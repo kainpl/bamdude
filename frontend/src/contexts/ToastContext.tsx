@@ -26,6 +26,8 @@ interface DispatchToastJob {
   printerName: string;
   status: DispatchJobStatus;
   message?: string;
+  /** False once the start command has gone: from then on it is a print, stopped from the printer card. */
+  cancellable?: boolean;
   uploadBytes?: number;
   uploadTotalBytes?: number;
   uploadProgressPct?: number;
@@ -217,6 +219,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         printer_name?: string;
         source_name?: string;
         message?: string;
+        cancellable?: boolean;
         upload_bytes?: number;
         upload_total_bytes?: number;
         upload_progress_pct?: number;
@@ -226,6 +229,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         printer_name?: string;
         source_name?: string;
         message?: string;
+        cancellable?: boolean;
         upload_bytes?: number;
         upload_total_bytes?: number;
         upload_progress_pct?: number;
@@ -360,6 +364,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               printerName: job.printer_name || t('backgroundDispatch.unknownPrinter'),
               status: 'processing',
               message: job.message,
+              cancellable: job.cancellable !== false,
               uploadBytes: job.upload_bytes,
               uploadTotalBytes: job.upload_total_bytes,
               uploadProgressPct: job.upload_progress_pct,
@@ -393,6 +398,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               sourceName: activeJob.sourceName,
               printerName: activeJob.printerName,
               message: activeJob.message,
+              cancellable: activeJob.cancellable,
               uploadBytes: activeJob.uploadBytes,
               uploadTotalBytes: activeJob.uploadTotalBytes,
               uploadProgressPct: activeJob.uploadProgressPct,
@@ -643,7 +649,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                                 {job.sourceName}
                               </span>
                               <div className="flex items-center gap-2">
-                                {(job.status === 'dispatched' || job.status === 'processing') && (
+                                {(job.status === 'dispatched' || job.status === 'processing') && job.cancellable !== false && (
                                   <button
                                     onClick={() => void cancelDispatchJob(job.jobId)}
                                     disabled={cancellingDispatchJobIds.has(job.jobId)}
@@ -666,6 +672,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                             {job.message && (
                               <div className="text-[11px] text-bambu-gray truncate" title={job.message}>
                                 {job.message}
+                              </div>
+                            )}
+                            {job.status === 'processing' && job.cancellable === false && (
+                              <div className="text-[11px] text-bambu-gray">
+                                {t('backgroundDispatch.stopFromPrinter')}
                               </div>
                             )}
                             {job.status === 'processing' && (

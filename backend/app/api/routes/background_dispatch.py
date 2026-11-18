@@ -17,9 +17,18 @@ async def cancel_dispatch_job(
 
     Queued jobs are cancelled immediately. Active jobs are marked for
     cooperative cancellation and will stop at the next cancellation checkpoint.
+    A job whose start command was sent is no longer a dispatch: 409 ``start_sent``.
     """
     result = await background_dispatch.cancel_job(job_id)
 
+    if result.get("reason") == "start_sent":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "start_sent",
+                "message": "The start command has already been sent. Stop the print from the printer card.",
+            },
+        )
     if not result["cancelled"]:
         raise HTTPException(status_code=404, detail="Dispatch job not found")
 

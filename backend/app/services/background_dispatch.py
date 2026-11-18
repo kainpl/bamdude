@@ -1748,6 +1748,12 @@ class BackgroundDispatchService:
         async with self._lock:
             # Check active jobs first
             active_state = self._active_jobs.get(job_id)
+            if active_state is not None and _published(active_state.job):
+                # The dispatch is over: the command has gone and what follows is a print, which is
+                # stopped from the printer's card (owner, 2026-11-18). Nothing past the send reads
+                # a cancel, so taking one here only showed «Cancelling» over a print that started.
+                logger.info("Cancel refused for dispatch job %s: its start command was sent", job_id)
+                return {"cancelled": False, "reason": "start_sent"}
             if active_state is not None:
                 logger.info("Cancel requested for active dispatch job %s", job_id)
                 self._cancel_requested_job_ids.add(job_id)
@@ -2402,6 +2408,8 @@ class BackgroundDispatchService:
                     "printer_id": active.job.printer_id,
                     "printer_name": active.job.printer_name,
                     "message": active.message,
+                    # Cancel belongs to the dispatch; once the start command has gone it is a print.
+                    "cancellable": not _published(active.job),
                     "upload_bytes": active.upload_bytes,
                     "phase": active.phase,
                     "upload_total_bytes": active.upload_total_bytes,
@@ -2701,6 +2709,17 @@ class BackgroundDispatchService:
             # operator cancelled, another attempt reclaimed or somebody deleted is
             # not a failure to report — and not one to count.
             not_started = released or job.queue_item_id is None
+            if released and getattr(released, "terminal", True) is False:
+                # The row went back to the queue (an uncleared plate): nothing failed and nothing is
+                # announced as a failure -- the window says where the job is now.
+                await self._mark_job_finished(
+                    job,
+                    failed=False,
+                    message="The plate is not cleared. The job is first in the printer's queue and "
+                    "starts when the plate is cleared.",
+                    deferred=True,
+                )
+                return
             await self._mark_job_finished(job, failed=not_started, message=reason["message"], deferred=True)
             if not_started:
                 await announce_not_started(job, reason["message"])
@@ -2985,6 +3004,14 @@ class BackgroundDispatchService:
             ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
             self._raise_if_cancel_requested(job)
 
+            # The plate is asked about BEFORE the upload (and again after it, below): a printer that still
+            # waits for its plate answer was sent the whole file first and refused afterwards. A session of
+            # its own, so the runner's stays without an open transaction for the length of the upload.
+            from backend.app.services.order_auto_eject import dispatch_admission as plate_admission
+
+            async with async_session() as admission_db:
+                await plate_admission(admission_db, job, printer)
+
             await self._set_active_message(job, f"Preparing upload to {printer_name}...")
             # One gate for this run's every delete and for the upload itself (G10 B).
             # The printer may still be reconnecting after the session check above:
@@ -3111,6 +3138,7 @@ class BackgroundDispatchService:
                                 retry_delay=ftp_retry_delay,
                                 operation_name=f"Upload for reprint to {printer_name}",
                                 non_retry_exceptions=(DispatchJobCancelled, UploadFailed),
+                                stop_retrying=lambda: self._is_cancel_requested(job.id),
                                 report=upload_report,
                                 may_run=file_gate(remote_path),
                             )
@@ -3129,6 +3157,8 @@ class BackgroundDispatchService:
                 except (DispatchJobCancelled, UploadFailed):
                     raise
                 except Exception as exc:
+                    # A cancel that could not finish tidily (the partial file stayed) is still a cancel.
+                    self._raise_if_cancel_requested(job)
                     raise UploadFailed(str(exc) or _upload_failure_message(storage, upload_report)) from exc
                 # The gate kept the name — a print began on the printer while this
                 # upload waited for the file channel: say that, not "upload failed".
@@ -3137,6 +3167,8 @@ class BackgroundDispatchService:
                 if uploaded:
                     await self._set_active_upload_progress(job, 1, 1)
 
+                # An upload that ended without its file while a cancel was asked for was cancelled.
+                self._raise_if_cancel_requested(job)
                 if not uploaded:
                     raise UploadFailed(_upload_failure_message(storage, upload_report))
                 # The file is on the printer: what follows until the start is preparation.
@@ -3356,6 +3388,10 @@ class BackgroundDispatchService:
                 # From here on only the printer's answer decides the attempt; every
                 # write below is bookkeeping (D-R4).
                 await self._record_phase(db, job, dispatch_phase.SENT)
+                # Tells the window the dispatch is over, so it takes its Cancel button away.
+                await self._set_active_message(
+                    job, f"Start command sent to {printer_name}; waiting for the printer...", phase="sent"
+                )
                 # The row keeps the mapping the printer was actually sent.
                 await self._secondary(db, job, "the dispatched mapping", lambda: _record_dispatched_mapping(job))
 
@@ -3981,6 +4017,14 @@ class BackgroundDispatchService:
             ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
             self._raise_if_cancel_requested(job)
 
+            # The plate is asked about BEFORE the upload (and again after it, below): a printer that still
+            # waits for its plate answer was sent the whole file first and refused afterwards. A session of
+            # its own, so the runner's stays without an open transaction for the length of the upload.
+            from backend.app.services.order_auto_eject import dispatch_admission as plate_admission
+
+            async with async_session() as admission_db:
+                await plate_admission(admission_db, job, printer)
+
             await self._set_active_message(job, f"Preparing upload to {printer_name}...")
             # One gate for this run's every delete and for the upload itself (G10 B).
             # The printer may still be reconnecting after the session check above:
@@ -4107,6 +4151,7 @@ class BackgroundDispatchService:
                                 retry_delay=ftp_retry_delay,
                                 operation_name=f"Upload for print to {printer_name}",
                                 non_retry_exceptions=(DispatchJobCancelled, UploadFailed),
+                                stop_retrying=lambda: self._is_cancel_requested(job.id),
                                 report=upload_report,
                                 may_run=file_gate(remote_path),
                             )
@@ -4125,6 +4170,8 @@ class BackgroundDispatchService:
                 except (DispatchJobCancelled, UploadFailed):
                     raise
                 except Exception as exc:
+                    # A cancel that could not finish tidily (the partial file stayed) is still a cancel.
+                    self._raise_if_cancel_requested(job)
                     raise UploadFailed(str(exc) or _upload_failure_message(storage, upload_report)) from exc
                 # The gate kept the name — a print began on the printer while this
                 # upload waited for the file channel: say that, not "upload failed".
@@ -4133,6 +4180,8 @@ class BackgroundDispatchService:
                 if uploaded:
                     await self._set_active_upload_progress(job, 1, 1)
 
+                # An upload that ended without its file while a cancel was asked for was cancelled.
+                self._raise_if_cancel_requested(job)
                 if not uploaded:
                     raise UploadFailed(_upload_failure_message(storage, upload_report))
                 # The file is on the printer: what follows until the start is preparation.
@@ -4349,6 +4398,10 @@ class BackgroundDispatchService:
                 # From here on only the printer's answer decides the attempt; every
                 # write below is bookkeeping (D-R4).
                 await self._record_phase(db, job, dispatch_phase.SENT)
+                # Tells the window the dispatch is over, so it takes its Cancel button away.
+                await self._set_active_message(
+                    job, f"Start command sent to {printer_name}; waiting for the printer...", phase="sent"
+                )
                 # The row keeps the mapping the printer was actually sent.
                 await self._secondary(db, job, "the dispatched mapping", lambda: _record_dispatched_mapping(job))
 

@@ -2509,6 +2509,7 @@ export default {
     cancelDispatchJob: 'Скасувати завдання відправки',
     cancel: 'Скасувати',
     cancelling: 'Скасування\u2026',
+    stopFromPrinter: 'Команду надіслано — зупиніть друк із картки принтера',
     awaitingPrinter: 'Очікування принтера\u2026',
     status: {
       dispatched: 'Відправлено',

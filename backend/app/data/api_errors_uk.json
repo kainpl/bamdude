@@ -1132,6 +1132,7 @@
   "The source changed since it was inspected. Inspect it again.": "Джерело змінилося після перевірки. Перевірте його ще раз.",
   "The standard must be one of the group's own options": "Стандартом має бути одна з опцій самої групи",
   "The standard option cannot be deleted; choose another standard first": "Стандартну опцію не можна видалити; спершу оберіть іншу стандартною",
+  "The start command has already been sent. Stop the print from the printer card.": "Команду старту вже надіслано. Зупиніть друк із картки принтера.",
   "The start time must be in the future": "Час старту має бути в майбутньому",
   "The starting position must be between 1 and {} on this sheet": "Стартова позиція на цьому аркуші — від 1 до {}",
   "The target printer no longer exists.": "Цільового принтера більше не існує.",

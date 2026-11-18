@@ -201,6 +201,23 @@ async def test_a_direct_deferral_is_announced_with_its_sentence(notify, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_a_direct_print_sent_back_to_the_queue_is_no_failure(notify, monkeypatch):
+    """An uncleared plate: the row waits first in the queue, so nothing failed and nobody is told it did."""
+    from backend.app.services.filament_deferred import DeferResult
+    from backend.app.services.filament_routing import RoutingDeferred
+
+    service = _deferring_service(monkeypatch, released=DeferResult(True, terminal=False))
+    job = _job(queue_item_id=5, claim_started_at=object())
+
+    await service._handle_routing_deferred(job, RoutingDeferred("plate_manual_inspection"))
+
+    notify.assert_not_awaited()
+    event = _finished_event()
+    assert event["failed"] == 0
+    assert "first in the printer's queue" in event["recent_event"]["message"]
+
+
+@pytest.mark.asyncio
 async def test_a_rowless_direct_deferral_is_still_announced(notify, monkeypatch):
     """No claim row to release is not a reason to stay silent."""
     from backend.app.services.filament_routing import RoutingDeferred
