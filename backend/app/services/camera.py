@@ -15,6 +15,7 @@ import subprocess
 import time
 import traceback
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from backend.app.services.camera_cleanup import CameraAttempt
@@ -840,7 +841,69 @@ async def test_camera_connection(
     }
 
 
-async def extract_video_last_frame(video_path: Path, output_path: Path) -> bool:
+#: Seconds a killed frame extraction gets to exit before its caller's cleanup is left to a background owner.
+EXTRACT_KILL_WAIT = 5.0
+#: Cleanups waiting for an extraction that outlived :data:`EXTRACT_KILL_WAIT` to exit.
+_abandoned_extractions: set[asyncio.Task] = set()
+
+
+async def _through(awaitable) -> None:
+    """Run ``awaitable`` to its end however often the caller is cancelled meanwhile; log, never raise, its error."""
+    task = asyncio.ensure_future(awaitable)
+    while not task.done():
+        try:
+            await asyncio.wait({task})
+        except asyncio.CancelledError:
+            continue
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning("A frame extraction's cleanup failed: %s", type(task.exception()).__name__)
+
+
+async def _exited(process, seconds: float) -> bool:
+    """Wait for a killed process to exit, through any number of cancels. False = it still runs."""
+    waiter = asyncio.ensure_future(process.wait())
+    deadline = asyncio.get_running_loop().time() + seconds
+    while not waiter.done():
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            waiter.cancel()
+            return False
+        try:
+            await asyncio.wait({waiter}, timeout=remaining)
+        except asyncio.CancelledError:
+            continue
+    return True
+
+
+async def _after_exit(process, on_abandon: Callable[[], Awaitable[None]]) -> None:
+    await process.wait()
+    await on_abandon()
+
+
+async def _abandon(process, on_abandon: Callable[[], Awaitable[None]] | None) -> None:
+    """The extraction is being given up: ffmpeg must stop, and only then is its output cleaned up (Codex G2-R2)."""
+    if process is not None and process.returncode is None:
+        try:
+            process.kill()
+        except (ProcessLookupError, OSError):
+            pass  # already exited
+        if not await _exited(process, EXTRACT_KILL_WAIT):
+            logger.warning("A cancelled frame extraction had not exited %.0fs after it was killed", EXTRACT_KILL_WAIT)
+            if on_abandon is not None:
+                owner = asyncio.ensure_future(_after_exit(process, on_abandon))
+                _abandoned_extractions.add(owner)
+                owner.add_done_callback(_abandoned_extractions.discard)
+            return
+    if on_abandon is not None:
+        await _through(on_abandon())
+
+
+async def extract_video_last_frame(
+    video_path: Path,
+    output_path: Path,
+    *,
+    on_abandon: Callable[[], Awaitable[None]] | None = None,
+) -> bool:
     """Extract the last frame of `video_path` as JPEG at `output_path`.
 
     Used to source finish photos from a Bambu timelapse. The Bambu firmware
@@ -860,7 +923,12 @@ async def extract_video_last_frame(video_path: Path, output_path: Path) -> bool:
     construction (<1 minute even on hours-long prints).
 
     Returns False on missing ffmpeg, missing video, subprocess failure or
-    timeout. Never raises.
+    timeout. A cancel of the caller (or any unexpected error) is re-raised —
+    only after ffmpeg was killed and ``on_abandon``, the caller's cleanup of
+    ``output_path``, has run once ffmpeg can no longer write to it: inline when
+    ffmpeg exits within :data:`EXTRACT_KILL_WAIT`, else by a background owner
+    after its exit (Codex G2-R2). A caller that passes ``on_abandon`` leaves
+    that cleanup to it on every exception from here.
     """
     ffmpeg = get_ffmpeg_path()
     if not ffmpeg:
@@ -887,35 +955,41 @@ async def extract_video_last_frame(video_path: Path, output_path: Path) -> bool:
 
     process = None
     try:
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await asyncio.wait_for(process.communicate(), timeout=15.0)
-        if process.returncode != 0:
-            logger.warning(
-                "ffmpeg failed extracting last frame from %s: %s",
-                video_path,
-                summarize_ffmpeg_stderr(stderr) or NO_FFMPEG_OUTPUT,
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
+            _, stderr = await asyncio.wait_for(process.communicate(), timeout=15.0)
+            if process.returncode != 0:
+                logger.warning(
+                    "ffmpeg failed extracting last frame from %s: %s",
+                    video_path,
+                    summarize_ffmpeg_stderr(stderr) or NO_FFMPEG_OUTPUT,
+                )
+                return False
+            if not output_path.exists() or output_path.stat().st_size == 0:
+                logger.warning("ffmpeg produced no output for %s", video_path)
+                return False
+            return True
+        except TimeoutError:
+            logger.warning("ffmpeg timed out extracting last frame from %s", video_path)
+            if process is not None:
+                try:
+                    process.kill()
+                    await process.wait()
+                except ProcessLookupError:
+                    pass  # Already exited
             return False
-        if not output_path.exists() or output_path.stat().st_size == 0:
-            logger.warning("ffmpeg produced no output for %s", video_path)
+        except OSError as e:
+            logger.warning("ffmpeg subprocess error for %s: %s", video_path, e)
             return False
-        return True
-    except TimeoutError:
-        logger.warning("ffmpeg timed out extracting last frame from %s", video_path)
-        if process is not None:
-            try:
-                process.kill()
-                await process.wait()
-            except ProcessLookupError:
-                pass  # Already exited
-        return False
-    except OSError as e:
-        logger.warning("ffmpeg subprocess error for %s: %s", video_path, e)
-        return False
+    except BaseException:
+        # Cancelled (a completion's budget, a shutdown) or an unexpected error: ffmpeg may still be
+        # writing the still. It is killed, and the caller's cleanup waits for it (Codex G2-R2).
+        await _abandon(process, on_abandon)
+        raise
 
 
 def apply_camera_rotation(image_data: bytes, rotation: int, logger: logging.Logger) -> bytes:

@@ -6662,8 +6662,16 @@ async def _capture_finish_photo_from_timelapse(
                 # The store knows the address before ffmpeg may create the file: whatever ends this
                 # attempt — a refusal, a failed extraction, a cancel — removes exactly that file.
                 finish_photo_store.note_written(filename, output_path)
+
+                async def remove_still(name: str = filename) -> None:
+                    await finish_photo_store.discard(archive_id, name, session=async_session)
+
+                in_extractor = True
                 try:
-                    extracted = await extract_video_last_frame(video_path, output_path)
+                    # A cancel inside the extraction is settled by the extractor: it kills ffmpeg and
+                    # removes the still only once ffmpeg can no longer write it (Codex G2-R2).
+                    extracted = await extract_video_last_frame(video_path, output_path, on_abandon=remove_still)
+                    in_extractor = False
                     wanted = False
                     if extracted:
                         # ffmpeg writes the still straight to disk, so there are no
@@ -6678,9 +6686,8 @@ async def _capture_finish_photo_from_timelapse(
                             same = current is not None and current.recovery_identity == expected_identity
                         wanted = same and (may_run is None or may_run())
                 except BaseException:
-                    await finish_photo_store.to_the_end(
-                        finish_photo_store.discard(archive_id, filename, session=async_session)
-                    )
+                    if not in_extractor:  # ffmpeg has ended: the still is removed here
+                        await finish_photo_store.to_the_end(remove_still())
                     raise
                 if wanted:
                     # Its exact address stays with the store until the caller attaches or refuses it.

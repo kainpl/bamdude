@@ -89,7 +89,7 @@ async def test_extracts_frame_when_timelapse_lands(tmp_path: Path, patched_sessi
 
     # Patch extraction to succeed unconditionally — the actual ffmpeg
     # codepath has its own test file.
-    async def fake_extract(src, dst):
+    async def fake_extract(src, dst, **_kwargs):
         dst.write_bytes(b"\xff\xd8" + b"\x00" * 50)  # JPEG SOI
         return True
 
@@ -123,7 +123,7 @@ async def test_returns_none_when_extraction_fails(tmp_path: Path, patched_sessio
     video_abspath.parent.mkdir(parents=True, exist_ok=True)
     video_abspath.write_bytes(b"x" * 100)
 
-    async def fake_extract_fails(src, dst):
+    async def fake_extract_fails(src, dst, **_kwargs):
         return False
 
     patched_session.timelapse_path = str(video_relpath)
@@ -160,7 +160,7 @@ async def test_polls_until_file_appears(tmp_path: Path, patched_session, monkeyp
         video_abspath.parent.mkdir(parents=True, exist_ok=True)
         video_abspath.write_bytes(b"x" * 100)
 
-    async def fake_extract(src, dst):
+    async def fake_extract(src, dst, **_kwargs):
         dst.write_bytes(b"\xff\xd8")
         return True
 
@@ -192,7 +192,7 @@ def _landed(tmp_path: Path, monkeypatch, archive) -> Path:
     return tmp_path / "archive" / "1" / "print" / "photos"
 
 
-async def _extract(src, dst):
+async def _extract(src, dst, **_kwargs):
     dst.write_bytes(b"\xff\xd8" + b"\x00" * 50)
     return True
 
@@ -210,7 +210,7 @@ async def test_a_run_that_changes_during_the_extraction_leaves_no_file(tmp_path:
     photos = _landed(tmp_path, monkeypatch, patched_session)
     current = {"value": True}
 
-    async def extract_and_lose_the_run(src, dst):
+    async def extract_and_lose_the_run(src, dst, **_kwargs):
         await _extract(src, dst)
         current["value"] = False  # the next print started while ffmpeg worked
         return True
@@ -226,7 +226,7 @@ async def test_an_archive_that_became_another_during_the_extraction_leaves_no_fi
 ):
     photos = _landed(tmp_path, monkeypatch, patched_session)
 
-    async def extract_and_reuse_the_id(src, dst):
+    async def extract_and_reuse_the_id(src, dst, **_kwargs):
         await _extract(src, dst)
         patched_session.recovery_identity = "another-archive-with-this-id"
         return True
@@ -246,7 +246,7 @@ async def test_a_pointer_that_leaves_the_data_directory_is_never_read(tmp_path: 
     patched_session.timelapse_path = "../outside.mp4"
     called = []
 
-    async def extract(src, dst):
+    async def extract(src, dst, **_kwargs):
         called.append(src)
         return True
 
@@ -273,10 +273,15 @@ async def test_a_cancel_during_the_extraction_leaves_no_file(tmp_path: Path, pat
     before = dict(finish_photo_store._own)  # other tests of this file leave their extracted stills recorded
     started = asyncio.Event()
 
-    async def slow_extract(_src, dst):
+    async def slow_extract(_src, dst, *, on_abandon=None):
         dst.write_bytes(b"\xff\xd8 half a frame")
         started.set()
-        await asyncio.sleep(10)
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            # The real extractor's contract: the caller's cleanup runs once nothing writes any more.
+            await on_abandon()
+            raise
         return True
 
     with patch("backend.app.services.camera.extract_video_last_frame", new=slow_extract):
@@ -295,7 +300,7 @@ async def test_a_failed_extraction_removes_what_it_left(tmp_path: Path, patched_
     photos = _landed(tmp_path, monkeypatch, patched_session)
     before = dict(finish_photo_store._own)
 
-    async def broken_extract(_src, dst):
+    async def broken_extract(_src, dst, **_kwargs):
         dst.write_bytes(b"\xff\xd8 not a whole frame")
         return False
 
