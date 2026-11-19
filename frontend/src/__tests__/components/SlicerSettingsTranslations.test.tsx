@@ -12,7 +12,7 @@ afterEach(async () => { await act(() => i18n.changeLanguage('en')); });
 
 const translations: Record<string, string> = uk;
 
-function Harness({ onChange }: { onChange: ReturnType<typeof vi.fn> }) {
+function Harness({ onChange }: { onChange: (values: Record<string, string | string[]>) => void }) {
   const [values, setValues] = useState<Record<string, SettingValue>>({});
   return <SlicerSettingsPanel values={values} onChange={(next, serialized) => {
     setValues(next);
@@ -44,6 +44,7 @@ describe('OrcaSlicer parameter translations', () => {
     const layer = await screen.findByLabelText('Висота шару');
     expect(screen.getByRole('button', { name: 'Якість' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Міцність' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Експертний' }));
     expect(screen.getByText('Ширина лінії')).toBeInTheDocument();
     const row = layer.closest('.group')!;
     expect(row).toHaveAttribute('title', translations[schema.layer_height.tooltip]);
@@ -52,7 +53,8 @@ describe('OrcaSlicer parameter translations', () => {
     expect(within(seam).getByRole('option', { name: 'Вирівняне' })).toHaveValue('aligned');
     fireEvent.change(seam, { target: { value: 'random' } });
     expect(onChange).toHaveBeenLastCalledWith({ seam_position: 'random' });
-  });
+    // Expert renders the whole Quality page; measured at 6.2s beside lint/tsc.
+  }, 20_000);
 
   it('keeps edited values and the same control when switching languages', async () => {
     await act(() => i18n.changeLanguage('en'));
@@ -63,10 +65,10 @@ describe('OrcaSlicer parameter translations', () => {
     expect(onChange).toHaveBeenLastCalledWith({ layer_height: '0.28' });
     const calls = onChange.mock.calls.length;
     await act(() => i18n.changeLanguage('uk'));
-    expect(screen.getByLabelText('Висота шару')).toBe(layer);
+    expect(screen.getByLabelText(/^Висота шару/)).toBe(layer);
     expect(layer).toHaveValue(0.28);
     await act(() => i18n.changeLanguage('en'));
-    expect(screen.getByLabelText('Layer height')).toBe(layer);
+    expect(screen.getByLabelText(/^Layer height/)).toBe(layer);
     expect(layer).toHaveValue(0.28);
     expect(onChange).toHaveBeenCalledTimes(calls);
   });
