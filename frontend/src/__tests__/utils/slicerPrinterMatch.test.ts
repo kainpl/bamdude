@@ -5,6 +5,8 @@ import {
   printerPresetIdentity,
   matchesPrinterModelSuffix,
   EMPTY_COMPATIBILITY_INDEX,
+  isMachinePreset,
+  isProvenPrinterPreset,
 } from '../../utils/slicerPrinterMatch';
 
 const X1C = 'Bambu Lab X1 Carbon 0.4 nozzle';
@@ -518,4 +520,32 @@ describe('printerPresetIdentity — the model and nozzle of a printer preset', (
     expect(printerPresetIdentity('Voron 2.4', parents)).toBeNull();
     expect(printerPresetIdentity(null, parents)).toBeNull();
   });
+});
+
+// R4 (spec slicing-setup r5): a printer preset is PROVEN for a physical printer
+// only when a name in its lineage states both its model and its nozzle, the
+// model is exactly the printer's and the nozzle the one chosen. There is no
+// implicit 0.4, and a bare model card is never proven.
+describe('isMachinePreset / isProvenPrinterPreset (R4)', () => {
+  const A1 = { model: 'A1', nozzle: 0.4 };
+  it('a bare model card is not a machine preset and never proven', () => {
+    expect(isMachinePreset('Bambu Lab A1', null)).toBe(false);
+    expect(isProvenPrinterPreset('Bambu Lab A1', null, A1, PRINTER_MODELS)).toBe(false);
+  });
+  it('a preset that states its nozzle is a machine preset', () =>
+    expect(isMachinePreset('Bambu Lab A1 0.4 nozzle', null)).toBe(true));
+  it('A1 is not A1 mini', () => {
+    expect(isProvenPrinterPreset('Bambu Lab A1 mini 0.4 nozzle', null, A1, PRINTER_MODELS)).toBe(false);
+    expect(isProvenPrinterPreset('Bambu Lab A1 0.4 nozzle', null, A1, PRINTER_MODELS)).toBe(true);
+  });
+  it('the nozzle must equal the chosen one', () =>
+    expect(isProvenPrinterPreset('Bambu Lab A1 0.6 nozzle', null, A1, PRINTER_MODELS)).toBe(false));
+  it('renamed through its parent; a clone through its name', () => {
+    expect(isProvenPrinterPreset('My A1', { 'My A1': 'Bambu Lab A1 0.4 nozzle' }, A1, PRINTER_MODELS)).toBe(true);
+    expect(isProvenPrinterPreset('# Bambu Lab A1 0.4 nozzle', null, A1, PRINTER_MODELS)).toBe(true);
+  });
+  it('a short physical model and a long preset model meet in the registry', () =>
+    expect(
+      isProvenPrinterPreset('Bambu Lab X1 Carbon 0.4 nozzle', null, { model: 'X1C', nozzle: 0.4 }, PRINTER_MODELS),
+    ).toBe(true));
 });

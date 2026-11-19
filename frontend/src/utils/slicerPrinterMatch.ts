@@ -382,6 +382,36 @@ export function printerPresetModel(
 }
 
 /**
+ * A machine preset — one a slice can run on — as opposed to a model card
+ * ("Bambu Lab A1"): a name in its lineage states both its model and its
+ * nozzle (spec slicing-setup R4). A card is never picked automatically.
+ */
+export function isMachinePreset(name: string, parents: PrinterParents | null | undefined): boolean {
+  return printerPresetIdentity(name, parents) !== null;
+}
+
+/**
+ * Is this printer preset PROVEN for a physical printer (spec slicing-setup R4,
+ * D7)? Its lineage must state a model and a nozzle; the model must be exactly
+ * the printer's — no substring match ("A1" ⊂ "A1 mini") and no "compatible"
+ * model — and the nozzle the one chosen. There is no implicit 0.4: a preset
+ * whose nozzle nobody stated is not proven.
+ */
+export function isProvenPrinterPreset(
+  name: string,
+  parents: PrinterParents | null | undefined,
+  physical: { model: string; nozzle: number },
+  printerModels: Record<string, string>,
+): boolean {
+  const identity = printerPresetIdentity(name, parents);
+  if (!identity) return false;
+  const sameModel =
+    canonicalPrinterModel(identity.model, printerModels).toLowerCase()
+    === canonicalPrinterModel(physical.model, printerModels).toLowerCase();
+  return sameModel && Number(identity.nozzle) === physical.nozzle;
+}
+
+/**
  * Collapse a raw model token extracted from a preset name ("A1M",
  * "A1 mini", "X1C", "X1 Carbon"...) onto ONE canonical display fragment
  * from the backend registry ("A1 Mini", "X1 Carbon"). The cloud tabs' printer
