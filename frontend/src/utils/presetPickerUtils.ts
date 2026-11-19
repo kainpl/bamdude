@@ -20,24 +20,46 @@ export type Slot = 'printer' | 'process' | 'filament';
 // and rendering (#1712). Identical to the SliceModal ordering.
 export const TIER_ORDER = ['local', 'orca_cloud', 'cloud', 'standard'] as const;
 
+// The source filter of the slicing-setup family: every preset, the user's
+// own, or the built-in ones (spec slicing-setup R1 / R2).
+export type PresetSourceFilter = 'all' | 'mine' | 'builtin';
+
+// The setting_id prefixes Bambu Cloud gives a user-created preset. This is
+// the one copy of the pattern (a guard test keeps it so).
+const OWN_BAMBU_CLOUD_ID = /^(P[FPM]US|PF\d|PP\d)/;
+
+/** A Bambu Cloud setting id the user created (not a system preset). */
+export function isOwnBambuCloudId(id: string): boolean {
+  return OWN_BAMBU_CLOUD_ID.test(id);
+}
+
+/**
+ * Is this preset the user's own (R1)? Imported presets are; every Orca Cloud
+ * preset is (the tier holds only the user's own synced profiles, under UUIDs
+ * the Bambu prefix rule would read as built-in); a Bambu Cloud preset is when
+ * its id carries the user prefix; the slicer's bundled presets never are.
+ */
+export function isOwnPreset(p: Pick<UnifiedPreset, 'source' | 'id'>): boolean {
+  if (p.source === 'local' || p.source === 'orca_cloud') return true;
+  if (p.source === 'standard') return false;
+  return isOwnBambuCloudId(p.id);
+}
+
+export function matchesSourceFilter(p: Pick<UnifiedPreset, 'source' | 'id'>, filter: PresetSourceFilter): boolean {
+  if (filter === 'all') return true;
+  const own = isOwnPreset(p);
+  return filter === 'mine' ? own : !own;
+}
+
+// Calibration's old names, kept until its copies are removed (plan Task 18).
 export type OwnerFilter = 'all' | 'custom' | 'builtin';
 
-// Cloud setting_id prefixes Bambu uses for user-created presets — kept
-// in sync with ``pages/ProfilesPage.tsx::isUserPreset`` and SliceModal.
-// Local presets are user-imported by definition; standard presets are
-// always built-in. Cloud splits by id prefix.
-const _USER_CLOUD_PRESET_RE = /^(P[FPM]US|PF\d|PP\d)/;
-
 export function isCustomPreset(p: UnifiedPreset): boolean {
-  if (p.source === 'local') return true;
-  if (p.source === 'standard') return false;
-  return _USER_CLOUD_PRESET_RE.test(p.id);
+  return isOwnPreset(p);
 }
 
 export function matchesOwnerFilter(p: UnifiedPreset, filter: OwnerFilter): boolean {
-  if (filter === 'all') return true;
-  const custom = isCustomPreset(p);
-  return filter === 'custom' ? custom : !custom;
+  return matchesSourceFilter(p, filter === 'custom' ? 'mine' : filter);
 }
 
 export function toRefValue(ref: PresetRef | null): string {
