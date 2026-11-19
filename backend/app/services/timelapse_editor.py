@@ -41,8 +41,14 @@ An edit is now a JOB:
   that moment (:attr:`EditJob.no_return`) a cancel is answered "too late".
 * **Cancelled only when it has stopped**: the job reads ``cancelled`` after the
   child was reaped and its files removed. A child whose end was not seen leaves
-  the job ``failed`` / ``process_unreaped`` with its output untouched, and a
-  restore refused.
+  the job ``failed`` / ``process_unreaped`` with its output untouched, a
+  restore refused, and the encoder slot taken until that child has really gone.
+* **The place outlives its request.** The directory and the pin are prepared
+  by a task of the runtime's (:meth:`TimelapseEditRuntime.begin_preparation`)
+  and the music's writes are counted until their threads end; a request that
+  goes away hands its place to :meth:`TimelapseEditRuntime.abandon_soon`, which
+  waits for all of that before it removes the directory. Until then the job
+  stays in the registry and a drain waits for it, or refuses.
 * **In memory, one process.** A restart forgets every job; what it left on disk
   — its scratch directory and the staged output it named there — is removed at
   startup by the marker, never by age or by a name that merely looks like ours.
