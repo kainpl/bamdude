@@ -486,4 +486,24 @@ describe('AssembleProjectModal', () => {
     expect(await screen.findByText('This file was not assembled here, or its record is damaged')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Re-layout' })).not.toBeInTheDocument();
   });
+  it.each(['completed', 'failed'] as const)('returns from a %s assembly to the same form and submits only on request', async (status) => {
+    if (status === 'failed') {
+      jobState = { job_id: 31, status, kind: 'assembly', error_detail: 'Could not lay out this model' };
+    }
+    open();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Assemble' })).toBeEnabled());
+    fireEvent.change(screen.getByLabelText('Gap between parts, mm'), { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Assemble' }));
+    await screen.findByTestId('assemble-summary');
+    expect(posted).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit and try again' }));
+    await screen.findByTestId('assemble-part-0');
+    expect(screen.getByLabelText('Gap between parts, mm')).toHaveValue('3');
+    expect(within(target(0)).getByRole('combobox', { name: 'Process' })).toHaveValue('local:10');
+    expect(posted).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Assemble' }));
+    await waitFor(() => expect(posted).toHaveLength(2));
+    expect(posted[1].body).toEqual(posted[0].body);
+  });
+
 });

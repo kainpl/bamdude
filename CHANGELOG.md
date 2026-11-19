@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Edit a project assembly and try again.** After a completed or failed assembly, return to the same inputs without starting another job or deleting the previous result. A new attempt starts only when requested; moving previous outputs to the trash must be opted into again.
+
 - **A successful print releases "Only after a successful previous print" for good.** Successful queue jobs are removed when a print finishes or the plate is cleared, but failed ones stay, so one old failure kept the gate shut for ever — even after many good prints since. A success now retires the older failures on that printer. On PostgreSQL a cancelled job without an end time could also hide a later failure from the gate; every cancel is now dated and the newest print is chosen the same way on both databases.
 - **A failed start that never reached the printer no longer holds back the next job.** An upload the printer refused, or a printer that went offline before the start, counted as a failed print for "Only after a successful previous print". Only a start the printer received and did not run counts now.
 - **"Only after a successful previous print" is judged only for the job that is next.** A job further down a printer's queue could be skipped while the job ahead of it was still waiting for filament or for an order restriction.
