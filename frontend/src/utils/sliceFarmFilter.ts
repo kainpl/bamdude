@@ -27,8 +27,11 @@ import { printerPresetModel } from './slicerPrinterMatch';
 
 type PresetModel = { model: string; nozzle: string | null };
 
-/** Is this online printer one the preset's model can be sliced for? */
-function printerIsOfModel(printer: OnlinePrinter, model: string): boolean {
+/** The parts of a farm printer the model comparison reads (online or not). */
+type FarmMachine = Pick<OnlinePrinter, 'model' | 'accepts' | 'nozzle_diameters'>;
+
+/** Is this printer one the preset's model can be sliced for? */
+function printerIsOfModel(printer: FarmMachine, model: string): boolean {
   if (!printer.model) return false;
   // `model` is the fragment a printer preset's name carries after "Bambu Lab "
   // ("X1 Carbon"); the long marketing name is the spelling the normaliser knows.
@@ -36,7 +39,7 @@ function printerIsOfModel(printer: OnlinePrinter, model: string): boolean {
   return verdict === 'exact' || verdict === 'compatible';
 }
 
-function printerHasNozzle(printer: OnlinePrinter, nozzle: string | null): boolean {
+function printerHasNozzle(printer: FarmMachine, nozzle: string | null): boolean {
   // A preset that states no nozzle, or a printer that reported none yet, is not
   // ruled out on a size nobody stated.
   if (nozzle === null || printer.nozzle_diameters.length === 0) return true;
@@ -45,15 +48,28 @@ function printerHasNozzle(printer: OnlinePrinter, nozzle: string | null): boolea
   return printer.nozzle_diameters.some((d) => Math.abs(d - size) < 1e-6);
 }
 
+/**
+ * Does a printer preset fit this farm printer — its model (exact or one the
+ * printer accepts) and, when the preset states one, a nozzle fitted there? A
+ * printer whose nozzles are unknown excludes no size (spec slicing-setup D4).
+ */
+export function printerPresetFitsFarmPrinter(
+  preset: Pick<UnifiedPreset, 'name'>,
+  printer: FarmMachine,
+  printerParents: PrinterParents | null | undefined,
+): boolean {
+  const identity: PresetModel | null = printerPresetModel(preset.name, printerParents);
+  if (!identity) return false;
+  return printerIsOfModel(printer, identity.model) && printerHasNozzle(printer, identity.nozzle);
+}
+
 /** Does a printer preset belong to a printer that is online now? */
 export function printerPresetIsOnline(
   preset: Pick<UnifiedPreset, 'name'>,
   farm: LoadedFilamentsResponse,
   printerParents: PrinterParents | null | undefined,
 ): boolean {
-  const identity: PresetModel | null = printerPresetModel(preset.name, printerParents);
-  if (!identity) return false;
-  return farm.printers.some((p) => printerIsOfModel(p, identity.model) && printerHasNozzle(p, identity.nozzle));
+  return farm.printers.some((p) => printerPresetFitsFarmPrinter(preset, p, printerParents));
 }
 
 /**

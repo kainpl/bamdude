@@ -16,6 +16,7 @@ import type { PrintOptions as PrintDialogOptions } from '../components/PrintModa
 import { isMonitorKioskLocation } from '../features/monitor/location';
 import { createPrinterStatusBatcher } from './printerStatusBatch';
 import { createIdBatcher } from '../utils/idBatch';
+import { bumpPresetContext } from '../utils/presetContext';
 import { farmRead, farmReadBudget } from './farmReadBudget';
 
 export type PrintStateAction =
@@ -6257,9 +6258,20 @@ export interface FamilyPresetRefs {
   standard: string[];
 }
 
+// A printer of the farm that is not archived — online, paused, offline or in
+// maintenance (spec slicing-setup D4). Nozzles unknown → [] (never assumed).
+export interface FarmPrinter {
+  printer_id: number;
+  model: string | null;
+  accepts: string[];
+  nozzle_diameters: number[];
+}
+
 export interface LoadedFilamentsResponse {
   printers: OnlinePrinter[];
   families: Record<string, FamilyPresetRefs>;
+  // Optional until the server sends it (plan Task 12).
+  farm_printers?: FarmPrinter[];
 }
 
 export interface SliceResponse {
@@ -12496,23 +12508,38 @@ export const api = {
     if (!response.ok) throw new ApiError(`HTTP ${response.status}`, response.status);
     return response.blob();
   },
-  cloudLogin: (email: string, password: string, region = 'global') =>
-    request<CloudLoginResponse>('/cloud/login', {
+  // A CONFIRMED binding change starts a new preset-catalogue context
+  // (utils/presetContext): a list read under the old link is never reused.
+  // A pending answer — a verification code still to come — changes nothing.
+  cloudLogin: async (email: string, password: string, region = 'global') => {
+    const result = await request<CloudLoginResponse>('/cloud/login', {
       method: 'POST',
       body: JSON.stringify({ email, password, region }),
-    }),
-  cloudVerify: (email: string, code: string, tfaKey?: string, region: string = 'global') =>
-    request<CloudLoginResponse>('/cloud/verify', {
+    });
+    if (result.success && !result.needs_verification) bumpPresetContext();
+    return result;
+  },
+  cloudVerify: async (email: string, code: string, tfaKey?: string, region: string = 'global') => {
+    const result = await request<CloudLoginResponse>('/cloud/verify', {
       method: 'POST',
       body: JSON.stringify({ email, code, tfa_key: tfaKey, region }),
-    }),
-  cloudSetToken: (access_token: string, region: string = 'global') =>
-    request<CloudAuthStatus>('/cloud/token', {
+    });
+    if (result.success) bumpPresetContext();
+    return result;
+  },
+  cloudSetToken: async (access_token: string, region: string = 'global') => {
+    const result = await request<CloudAuthStatus>('/cloud/token', {
       method: 'POST',
       body: JSON.stringify({ access_token, region }),
-    }),
-  cloudLogout: () =>
-    request<{ success: boolean }>('/cloud/logout', { method: 'POST' }),
+    });
+    bumpPresetContext();
+    return result;
+  },
+  cloudLogout: async () => {
+    const result = await request<{ success: boolean }>('/cloud/logout', { method: 'POST' });
+    if (result.success) bumpPresetContext();
+    return result;
+  },
 
   // Orca Cloud — RFC 8628 device pairing. deviceStart() returns a short
   // user_code + verification link; the user approves it in their Orca Cloud
@@ -12523,14 +12550,21 @@ export const api = {
     request<OrcaDeviceStartResponse>('/orca-cloud/device/start', {
       method: 'POST',
     }),
-  orcaCloudDevicePoll: () =>
-    request<OrcaDevicePollResponse>('/orca-cloud/device/poll', {
+  orcaCloudDevicePoll: async () => {
+    const result = await request<OrcaDevicePollResponse>('/orca-cloud/device/poll', {
       method: 'POST',
-    }),
+    });
+    // `authorization_pending` / `slow_down` answer too; only a pairing is a change.
+    if (result.connected) bumpPresetContext();
+    return result;
+  },
   orcaCloudStatus: () =>
     request<OrcaAuthStatusResponse>('/orca-cloud/status'),
-  orcaCloudLogout: () =>
-    request<{ success: boolean }>('/orca-cloud/logout', { method: 'POST' }),
+  orcaCloudLogout: async () => {
+    const result = await request<{ success: boolean }>('/orca-cloud/logout', { method: 'POST' });
+    if (result.success) bumpPresetContext();
+    return result;
+  },
   orcaCloudListProfiles: () =>
     request<OrcaProfileListResponse>('/orca-cloud/profiles'),
   orcaCloudGetProfile: (id: string) =>

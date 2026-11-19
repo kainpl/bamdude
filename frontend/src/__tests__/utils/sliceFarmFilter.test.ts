@@ -8,7 +8,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { LoadedFilamentsResponse, OnlinePrinter } from '../../api/client';
-import { filamentPresetIsLoaded, loadedFilamentsFor, printerPresetIsOnline } from '../../utils/sliceFarmFilter';
+import {
+  filamentPresetIsLoaded,
+  loadedFilamentsFor,
+  printerPresetFitsFarmPrinter,
+  printerPresetIsOnline,
+} from '../../utils/sliceFarmFilter';
 
 const printer = (over: Partial<OnlinePrinter>): OnlinePrinter => ({
   printer_id: 1,
@@ -133,4 +138,24 @@ describe('filamentPresetIsLoaded', () => {
   it('is false when nothing is loaded', () => {
     expect(filamentPresetIsLoaded({ source: 'standard', id: 'Generic PLA', filament_type: 'PLA' }, [], families)).toBe(false);
   });
+});
+
+// D4 (spec slicing-setup r5): the farm-models switch compares a printer preset
+// with every non-archived farm printer the same way the online filter did.
+describe('printerPresetFitsFarmPrinter', () => {
+  const x1c = { model: 'X1C', accepts: [], nozzle_diameters: [0.4] };
+  it('exact model and a fitted nozzle', () =>
+    expect(printerPresetFitsFarmPrinter({ name: 'Bambu Lab X1 Carbon 0.4 nozzle' }, x1c, null)).toBe(true));
+  it('a nozzle the printer does not carry', () =>
+    expect(printerPresetFitsFarmPrinter({ name: 'Bambu Lab X1 Carbon 0.6 nozzle' }, x1c, null)).toBe(false));
+  it('an unknown nozzle list excludes no size', () =>
+    expect(
+      printerPresetFitsFarmPrinter({ name: 'Bambu Lab X1 Carbon 0.6 nozzle' }, { ...x1c, nozzle_diameters: [] }, null),
+    ).toBe(true));
+  it('a model the printer accepts counts', () =>
+    expect(
+      printerPresetFitsFarmPrinter({ name: 'Bambu Lab X1 0.4 nozzle' }, { ...x1c, accepts: ['X1'] }, null),
+    ).toBe(true));
+  it('another model does not', () =>
+    expect(printerPresetFitsFarmPrinter({ name: 'Bambu Lab A1 0.4 nozzle' }, x1c, null)).toBe(false));
 });
