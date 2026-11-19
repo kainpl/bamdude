@@ -909,3 +909,67 @@ class TestFreeStockOnCompletion:
             await main_mod._credit_free_stock(None)
 
         session_maker.assert_not_called()
+
+
+class TestACompletionWithoutAnArchive:
+    """G03 E-4 (owner): every BamDude print has an archive; a completion that finds none guesses no owner.
+
+    It used to take the owner of whatever queue row this printer finished in the last five minutes — typically
+    somebody else's job that had just failed or been cancelled — and mail them "your print failed / is done"
+    about a print that was not theirs, with an estimate read from a library column that does not exist.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_the_providers_are_told_and_nobody_is_mailed(self, db_session, printer_factory, monkeypatch):
+        from datetime import datetime, timedelta, timezone
+
+        from backend.app import main as main_mod
+        from backend.app.models.print_queue import PrintQueueItem
+        from backend.app.models.printer_queue import PrinterQueue
+        from backend.app.models.user import User
+
+        printer = await printer_factory(name="Bench")
+        alice = User(username="alice-e4")
+        db_session.add_all([PrinterQueue(id=printer.id, printer_id=printer.id), alice])
+        await db_session.flush()
+        # Alice's job failed on this printer a minute ago: the row the old lookup would have borrowed.
+        db_session.add(
+            PrintQueueItem(
+                queue_id=printer.id,
+                status="failed",
+                position=0,
+                created_by_id=alice.id,
+                completed_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            )
+        )
+        await db_session.commit()
+        printer_id = printer.id
+
+        @asynccontextmanager
+        async def _session():
+            yield db_session
+
+        service = MagicMock()
+        service.on_print_complete = AsyncMock()
+        service.send_user_print_email = AsyncMock()
+        monkeypatch.setattr(main_mod, "async_session", _session)
+        monkeypatch.setattr(main_mod, "notification_service", service)
+
+        await main_mod._notify_completion_without_archive(printer_id, {"status": "failed", "subtask_name": "part"})
+
+        service.on_print_complete.assert_awaited_once()
+        call = service.on_print_complete.await_args
+        assert call.args[:3] == (printer_id, "Bench", "failed")
+        assert call.kwargs["archive_data"] is None
+        service.send_user_print_email.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failing_notification_never_raises(self, monkeypatch):
+        from backend.app import main as main_mod
+
+        def broken():
+            raise RuntimeError("database is gone")
+
+        monkeypatch.setattr(main_mod, "async_session", broken)
+        await main_mod._notify_completion_without_archive(1, {"status": "completed"})

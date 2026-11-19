@@ -258,6 +258,27 @@ def _drying_ams_ids(status) -> list[int]:
 #: How long a queued job waits after its source copy found the spool busy (swap-source-lifecycle spec r4 §6).
 CAPTURE_RETRY_COOLDOWN_SECONDS = 60
 
+#: After a wake that did not bring the printer online (or a plug that would not switch), how long this tier leaves
+#: the printer alone before it tries again — the same answer as AutoQueue's ``_WAKE_COOLDOWN_SECONDS``.
+_POWER_ON_COOLOFF_SECONDS = 600.0
+#: The row's waiting reason while a printer this tier switched on boots.
+_POWERING_ON_REASON = "Printer powering on"
+
+
+@dataclass
+class _PowerOnWake:
+    """One printer this tier switched on and is waiting for (G03 E-5), in process memory, keyed by printer id.
+
+    ``grace_until``: until then the printer is booting, the row says so and nothing is retried. After it, until
+    ``cooloff_until``, a printer still offline is left alone. A printer that connects ends the record (its other
+    auto-on plugs follow). Printer deletion takes it with the printer (``printer_deletion._ID_KEYED``).
+    """
+
+    primary_plug_id: int
+    grace_until: float
+    cooloff_until: float
+    reported: bool = False
+
 
 class PrintScheduler:
     """Background scheduler that processes the print queue."""
@@ -284,8 +305,10 @@ class PrintScheduler:
         # stall behind the idle sleep (#2555). Falls back to _check_interval when
         # a pass dispatches nothing, so this can never tight-loop.
         self._fast_check_interval = 3  # seconds
-        self._power_on_wait_time = 180  # seconds to wait for printer after power on (3 min)
-        self._power_on_check_interval = 10  # seconds between connection checks
+        # How long a printer switched on by this tier may take to boot and connect (3 min).
+        self._power_on_wait_time = 180
+        # printer_id -> the wake in progress or cooling off (see ``_PowerOnWake``).
+        self._power_on_wakes: dict[int, _PowerOnWake] = {}
         # Track which printers are currently auto-drying (printer_id -> start timestamp)
         self._drying_in_progress: dict[int, float] = {}
         # Printers with a running SCHEDULED drying and the (printer, AMS) units a
@@ -410,11 +433,14 @@ class PrintScheduler:
             # Get all pending items with queue loaded, ordered by queue and position
             from sqlalchemy.orm import selectinload
 
+            # ``id`` last, as the claim orders: which row of a printer is its first
+            # runnable one is decided below from this order (G03 E2), and on
+            # PostgreSQL equal positions otherwise come back in heap order.
             result = await db.execute(
                 select(PrintQueueItem)
                 .options(selectinload(PrintQueueItem.queue))
                 .where(PrintQueueItem.status == "pending")
-                .order_by(PrintQueueItem.queue_id, PrintQueueItem.position)
+                .order_by(PrintQueueItem.queue_id, PrintQueueItem.position, PrintQueueItem.id)
             )
             items = list(result.scalars().all())
             requirements_cache = PrintRequirementsCache()
@@ -526,6 +552,16 @@ class PrintScheduler:
             # Log skip reasons once per queue check (not per item)
             skip_reasons: dict[str, int] = {}
 
+            # The printers whose first runnable row this pass has already taken up
+            # (G03 E2). Only that row is next — the claim refuses every other one as
+            # ``not_first_runnable`` — so only that row may be judged by its
+            # ``require_previous_success`` gate, preflighted or started. A later row
+            # of the same printer used to reach the gate while the head waited for
+            # filament or an order restriction, and was SKIPPED for a failure its
+            # real predecessor would have cleared. A head that leaves ``pending``
+            # here (its own gate, a source failure) leaves the next row first.
+            heads_taken: set[int] = set()
+
             cooling = self._cooling_item_ids()
             for item in items:
                 # A busy spool refused this job's source copy moments ago: it waits out its cooldown while the
@@ -609,6 +645,15 @@ class PrintScheduler:
                 if printer_id in busy_printers:
                     continue
 
+                # Everything above is either a printer-wide hold or what the claim's
+                # "first runnable" itself leaves out (cooling, scheduled for later,
+                # manual start). This row is therefore the printer's next one —
+                # unless an earlier row of the same printer already was (G03 E2).
+                if printer_id in heads_taken:
+                    skip_reasons["not_next"] = skip_reasons.get("not_next", 0) + 1
+                    continue
+                heads_taken.add(printer_id)
+
                 # Check if printer is idle
                 rpc = await _get_require_plate_clear(printer_id)
                 printer_idle = self._is_printer_idle(printer_id, require_plate_clear=rpc)
@@ -633,7 +678,10 @@ class PrintScheduler:
                     new_reason = "Order printer restrictions changed"
                     reason_code = "order_resources"
                 elif not printer_connected:
-                    new_reason = "Printer offline"
+                    # A printer this tier switched on is still booting: say so rather than "offline".
+                    new_reason = (
+                        _POWERING_ON_REASON if self._power_on_phase(printer_id) == "booting" else "Printer offline"
+                    )
                     reason_code = "printer_offline"
                 elif not printer_idle:
                     if self._drying_holds_queue(printer_id):
@@ -656,38 +704,33 @@ class PrintScheduler:
                 if reason_code == "order_resources":
                     continue
 
-                # If printer not connected, try to power on via smart plug(s)
+                # If printer not connected, switch it on via its smart plug(s) — and
+                # never wait for it here (G03 E-5). The wake is recorded with a boot
+                # grace and a cool-off; a later pass dispatches once the printer has
+                # connected. Waiting inside the pass used to hold every printer after
+                # this one ≈ 3.5 min per pass, with the pass's PostgreSQL connection
+                # idle in transaction, and with no cool-off for a printer that never
+                # comes up.
                 if not printer_connected:
                     plugs = await self._get_smart_plugs(db, printer_id)
-                    auto_on_plugs = [p for p in plugs if p.auto_on and p.enabled]
-                    if auto_on_plugs:
-                        logger.info("Printer %s offline, attempting to power on via smart plug(s)", printer_id)
-                        # Power on primary plug and wait for printer to connect
-                        powered_on = await self._power_on_and_wait(auto_on_plugs[0], printer_id, db)
-                        if powered_on:
-                            # Also turn on remaining auto_on plugs (filter, secondary power, etc.)
-                            for extra_plug in auto_on_plugs[1:]:
-                                try:
-                                    service = await smart_plug_manager.get_service_for_plug(extra_plug, db)
-                                    if farm_startup_guard.allowed() and await service.turn_on(extra_plug):
-                                        from backend.app.services.smart_plug_manager import plug_switched
-
-                                        # The print start that follows runs the "on" scripts.
-                                        await plug_switched(extra_plug, True, scripts="none")
-                                        logger.info(
-                                            "Also powered on plug '%s' for printer %s", extra_plug.name, printer_id
-                                        )
-                                except Exception as e:
-                                    logger.warning("Failed to power on extra plug '%s': %s", extra_plug.name, e)
-                            printer_connected = True
-                            printer_idle = self._is_printer_idle(printer_id, require_plate_clear=rpc)
-                        else:
-                            logger.warning("Could not power on printer %s via smart plug", printer_id)
-                            mark_busy(printer_id, "power_on_failed")
-                            continue
-                    else:
+                    auto_on_plugs = self._wake_plugs(plugs)
+                    if not auto_on_plugs:
                         mark_busy(printer_id, "offline")
                         continue
+                    phase = self._power_on_phase(printer_id)
+                    if phase is None:
+                        phase = await self._begin_power_on(db, printer_id, auto_on_plugs[0])
+                        if phase == "booting" and set_wait_reason(item, "printer_offline", _POWERING_ON_REASON):
+                            await db.commit()
+                    if phase == "booting":
+                        mark_busy(printer_id, "powering_on")
+                    else:
+                        mark_busy(printer_id, "power_on_failed")
+                    continue
+                if printer_id in self._power_on_wakes:
+                    # Woken by this tier and connected now: its other auto-on plugs
+                    # (filter, secondary power) follow, as they did after the wait.
+                    await self._finish_power_on(db, printer_id)
 
                 # Check if printer is idle (busy with another print)
                 #
@@ -754,6 +797,8 @@ class PrintScheduler:
                     item.error_message = "Previous print failed"
                     item.completed_at = datetime.now(timezone.utc)
                     await db.commit()
+                    # The skipped head is no longer next: the row behind it is judged in this pass.
+                    heads_taken.discard(printer_id)
                     logger.info("Skipped queue item %s — the previous print on printer %s failed", item.id, printer_id)
 
                     job_name = await self._get_job_name(db, item)
@@ -778,6 +823,7 @@ class PrintScheduler:
                 except RoutingDeferred as exc:
                     if exc.reason in SOURCE_FAILURES:
                         await self._fail_source_item(db, item, exc.reason)
+                        heads_taken.discard(printer_id)  # failed, so no longer next
                         continue
                     set_wait_reason(item, "filament_unavailable", routing_detail(exc.reason)["message"])
                     await db.commit()
@@ -831,6 +877,10 @@ class PrintScheduler:
                 # the next loop iteration dispatch a different printer in
                 # parallel instead of serialising through one global await.
                 if not await self._start_print(db, item, requirements_cache=requirements_cache):
+                    if item.status != "pending":
+                        # A refusal that ended the row itself (its source is gone):
+                        # the row behind it is next, as it would have been before.
+                        heads_taken.discard(printer_id)
                     continue
                 dispatched = True
                 mark_busy(printer_id, "dispatched")
@@ -1638,40 +1688,14 @@ class PrintScheduler:
         """Did the last finished print on this printer end well?
 
         Backs the ``require_previous_success`` gate on both queue tiers (m116).
-        Ported from upstream's ``_check_previous_success`` with both of its
-        hard-won exclusions intact:
-
-        * ``cancelled`` is **neutral**. A person stopping a print is a decision,
-          not a failure, so work queued behind it still runs (upstream #1667).
-        * ``skipped`` is out of the lookback entirely. A skip was never a print
-          attempt; counting one as a failed predecessor is what let a single
-          cancellation block 18 items over three days for their reporter.
-
-        So only ``failed`` blocks — we have no ``aborted`` status, that is
-        upstream's vocabulary. ``gate_acknowledged`` rows are excluded too, which
-        is how an operator who has fixed the physical problem releases everything
-        queued behind the failure (see m116).
-
-        No finished print at all means nothing to gate on, so it passes: a gate
-        must never block the first job on a fresh printer.
+        A thin door: the one reader is ``previous_print_gate`` — its lookback
+        (``cancelled`` neutral, ``skipped`` out, acknowledged failures out), its
+        order (``completed_at DESC NULLS LAST, id DESC``) and what releases it.
+        Kept on the scheduler because the router and the rebalancer ask it here.
         """
-        from backend.app.models.print_queue import PrinterQueue
+        from backend.app.services.previous_print_gate import previous_print_succeeded
 
-        stmt = (
-            select(PrintQueueItem.status)
-            .join(PrinterQueue, PrintQueueItem.queue_id == PrinterQueue.id)
-            .where(PrinterQueue.printer_id == printer_id)
-            .where(PrintQueueItem.status.in_(["completed", "failed", "cancelled"]))
-            .where(PrintQueueItem.gate_acknowledged.is_(False))
-            .order_by(PrintQueueItem.completed_at.desc())
-            .limit(1)
-        )
-        if exclude_item_id is not None:
-            stmt = stmt.where(PrintQueueItem.id != exclude_item_id)
-        previous = (await db.execute(stmt)).scalar_one_or_none()
-        if previous is None:
-            return True
-        return previous != "failed"
+        return await previous_print_succeeded(db, printer_id, exclude_item_id=exclude_item_id)
 
     async def _get_setting_value(self, db: AsyncSession, key: str) -> str | None:
         """Read a raw setting value from the database."""
@@ -2598,74 +2622,142 @@ class PrintScheduler:
         result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
         return list(result.scalars().all())
 
-    async def _power_on_and_wait(
-        self, plug: SmartPlug, printer_id: int, db: AsyncSession, *, life: int | None = None
-    ) -> bool:
-        """Turn on smart plug and wait for printer to connect.
+    @staticmethod
+    def _wake_plugs(plugs) -> list:
+        """The enabled auto-on plugs, the one that feeds the printer first, then by id.
 
-        Returns True if printer connected successfully within timeout. The
-        printer record's life is captured before the first await and every
-        connect proves it: a printer deleted during the minutes this waits is
-        never reconnected as the one created with its id (spec gh109-o1 r2 R1).
+        The first is the one the wake switches; the others follow once the printer has
+        connected (``_finish_power_on``). Never "the first row": its order is the heap's on
+        PostgreSQL, and a light's plug taken first left the printer off through every grace
+        and cool-off.
         """
-        if life is None:
-            life = printer_manager.printer_life(printer_id)
-        # Get the appropriate service for the plug type (Tasmota or Home Assistant)
-        service = await smart_plug_manager.get_service_for_plug(plug, db)
+        return sorted(
+            (p for p in plugs if p.auto_on and p.enabled),
+            key=lambda p: (not getattr(p, "controls_printer_power", True), p.id),
+        )
 
-        # Check current plug state
-        status = await service.get_status(plug)
-        if not status.get("reachable"):
-            logger.warning("Smart plug '%s' is not reachable", plug.name)
-            return False
+    def _power_on_phase(self, printer_id: int) -> str | None:
+        """Where this tier's wake of ``printer_id`` stands: ``booting``, ``cooling_off`` or None (no wake).
 
-        # Turn on if not already on
-        if status.get("state") != "ON":
-            success = await service.turn_on(plug) if farm_startup_guard.allowed() else False
-            if not success:
-                logger.warning("Failed to turn on smart plug '%s'", plug.name)
-                return False
-            from backend.app.services.smart_plug_manager import plug_switched
+        An expired record is dropped here, so the next pass may switch the printer on again.
+        """
+        wake = self._power_on_wakes.get(printer_id)
+        if wake is None:
+            return None
+        now = time.monotonic()
+        if now < wake.grace_until:
+            return "booting"
+        if now < wake.cooloff_until:
+            if not wake.reported:
+                wake.reported = True
+                logger.warning(
+                    "Printer %s did not connect within %ss after power on; not trying again for %.0fs",
+                    printer_id,
+                    self._power_on_wait_time,
+                    wake.cooloff_until - now,
+                )
+            return "cooling_off"
+        self._power_on_wakes.pop(printer_id, None)
+        return None
 
-            # The print start that follows runs the "on" scripts.
-            await plug_switched(plug, True, scripts="none")
-            logger.info("Powered on smart plug '%s' for printer %s", plug.name, printer_id)
+    async def _begin_power_on(self, db: AsyncSession, printer_id: int, plug: SmartPlug) -> str | None:
+        """Switch ``printer_id`` on through its primary auto-on plug, without waiting for it (G03 E-5).
 
-        # Get printer from database for connection
-        result = await db.execute(select(Printer).where(Printer.id == printer_id))
-        printer = result.scalar_one_or_none()
-        if not printer:
-            logger.error("Printer %s not found in database", printer_id)
-            return False
+        Returns ``booting`` (switched on, or already on: the boot grace runs), ``cooling_off`` (the plug was
+        unreachable or would not switch: no new attempt until the cool-off ends) or None (the farm's start
+        admission is closed: nothing switched, nothing recorded).
 
-        # Wait for printer to boot (give it some time before trying to connect)
-        logger.info("Waiting 30s for printer %s to boot...", printer_id)
-        await asyncio.sleep(30)
+        The record is registered before the first await, so a printer deleted meanwhile takes it with it
+        (``printer_deletion._ID_KEYED``); a deleted record's plug is never switched. The pass's transaction is
+        ended before the plug's own I/O, so no PostgreSQL connection sits idle in transaction behind a slow
+        plug. Nothing connects here: the printer's MQTT client reconnects by itself once the printer is up, and
+        a later pass dispatches.
+        """
+        from backend.app.services.smart_plug_manager import plug_switched
 
-        # Try to connect to the printer periodically
-        elapsed = 30  # Already waited 30s
-        while elapsed < self._power_on_wait_time:
+        life = printer_manager.printer_life(printer_id)
+        plug_name = plug.name
+        now = time.monotonic()
+        wake = _PowerOnWake(
+            primary_plug_id=plug.id,
+            grace_until=now + self._power_on_wait_time,
+            cooloff_until=now + self._power_on_wait_time + _POWER_ON_COOLOFF_SECONDS,
+        )
+        self._power_on_wakes[printer_id] = wake
+
+        def refused(message: str, *args) -> str:
+            logger.warning(message, *args)
+            # The cool-off starts now; there is no boot to wait for.
+            wake.grace_until = time.monotonic()
+            wake.cooloff_until = wake.grace_until + _POWER_ON_COOLOFF_SECONDS
+            wake.reported = True
+            return "cooling_off"
+
+        logger.info("Printer %s offline, attempting to power on via smart plug '%s'", printer_id, plug_name)
+        try:
+            # Tasmota or Home Assistant: the one read that needs the session comes first.
+            service = await smart_plug_manager.get_service_for_plug(plug, db)
+            if db.in_transaction():
+                await db.commit()
+            status = await service.get_status(plug)
+            if not status.get("reachable"):
+                return refused("Smart plug '%s' is not reachable", plug_name)
+            if status.get("state") == "ON":
+                logger.info("Smart plug '%s' is already on; waiting for printer %s to connect", plug_name, printer_id)
+                return "booting"
+            if not farm_startup_guard.allowed():
+                if self._power_on_wakes.get(printer_id) is wake:
+                    self._power_on_wakes.pop(printer_id, None)
+                return None
             if not printer_manager.printer_life_is_current(printer_id, life):
-                logger.info("Printer %s was deleted while powering on -- not connecting it", printer_id)
-                return False
-            # Try to connect
-            logger.info("Attempting to connect to printer %s...", printer_id)
+                logger.info("Printer %s was deleted while powering on -- its plug is left alone", printer_id)
+                return None
+            if not await service.turn_on(plug):
+                return refused("Failed to turn on smart plug '%s'", plug_name)
+        except Exception as exc:  # noqa: BLE001 - a plug that fails is a failed wake, never a failed pass
+            return refused("Could not power on printer %s via smart plug '%s': %s", printer_id, plug_name, exc)
+        # The print start that follows runs the "on" scripts.
+        await plug_switched(plug, True, scripts="none")
+        logger.info(
+            "Powered on smart plug '%s' for printer %s; dispatching once it connects (within %ss)",
+            plug_name,
+            printer_id,
+            self._power_on_wait_time,
+        )
+        return "booting"
+
+    async def _finish_power_on(self, db: AsyncSession, printer_id: int) -> None:
+        """A printer this tier woke has connected: end its record and switch its other auto-on plugs on.
+
+        Filter, secondary power and the like followed the primary plug only once the printer was up, and still
+        do. Best-effort: a plug that fails is logged, never the pass.
+        """
+        from backend.app.services.smart_plug_manager import plug_switched
+
+        wake = self._power_on_wakes.pop(printer_id, None)
+        if wake is None:
+            return
+        extras = [
+            plug
+            for plug in await self._get_smart_plugs(db, printer_id)
+            if plug.auto_on and plug.enabled and plug.id != wake.primary_plug_id
+        ]
+        services = []
+        for plug in extras:
             try:
-                connected = await printer_manager.connect_printer(printer, life=life)
-                if connected:
-                    logger.info("Printer %s connected after %ss", printer_id, elapsed)
-                    # Give it a moment to stabilize and get status
-                    await asyncio.sleep(5)
-                    return True
-            except Exception as e:
-                logger.debug("Connection attempt failed: %s", e)
-
-            await asyncio.sleep(self._power_on_check_interval)
-            elapsed += self._power_on_check_interval
-            logger.debug("Waiting for printer %s to connect... (%ss)", printer_id, elapsed)
-
-        logger.warning("Printer %s did not connect within %ss after power on", printer_id, self._power_on_wait_time)
-        return False
+                services.append((plug, plug.name, await smart_plug_manager.get_service_for_plug(plug, db)))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to power on extra plug '%s': %s", plug.name, exc)
+        if services and db.in_transaction():
+            await db.commit()
+        for plug, plug_name, service in services:
+            try:
+                if farm_startup_guard.allowed() and await service.turn_on(plug):
+                    # The print start that follows runs the "on" scripts.
+                    await plug_switched(plug, True, scripts="none")
+                    logger.info("Also powered on plug '%s' for printer %s", plug_name, printer_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to power on extra plug '%s': %s", plug_name, exc)
 
     async def _power_off_if_needed(self, db: AsyncSession, item: PrintQueueItem):
         """Schedule power-off if the queue item enabled auto_off_after.
@@ -2740,6 +2832,9 @@ class PrintScheduler:
         item.status = "failed"
         item.error_message = error_message
         item.error_code = code
+        # Never claimed, so never sent: no physical print failed, and the next
+        # job's "only after a successful previous print" must not read one (G03 O-3).
+        item.gate_acknowledged = True
         item.completed_at = datetime.now(timezone.utc)
         await set_queue_error(db, item.queue_id, failed_item_id=item.id)
         await update_queue_counters(db, item.queue_id)
@@ -2876,12 +2971,27 @@ class PrintScheduler:
             await cdb.commit()
         return ClaimResult(True, started_at=now)
 
-    async def _fail_attempt(self, db: AsyncSession, *, item_id: int, claim_started_at, message: str, code: str) -> bool:
+    async def _fail_attempt(
+        self,
+        db: AsyncSession,
+        *,
+        item_id: int,
+        claim_started_at,
+        message: str,
+        code: str,
+        sent: bool = True,
+    ) -> bool:
         """End THIS claimed attempt as failed with its class, and halt the printer's queue until Resume.
 
         Addressed to the attempt's claim token: a row the operator cancelled, a later
         attempt, or a completion that already closed it is left exactly as it is. The
         execution archive is closed by the dispatcher; this is the queue's half.
+
+        ``sent=False`` — the attempt published no start — writes the row
+        ``gate_acknowledged``: nothing reached the printer, so the next job's "only
+        after a successful previous print" has no failed print to read (G03 O-3). A
+        published start the printer did not take (``DispatchNotStarted``, a refused
+        command) still gates; so does an outcome nobody typed (the default).
         """
         from backend.app.services.queue_counters import set_queue_error, update_queue_counters
 
@@ -2894,7 +3004,13 @@ class PrintScheduler:
                 PrintQueueItem.status == "printing",
                 PrintQueueItem.started_at == claim_started_at,
             )
-            .values(status="failed", error_message=message, error_code=code, completed_at=datetime.now(timezone.utc))
+            .values(
+                status="failed",
+                error_message=message,
+                error_code=code,
+                completed_at=datetime.now(timezone.utc),
+                gate_acknowledged=not sent,
+            )
             .execution_options(synchronize_session=False)
         )
         if not result.rowcount:
@@ -3367,6 +3483,9 @@ class PrintScheduler:
                 return
 
             if not outcome.get("success"):
+                # Whether the start reached the printer: nothing published means no
+                # print failed, and the reservations taken for it go at once.
+                published = outcome.get("send_fact") in ("sent", "accepted")
                 item = await db.get(PrintQueueItem, queue_item_id)
                 if outcome.get("cancelled"):
                     # User-initiated cancel — mark item cancelled and pause
@@ -3375,6 +3494,10 @@ class PrintScheduler:
                     if item:
                         await self._cancel_item(db, item)
                         await self._power_off_if_needed(db, item)
+                    if not published:
+                        # The pre-registered stagger slot of a start that never went
+                        # out would hold its group back for the settle window (G03 E-10).
+                        await self.release_prepared_dispatch(printer_id)
                     return
                 err = outcome.get("error") or "Dispatch failed"
                 # ⚠️ No busy check here (#2598 moved): a refusal before publish
@@ -3386,8 +3509,11 @@ class PrintScheduler:
                     claim_started_at=claim_started_at,
                     message=err,
                     code=outcome.get("failure_code") or failure_reasons.DISPATCH_INTERNAL_ERROR,
+                    sent=published,
                 ):
                     return
+                if not published:
+                    await self.release_prepared_dispatch(printer_id)
                 await notification_service.on_queue_job_failed(
                     job_name=job_name_short,
                     printer_id=printer_id,

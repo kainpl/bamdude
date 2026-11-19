@@ -138,7 +138,14 @@ async def busy_printer_ids(db: AsyncSession) -> set[int]:
     return printing | {pid for (pid,) in holding.all()}
 
 
-async def printers_for_item(db: AsyncSession, item: AutoQueueItem) -> tuple[list[Printer], str, str]:
+#: A printer queue in one of these states dispatches nothing until the operator resumes it (after a failed or
+#: cancelled print) — ``print_scheduler.check_queue`` skips it and ``require_scheduler_claim`` refuses it.
+HALTED_QUEUE_STATUSES = ("paused", "error")
+
+
+async def printers_for_item(
+    db: AsyncSession, item: AutoQueueItem, *, halted: list[Printer] | None = None
+) -> tuple[list[Printer], str, str]:
     """Every printer this item is allowed to run on, before any readiness is asked.
 
     Returns ``(printers, normalized_model, location_suffix)``.
@@ -149,6 +156,15 @@ async def printers_for_item(db: AsyncSession, item: AutoQueueItem) -> tuple[list
     disagreement that matters is switching a printer on for a file that can
     never legally run there — the job stays stuck and the printer now draws
     power.
+
+    ⚠️ **A halted queue gets no work** (owner, G03 E-3): a queue left ``paused`` or
+    ``error`` by a cancelled or failed print is out, exactly like an
+    operator-paused one. Placed there, the job would sit until somebody pressed
+    Resume while an identical printer idled; left in AutoQueue, any printer of the
+    model can take it. Not a readiness question — the queue refuses ALL work until
+    resumed, the category ``is_paused`` already belongs to. A caller that names the
+    halted printers in its waiting reason passes ``halted``: the printers that would
+    otherwise qualify are appended to it, never returned.
     """
     # ⚠️ ``normalize_model_name``, not ``normalize_printer_model``: the latter
     # hands an internal code straight back, so an item targeting "C12" matched
@@ -159,7 +175,7 @@ async def printers_for_item(db: AsyncSession, item: AutoQueueItem) -> tuple[list
 
     # Filter active printers of the right model + location, with auto-distribute eligible.
     query = (
-        select(Printer)
+        select(Printer, PrinterQueue.status)
         .join(PrinterQueue, PrinterQueue.printer_id == Printer.id)
         .where(Printer.is_active.is_(True))
         .where(Printer.archived.is_(False))
@@ -167,6 +183,9 @@ async def printers_for_item(db: AsyncSession, item: AutoQueueItem) -> tuple[list
         # An operator-paused queue refuses new work — auto-queue included.
         .where(PrinterQueue.is_paused.is_(False))
     )
+    if halted is None:
+        # NULL is no halt (as the scheduler's ``status in (...)`` reads it), never filtered out by NOT IN.
+        query = query.where(or_(PrinterQueue.status.is_(None), PrinterQueue.status.not_in(HALTED_QUEUE_STATUSES)))
     location_suffix = ""
     if item.target_location_id:
         # The SUBTREE, by id. Aiming work at a workshop has to reach the
@@ -197,15 +216,21 @@ async def printers_for_item(db: AsyncSession, item: AutoQueueItem) -> tuple[list
     resources = await policy_for(db, item.project_id, project_line_id=item.project_line_id)
     setting = await db.scalar(select(Settings.value).where(Settings.key == "auto_queue_compatible_models"))
     allow_compatible = isinstance(setting, str) and setting.lower() == "true"
-    exact, compatible = [], []
-    for printer in result.scalars().all():
+    exact, compatible, stopped = [], [], []
+    for printer, queue_status in result.all():
         if not permits(resources, printer.id, printer_manager.effective_model_for(printer.id, printer.model)):
             continue
         verdict = model_compatibility(normalized_model, printer_manager.effective_model_for(printer.id, printer.model))
-        if verdict == "exact":
+        if verdict not in ("exact", "compatible") or (verdict == "compatible" and not allow_compatible):
+            continue
+        if queue_status in HALTED_QUEUE_STATUSES:
+            stopped.append(printer)
+        elif verdict == "exact":
             exact.append(printer)
-        elif verdict == "compatible" and allow_compatible:
+        else:
             compatible.append(printer)
+    if halted is not None:
+        halted.extend(stopped)
     printers = exact + compatible
     return printers, normalized_model, location_suffix
 
@@ -275,8 +300,9 @@ async def find_eligible_printer(
     switched on (upstream #2876). Without it an off printer reads as offline.
     """
     if item.target_model:
-        printers, normalized_model, location_suffix = await printers_for_item(db, item)
-        if not printers:
+        stopped: list[Printer] = []
+        printers, normalized_model, location_suffix = await printers_for_item(db, item, halted=stopped)
+        if not printers and not stopped:
             reason = t(
                 current_language(),
                 "filament_routing",
@@ -294,8 +320,12 @@ async def find_eligible_printer(
     item.plate_id = req.resolved_plate_id
     if not item.target_model:
         item.target_model = req.model
-    printers, normalized_model, location_suffix = await printers_for_item(db, item)
-    if not printers:
+    # The printers whose queue is halted are no candidates (G03 E-3), but the job's waiting
+    # reason names each of them: the operator's Resume is what would let them take it.
+    halted: list[Printer] = []
+    printers, normalized_model, location_suffix = await printers_for_item(db, item, halted=halted)
+    halted_ids = {printer.id for printer in halted}
+    if not printers and not halted:
         reason = t(
             current_language(),
             "filament_routing",
@@ -327,10 +357,14 @@ async def find_eligible_printer(
             )
         )
 
-    for printer in printers:
+    for printer in [*printers, *halted]:
         verdict = model_compatibility(req.model, printer_manager.effective_model_for(printer.id, printer.model))
         if verdict not in ("exact", "compatible"):
             refuse(printer, "model_mismatch", routing_detail("model_mismatch")["message"], {"file_model": req.model})
+            continue
+        if printer.id in halted_ids:
+            # Before "busy": a halted queue with rows left in it is first of all halted.
+            refuse(printer, "queue_halted", routing_detail("queue_halted")["message"])
             continue
         if printer.id in busy_printers:
             code = (exclusion_reasons or {}).get(printer.id, "printer_busy")

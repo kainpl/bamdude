@@ -149,6 +149,12 @@ class ArchivePurgeService:
         archive was told nothing at all and merely stopped being routable; and it
         cancelled every pending row, including the ones that hold their own copy of
         the bytes and print perfectly well without this archive.
+
+        ⚠️ Not recounted here: :meth:`move_to_trash` commits inside the trash
+        route's ``archive_write_scope``, and a recount is a write that must not run
+        inside a deletion's lock plan. The recount
+        (``queue_source_release.recount_released_queues``) belongs to the route,
+        once that scope has ended.
         """
         from backend.app.services import queue_source_release
 
@@ -207,12 +213,20 @@ class ArchivePurgeService:
         goes through the same safety-checked path as the sweeper. The service
         rechecks that it is still in trash under the archive's row lock: an
         operator restore that committed after the caller's scan must survive.
+
+        ``delete_archive`` commits and leaves its archive guard before it returns,
+        so the printer queues its release cancelled rows on are recounted here —
+        after the commit, outside the plan, in a transaction of their own.
         """
+        from backend.app.services import queue_source_release
+
         async with _database.async_session() as delete_db:
             service = ArchiveService(delete_db)
-            return await service.delete_archive(
+            deleted = await service.delete_archive(
                 archive_id, refuse_kept=True, trashed_only=True, retention_cutoff=retention_cutoff
             )
+            await queue_source_release.recount_released_queues(delete_db)
+            return deleted
 
     async def empty_trash(self, db: AsyncSession) -> int:
         """Hard-delete every trashed archive immediately. Returns the count."""

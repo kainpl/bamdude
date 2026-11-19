@@ -343,19 +343,46 @@ async def cb_queue_cancel(callback: CallbackQuery, tg_chat: TelegramChat | None 
 
     item_id = int(callback.data.split(":")[2])
 
-    from sqlalchemy import select
-
-    from backend.app.core.database import async_session
-    from backend.app.models.print_queue import PrintQueueItem
-
-    async with async_session() as db:
-        result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))
-        item = result.scalar_one_or_none()
-        if item and item.status == "pending":
-            item.status = "cancelled"
-            await db.commit()
-            await callback.answer(f"\u2705 {t(lang, NS, 'queue.cancel_ok')}")
-        else:
-            await callback.answer()
+    if await _cancel_pending_item(item_id):
+        await callback.answer(f"\u2705 {t(lang, NS, 'queue.cancel_ok')}")
+    else:
+        await callback.answer()
 
     await render_queue(callback, tg_chat)
+
+
+async def _cancel_pending_item(item_id: int) -> bool:
+    """Cancel one PENDING row the way the queue card's Cancel does (G03 E-2, E3a, D7.2).
+
+    The row's lane before the authoritative read (``cancellation_scope``), a compare-and-set on
+    ``status='pending'`` -- a job the scheduler claimed meanwhile is left printing, never written over --
+    the end time the "previous print succeeded" gate orders by, and the queue's counters recounted in
+    the same transaction. Returns whether the row was cancelled.
+    """
+    from datetime import datetime, timezone
+
+    from fastapi import HTTPException
+    from sqlalchemy import update
+
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.services.queue_cancel_scope import cancellation_scope
+    from backend.app.services.queue_counters import update_queue_counters
+
+    try:
+        async with cancellation_scope([item_id]) as db:
+            queue_id = (
+                await db.execute(
+                    update(PrintQueueItem)
+                    .where(PrintQueueItem.id == item_id, PrintQueueItem.status == "pending")
+                    .values(status="cancelled", completed_at=datetime.now(timezone.utc))
+                    .returning(PrintQueueItem.queue_id)
+                )
+            ).scalar_one_or_none()
+            if queue_id is None:
+                return False
+            await update_queue_counters(db, queue_id)
+            await db.commit()
+            return True
+    except HTTPException:
+        # The row changed between the lane discovery and its read (``selection_changed``): nothing was written.
+        return False

@@ -225,6 +225,78 @@ class TestAutoQueueSchedulerTick:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_a_slicer_connectors_choices_survive_promotion(
+        self, db_session, scheduler, printer_factory, routing_item
+    ) -> None:
+        """G03 D2: the options a slicer connector sent for an AutoQueue target ride ``slicer_options`` and are
+        laid over the profile when the job is handed to a printer -- in the connector's own shapes."""
+        printer, pq = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
+        item = routing_item(
+            target_model="A1MINI",
+            status="pending",
+            position=1,
+            slicer_options={"bed_levelling": "off", "flow_cali": "auto", "timelapse": True, "layer_inspect": True},
+        )
+        db_session.add(item)
+        await db_session.commit()
+
+        p_elig, p_sched = _patch_printer_manager({printer.id})
+        with (
+            p_elig,
+            p_sched,
+            patch("backend.app.services.auto_queue_scheduler.ws_manager.send_queue_changed", new_callable=AsyncMock),
+        ):
+            await scheduler.tick()
+
+        row = (await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.queue_id == pq.id))).scalar_one()
+        assert (row.bed_levelling_mode, row.bed_levelling) == ("off", False)
+        assert row.flow_cali_mode == "auto"
+        assert (row.timelapse, row.layer_inspect) == (True, True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_connector_job_runs_no_macros_or_injection_whatever_the_owners_profile(
+        self, db_session, scheduler, printer_factory, routing_item
+    ) -> None:
+        """G03 follow-up: the connector forces swap macros and G-code injection off, as for a printer target.
+        The owner's saved profile asks for both on a swap printer; the source declares nothing, so without
+        the overlay the swap request is refused there and the job never lands."""
+        from backend.app.services import connector_submissions as cs
+
+        printer, pq = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
+        printer.swap_mode_enabled = True
+        entry = {
+            "target": {"kind": "auto"},
+            "options": {"bed_levelling": "auto", "flow_cali": "auto", "timelapse": False, "layer_inspect": False},
+        }
+        item = routing_item(
+            target_model="A1MINI", status="pending", position=1, slicer_options=cs._auto_slicer_options(entry)
+        )
+        db_session.add(item)
+        await db_session.commit()
+        profile = SimpleNamespace(
+            for_printer_queue=lambda: {
+                "execute_swap_macros": True,
+                "swap_macro_events": ["swap_mode_start"],
+                "gcode_injection": True,
+            }
+        )
+
+        p_elig, p_sched = _patch_printer_manager({printer.id})
+        with (
+            p_elig,
+            p_sched,
+            patch("backend.app.services.auto_queue_scheduler.ws_manager.send_queue_changed", new_callable=AsyncMock),
+            patch("backend.app.services.auto_queue_scheduler.preference_options", new=AsyncMock(return_value=profile)),
+        ):
+            await scheduler.tick()
+
+        row = (await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.queue_id == pq.id))).scalar_one()
+        assert (row.execute_swap_macros, row.swap_macro_events) == (False, None)
+        assert row.gcode_injection is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_assignment_recounts_skipped_and_is_idempotent(
         self, db_session, scheduler, printer_factory, routing_item
     ) -> None:
@@ -593,6 +665,124 @@ class TestRequirePreviousSuccessRoutesAround:
 
         placed = (await db_session.execute(select(PrintQueueItem))).scalars().one()
         assert placed.require_previous_success is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_acknowledging_the_failure_lets_the_waiting_job_through(
+        self, db_session, scheduler, printer_factory, routing_item
+    ) -> None:
+        """G03 D4: no skipped row exists on this tier, so the printer's own acknowledgement is the release."""
+        from backend.app.services.previous_print_gate import acknowledge_newest_failure
+
+        broken, broken_q = await _make_printer_with_queue(db_session, printer_factory, name="broken", model="A1MINI")
+        await self._finish(db_session, broken_q.id, "failed", minutes_ago=5)
+        db_session.add(routing_item(target_model="A1MINI", status="pending", position=1, require_previous_success=True))
+        await db_session.commit()
+
+        p_elig, p_sched = _patch_printer_manager({broken.id})
+        with p_elig, p_sched:
+            await scheduler.tick()
+            item = (await db_session.execute(select(AutoQueueItem))).scalars().one()
+            assert item.status == "pending"
+
+            assert await acknowledge_newest_failure(db_session, broken_q.id) is True
+            await db_session.commit()
+            await scheduler.tick()
+
+        await db_session.refresh(item)
+        assert item.status == "assigned"
+        placed = (await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.status == "pending"))).scalars()
+        assert [row.queue_id for row in placed] == [broken_q.id]
+
+
+class TestAHaltedQueueGetsNoWork:
+    """G03 E-3 (owner: do not give it work). A queue left ``paused`` / ``error`` by a cancelled or failed print
+    dispatches nothing until Resume; placed there, a job sat while an identical printer idled."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.parametrize("queue_status", ["paused", "error"])
+    async def test_the_job_goes_to_the_printer_that_can_start_it(
+        self, db_session, scheduler, printer_factory, routing_item, queue_status
+    ) -> None:
+        # The halted printer has the LOWER id: it won the tie before (``-printer.id``).
+        halted, halted_q = await _make_printer_with_queue(db_session, printer_factory, name="halted", model="A1MINI")
+        other, other_q = await _make_printer_with_queue(db_session, printer_factory, name="other", model="A1MINI")
+        halted_q.status = queue_status
+        db_session.add(routing_item(target_model="A1MINI", status="pending", position=1))
+        await db_session.commit()
+
+        p_elig, p_sched = _patch_printer_manager({halted.id, other.id})
+        with p_elig, p_sched:
+            await scheduler.tick()
+
+        placed = (await db_session.execute(select(PrintQueueItem))).scalars().all()
+        assert [row.queue_id for row in placed] == [other_q.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.parametrize("queue_status", ["paused", "error"])
+    async def test_the_only_fit_printer_being_halted_keeps_the_job_waiting_and_names_it(
+        self, db_session, scheduler, printer_factory, routing_item, queue_status
+    ) -> None:
+        halted, halted_q = await _make_printer_with_queue(db_session, printer_factory, name="halted", model="A1MINI")
+        halted_q.status = queue_status
+        db_session.add(routing_item(target_model="A1MINI", status="pending", position=1))
+        await db_session.commit()
+
+        p_elig, p_sched = _patch_printer_manager({halted.id})
+        with p_elig, p_sched:
+            await scheduler.tick()
+
+        assert (await db_session.execute(select(PrintQueueItem))).scalars().all() == []
+        item = (await db_session.execute(select(AutoQueueItem))).scalars().one()
+        assert item.status == "pending"
+        assert (item.waiting_reason or "").startswith("halted: ")
+        assert "resume" in item.waiting_reason.lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_resuming_the_queue_lets_it_take_work_again(
+        self, db_session, scheduler, printer_factory, routing_item
+    ) -> None:
+        printer, queue = await _make_printer_with_queue(db_session, printer_factory, name="halted", model="A1MINI")
+        queue.status = "error"
+        db_session.add(routing_item(target_model="A1MINI", status="pending", position=1))
+        await db_session.commit()
+
+        p_elig, p_sched = _patch_printer_manager({printer.id})
+        with p_elig, p_sched:
+            await scheduler.tick()
+            queue.status = "idle"
+            await db_session.commit()
+            await scheduler.tick()
+
+        item = (await db_session.execute(select(AutoQueueItem))).scalars().one()
+        assert item.status == "assigned"
+
+    def test_the_final_placement_refuses_a_halted_lane(self) -> None:
+        """The router chose from an earlier read; the lane's own guard asks again under its lock."""
+        from backend.app.services.printer_occupancy import (
+            PrinterOccupancyConflict,
+            QueueOccupancy,
+            require_auto_placement,
+        )
+
+        for status in ("paused", "error"):
+            occupancy = QueueOccupancy(
+                queue=PrinterQueue(id=1, printer_id=1, status=status, is_paused=False),
+                printing_item_ids=(),
+                pending_item_ids=(),
+            )
+            with pytest.raises(PrinterOccupancyConflict):
+                require_auto_placement(occupancy)
+        require_auto_placement(
+            QueueOccupancy(
+                queue=PrinterQueue(id=1, printer_id=1, status="idle", is_paused=False),
+                printing_item_ids=(),
+                pending_item_ids=(),
+            )
+        )
 
 
 class TestAStalledQueueTellsTheOperator:

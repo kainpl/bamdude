@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
-import { formatRelativeTime } from '../utils/date';
+import { formatDateTime, formatRelativeTime, parseUTCDate } from '../utils/date';
 import { usePlateDefects } from '../hooks/usePlateDefects';
 import { PlateDefectsRow } from './PlateDefectsRow';
 import { usePrinterQueueRows } from '../hooks/FarmQueueScope';
@@ -81,19 +81,37 @@ export function PrinterQueueWidget({ printerId, printerModel, printerState, awai
     return null;
   }
 
-  const nextAutoItem = autoDispatchQueue[0];
-  const nextItem = queue?.[0];
+  // The job that will really start next — what the scheduler starts: the first row
+  // in queue order that is neither staged (manual start) nor scheduled for later
+  // (G03 E8). With none, what starts by itself first is the auto row due earliest;
+  // with none of those either, only staged rows wait, and the card says so.
+  const nowMs = Date.now();
+  const dueAt = (scheduled: string | null | undefined) => parseUTCDate(scheduled)?.getTime() ?? null;
+  const startable = queue?.find(item => {
+    const at = dueAt(item.scheduled_time);
+    return !item.manual_start && (at === null || at <= nowMs);
+  });
+  const laterAuto = startable ? undefined
+    : [...autoDispatchQueue].sort((a, b) => (dueAt(a.scheduled_time) ?? 0) - (dueAt(b.scheduled_time) ?? 0))[0];
+  const nextItem = startable ?? laterAuto ?? queue?.[0];
+  const heading = startable ? t('queue.nextInQueue')
+    : laterAuto?.scheduled_time
+      ? t('queue.nextScheduled', {
+          time: formatDateTime(laterAuto.scheduled_time, 'system', 'system',
+            { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+        })
+      : t('queue.nextStaged');
   // Only prompt "Clear Plate & Start Next" when there are auto-dispatchable items
   const needsClearPlate = gateArmed && autoDispatchQueue.length > 0;
 
   if (needsClearPlate) {
-    const displayItem = nextAutoItem || nextItem;
+    const displayItem = nextItem;
     return (
       <div className="mb-3 p-3 bg-bambu-dark rounded-lg border border-yellow-400/30">
         <div className="flex items-center gap-3 mb-2">
           <Calendar className="w-5 h-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
           <div className="min-w-0 flex-1">
-            <p className="text-xs text-bambu-gray">{t('queue.nextInQueue')}</p>
+            <p className="text-xs text-bambu-gray">{heading}</p>
             <p className="text-sm text-white truncate" title={displayItem?.archive_name || displayItem?.library_file_name || undefined}>
               {displayItem?.archive_name || displayItem?.library_file_name || `File #${displayItem?.archive_id || displayItem?.library_file_id}`}
             </p>
@@ -155,7 +173,7 @@ export function PrinterQueueWidget({ printerId, printerModel, printerState, awai
         <div className="flex items-center gap-3 min-w-0 flex-1">
           <Calendar className="w-5 h-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
           <div className="min-w-0 flex-1">
-            <p className="text-xs text-bambu-gray">{t('queue.nextInQueue')}</p>
+            <p className="text-xs text-bambu-gray">{heading}</p>
             <p className="text-sm text-white truncate" title={nextItem?.archive_name || nextItem?.library_file_name || undefined}>
               {nextItem?.archive_name || nextItem?.library_file_name || `File #${nextItem?.archive_id || nextItem?.library_file_id}`}
             </p>
@@ -166,7 +184,9 @@ export function PrinterQueueWidget({ printerId, printerModel, printerState, awai
           <QueueDuration seconds={nextItem?.print_time_seconds} />
           <span className="text-xs text-bambu-gray flex items-center gap-1">
             <Clock className="w-3 h-3" />
-            {nextItem?.scheduled_time ? formatRelativeTime(nextItem.scheduled_time, 'system', t) : t('time.waiting')}
+            {nextItem?.scheduled_time
+              ? formatRelativeTime(nextItem.scheduled_time, 'system', t)
+              : nextItem?.manual_start ? t('queueCard.manualStart') : t('time.waiting')}
           </span>
           {totalPending > 1 && (
             <span className="text-xs px-1.5 py-0.5 bg-yellow-100 dark:bg-yellow-400/20 text-yellow-700 dark:text-yellow-400 rounded">

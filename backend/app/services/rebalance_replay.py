@@ -73,10 +73,12 @@ class Lane:
     waiting: float = 0.0
     #: Held now with no forecast release: an HA interlock, a busy claim with no timed print.
     hold_unknown: bool = False
-    #: Its queue starts nothing (paused or in error): the router still places a job there, where
-    #: it waits for the operator — no finish (``"none"``, as no home at all: the agreed exclusion of
-    #: such a printer) — and the printer never frees in the forecast. Nothing starts, so it takes
-    #: no start window and makes no other job uncertain.
+    #: Its queue starts nothing (paused or in error): what it already holds waits for the operator —
+    #: no finish (``"none"``, as no home at all: the agreed exclusion of such a printer) — and the
+    #: printer never frees in the forecast. The router places no new work on a halted queue (G03 E-3:
+    #: ``auto_queue_eligibility.printers_for_item`` leaves it out, ``printer_occupancy.
+    #: require_auto_placement`` refuses it), so the forecast builds such a lane not ``routable``
+    #: either. Nothing starts, so it takes no start window and makes no other job uncertain.
     stuck: bool = False
     gap: float = 0.0  # plate service after every print that is not auto-ejected
     requires_operator: bool = False

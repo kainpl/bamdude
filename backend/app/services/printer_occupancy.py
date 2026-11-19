@@ -93,9 +93,14 @@ def require_direct_admission(occupancy: QueueOccupancy) -> None:
 
 
 def require_auto_placement(occupancy: QueueOccupancy) -> None:
-    """Auto queue needs an empty lane; pending work is its own backlog fact."""
+    """Auto queue needs an empty lane; pending work is its own backlog fact.
+
+    A queue halted after a failed or cancelled print (``status`` ``paused`` / ``error``) refuses new work as an
+    operator-paused one does (owner, G03 E-3) — the same rule as the direct and the scheduler admissions, read
+    again here under the lane's lock because routing chose the printer from an earlier read.
+    """
     queue = occupancy.queue
-    if queue.is_paused:
+    if queue.is_paused or queue.status in {"paused", "error"}:
         raise PrinterOccupancyConflict("queue_paused", queue_id=queue.id)
     if occupancy.has_active_claim:
         raise PrinterOccupancyConflict("active_claim", queue_id=queue.id)

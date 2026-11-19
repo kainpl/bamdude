@@ -1444,6 +1444,17 @@ class BambuFTPClient:
             kind = "storage" if error_code in ("553", "552") else "not_found" if error_code == "550" else "rejected"
             self.failure = FtpFailure(kind, str(e), error_code)
             return False
+        except ftplib.error_temp as e:
+            # ⚠️ A 4xx reply is ``error_temp``, not ``error_perm``: 452 "insufficient storage space" used to fall
+            # through to the arm below and was reported as a dropped connection — "check the network" for a card
+            # that is full (G03 E-7). Any other temporary refusal keeps that reading.
+            error_code = str(e)[:3] if str(e) else None
+            logger.error("FTP upload failed for %s: %s (error code: %s)", remote_path, e, error_code)
+            if error_code == "452":
+                self.failure = FtpFailure("storage", str(e), error_code)
+            else:
+                self.failure = FtpFailure("transfer", f"{type(e).__name__}: {e}")
+            return False
         except (OSError, ftplib.Error) as e:
             logger.error("FTP upload failed for %s: %s (type: %s)", remote_path, e, type(e).__name__)
             self.failure = FtpFailure("transfer", f"{type(e).__name__}: {e}")

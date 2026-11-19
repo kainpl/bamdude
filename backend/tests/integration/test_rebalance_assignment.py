@@ -171,6 +171,44 @@ async def test_a_swap_refusal_is_no_home_for_the_job(
     assert predicted == placed.queue_id
 
 
+async def test_slicer_choices_that_turn_our_macros_off_are_in_the_forecast_too(
+    db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    """G03 follow-up: a slicer connector's AutoQueue job carries ``execute_swap_macros: False`` in its
+    ``slicer_options``, which ``_assign`` lays over the owner's profile. On the only printer -- swap mode,
+    a source that declares nothing, a profile asking for our swap start -- the router therefore places
+    the job; a forecast that composed without the overlay saw a refusal and no home at all."""
+    from backend.app.services.auto_queue_scheduler import AutoQueueScheduler
+    from backend.tests.integration import test_swap_policy_doors as doors
+
+    swap, _queue = await doors.a_swap_printer(db_session, tmp_path, printer_factory, monkeypatch)
+    library = await doors.a_library(db_session, tmp_path, fact=None)
+    auto = await doors.an_auto_job(db_session, library, monkeypatch=monkeypatch)
+    auto.slicer_options = {"execute_swap_macros": False, "swap_macro_events": None, "gcode_injection": False}
+    await db_session.commit()
+    item_id, swap_id = auto.id, swap.id
+
+    forecast = await _forecast(db_session)
+    predicted = queue_rebalance.start_projection([], forecast.farm).result_of(item_id).lane_of.get(item_id)
+    await AutoQueueScheduler().tick()
+
+    placed = (await db_session.execute(select(PrintQueueItem))).scalars().one()
+    assert placed.queue_id == swap_id
+    assert placed.execute_swap_macros is False
+    assert predicted == swap_id
+
+
+async def test_the_refusal_reads_the_slicer_overlay():
+    """The decision and a move's final check share :func:`queue_rebalance.assignment_refusal`."""
+    profile = _SwapProfile()
+
+    assert queue_rebalance.assignment_refusal(profile, None, "P1P", "P1P", True, None) is not None
+    assert (
+        queue_rebalance.assignment_refusal(profile, None, "P1P", "P1P", True, None, {"execute_swap_macros": False})
+        is None
+    )
+
+
 @pytest.mark.parametrize("swap_mode", [False, True], ids=["plain-receiver", "swap-receiver"])
 async def test_a_receiver_that_refuses_the_target_takes_nothing(
     db_session, printer_factory, tmp_path, monkeypatch, swap_mode

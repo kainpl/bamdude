@@ -117,6 +117,64 @@ async def test_the_event_names_the_file_and_the_printer(db_session, printer_fact
     assert (payload["job_id"], payload["printer_id"], payload["printer_name"]) == (item.id, printer.id, "Farm P1S")
 
 
+def _relay():
+    service = relay_module.MQTTRelayService()
+    service.enabled = service.connected = True
+    published = []
+    service._publish = lambda topic, payload, retain=False: published.append((topic, payload))
+    return service, published
+
+
+async def test_a_job_whose_originals_are_gone_is_named_by_its_own_snapshot(db_session, printer_factory):
+    """G03 D7.3: a job with neither archive nor library row (first-class since m173) went out as ``""``."""
+    from pathlib import Path
+
+    from backend.app.models.queue_source import FORMAT_3MF, QueueSource
+    from backend.app.services.queue_source_descriptor import QueueSourceDescriptor, source_snapshot
+
+    service, published = _relay()
+    printer = await printer_factory(name="Farm P1S")
+    blob = QueueSource(
+        sha256="a" * 64, size_bytes=10, relative_path=f"queue-spool/objects/aa/{'a' * 64}.3mf", format=FORMAT_3MF
+    )
+    db_session.add(blob)
+    await db_session.flush()
+    snapshot = source_snapshot(
+        QueueSourceDescriptor(
+            path=Path(blob.relative_path),
+            format=blob.format,
+            sha256=blob.sha256,
+            size_bytes=blob.size_bytes,
+            display_filename="widget.gcode.3mf",
+            plate_fallback=None,
+            provenance={"kind": "library_file", "id": 0},
+        )
+    )
+    item = PrintQueueItem(
+        queue_id=printer.id, status="pending", position=1, queue_source_id=blob.id, source_snapshot=snapshot
+    )
+    db_session.add(item)
+    await db_session.commit()
+
+    await service.on_queue_jobs_added([item.id])
+
+    ((_topic, payload),) = published
+    assert payload["filename"] == "widget.gcode.3mf"
+
+
+async def test_a_calibration_print_is_not_announced_as_a_queued_job(db_session, printer_factory):
+    """G03 D7.3: the wizard's own print is not work somebody queued -- skipped, not marked."""
+    service, published = _relay()
+    printer = await printer_factory(name="Farm P1S")
+    item = PrintQueueItem(queue_id=printer.id, status="pending", position=1, is_calibration=True)
+    db_session.add(item)
+    await db_session.commit()
+
+    await service.on_queue_jobs_added([item.id])
+
+    assert published == []
+
+
 class TestBrokerCertificate:
     def test_unverified_is_the_default_so_a_self_signed_broker_keeps_working(self):
         client = MagicMock()

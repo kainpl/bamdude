@@ -218,8 +218,19 @@ async def _queue_item(db: AsyncSession, raw: str) -> set[int]:
     return await _queues_of_items(db, {_as_id(raw)})
 
 
-async def _queue_batch(db: AsyncSession, raw: str) -> set[int]:
-    rows = await db.execute(select(PrintQueueItem.queue_id).where(PrintQueueItem.batch_id == raw))
+async def _queue_batch(db: AsyncSession, raw: str, within: set[int] | None = None) -> set[int]:
+    """The queues of a batch's rows -- every queue it touches, unless the request names its queue.
+
+    A batch route acts on ONE printer queue's rows (G03 D1): AutoQueue promotion spreads a batch over the
+    printers that took its copies, and ``?queue_id=`` names whose copies the route touches. With it, the
+    rows acted on are the batch's rows in that queue, so that is what the key's list is asked of -- the
+    named queue itself is read as a printer reference beside this. Without it the route may still act on
+    the batch's only queue, so every queue the batch touches is asked, as strictly as before.
+    """
+    stmt = select(PrintQueueItem.queue_id).where(PrintQueueItem.batch_id == raw)
+    if within is not None:
+        stmt = stmt.where(PrintQueueItem.queue_id.in_(within))
+    rows = await db.execute(stmt)
     return set(rows.scalars().all())
 
 
@@ -275,10 +286,15 @@ async def printers_named_by(db: AsyncSession, request: Request, template: str) -
     for key in _PRINTER_CSV_QUERY:
         for value in request.query_params.getlist(key):
             printers.update(int(token.strip()) for token in value.split(",") if token.strip().isdigit())
+    # The queue a batch route is told to act on (``?queue_id=``, G03 D1), already checked above as a printer.
+    named_queues = {one for value in request.query_params.getlist("queue_id") for one in _ids(value)}
 
     for prefix, param, resolve in _PATH_RESOLVERS:
         if template.startswith(prefix) and param in request.path_params:
-            printers |= await resolve(db, request.path_params[param])
+            if resolve is _queue_batch and named_queues:
+                printers |= await _queue_batch(db, request.path_params[param], within=named_queues)
+            else:
+                printers |= await resolve(db, request.path_params[param])
 
     body = await _json_body(request)
     for value in _find(body, _PRINTER_KEYS):

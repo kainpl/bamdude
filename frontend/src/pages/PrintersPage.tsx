@@ -155,6 +155,7 @@ import { MQTTDebugModal } from '../components/MQTTDebugModal';
 import { CalibrationModal } from '../components/CalibrationModal';
 import { HMSErrorModal, filterKnownHMSErrors, hmsBrief } from '../components/HMSErrorModal';
 import { PrinterQueueWidget } from '../components/PrinterQueueWidget';
+import { PreviousFailureHold } from '../components/PreviousFailureHold';
 import { FarmQueueScope, usePrinterQueueRows } from '../hooks/FarmQueueScope';
 import { usePendingQueueItems, usePrintingQueueItems } from '../hooks/useQueueItems';
 import { usePlateDefects } from '../hooks/usePlateDefects';
@@ -2532,9 +2533,11 @@ const PrinterCard = memo(function PrinterCard({
   // Fetch currently printing queue item to show who started it (Issue #206)
   const { data: printingQueueItems } = usePrinterQueueRows(printer.id, 'printing', status?.state === 'RUNNING' || status?.state === 'PAUSE');
 
-  // Fetch reprint user info (for prints started via Reprint, not queue - Issue #206)
+  // Fetch reprint user info (for prints started via Reprint, not queue - Issue #206). Keyed by
+  // the run on the plate too, so an earlier run's answer is never shown while the new one loads;
+  // the server answers `{}` when no run is bound, and then no name is shown.
   const { data: reprintUser } = useQuery({
-    queryKey: ['currentPrintUser', printer.id],
+    queryKey: ['currentPrintUser', printer.id, status?.current_archive_id ?? null],
     queryFn: () => api.getCurrentPrintUser(printer.id),
     enabled: status?.state === 'RUNNING',
   });
@@ -4595,6 +4598,8 @@ const PrinterCard = memo(function PrinterCard({
 
                 {/* Queue Widget - always visible when there are pending items */}
                 <PrinterQueueWidget printerId={printer.id} printerModel={status.effective_model || printer.model} printerState={status.state} awaitingPlateClear={status.awaiting_plate_clear} repeatAvailable={repeatAvailable} requirePlateClear={printer.require_plate_clear} />
+                {/* Jobs held for a failed last print — AutoQueue work too, which has no row here. */}
+                <PreviousFailureHold queue={printerQueue} />
               </>
             )}
 

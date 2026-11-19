@@ -862,3 +862,37 @@ async def test_the_result_carries_every_candidates_home_forecast(db_session, pri
     assert result.skipped == [(farm.item.id, "home_model_idle")]
     state, finish = result.home[farm.item.id]
     assert state == "known" and finish > 3600
+
+
+@pytest.mark.parametrize("halt", ["error", "paused"])
+async def test_a_halted_queue_is_never_a_home_for_a_pending_job(
+    db_session, tick_scheduler, printer_factory, tmp_path, halt
+):
+    """G03 follow-up: the router places no new work on a queue left ``error`` / ``paused`` (E-3), so the
+    forecast deals nothing to it either -- the only P2S that can print the job is halted: the router leaves
+    the job waiting, and the forecast gives it no lane; what the halted queue already holds stays modelled,
+    and never starts (``Lane.stuck``)."""
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.tests.integration.test_rebalance_assignment import _forecast
+
+    farm = await petg_farm(db_session, printer_factory, tmp_path, home_trays=("PETG",))
+    home_id, item_id = farm.home.id, farm.item.id
+    await db_session.execute(PrinterQueue.__table__.update().where(PrinterQueue.id == home_id).values(status=halt))
+    db_session.add(PrintQueueItem(queue_id=home_id, status="pending", position=1))
+    await db_session.commit()
+
+    p_elig, p_sched = _live(farm)
+    with p_elig, p_sched:
+        forecast = await _forecast(db_session)
+        projection = queue_rebalance.start_projection([], forecast.farm)
+        await tick_scheduler.tick()
+
+    home = forecast.farm.machines[home_id]
+    assert (home.routable, home.dispatchable) == (False, False)
+    assert len(home.held) == 1, "what the halted queue holds stays in the forecast"
+    assert projection.result_of(item_id).lane_of.get(item_id) is None
+    placed = (
+        await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.source_auto_item_id == item_id))
+    ).scalar_one_or_none()
+    assert placed is None, "the router left it waiting too"

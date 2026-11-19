@@ -76,6 +76,26 @@ class TestAMovedJobLeavesItsRackPickBehind:
         _drop_rack_pick_on_move(self._item(), changes, None, None)
         assert changes == {}
 
+    # G03 E6: the operator's rack-position pick names the OLD printer's rack positions too.
+    def _picked(self):
+        return SimpleNamespace(queue_id=1, nozzle_mapping=None, nozzle_rack_choice='{"2": 1}')
+
+    @pytest.mark.parametrize("model", ["H2C", "X1C", None])
+    def test_a_move_clears_the_operators_rack_pick_on_any_target(self, model):
+        changes: dict = {}
+        _drop_rack_pick_on_move(self._picked(), changes, SimpleNamespace(id=2), model)
+        assert changes == {"nozzle_rack_choice": None}
+
+    def test_a_move_that_sets_a_new_pick_keeps_it(self):
+        changes = {"nozzle_rack_choice": '{"2": 3}'}
+        _drop_rack_pick_on_move(self._picked(), changes, SimpleNamespace(id=2), "H2C")
+        assert changes == {"nozzle_rack_choice": '{"2": 3}'}
+
+    def test_the_same_queue_keeps_the_pick(self):
+        changes: dict = {}
+        _drop_rack_pick_on_move(self._picked(), changes, SimpleNamespace(id=1), "H2C")
+        assert changes == {}
+
 
 class TestNozzleOffsetCalibration:
     @pytest.mark.parametrize(("wire", "mode"), [(0, "off"), (1, "on"), (2, "auto"), (False, "off"), (True, "on")])

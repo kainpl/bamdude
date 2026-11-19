@@ -1442,6 +1442,11 @@ class VirtualPrinterInstance:
                             db.add(queue_item)
                             await db.flush()  # populate queue_item.id before logging
                             queue_item_ids.append(queue_item.id)
+                        # The card's counter in the transaction that adds the rows, as every web
+                        # door does (G03 D7.2) -- ``GET /queues/`` answers the cached column.
+                        from backend.app.services.queue_counters import update_queue_counters
+
+                        await update_queue_counters(db, queue_id)
 
                 # The rows and the blob's own row are committed together, after the
                 # file is in its final place (§5 step 6).

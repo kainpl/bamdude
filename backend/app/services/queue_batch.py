@@ -436,7 +436,9 @@ async def enqueue_batch_copies(
             printer_swap_mode=printer_swap_on,
         )
         swap_macro_events = swap_events
-        if batch_id is None:
+        # A batch is "these copies were made together": one copy is no batch, exactly as every
+        # other door decides it (G03 D7.5). A batch of one got the batch chrome and batch routes.
+        if batch_id is None and count > 1:
             batch_id = str(uuid.uuid4())
         # Tri-state calibration → canonical mode string (accepts legacy bool from
         # existing callers). Store the bool mirror + *_mode column on each copy.

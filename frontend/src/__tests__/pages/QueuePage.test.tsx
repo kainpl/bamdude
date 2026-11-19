@@ -419,7 +419,9 @@ describe('QueuePage', () => {
       return http.get('/api/v1/queue/', ({ request }) => {
         const params = new URL(request.url).searchParams;
         if (params.get('queue_id') && params.get('queue_id') !== '1') return HttpResponse.json([]);
-        return HttpResponse.json(rows[params.get('status') ?? 'pending'] ?? []);
+        // One status or several, comma-separated — the page asks `pending,printing` at once.
+        const statuses = (params.get('status') ?? 'pending').split(',');
+        return HttpResponse.json(statuses.flatMap((status) => rows[status] ?? []));
       });
     };
 

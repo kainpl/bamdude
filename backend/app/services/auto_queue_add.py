@@ -70,6 +70,7 @@ async def add_items_to_auto_queue(
     consumption: PlanConsumption | LegacyPlanPublication | None = None,
     publication_receipt: PublicationReceipt | None = None,
     authority=None,
+    slicer_options: dict | None = None,
 ) -> list[AutoQueueItem]:
     """Validate, build and persist the auto-queue rows ``data`` asks for.
 
@@ -78,6 +79,10 @@ async def add_items_to_auto_queue(
 
     ``publication_receipt`` (``services/queue_publication.py``) is claimed in the publication's transaction before
     any row and recorded with the rows' ids; it never travels with an order plan's ``consumption``.
+
+    ``slicer_options`` are the print options a SLICER explicitly chose for these jobs, under the printer-queue
+    option names (m243, ``auto_queue_items.slicer_options``): the assignment lays them over the creator's saved
+    profile -- slicer, then profile, then default. The row's own option columns stay inert.
     """
     from backend.app.services.publication_authority import actor_for_writer
 
@@ -164,6 +169,7 @@ async def add_items_to_auto_queue(
             **({"consumption": consumption} if consumption is not None else {}),
             publication_receipt=publication_receipt,
             authority=authority,
+            slicer_options=slicer_options,
         )
     except BaseException:
         await discard_staged(staged)
@@ -194,6 +200,7 @@ async def _publish_items(
     *,
     publication_receipt: PublicationReceipt | None = None,
     authority=None,
+    slicer_options: dict | None = None,
 ) -> list[int]:
     """Publish the captured bytes and write every row in ONE transaction (§5 step 6).
 
@@ -237,6 +244,7 @@ async def _publish_items(
             order_print_options=order_print_options,
             batch_id=batch_id,
             ticket=ticket,
+            slicer_options=slicer_options,
         )
         created_ids.extend(item.id for item in items)
         if ticket is not None:
@@ -278,6 +286,7 @@ async def build_auto_queue_rows(
     order_print_options: dict | None,
     batch_id: str | None,
     ticket=None,
+    slicer_options: dict | None = None,
 ) -> list[AutoQueueItem]:
     """Build and flush the rows ``data`` asks for, over a source already captured and published.
 
@@ -365,6 +374,7 @@ async def build_auto_queue_rows(
             items.append(
                 AutoQueueItem(
                     order_print_options=deepcopy(order_print_options),
+                    slicer_options=deepcopy(slicer_options) or None,
                     queue_source_id=source.id,
                     auto_eject=eject,
                     auto_eject_settings=eject_settings,

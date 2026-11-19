@@ -64,6 +64,7 @@ PRINTER_KEYED_REGISTRIES = (
     ("backend.app.main", "_pause_started_at"),
     ("backend.app.main", "_print_ams_mappings"),
     ("backend.app.main", "_printer_last_connected"),
+    ("backend.app.main", "_runtime_seen_connected"),
     ("backend.app.main", "_printer_offline_notify_tasks"),
     ("backend.app.main", "_stage22_finish_frames"),
     ("backend.app.main", "_stage22_finish_in_flight"),

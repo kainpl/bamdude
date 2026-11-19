@@ -100,6 +100,7 @@ _ID_KEYED = (
     ("backend.app.services.print_scheduler", "scheduler._armed_dry_cycles"),
     ("backend.app.services.print_scheduler", "scheduler._dry_unit_history"),
     ("backend.app.services.print_scheduler", "scheduler._auto_dry_above"),
+    ("backend.app.services.print_scheduler", "scheduler._power_on_wakes"),
     ("backend.app.services.filament_low", "_announced"),
     ("backend.app.services.connection_watchdog", "_last_rebuild"),
     ("backend.app.services.auto_queue_scheduler", "auto_queue_scheduler._wake_cooldowns"),

@@ -315,6 +315,30 @@ class TestBumpBlockToTop:
         assert await _positions(db_session, queue_b.id) == [(x.id, 0), (y.id, 1)]
 
 
+class TestBumpToBottom:
+    async def test_a_block_just_above_the_last_row_moves_on_a_one_based_queue(self, db_session, queue):
+        """Pending positions start at 1. The "already at the bottom" check assumed 0..n-1, so a block at
+        2, 3 above a row at 4 counted as already there and the bump did nothing."""
+        first = await _add_item(db_session, queue.id, position=1)
+        a = await _add_item(db_session, queue.id, position=2)
+        b = await _add_item(db_session, queue.id, position=3)
+        last = await _add_item(db_session, queue.id, position=4)
+
+        changed = await queue_ops.bump_block_to_bottom(db_session, queue.id, [a.id, b.id])
+
+        assert changed == 4
+        assert await _positions(db_session, queue.id) == [(first.id, 0), (last.id, 1), (a.id, 2), (b.id, 3)]
+
+    @pytest.mark.parametrize("start", [0, 1])
+    async def test_a_block_already_at_the_bottom_is_a_noop(self, db_session, queue, start):
+        first = await _add_item(db_session, queue.id, position=start)
+        a = await _add_item(db_session, queue.id, position=start + 1)
+        b = await _add_item(db_session, queue.id, position=start + 2)
+
+        assert await queue_ops.bump_block_to_bottom(db_session, queue.id, [a.id, b.id]) == 0
+        assert await _positions(db_session, queue.id) == [(first.id, start), (a.id, start + 1), (b.id, start + 2)]
+
+
 # ── clone_item / clone_batch ──────────────────────────────────────────────────
 
 
@@ -464,6 +488,109 @@ class TestSetStatusForBatch:
 
     async def test_empty_batch_returns_zero(self, db_session):
         assert await queue_ops.set_status_for_batch(db_session, "no-such-batch", "cancelled") == 0
+
+
+async def _claim_behind_the_sessions_back(db_session, item_id: int) -> None:
+    """What the scheduler's claim does to a row the caller already read: ``printing``, with the session's
+    loaded copy still saying ``pending``."""
+    from sqlalchemy import update
+
+    await db_session.execute(
+        update(PrintQueueItem)
+        .where(PrintQueueItem.id == item_id)
+        .values(status="printing")
+        .execution_options(synchronize_session=False)
+    )
+    await db_session.commit()
+
+
+class TestAStatusWriteIsACompareAndSet:
+    """G03 E-2: skip / batch cancel / batch skip wrote the status from their own earlier read."""
+
+    async def test_a_claimed_row_is_not_written_over(self, db_session, queue):
+        item = await _add_item(db_session, queue.id, position=1)
+        await _claim_behind_the_sessions_back(db_session, item.id)
+
+        assert await queue_ops.set_status(db_session, item.id, "skipped") is False
+        await db_session.refresh(item)
+        assert item.status == "printing"
+
+    async def test_a_claimed_batch_copy_is_not_written_over(self, db_session, queue):
+        batch = str(uuid.uuid4())
+        claimed = await _add_item(db_session, queue.id, position=1, batch_id=batch)
+        other = await _add_item(db_session, queue.id, position=2, batch_id=batch)
+        await _claim_behind_the_sessions_back(db_session, claimed.id)
+
+        assert await queue_ops.set_status_for_batch(db_session, batch, "cancelled") == 1
+        await db_session.refresh(claimed)
+        await db_session.refresh(other)
+        assert (claimed.status, other.status) == ("printing", "cancelled")
+
+    async def test_the_end_is_stamped_when_asked(self, db_session, queue):
+        from datetime import datetime, timezone
+
+        batch = str(uuid.uuid4())
+        item = await _add_item(db_session, queue.id, position=1, batch_id=batch)
+        now = datetime.now(timezone.utc)
+
+        assert await queue_ops.set_status_for_batch(db_session, batch, "cancelled", completed_at=now) == 1
+        await db_session.refresh(item)
+        assert item.completed_at is not None
+
+
+class TestABatchBelongsToOneQueue:
+    """G03 D1: AutoQueue promotion spreads one ``batch_id`` over the printers that took its copies."""
+
+    async def test_a_spread_batch_names_no_queue_by_itself(self, db_session, queue, queue_b):
+        batch = str(uuid.uuid4())
+        await _add_item(db_session, queue.id, position=1, batch_id=batch)
+        await _add_item(db_session, queue_b.id, position=1, batch_id=batch)
+
+        with pytest.raises(queue_ops.BatchSpansQueues):
+            await queue_ops.batch_queue_id(db_session, batch, None)
+        assert await queue_ops.batch_queue_id(db_session, batch, queue_b.id) == queue_b.id
+
+    async def test_finished_copies_do_not_spread_it(self, db_session, queue, queue_b):
+        batch = str(uuid.uuid4())
+        await _add_item(db_session, queue.id, position=1, batch_id=batch)
+        await _add_item(db_session, queue_b.id, position=1, batch_id=batch, status="completed")
+
+        assert await queue_ops.batch_queue_id(db_session, batch, None) == queue.id
+        assert await queue_ops.batch_queue_id(db_session, "no-such-batch", None) is None
+
+    async def test_a_status_write_reaches_one_queue(self, db_session, queue, queue_b):
+        batch = str(uuid.uuid4())
+        mine = await _add_item(db_session, queue.id, position=1, batch_id=batch)
+        theirs = await _add_item(db_session, queue_b.id, position=1, batch_id=batch)
+
+        with pytest.raises(queue_ops.BatchSpansQueues):
+            await queue_ops.set_status_for_batch(db_session, batch, "skipped")
+        assert await queue_ops.set_status_for_batch(db_session, batch, "skipped", queue_id=queue.id) == 1
+        await db_session.refresh(mine)
+        await db_session.refresh(theirs)
+        assert (mine.status, theirs.status) == ("skipped", "pending")
+
+    async def test_a_rows_block_is_its_own_queues_copies(self, db_session, queue, queue_b):
+        batch = str(uuid.uuid4())
+        a = await _add_item(db_session, queue.id, position=1, batch_id=batch)
+        b = await _add_item(db_session, queue.id, position=2, batch_id=batch)
+        await _add_item(db_session, queue_b.id, position=1, batch_id=batch)
+
+        qid, ids = await queue_ops.resolve_block_ids(db_session, a.id)
+
+        assert (qid, sorted(ids)) == (queue.id, sorted([a.id, b.id]))
+
+    async def test_a_batch_clone_copies_one_queue_into_that_queue(self, db_session, queue, queue_b):
+        batch = str(uuid.uuid4())
+        await _add_item(db_session, queue.id, position=7, batch_id=batch)
+        await _add_item(db_session, queue_b.id, position=1, batch_id=batch)
+        await _add_item(db_session, queue_b.id, position=2, batch_id=batch)
+
+        with pytest.raises(queue_ops.BatchSpansQueues):
+            await queue_ops.clone_batch(db_session, batch)
+        clones = await queue_ops.clone_batch(db_session, batch, queue_id=queue_b.id)
+
+        assert [(c.queue_id, c.position) for c in clones] == [(queue_b.id, 3), (queue_b.id, 4)]
 
 
 class TestACloneCarriesEveryPrintOption:

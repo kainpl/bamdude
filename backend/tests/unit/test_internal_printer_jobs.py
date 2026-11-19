@@ -92,6 +92,7 @@ class TestWhereItIsAsked:
 
     def test_its_completion_sends_no_no_archive_notification(self):
         source = self._source(main._on_print_complete_impl)
-        notify = source.index("async def _notify_no_archive():")
+        notify = source.index("_notify_completion_without_archive(printer_id, data)")
         branch = source[source.rindex("if not archive_id:", 0, notify) : notify]
-        assert "if is_internal_printer_job(filename, subtask_name):" in branch
+        guard = branch.index("if is_internal_printer_job(filename, subtask_name):")
+        assert "return" in branch[guard:], "the internal job must return before the no-archive notice"

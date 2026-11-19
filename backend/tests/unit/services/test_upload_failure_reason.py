@@ -103,6 +103,20 @@ def test_a_dropped_connection_is_a_transfer_failure(tmp_path):
     assert client.failure.kind == "transfer"
 
 
+def test_a_full_card_answering_452_is_storage_not_a_dropped_connection(tmp_path):
+    """G03 E-7: 452 is a 4xx (``error_temp``), so it fell through to "the connection dropped"."""
+    client, local = _connected_client(tmp_path, ftplib.error_temp("452 Insufficient storage space."))
+    assert client.upload_file(local, "/plate.gcode.3mf") is False
+    assert (client.failure.kind, client.failure.code) == ("storage", "452")
+    assert "formatted FAT32 or exFAT" in describe_upload_failure(client.failure)
+
+
+def test_another_temporary_refusal_keeps_the_transfer_reading(tmp_path):
+    client, local = _connected_client(tmp_path, ftplib.error_temp("421 Too many connections."))
+    assert client.upload_file(local, "/plate.gcode.3mf") is False
+    assert client.failure.kind == "transfer"
+
+
 def test_a_short_copy_on_the_printer_is_truncated(tmp_path):
     local = tmp_path / "plate.gcode.3mf"
     local.write_bytes(b"PK" + b"0" * 64)

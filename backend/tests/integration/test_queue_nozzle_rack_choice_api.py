@@ -133,6 +133,70 @@ class TestUpdate:
         assert response.json()["nozzle_rack_choice"] == {"2": 1, "1": 3}
 
 
+@pytest.fixture
+async def other_queue(db_session):
+    from backend.app.models.printer import Printer
+    from backend.app.models.printer_queue import PrinterQueue
+
+    printer = Printer(
+        name="Rack-2", ip_address="192.168.1.211", serial_number="RACKCHOICE0002", access_code="12345678", model="X1C"
+    )
+    db_session.add(printer)
+    await db_session.flush()
+    queue = PrinterQueue(id=printer.id, printer_id=printer.id)
+    db_session.add(queue)
+    await db_session.commit()
+    await db_session.refresh(queue)
+    return queue
+
+
+@pytest.mark.asyncio
+class TestAMoveLeavesThePickBehind:
+    """G03 E6: the pick names rack positions of the printer the job was queued for. Moved through the API
+    to another printer it fitted by chance or refused the print after the upload and halted that queue."""
+
+    async def test_a_plain_move_clears_it(self, async_client, queue, other_queue, archive, db_session):
+        item_id = (await _add(async_client, queue, archive, nozzle_rack_choice={"2": 1}))["id"]
+
+        response = await async_client.patch(f"/api/v1/queue/{item_id}", json={"queue_id": other_queue.id})
+
+        assert response.status_code == 200, response.text
+        assert response.json()["nozzle_rack_choice"] is None
+        assert await _stored_choice(db_session, item_id) is None
+
+    async def test_a_move_that_picks_again_keeps_the_new_pick(self, async_client, queue, other_queue, archive):
+        item_id = (await _add(async_client, queue, archive, nozzle_rack_choice={"2": 1}))["id"]
+
+        response = await async_client.patch(
+            f"/api/v1/queue/{item_id}", json={"queue_id": other_queue.id, "nozzle_rack_choice": {"2": 3}}
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["nozzle_rack_choice"] == {"2": 3}
+
+    async def test_a_bulk_move_clears_it(self, async_client, queue, other_queue, archive, db_session):
+        item_id = (await _add(async_client, queue, archive, nozzle_rack_choice={"2": 1}))["id"]
+
+        response = await async_client.patch(
+            "/api/v1/queue/bulk", json={"item_ids": [item_id], "queue_id": other_queue.id}
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["updated_count"] == 1
+        assert await _stored_choice(db_session, item_id) is None
+
+    async def test_a_batch_move_clears_it(self, async_client, queue, other_queue, archive, db_session):
+        created = await _add(async_client, queue, archive, quantity=2, nozzle_rack_choice={"2": 1})
+
+        response = await async_client.patch(
+            f"/api/v1/queue/batch/{created['batch_id']}?queue_id={queue.id}", json={"queue_id": other_queue.id}
+        )
+
+        assert response.status_code == 200, response.text
+        for item_id in created["created_item_ids"]:
+            assert await _stored_choice(db_session, item_id) is None
+
+
 class TestSchemaCoverage:
     def test_every_request_that_can_carry_a_pick_declares_it(self):
         """The original bug in one assertion: it was on two of the three.

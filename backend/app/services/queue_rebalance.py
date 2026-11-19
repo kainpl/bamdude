@@ -932,7 +932,9 @@ async def load_printers(db: AsyncSession, busy: set[int], interlocked: set[int])
     over exactly the printers the router does. ``dispatchable`` says whether
     ``print_scheduler.check_queue`` would dispatch from its queue: ⚠️ ``status in
     ("paused", "error")`` is what it refuses, so such a printer is never a receiver
-    of moved work, and what the router places there waits for the operator. An
+    of moved work, and — since the router itself places nothing new on a halted
+    queue (G03 E-3) — no home of a tail job either (``_machines``: not routable);
+    what it already holds waits for the operator (``Lane.stuck``). An
     offline printer is left out whole (spec R7): it neither vetoes, nor dates a
     home, nor receives — not waiting for it to come back.
 
@@ -1422,7 +1424,10 @@ def _machines(
             model=passing.key if passing else (model_key(state.model) or ""),
             ready=bool(passing and passing.ready),
             held=tuple(held),
-            routable=passing is not None,
+            # ⚠️ A halted queue (``paused`` / ``error``) receives no NEW work from the router
+            # (``auto_queue_eligibility.printers_for_item``, G03 E-3), so it is no home in the forecast
+            # either; what it already holds stays modelled, and never starts (``stuck``) until Resume.
+            routable=passing is not None and passing.dispatchable,
             waiting=waiting,
             hold_unknown=hold_unknown,
             gap=gap,
@@ -1551,18 +1556,26 @@ class _PassGroups:
         return found
 
 
-def assignment_refusal(profile, choices: dict | None, model: str | None, printer_model, swap_mode: bool, fact):
+def assignment_refusal(
+    profile, choices: dict | None, model: str | None, printer_model, swap_mode: bool, fact, slicer=None
+):
     """Why the router's ``_assign`` would turn this printer away for this job — ``None`` when it
     would not. Its two refusals, in its order: the order's choices that do not fit the printer
     (``compose_options`` → ``incompatible_target``) and a request for our swap macros the job's
     source cannot honour (``resolve_request``). The decision and a move's final check ask it alike
-    (Codex review r1 T-R3, r2 T2-R1)."""
+    (Codex review r1 T-R3, r2 T2-R1).
+
+    ``slicer`` is the row's ``slicer_options`` (m243), laid over the composition exactly as ``_assign``
+    lays it: a slicer connector turns our swap macros off there (G03 follow-up), and a forecast that
+    ignored it would refuse a swap printer the router assigns."""
     from backend.app.services import auto_queue_scheduler as router
 
     try:
         options = router.compose_options(profile, choices, model, printer_model)
     except ValueError:
         return "incompatible_target"
+    if slicer:
+        options.update(slicer)
     try:
         swap_compatibility.resolve_request(
             fact,
@@ -1604,10 +1617,19 @@ class _Assignments:
             self._owners[user_id] = await self._db.get(User, user_id)
         return self._owners[user_id]
 
-    async def key_for(self, owner: User | None, choices: dict | None, model: str | None, fact) -> tuple:
+    async def key_for(
+        self, owner: User | None, choices: dict | None, model: str | None, fact, slicer: dict | None = None
+    ) -> tuple:
+        """``slicer`` is the row's ``slicer_options``: part of its assignment, as ``_assign`` reads it."""
         from backend.app.services import auto_queue_scheduler as router
 
-        key = (getattr(owner, "id", None), json.dumps(choices, sort_keys=True, default=str), model, fact)
+        key = (
+            getattr(owner, "id", None),
+            json.dumps(choices, sort_keys=True, default=str),
+            model,
+            fact,
+            json.dumps(slicer or None, sort_keys=True, default=str),
+        )
         if key in self._keys:
             return key
         self._keys.add(key)
@@ -1616,20 +1638,23 @@ class _Assignments:
             if profile_key not in self._profiles:
                 self._profiles[profile_key] = await router.preference_options(self._db, owner, printer.raw_model)
             refused = assignment_refusal(
-                self._profiles[profile_key], choices, model, printer.raw_model, printer.swap_mode, fact
+                self._profiles[profile_key], choices, model, printer.raw_model, printer.swap_mode, fact, slicer
             )
             if refused:
                 self._oracle.refuse(key, printer_id, refused)
         return key
 
-    def prep(self, choices: dict | None, model: str | None) -> float:
+    def prep(self, choices: dict | None, model: str | None, slicer: dict | None = None) -> float:
         """The preparation the job is written with: the order's entry for its own model
-        (``preheat_override``). The saved profile carries none, so it is one per job whatever
-        printer takes it (``test_a_saved_profile_sets_no_preparation`` pins that)."""
+        (``preheat_override``), then the row's ``slicer_options`` as ``_assign`` lays them over it.
+        The saved profile carries none, so it is one per job whatever printer takes it
+        (``test_a_saved_profile_sets_no_preparation`` pins that)."""
         try:
             chosen = override_options(choices, model).get("preheat_override", "inherit")
         except ValueError:
             chosen = "inherit"  # choices nobody can read: refused on every printer anyway
+        if slicer and "preheat_override" in slicer:
+            chosen = slicer["preheat_override"]
         return float(self._gates.prep_for(chosen))
 
 
@@ -1758,8 +1783,10 @@ async def _load_forecast(
             descriptor = await item_descriptor(db, row)
             facts[source] = descriptor.swap_fact.value if descriptor is not None else None
         owner = await assignments.owner(row.created_by_id)
-        key = await assignments.key_for(owner, row.order_print_options, requirements.model, facts[source])
-        return key, assignments.prep(row.order_print_options, requirements.model)
+        key = await assignments.key_for(
+            owner, row.order_print_options, requirements.model, facts[source], row.slicer_options
+        )
+        return key, assignments.prep(row.order_print_options, requirements.model, row.slicer_options)
 
     tail: list[MovableItem] = []
     for row in tail_rows:
@@ -2021,6 +2048,8 @@ def _row_identity(item: AutoQueueItem) -> tuple:
         bool(item.require_previous_success),
         json.dumps(item.order_print_options, sort_keys=True, default=str),
         item.created_by_id,
+        # A Virtual Printer's late slicer command can still patch a pending row's choices (m243).
+        json.dumps(item.slicer_options, sort_keys=True, default=str),
     )
 
 
@@ -2089,9 +2118,12 @@ async def _read_alternative_plates(
                 continue
             requirements, file = read[option.plate_id]
             fact = swap_compatibility.library_source(file)[0].value
-            converted = await assignments.key_for(owner, row.order_print_options, requirements.model, fact)
-            spare = await assignments.key_for(mover, row.order_print_options, requirements.model, fact)
-            prep = assignments.prep(row.order_print_options, requirements.model)
+            # Both carry the row's slicer choices: the conversion keeps the column, and the companions
+            # are written with it (``_write_group``).
+            slicer = row.slicer_options
+            converted = await assignments.key_for(owner, row.order_print_options, requirements.model, fact, slicer)
+            spare = await assignments.key_for(mover, row.order_print_options, requirements.model, fact, slicer)
+            prep = assignments.prep(row.order_print_options, requirements.model, slicer)
             oracle.set_target(row.id, option.plate_id, converted, spare, prep)
 
 
@@ -2280,7 +2312,13 @@ async def _assignment_changed(
                 printer_model, swap_mode = receivers[printer_id]
                 profile = await router.preference_options(current, owner, printer_model)
                 if assignment_refusal(
-                    profile, fresh.order_print_options, requirements.model, printer_model, swap_mode, fact
+                    profile,
+                    fresh.order_print_options,
+                    requirements.model,
+                    printer_model,
+                    swap_mode,
+                    fact,
+                    fresh.slicer_options,
                 ):
                     return "eligibility_changed"
     return None
@@ -2647,6 +2685,9 @@ async def _write_group(
             library_file=file,
             order_print_options=item.order_print_options,
             batch_id=batch_id,
+            # The copies are the same job: what its slicer chose travels with them, as the forecast
+            # judged them (``_Assignments.key_for``), and the router lays it over the profile.
+            slicer_options=item.slicer_options,
         )
         for row in created:
             row.rebalanced_at = now
