@@ -17,12 +17,14 @@ import {
 } from '../../api/client';
 import { useSliceJobTracker } from '../../contexts/SliceJobTrackerContext';
 import { TIER_ORDER, resolvePresetName } from '../../utils/presetPickerUtils';
-import { pickDefault, pickFilamentForSlot, pickProcessDefault } from '../../utils/slicePresetPicker';
-import { buildCompatibilityIndex, type PrinterCompatibilityIndex } from '../../utils/slicerPrinterMatch';
+import { findPreset, pickDefault, pickFilamentForSlot, pickProcessDefault } from '../../utils/slicePresetPicker';
+import { buildCompatibilityIndex, presetCompatibility, type PrinterCompatibilityIndex } from '../../utils/slicerPrinterMatch';
 import { Button } from '../Button';
 import { Modal } from '../Modal';
 import { Select } from '../Select';
 import { Toggle } from '../Toggle';
+import { usePresetVisibility } from '../../hooks/usePresetVisibility';
+import { PresetVisibilityFilters } from '../PresetVisibilityFilters';
 import { AssemblePresetSelect } from './AssemblePresetSelect';
 import {
   MAX_COPIES,
@@ -96,14 +98,18 @@ function defaultsFor(
   data: UnifiedPresetsResponse,
   printer: PresetRef | null,
   compatIndex: PrinterCompatibilityIndex,
+  onlyMine = false,
 ): Pick<TargetRow, 'printer' | 'process' | 'filament'> {
   const chosen = printer ?? firstMachinePreset(data) ?? pickDefault(data, 'printer');
   const printerName = resolvePresetName(data, chosen, 'printer');
+  const fits = (ref: PresetRef | null, slot: 'process' | 'filament') => {
+    const preset = findPreset(data, ref, slot);
+    return !onlyMine || (preset && presetCompatibility(preset, slot, printerName, compatIndex) !== 'mismatch') ? ref : null;
+  };
   return {
     printer: chosen,
-    process: pickProcessDefault(data, printerName, compatIndex),
-    filament:
-      pickFilamentForSlot(data, { type: 'PLA', color: '' }, printerName, compatIndex) ?? pickDefault(data, 'filament'),
+    process: fits(pickProcessDefault(data, printerName, compatIndex), 'process'),
+    filament: fits(pickFilamentForSlot(data, { type: 'PLA', color: '' }, printerName, compatIndex), 'filament'),
   };
 }
 
@@ -112,6 +118,7 @@ function TargetEditor({
   index,
   data,
   compatIndex,
+  visibility,
   removable,
   onChange,
   onRemove,
@@ -120,6 +127,7 @@ function TargetEditor({
   index: number;
   data: UnifiedPresetsResponse;
   compatIndex: PrinterCompatibilityIndex;
+  visibility: ReturnType<typeof usePresetVisibility>;
   removable: boolean;
   onChange: (next: TargetRow) => void;
   onRemove: () => void;
@@ -161,13 +169,15 @@ function TargetEditor({
           label={t('fileManager.assemble.printerPreset')}
           slot="printer"
           data={data}
+          keep={visibility.keep}
           value={target.printer}
-          onChange={(printer) => onChange({ ...target, ...defaultsFor(data, printer, compatIndex), printer, nozzle: 1 })}
+          onChange={(printer) => onChange({ ...target, ...defaultsFor(visibility.visible ?? data, printer, compatIndex, visibility.onlyMine), printer, nozzle: 1 })}
         />
         <AssemblePresetSelect
           label={t('fileManager.assemble.processPreset')}
           slot="process"
           data={data}
+          keep={visibility.keep}
           value={target.process}
           onChange={(process) => onChange({ ...target, process })}
           selectedPrinterName={printerName}
@@ -177,6 +187,7 @@ function TargetEditor({
           label={t('fileManager.assemble.filamentPreset')}
           slot="filament"
           data={data}
+          keep={visibility.keep}
           value={target.filament}
           onChange={(filament) => onChange({ ...target, filament })}
           selectedPrinterName={printerName}
@@ -426,6 +437,7 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
   const relayout = mode.kind === 'relayout';
 
   const presets = useQuery({ queryKey: ['slicerPresets'], queryFn: () => api.getSlicerPresets() });
+  const visibility = usePresetVisibility(presets.data);
   const printerModels = useQuery({ queryKey: ['slicerPrinterModels'], queryFn: api.getPrinterModels });
   const compatIndex = useMemo(() => buildCompatibilityIndex(printerModels.data ?? {}), [printerModels.data]);
   const record = useQuery({
@@ -453,7 +465,7 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
   const modelsSettled = printerModels.isFetched || printerModels.isError;
   useEffect(() => {
     // wait for the printer-model registry too: without it nothing is known to suit the printer
-    if (seeded || !data || !form || !modelsSettled) return;
+    if (seeded || !data || !form || !modelsSettled || !visibility.ready) return;
     setSeeded(true);
     if (!relayout) {
       setForm((current) =>
@@ -461,13 +473,13 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
           ? {
               ...current,
               targets: current.targets.map((target) =>
-                target.printer ? target : { ...target, ...defaultsFor(data, null, compatIndex) },
+                target.printer ? target : { ...target, ...defaultsFor(visibility.visible ?? data, null, compatIndex, visibility.onlyMine) },
               ),
             }
           : current,
       );
     }
-  }, [seeded, data, form, relayout, compatIndex, modelsSettled]);
+  }, [seeded, data, form, relayout, compatIndex, modelsSettled, visibility.ready, visibility.visible, visibility.onlyMine]);
 
   const issues = form ? validate(form) : [];
   // the same queries the rows show their warning from: a printer preset that cannot be used blocks the button
@@ -573,9 +585,14 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
       </div>
     );
     footer = (
-      <Button variant="primary" onClick={onClose}>
-        {t('common.close')}
-      </Button>
+      <>
+        <Button variant="secondary" onClick={() => {
+          // Keep the form, retire the old poll and clear cached mutation state.
+          setJobId(null); setFinished(null); setSubmitError(null); submit.reset(); stop.reset();
+          update((current) => ({ ...current, trashPrevious: false }));
+        }}>{t('fileManager.assemble.editAndRetry')}</Button>
+        <Button variant="primary" onClick={onClose}>{t('common.close')}</Button>
+      </>
     );
   } else if (phase === 'running') {
     body = (
@@ -668,7 +685,7 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
               onClick={() =>
                 update((current) => ({
                   ...current,
-                  targets: [...current.targets, { ...emptyTarget(), ...defaultsFor(data, null, compatIndex) }],
+                  targets: [...current.targets, { ...emptyTarget(), ...defaultsFor(visibility.visible ?? data, null, compatIndex, visibility.onlyMine) }],
                 }))
               }
               disabled={form.targets.length >= MAX_TARGETS}
@@ -678,6 +695,7 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
             </Button>
           </div>
           <p className="text-xs text-bambu-gray">{t('fileManager.assemble.targetsHint')}</p>
+          <PresetVisibilityFilters filters={visibility} disabled={submit.isPending} />
           {form.targets.map((target, index) => (
             <TargetEditor
               key={target.key}
@@ -685,6 +703,7 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
               index={index}
               data={data}
               compatIndex={compatIndex}
+              visibility={visibility}
               removable={form.targets.length > 1}
               onChange={(next) => setTarget(index, next)}
               onRemove={() =>

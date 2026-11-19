@@ -6016,6 +6016,14 @@ export default {
   },
 
   slice: {
+    visibility: {
+      onlyFarm: "Only models in my farm",
+      onlyMine: "Only my processes and filaments",
+      hint: "Turn a filter off to browse the full catalogue. Paused, offline or maintenance printers still belong to the farm. Your current selection stays.",
+      noMine: "No custom process or filament profiles yet.",
+      showAll: "Show all profiles",
+      unavailable: "Could not read the farm models. All printers are shown.",
+    },
     title: 'Slice model',
     action: 'Slice',
     pipelines: {
@@ -6652,6 +6660,7 @@ export default {
     schedulePrint: 'Schedule',
     computeOrder: 'Calculate',
     assemble: {
+      editAndRetry: "Edit and try again",
       action: 'Assemble project',
       hint: 'Lay the selected models out densely and save project files for your printers',
       onlyMeshes: 'Only STL, OBJ and STEP models can be assembled — the selection holds another kind of file',

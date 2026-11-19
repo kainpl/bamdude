@@ -19,6 +19,7 @@ interface AssemblePresetSelectProps {
   /** For a process / filament slot: presets made for another printer move to a trailing group. */
   selectedPrinterName?: string | null;
   compatIndex?: PrinterCompatibilityIndex;
+  keep?: (preset: UnifiedPreset, slot: Slot) => boolean;
 }
 
 const TIERS: { key: keyof UnifiedPresetsResponse; label: string }[] = [
@@ -41,6 +42,7 @@ export function AssemblePresetSelect({
   onChange,
   selectedPrinterName,
   compatIndex,
+  keep,
 }: AssemblePresetSelectProps) {
   const { t } = useTranslation();
   const selectId = useId();
@@ -50,11 +52,11 @@ export function AssemblePresetSelect({
     const fitting: { label: string; entries: UnifiedPreset[] }[] = [];
     const other: UnifiedPreset[] = [];
     for (const tier of TIERS) {
-      const entries = (data[tier.key] as UnifiedPresetsBySlot)[slot];
+      const entries = (data[tier.key] as UnifiedPresetsBySlot)[slot].filter((p) => !keep || keep(p, slot) || (p.source === value?.source && p.id === value.id));
       if (entries.length === 0) continue;
       all.push({ label: t(tier.label), entries });
       if (slot === 'printer') continue;
-      const keep = entries.filter((preset) => {
+      const matching = entries.filter((preset) => {
         const verdict = presetCompatibility(
           preset,
           slot,
@@ -64,12 +66,12 @@ export function AssemblePresetSelect({
         if (verdict === 'mismatch') other.push(preset);
         return verdict !== 'mismatch';
       });
-      if (keep.length > 0) fitting.push({ label: t(tier.label), entries: keep });
+      if (matching.length > 0) fitting.push({ label: t(tier.label), entries: matching });
     }
     // a filter that leaves nothing says something about the matching, not about the presets: show them all
     if (slot === 'printer' || fitting.length === 0) return { sections: all, others: [] };
     return { sections: fitting, others: other };
-  }, [data, slot, t, selectedPrinterName, compatIndex]);
+  }, [data, slot, t, selectedPrinterName, compatIndex, keep, value]);
 
   const total = sections.reduce((sum, section) => sum + section.entries.length, 0) + others.length;
   const option = (preset: UnifiedPreset) => (
@@ -84,6 +86,7 @@ export function AssemblePresetSelect({
         {label}
       </label>
       <Select
+        search={{ label: t('slice.searchPresets', { list: label }), placeholder: t('slice.searchPresetsPlaceholder'), noMatches: t('slice.noMatchingPresets') }}
         id={selectId}
         className="w-full"
         value={toRefValue(value)}

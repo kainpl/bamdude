@@ -89,6 +89,9 @@ const part = (index: number) => screen.getByTestId(`assemble-part-${index}`);
 const target = (index: number) => screen.getByTestId(`assemble-target-${index}`);
 
 beforeEach(() => {
+  // These catalogue/assembly fixtures predate the default visibility preferences.
+  localStorage.setItem('bamdude:presets:only-farm', 'off');
+  localStorage.setItem('bamdude:presets:only-mine', 'off');
   posted = [];
   cancelled = 0;
   jobState = { job_id: 31, status: 'completed', kind: 'assembly', progress: null, result: okResult() };
@@ -486,4 +489,21 @@ describe('AssembleProjectModal', () => {
     expect(await screen.findByText('This file was not assembled here, or its record is damaged')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Re-layout' })).not.toBeInTheDocument();
   });
+  it('returns from a finished assembly to the same form and submits a fresh job only on request', async () => {
+    open();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Assemble' })).toBeEnabled());
+    fireEvent.change(screen.getByLabelText('Gap between parts, mm'), { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Assemble' }));
+    await screen.findByTestId('assemble-summary');
+    expect(posted).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit and try again' }));
+    await screen.findByTestId('assemble-part-0');
+    expect(screen.getByLabelText('Gap between parts, mm')).toHaveValue('3');
+    expect(within(target(0)).getByRole('combobox', { name: 'Process' })).toHaveValue('local:10');
+    expect(posted).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Assemble' }));
+    await waitFor(() => expect(posted).toHaveLength(2));
+    expect(posted[1].body).toEqual(posted[0].body);
+  });
+
 });

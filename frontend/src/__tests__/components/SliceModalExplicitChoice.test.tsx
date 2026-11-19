@@ -103,6 +103,8 @@ function serve(first: Listing, { plates = 1, saved = [] as SavedSet[], slotsOnPl
 }
 
 function open() {
+  localStorage.setItem('bamdude:presets:only-farm', 'off');
+  localStorage.setItem('bamdude:presets:only-mine', 'off');
   return render(
     <SliceJobTrackerProvider>
       <SliceModal source={{ kind: 'libraryFile', id: 1, filename: 'Cube.3mf' }} onClose={() => undefined} />
