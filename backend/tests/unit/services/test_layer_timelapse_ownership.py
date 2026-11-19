@@ -817,3 +817,53 @@ class TestAnUnreapedStitchKeepsTheEncoder:
         ticket = await asyncio.wait_for(encoder_slot.acquire(), 2)
         assert ticket is not None
         encoder_slot.release(ticket)
+
+    async def test_a_stitch_cancelled_by_the_completion_budget_keeps_slot_frames_and_output(self, frames, monkeypatch):
+        """Codex F3-R2: the completion's budget cancelled the stitch's task, and the slot went beside a live child."""
+        from backend.app.services.print_completion_tasks import PrintCompletionTasks
+
+        monkeypatch.setattr(media_child, "TERMINATE_GRACE", 0.12)
+        monkeypatch.setattr(media_child, "REAP_WAIT", 0.2)
+        spared: list = []
+        monkeypatch.setattr(
+            media_child._Watcher, "_signal", staticmethod(lambda process, *, kill: spared.append(process))
+        )
+        real_run = media_child.run
+        started = asyncio.Event()
+
+        async def hung_encoder(_argv, **kwargs):
+            started.set()
+            return await real_run([sys.executable, "-c", "import time; time.sleep(120)"], **kwargs)
+
+        monkeypatch.setattr(lt.media_child, "run", hung_encoder)
+        session = lt.take_session(13, _session(13))
+        _fill(session, 2)
+        output = session.frames_dir.parent / f"timelapse_{session.session_id}.mp4"
+        task = asyncio.create_task(lt.finish_session(session))
+        try:
+            await asyncio.wait_for(started.wait(), 5)
+            await asyncio.sleep(0.3)  # the child is running
+            output.write_bytes(b"what the encoder wrote so far")
+            scope = PrintCompletionTasks(13, timeout=0.02)
+            scope.add(task)
+            scope.close(lambda: None)
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 8)
+            assert spared and any(process.poll() is None for process in spared)
+            assert session._pinned and session.session_id in lt._pinned_sessions
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(encoder_slot.acquire(), 0.3)
+            # Neither the frames nor the output were removed under a writer that may still be alive.
+            assert len(list(session.frames_dir.glob("layer_*.jpg"))) == 2 and output.is_file()
+            assert await lt.quiesce(0.1) is False
+        finally:
+            for process in spared:
+                if process.poll() is None:
+                    process.kill()
+        deadline = time.monotonic() + 15
+        while media_child.live():
+            assert time.monotonic() < deadline
+            await asyncio.sleep(0.05)
+        ticket = await asyncio.wait_for(encoder_slot.acquire(), 2)  # the child went: the encoder is free once
+        assert ticket is not None
+        encoder_slot.release(ticket)

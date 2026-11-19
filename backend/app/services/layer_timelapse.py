@@ -523,6 +523,18 @@ class TimelapseSession:
             if ticket is None:
                 self.failure = media_child.CANCELLED
                 return False
+            child_end: list = []
+
+            def unreaped(ended) -> None:
+                # Called by ``media_child`` the moment the encoder is declared unreaped — also before a
+                # cancel of this task (the completion's budget, a shutdown) reaches us (Codex F3-R2). It
+                # may still be reading the frames and writing the output: neither is touched again, by
+                # anybody — the pin is registered for every cleanup path and for the drain.
+                child_end.append(ended)
+                self._pinned = True
+                _pinned_sessions[self.session_id] = self
+                self.failure = media_child.UNREAPED
+
             result = None
             try:
                 result = await media_child.run(
@@ -533,19 +545,17 @@ class TimelapseSession:
                     stop=self.stop,
                     on_line=lambda _line: None,  # progress lines keep the idle limit away
                     cwd=self.frames_dir,  # the concat list names the frames relatively
+                    on_unreaped=unreaped,
                 )
             finally:
-                if result is not None and result.status == media_child.UNREAPED:
+                if not child_end and result is not None and result.status == media_child.UNREAPED:
+                    unreaped(result.ended)  # a result that did not announce itself: pinned all the same
+                if child_end:
                     # The encoder may still run: no other one starts until it has really ended (Codex F3-R).
-                    encoder_slot.keep_until_reaped(ticket, result.ended)
+                    encoder_slot.keep_until_reaped(ticket, child_end[0])
                 else:
                     encoder_slot.release(ticket)
             if result.status == media_child.UNREAPED:
-                # It may still be reading the frames and writing the output: neither is touched again,
-                # by anybody — the pin is registered for every cleanup path and for the drain.
-                self._pinned = True
-                _pinned_sessions[self.session_id] = self
-                self.failure = result.status
                 return False
             if not result.ok:
                 self.failure = result.status
