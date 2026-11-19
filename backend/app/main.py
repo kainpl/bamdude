@@ -10894,7 +10894,7 @@ async def _on_print_complete_impl(
 
     async def _background_layer_timelapse():
         """Stitch layer timelapse and attach to archive."""
-        from backend.app.services.layer_timelapse import finish_session
+        from backend.app.services.layer_timelapse import finish_session, retain_session
 
         try:
             if layer_session is None:
@@ -10938,10 +10938,9 @@ async def _on_print_complete_impl(
                             # Open Archives pages learn of it, as they do for a printer's recording.
                             await ws_manager.send_archive_updated({"id": archive_id, "timelapse_attached": True})
                         else:
-                            # Counted against the retention bounds at once; disk work, so off the loop.
-                            await asyncio.to_thread(
-                                layer_session.retain, f"not_published_{service.media_refusal or 'unknown'}"
-                            )
+                            # Counted against the retention bounds at once; disk work, so off the loop and
+                            # counted until its thread ends (a restore's drain sees it).
+                            await retain_session(layer_session, f"not_published_{service.media_refusal or 'unknown'}")
                             logger.info(
                                 "[LAYER-TL] Layer timelapse was not attached to archive %s (%s); its frames are kept",
                                 archive_id,

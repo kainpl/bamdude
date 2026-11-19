@@ -12,8 +12,10 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -664,3 +666,154 @@ class TestWhatIsKeptIsCountedAtOnce:
         await lt.stop_janitor()
         assert first.cancelled() or first.done()
         await lt.stop_janitor()  # twice is quiet
+
+
+class TestAFrameAnsweredAfterTheDrainIsDropped:
+    """Codex F1-R: the camera answered after a successful drain, and a JPG appeared behind it."""
+
+    async def test_a_late_camera_answer_writes_nothing(self, frames, monkeypatch):
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def slow_camera(*_args):
+            entered.set()
+            await release.wait()
+            return SimpleNamespace(frame=_jpeg((64, 48), 40))
+
+        monkeypatch.setattr(lt, "capture", slow_camera)
+        monkeypatch.setattr("backend.app.api.routes.camera.live_frame_for_capture", lambda _pid: (False, None))
+        session = _session()
+        capture = asyncio.create_task(session.capture_layer(1))
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            assert await lt.quiesce(0.1) is True  # nothing is written yet: drained is the truth
+        finally:
+            release.set()
+        assert await capture is False
+        assert not list(session.frames_dir.glob("*.jpg"))
+        assert session.frame_count == 0
+
+
+class TestTheJanitorsThreadIsOwned:
+    """Codex F4-R: shutdown and the drain lost a retention round that was still in its thread."""
+
+    async def test_shutdown_waits_for_a_round_already_in_its_thread(self, frames, monkeypatch):
+        entered, release, done = threading.Event(), threading.Event(), threading.Event()
+
+        def slow_round(*_args):
+            entered.set()
+            try:
+                assert release.wait(8)
+            finally:
+                done.set()
+            return 0
+
+        monkeypatch.setattr(lt, "apply_retention", slow_round)
+        lt.start_janitor(0.01)
+        assert await asyncio.to_thread(entered.wait, 3)
+        stopping = asyncio.create_task(lt.stop_janitor())
+        try:
+            await asyncio.sleep(0.1)
+            assert not stopping.done()  # the thread still removes: shutdown has not "stopped" it
+            assert await lt.quiesce(0.08) is False  # and a restore asking now is refused
+        finally:
+            release.set()
+        assert await stopping is True
+        assert done.is_set()
+        assert await lt.quiesce(1) is True
+
+    async def test_a_round_that_outlasts_the_shutdown_wait_stays_counted(self, frames, monkeypatch):
+        entered, release = threading.Event(), threading.Event()
+
+        def stuck_round(*_args):
+            entered.set()
+            assert release.wait(8)
+            return 0
+
+        monkeypatch.setattr(lt, "apply_retention", stuck_round)
+        lt.start_janitor(0.01)
+        assert await asyncio.to_thread(entered.wait, 3)
+        try:
+            assert await lt.stop_janitor(0.1) is False
+            assert await lt.quiesce(0.1) is False
+        finally:
+            release.set()
+        assert await lt.quiesce(2) is True
+
+    async def test_no_round_starts_after_a_successful_drain(self, frames, monkeypatch):
+        started = threading.Event()
+
+        def round_(*_args):
+            started.set()
+            return 0
+
+        monkeypatch.setattr(lt, "apply_retention", round_)
+        lt.start_janitor(0.2)
+        try:
+            assert await lt.quiesce(0.05) is True
+            assert not await asyncio.to_thread(started.wait, 1)
+        finally:
+            await lt.stop_janitor()
+
+    async def test_a_retain_after_the_drain_removes_nothing(self, frames, monkeypatch):
+        removed = []
+        monkeypatch.setattr(lt, "apply_retention", lambda *_args: removed.append(1) or 0)
+        session = _session()
+        assert await lt.quiesce(0.05) is True
+        await lt.retain_session(session, "not_published_test")
+        assert _manifest(session.frames_dir)["state"] == lt.STATE_RETAINED
+        assert removed == []
+
+    async def test_a_retain_is_counted_until_its_thread_ends(self, frames, monkeypatch):
+        entered, release = threading.Event(), threading.Event()
+        real_retain = lt.TimelapseSession.retain
+
+        def slow_retain(self, reason):
+            entered.set()
+            assert release.wait(8)
+            real_retain(self, reason)
+
+        monkeypatch.setattr(lt.TimelapseSession, "retain", slow_retain)
+        session = _session()
+        retaining = asyncio.create_task(lt.retain_session(session, "not_published_test"))
+        assert await asyncio.to_thread(entered.wait, 3)
+        retaining.cancel()  # its caller goes away; the thread does not
+        with pytest.raises(asyncio.CancelledError):
+            await retaining
+        try:
+            assert await lt.quiesce(0.1) is False
+        finally:
+            release.set()
+        assert await lt.quiesce(2) is True
+
+
+class TestAnUnreapedStitchKeepsTheEncoder:
+    """Codex F3-R: the stitch pinned its frames and still gave the encoder slot back."""
+
+    async def test_the_slot_stays_taken_with_no_end_to_wait_for(self, frames, monkeypatch):
+        async def unreaped(*_args, **_kwargs):
+            return media_child.ChildResult(media_child.UNREAPED)
+
+        monkeypatch.setattr(lt.media_child, "run", unreaped)
+        session = lt.take_session(11, _session(11))
+        _fill(session, 2)
+        await lt.finish_session(session)
+        assert session._pinned
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(encoder_slot.acquire(), 0.3)
+        assert encoder_slot.busy
+
+    async def test_the_slot_comes_back_once_the_child_has_ended(self, frames, monkeypatch):
+        ended = threading.Event()
+
+        async def unreaped(*_args, **_kwargs):
+            return media_child.ChildResult(media_child.UNREAPED, ended=ended)
+
+        monkeypatch.setattr(lt.media_child, "run", unreaped)
+        session = lt.take_session(12, _session(12))
+        _fill(session, 2)
+        await lt.finish_session(session)
+        assert encoder_slot.busy
+        ended.set()
+        ticket = await asyncio.wait_for(encoder_slot.acquire(), 2)
+        assert ticket is not None
+        encoder_slot.release(ticket)
