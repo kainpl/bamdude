@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Read order production progress through BamDude MCP.** The read-only orders module finds orders by name or code, reports their existing line/part coverage and stock receipts, distinguishes checked good output from unchecked print output and recount corrections, and lists linked running claims and pending work without counting auto-queue handoffs twice. Existing Workshop readers and permission ceilings remain authoritative; these calls do not reserve stock, accept QC, rebuild plans or change queues.
+
 - **A successful print releases "Only after a successful previous print" for good.** Successful queue jobs are removed when a print finishes or the plate is cleared, but failed ones stay, so one old failure kept the gate shut for ever — even after many good prints since. A success now retires the older failures on that printer. On PostgreSQL a cancelled job without an end time could also hide a later failure from the gate; every cancel is now dated and the newest print is chosen the same way on both databases.
 - **A failed start that never reached the printer no longer holds back the next job.** An upload the printer refused, or a printer that went offline before the start, counted as a failed print for "Only after a successful previous print". Only a start the printer received and did not run counts now.
 - **"Only after a successful previous print" is judged only for the job that is next.** A job further down a printer's queue could be skipped while the job ahead of it was still waiting for filament or for an order restriction.
