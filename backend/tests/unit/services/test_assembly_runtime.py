@@ -99,6 +99,22 @@ async def test_progress_reaches_the_callback(runtime):
 
 
 @pytest.mark.asyncio
+async def test_finish_search_reaches_the_real_child_without_cancelling(runtime):
+    seen = []
+    root = _job(runtime, "finish-search", [("lid", "fill")], layout={"long_search": True, "rotation_step": -1})
+    result = await runtime.run(
+        root,
+        job_id=91,
+        on_progress=seen.append,
+        finish_requested=lambda: any(p.get("search_best_plates", 0) for p in seen),
+    )
+    assert result["outcome"] == "ok" and result["printers"][0]["status"] == "ok"
+    assert (root / "finish").is_file()
+    assert result["printers"][0]["fill_counts"]["0"] > 0
+    assert not _packing_children(runtime)
+
+
+@pytest.mark.asyncio
 async def test_a_second_job_waits_in_the_service_and_main_stays_free(runtime):
     first_seen, second_seen = [], []
     first = asyncio.create_task(runtime.run(_slow(runtime, "a"), job_id=1, on_progress=first_seen.append))

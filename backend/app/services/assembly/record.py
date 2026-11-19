@@ -16,7 +16,7 @@ RECORD_MEMBER = "Metadata/bamdude_assembly.json"
 RECORD_VERSION = 1
 MAX_RECORD_BYTES = 256 * 1024
 ORIENTATIONS = ("as_is", "x+90", "x-90", "y+90", "y-90", "x180")
-ROTATION_STEPS = (0, 45, 90, 180)
+ROTATION_STEPS = (-1, 0, 5, 15, 45, 90, 180)
 
 
 @dataclass(frozen=True)
@@ -42,6 +42,7 @@ class LayoutInput:
     rotation_step: int
     centre: bool
     split_plates: bool
+    long_search: bool = False
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,9 @@ def rotations(step: int) -> tuple[float, ...]:
         raise ValueError(f"rotation step {step!r} is not one of {ROTATION_STEPS}")
     if step == 0:
         return (0.0,)
+    if step == -1:
+        # Seeds for the fast bitmap result; long search may use any Z angle.
+        return tuple(float(angle) for angle in range(0, 360, 15))
     return tuple(float(angle) for angle in range(0, 360, step))
 
 
@@ -133,7 +137,12 @@ def load(data: bytes) -> AssemblyRecord:
         raise _fail("the rotation step is wrong")
     if not isinstance(layout_raw.get("centre"), bool) or not isinstance(layout_raw.get("split_plates"), bool):
         raise _fail("a layout flag is wrong")
-    layout = LayoutInput(float(spacing), layout_raw["rotation_step"], layout_raw["centre"], layout_raw["split_plates"])
+    long_search = layout_raw.get("long_search", False)
+    if not isinstance(long_search, bool):
+        raise _fail("the search flag is wrong")
+    layout = LayoutInput(
+        float(spacing), layout_raw["rotation_step"], layout_raw["centre"], layout_raw["split_plates"], long_search
+    )
 
     plates = []
     for plate in plates_raw:
