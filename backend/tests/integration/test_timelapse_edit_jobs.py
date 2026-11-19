@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -936,3 +937,123 @@ class TestTheAdmittedInput:
         done = await _finish(async_client, edit, save_mode="new")
         assert done["phase"] == "done", done
         assert edit.file.is_file() and len(await _rows(db_session, edit)) == 2
+
+
+class TestTheEncoderOutlivesItsCaller:
+    """Codex E2-R: a cancel ended in ``process_unreaped`` and the next edit was admitted beside the live child."""
+
+    async def test_an_unreaped_child_keeps_the_encoder_until_it_has_really_ended(self, async_client, edit, monkeypatch):
+        _hang(monkeypatch)
+        monkeypatch.setattr(media_child, "TERMINATE_GRACE", 0.12)
+        monkeypatch.setattr(media_child, "REAP_WAIT", 0.2)
+        spared: list = []
+        monkeypatch.setattr(
+            media_child._Watcher, "_signal", staticmethod(lambda process, *, kill: spared.append(process))
+        )
+        job = await _start(async_client, edit, save_mode="new")
+        own = timelapse_edit_runtime.jobs[job["job_id"]]
+        url = f"{edit.base}/edit-jobs/{own.job_id}"
+        ticket = None
+        try:
+            await _until(async_client, url, phases=("encoding",))
+            for _ in range(200):  # the encoder itself, not the probe before it
+                if media_child.live() and own.staged is not None:
+                    break
+                await asyncio.sleep(0.02)
+            assert (await async_client.delete(url)).status_code == 200
+            await asyncio.wait_for(own.done.wait(), 8)
+            assert own.error == timelapse_editor.ERROR_UNREAPED
+            assert spared and any(process.poll() is None for process in spared)
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(encoder_slot.acquire(), 0.3)
+            assert encoder_slot.busy
+        finally:
+            for process in spared:
+                if process.poll() is None:
+                    process.kill()
+        deadline = asyncio.get_running_loop().time() + 15
+        while media_child.live():
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.05)
+        # The child has gone: the encoder is free again, once.
+        ticket = await asyncio.wait_for(encoder_slot.acquire(), 2)
+        assert ticket is not None
+        encoder_slot.release(ticket)
+        assert not encoder_slot.busy
+
+    async def test_an_ordinary_end_gives_the_encoder_back(self, async_client, edit):
+        done = await _finish(async_client, edit, save_mode="new")
+        assert done["phase"] == "done", done
+        assert not encoder_slot.busy
+
+
+class TestAPreparationOutlivesItsRequest:
+    """Codex E4-R: a request cancelled during the pin's copy left a job with no owner and every drain refused."""
+
+    async def test_a_cancelled_request_hands_its_place_to_an_owner_that_waits_for_the_copy(
+        self, async_client, edit, monkeypatch
+    ):
+        entered, release, copied = threading.Event(), threading.Event(), threading.Event()
+        real_copy = timelapse_editor.shutil.copyfile
+
+        def no_links(*_args):
+            raise OSError("this volume has no hard links")
+
+        def slow_copy(source, target, *args, **kwargs):
+            entered.set()
+            try:
+                assert release.wait(10)
+                return real_copy(source, target, *args, **kwargs)
+            finally:
+                copied.set()
+
+        monkeypatch.setattr(timelapse_editor.os, "link", no_links)
+        monkeypatch.setattr(timelapse_editor.shutil, "copyfile", slow_copy)
+        request = asyncio.create_task(async_client.post(f"{edit.base}/process", params={"save_mode": "new"}))
+        try:
+            assert await asyncio.to_thread(entered.wait, 6)
+            request.cancel()
+            await asyncio.sleep(0.15)
+            # The copy still runs: a restore asking now is refused, never told "drained".
+            assert await timelapse_edit_runtime.quiesce(0.12) is False
+            assert not copied.is_set()
+        finally:
+            release.set()
+            await asyncio.gather(request, return_exceptions=True)
+            assert await asyncio.to_thread(copied.wait, 3)
+        # The copy and the request have ended: the owner gives the place back, and the drain succeeds.
+        assert await timelapse_edit_runtime.quiesce(3) is True
+        assert timelapse_edit_runtime.jobs == {}
+        _no_leftovers(edit)
+
+    async def test_a_request_cancelled_while_the_music_arrives_leaves_no_job_and_no_file(
+        self, async_client, edit, clips, monkeypatch
+    ):
+        written = threading.Event()
+        release = threading.Event()
+        real_append = timelapse_editor._append
+
+        def slow_append(path, chunk):
+            written.set()
+            assert release.wait(10)
+            real_append(path, chunk)
+
+        monkeypatch.setattr(timelapse_editor, "_append", slow_append)
+        request = asyncio.create_task(
+            async_client.post(
+                f"{edit.base}/process",
+                params={"save_mode": "new", "audio_name": "music.wav"},
+                content=clips.music.read_bytes(),
+            )
+        )
+        try:
+            assert await asyncio.to_thread(written.wait, 6)
+            request.cancel()
+            await asyncio.sleep(0.15)
+            assert await timelapse_edit_runtime.quiesce(0.12) is False  # a write of the music is still running
+        finally:
+            release.set()
+            await asyncio.gather(request, return_exceptions=True)
+        assert await timelapse_edit_runtime.quiesce(3) is True
+        assert timelapse_edit_runtime.jobs == {}
+        _no_leftovers(edit)

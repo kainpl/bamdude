@@ -206,6 +206,12 @@ class EditJob:
     #: The publication can no longer be stopped: a cancel from here is "too late".
     no_return: bool = False
     slot: Any = field(default=None, repr=False)
+    #: The encoder's own end when it was not seen to end: the encoder slot stays taken until it is set.
+    child_ended: Any = field(default=None, repr=False)
+    #: The preparation of the job's place (directory + pin), a task of the runtime's, not of the request.
+    preparing: asyncio.Task | None = field(default=None, repr=False)
+    #: Disk writes of the preparation still running in a worker thread (the music), whoever waits for them.
+    io: set = field(default_factory=set, repr=False)
     directory: Path | None = None
     audio: Path | None = None
     phase: str = PHASE_QUEUED
@@ -397,6 +403,31 @@ def _sha256(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
+def _owned_io(job: EditJob, function, *args) -> asyncio.Future:
+    """One disk write of a job's preparation, in a worker thread, counted in ``job.io`` until the THREAD ends.
+
+    A request that is cancelled stops waiting; the write does not stop, and the
+    job's directory is not removed under it (:meth:`TimelapseEditRuntime.abandon`
+    waits for ``job.io`` first).
+    """
+    future = asyncio.get_running_loop().run_in_executor(None, function, *args)
+    job.io.add(future)
+
+    def ended(done: asyncio.Future) -> None:
+        job.io.discard(done)
+        if not done.cancelled():
+            done.exception()  # read here: a caller that was cancelled never reads it
+
+    future.add_done_callback(ended)
+    return future
+
+
+def _append(path: Path, chunk: bytes) -> None:
+    # Opened and closed per chunk: no file handle outlives a request that went away.
+    with path.open("ab") as handle:
+        handle.write(chunk)
+
+
 class TimelapseEditRuntime:
     """Admission, the registry and the workers of edit jobs."""
 
@@ -404,6 +435,8 @@ class TimelapseEditRuntime:
         self.closed = False
         self.jobs: dict[str, EditJob] = {}
         self.root: Path | None = None
+        #: Abandonments running on their own, after the request that started them went away.
+        self._owners: set[asyncio.Task] = set()
 
     # -- admission ---------------------------------------------------------------------
 
@@ -483,15 +516,50 @@ class TimelapseEditRuntime:
         job.pinned = await asyncio.to_thread(_pin_source, job)
         return job.directory
 
+    def begin_preparation(self, job: EditJob) -> asyncio.Task:
+        """Prepare the job's place in a task of the runtime's own (Codex E4-R).
+
+        The request awaits it shielded: a request that is cancelled stops
+        waiting, the copy of the pin goes on to its end, and
+        :meth:`abandon_soon` hands what it left to an owner that waits for it.
+        """
+        job.preparing = asyncio.ensure_future(self.prepare_directory(job))
+        return job.preparing
+
+    async def _idle(self, job: EditJob) -> None:
+        """Wait until nothing of the job's preparation still runs: the pin, the music being written."""
+        while True:
+            pending = [f for f in (job.preparing, *job.io) if f is not None and not f.done()]
+            if not pending:
+                return
+            await asyncio.wait(pending)
+
     async def abandon(self, job: EditJob) -> None:
-        """Give back a place whose job never started: its directory goes, then the job."""
+        """Give back a place whose job never started: its preparation ends, its directory goes, then the job."""
         if job.task is not None:
             return
+        await self._idle(job)
         await self._remove_directory(job)
         job.phase = PHASE_FAILED
         job.finished = time.monotonic()
         job.done.set()
         self.jobs.pop(job.job_id, None)
+
+    def abandon_soon(self, job: EditJob) -> asyncio.Task | None:
+        """Synchronous: give the place back through a task that outlives the request (Codex E4-R).
+
+        A request's ``except`` cannot await its own cleanup once it was
+        cancelled — the cancel is delivered again at the next ``await`` — so the
+        place would stay taken for good, and every restore after it refused.
+        The job stays in the registry, ``done`` unset, until its preparation has
+        ended and its directory is gone: a drain meanwhile waits or refuses.
+        """
+        if job.task is not None or job.done.is_set():
+            return None
+        owner = asyncio.ensure_future(self.abandon(job))
+        self._owners.add(owner)
+        owner.add_done_callback(self._owners.discard)
+        return owner
 
     def start(self, job: EditJob) -> EditJob:
         if self.closed:
@@ -550,8 +618,13 @@ class TimelapseEditRuntime:
                 logger.exception("[EDITS] job %s failed", job.job_id[:8])
                 outcome = ERROR_PUBLISH if job.phase == PHASE_PUBLISHING else ERROR_ENCODE
         finally:
-            # The encoder goes back first: the next edit, or a stitch, does not wait for our cleanup.
-            encoder_slot.release(job.slot)
+            # The encoder goes back first: the next edit, or a stitch, does not wait for our cleanup —
+            # unless its child was not seen to end: then the place stays taken until that child has
+            # really gone, and no second encoder starts beside one that may still run (Codex E2-R).
+            if job.keep_staged:
+                encoder_slot.keep_until_reaped(job.slot, job.child_ended)
+            else:
+                encoder_slot.release(job.slot)
             job.slot = None
             cleaned = await self._settle(job)
             if outcome is None:
@@ -642,6 +715,7 @@ class TimelapseEditRuntime:
         )
         if result.status == media_child.UNREAPED:
             job.keep_staged = True  # it may still be writing; nothing of it is touched
+            job.child_ended = result.ended
             raise _Ended(ERROR_UNREAPED)
         if result.status == media_child.CANCELLED:
             raise _Ended(job.cancel_reason)
@@ -805,24 +879,22 @@ async def stage_audio(job: EditJob, chunks, filename: str) -> Path:
 
     ``chunks`` is the request body as it arrives (``request.stream()``): every
     byte is counted here, whatever ``Content-Length`` said, and nothing is held
-    beyond one chunk. Raises :class:`EditRefused`.
+    beyond one chunk. Each write is counted in ``job.io`` until its thread
+    ends, so a request cancelled mid-upload leaves no write running under the
+    removal of the directory. Raises :class:`EditRefused`.
     """
     suffix = Path(filename or "").suffix.lower()
     if suffix not in AUDIO_SUFFIXES:
         raise EditRefused(400, "audio_invalid", "Audio must be .mp3, .wav, .m4a, .aac, or .ogg")
     target = job.directory / f"audio{suffix}"
     written = 0
-    handle = await asyncio.to_thread(target.open, "wb")
-    try:
-        async for chunk in chunks:
-            if not chunk:
-                continue
-            written += len(chunk)
-            if written > AUDIO_LIMIT:
-                raise EditRefused(413, "audio_too_large", "The music file is too large (100 MB at most)")
-            await asyncio.to_thread(handle.write, chunk)
-    finally:
-        await asyncio.to_thread(handle.close)
+    async for chunk in chunks:
+        if not chunk:
+            continue
+        written += len(chunk)
+        if written > AUDIO_LIMIT:
+            raise EditRefused(413, "audio_too_large", "The music file is too large (100 MB at most)")
+        await asyncio.shield(_owned_io(job, _append, target, bytes(chunk)))
     if written == 0:
         raise EditRefused(400, "audio_invalid", "The music file is empty")
     try:

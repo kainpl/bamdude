@@ -27,6 +27,7 @@ archive that is no longer that archive is the same 404.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -178,14 +179,19 @@ async def process_timelapse(
         raise _refusal(exc) from None
     job.output_name = job.output_name.format(job=job.job_id[:12])
     try:
-        await timelapse_edit_runtime.prepare_directory(job)
+        # The place is prepared by the runtime, not by this request: a request cancelled during the
+        # copy of the pin stops waiting, the copy does not (Codex E4-R).
+        await asyncio.shield(timelapse_edit_runtime.begin_preparation(job))
         if audio_name:
             await timelapse_editor.stage_audio(job, request.stream(), audio_name)
     except EditRefused as exc:
-        await timelapse_edit_runtime.abandon(job)
+        owner = timelapse_edit_runtime.abandon_soon(job)
+        if owner is not None:
+            await asyncio.shield(owner)  # the refusal answers once nothing of the job is left
         raise _refusal(exc) from None
     except BaseException:
-        await timelapse_edit_runtime.abandon(job)
+        # Possibly a cancel: nothing here may await — the owner gives the place back on its own.
+        timelapse_edit_runtime.abandon_soon(job)
         raise
     return timelapse_edit_runtime.start(job).status()
 
