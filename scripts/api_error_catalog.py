@@ -58,7 +58,14 @@ from backend.app.i18n.api_errors import is_code  # noqa: E402
 # WS-13 E1) — the index of the argument that carries the sentence (or ``{"message": …}``).
 # ``DownloadRefused(status, code, message)`` (services/media_downloads, G10 D) is answered
 # as ``{"error": code, "message": message}``.
-FORWARDED_ARG_INDEX = {"VariantError": 1, "_refusal": 2, "ConnectorRefusal": 2, "DownloadRefused": 2}
+FORWARDED_ARG_INDEX = {
+    "VariantError": 1,
+    "_refusal": 2,
+    "ConnectorRefusal": 2,
+    "DownloadRefused": 2,
+    # ``EditRefused(status, code, message)`` (services/timelapse_editor, G10 E), answered the same way.
+    "EditRefused": 2,
+}
 
 FORWARDED_EXCEPTIONS = frozenset(
     {

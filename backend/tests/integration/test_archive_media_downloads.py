@@ -128,7 +128,7 @@ class TestChooser:
         answer = (await async_client.get(archive_media.sources)).json()
         assert answer["local"] == {
             "status": "ok",
-            "items": [{"asset": archive_media.asset, "name": "Lamp.mp4", "size": 3300}],
+            "items": [{"asset": archive_media.asset, "name": "Lamp.mp4", "size": 3300, "variant": False}],
         }
         assert answer["printer_id"] == archive_media.printer.id
         assert answer["timelapse"]["status"] == "ok"

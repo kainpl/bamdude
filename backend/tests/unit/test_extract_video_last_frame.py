@@ -14,6 +14,7 @@ are exercised with monkeypatching so the suite stays hermetic and fast.
 import asyncio
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -169,3 +170,145 @@ async def test_returns_false_on_subprocess_timeout(tmp_path: Path, monkeypatch):
     ok = await extract_video_last_frame(src, out)
 
     assert ok is False
+
+
+def _stand_in_ffmpeg(monkeypatch, *, writes_after: float, spare_kill: bool = False):
+    """ffmpeg replaced by a child that writes the output only after a while, as a slow decode does."""
+    from backend.app.services import camera
+
+    monkeypatch.setattr(camera, "get_ffmpeg_path", lambda: sys.executable)
+    real = asyncio.create_subprocess_exec
+    launched: list = []
+
+    async def launch(*argv, **kwargs):
+        output = argv[-1]
+        code = f"import time, pathlib; time.sleep({writes_after}); pathlib.Path({output!r}).write_bytes(b'late')"
+        process = await real(sys.executable, "-c", code, **kwargs)
+        if spare_kill:
+            process.kill = lambda: None  # a process the kill does not end in time
+        launched.append(process)
+        return process
+
+    monkeypatch.setattr(camera.asyncio, "create_subprocess_exec", launch)
+    return launched
+
+
+async def test_a_cancel_kills_ffmpeg_and_cleans_up_only_after_it_exited(tmp_path: Path, monkeypatch):
+    """Codex G2-R2: the caller's cleanup ran while ffmpeg went on and left a still behind."""
+    src = tmp_path / "video.mp4"
+    src.write_bytes(b"x" * 100)
+    out = tmp_path / "photos" / "finish.jpg"
+    launched = _stand_in_ffmpeg(monkeypatch, writes_after=1.0)
+    seen: list = []
+
+    async def on_abandon():
+        seen.append(launched[0].returncode)  # ffmpeg's exit is known when the cleanup runs
+        out.unlink(missing_ok=True)
+
+    task = asyncio.create_task(extract_video_last_frame(src, out, on_abandon=on_abandon))
+    while not launched:
+        await asyncio.sleep(0.02)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(seen) == 1 and seen[0] is not None
+    await asyncio.sleep(1.5)  # past the moment the stand-in would have written
+    assert not out.exists()
+
+
+async def test_an_ffmpeg_that_outlives_the_kill_wait_is_cleaned_up_after_its_exit(tmp_path: Path, monkeypatch):
+    from backend.app.services import camera
+
+    monkeypatch.setattr(camera, "EXTRACT_KILL_WAIT", 0.2)
+    src = tmp_path / "video.mp4"
+    src.write_bytes(b"x" * 100)
+    out = tmp_path / "photos" / "finish.jpg"
+    launched = _stand_in_ffmpeg(monkeypatch, writes_after=1.0, spare_kill=True)
+    cleaned = asyncio.Event()
+
+    async def on_abandon():
+        assert launched[0].returncode is not None
+        out.unlink(missing_ok=True)
+        cleaned.set()
+
+    task = asyncio.create_task(extract_video_last_frame(src, out, on_abandon=on_abandon))
+    while not launched:
+        await asyncio.sleep(0.02)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not cleaned.is_set()  # it still runs: the cleanup waits for it, in the background
+    await asyncio.wait_for(cleaned.wait(), 10)  # it wrote its still and exited; then the cleanup removed it
+    assert not out.exists()
+
+
+class TestEveryOutcomeButSuccessIsTheExtractors:
+    """Codex G2-R3: a failed pipe returned False while ffmpeg went on; a vanished source left the name registered."""
+
+    async def test_a_failed_pipe_stops_ffmpeg_and_cleans_up_after_its_exit(self, tmp_path: Path, monkeypatch):
+        src = tmp_path / "video.mp4"
+        src.write_bytes(b"x" * 100)
+        out = tmp_path / "photos" / "finish.jpg"
+        launched = _stand_in_ffmpeg(monkeypatch, writes_after=1.0)
+        from backend.app.services import camera
+
+        real = camera.asyncio.create_subprocess_exec
+
+        async def failing_pipe(*argv, **kwargs):
+            process = await real(*argv, **kwargs)
+
+            async def broken_communicate(*_args, **_kwargs):
+                raise OSError("a controlled failure reading the encoder's pipe")
+
+            process.communicate = broken_communicate
+            return process
+
+        monkeypatch.setattr(camera.asyncio, "create_subprocess_exec", failing_pipe)
+        seen: list = []
+
+        async def on_abandon():
+            seen.append(launched[0].returncode)
+            out.unlink(missing_ok=True)
+
+        assert await extract_video_last_frame(src, out, on_abandon=on_abandon) is False
+        assert len(seen) == 1 and seen[0] is not None  # ffmpeg had exited when the still was removed
+        await asyncio.sleep(1.5)  # past the moment the stand-in would have written
+        assert not out.exists()
+
+    async def test_a_source_gone_before_it_is_read_hands_the_cleanup_back(self, tmp_path: Path, monkeypatch):
+        """The video was looked at and is gone when its size is read (a video being replaced): nothing started."""
+        out = tmp_path / "photos" / "finish.jpg"
+        cleaned: list = []
+
+        async def on_abandon():
+            cleaned.append(True)
+
+        assert await extract_video_last_frame(tmp_path / "gone.mp4", out, on_abandon=on_abandon) is False
+        assert cleaned == [True]
+
+    async def test_without_ffmpeg_the_cleanup_runs_too(self, tmp_path: Path, monkeypatch):
+        from backend.app.services import camera
+
+        monkeypatch.setattr(camera, "get_ffmpeg_path", lambda: None)
+        cleaned: list = []
+
+        async def on_abandon():
+            cleaned.append(True)
+
+        src = tmp_path / "video.mp4"
+        src.write_bytes(b"x" * 100)
+        assert await extract_video_last_frame(src, tmp_path / "out.jpg", on_abandon=on_abandon) is False
+        assert cleaned == [True]
+
+    @pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg not on PATH")
+    async def test_a_still_extracted_is_the_callers_and_is_not_cleaned_up(self, tmp_path: Path):
+        src = tmp_path / "synthetic.mp4"
+        _make_synthetic_mp4(src)
+        out = tmp_path / "out.jpg"
+        cleaned: list = []
+
+        async def on_abandon():
+            cleaned.append(True)
+
+        assert await extract_video_last_frame(src, out, on_abandon=on_abandon) is True
+        assert out.is_file() and cleaned == []

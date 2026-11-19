@@ -288,54 +288,71 @@ async def test_completion_scope_deadline_cancels_and_releases_once():
     cleanup.assert_called_once()
 
 
-async def test_cancelled_stitch_reaps_ffmpeg_before_frame_cleanup(tmp_path, monkeypatch):
-    from backend.app.services import layer_timelapse
+async def test_cancelled_stitch_reaps_ffmpeg_before_the_caller_unwinds(tmp_path, monkeypatch):
+    """A cancelled finaliser is held until its encoder has really ended (G10 F).
+
+    The encoder is a child ``media_child`` owns; a real process stands in for
+    ffmpeg. Since G10 F the frames of a stitch that did not finish are KEPT for
+    a recovery (they used to be removed here) — what must still hold is that no
+    encoder outlives the finaliser that started it.
+    """
+    import sys
+
+    from backend.app.services import layer_timelapse, media_child
 
     monkeypatch.setattr(layer_timelapse.settings, "base_dir", tmp_path)
     monkeypatch.setattr(layer_timelapse, "get_ffmpeg_path", lambda: "ffmpeg")
+    real = media_child.run
+
+    async def hanging(_argv, **kwargs):
+        return await real([sys.executable, "-c", "import time; time.sleep(120)"], **kwargs)
+
+    monkeypatch.setattr(layer_timelapse.media_child, "run", hanging)
     session = layer_timelapse.TimelapseSession(1, 80, "http://camera", "snapshot")
     (session.frames_dir / "layer_00001.jpg").write_bytes(b"frame")
     session.frame_count = 1
-    reached = asyncio.Event()
-
-    async def communicate():
-        reached.set()
-        await asyncio.Event().wait()
-
-    process = SimpleNamespace(returncode=None, communicate=communicate, kill=MagicMock(), wait=AsyncMock())
-    monkeypatch.setattr(layer_timelapse.asyncio, "create_subprocess_exec", AsyncMock(return_value=process))
     task = asyncio.create_task(layer_timelapse.finish_session(session))
-    await asyncio.wait_for(reached.wait(), timeout=5)
+    for _ in range(200):
+        if media_child.live():
+            break
+        await asyncio.sleep(0.05)
+    assert media_child.live() == 1
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    process.kill.assert_called_once()
-    process.wait.assert_awaited_once()
-    assert not session.frames_dir.exists()
+    assert media_child.live() == 0  # reaped before the cancellation came through
+    assert (session.frames_dir / "layer_00001.jpg").is_file()
+    assert layer_timelapse._read_manifest(session.frames_dir)["state"] == layer_timelapse.STATE_RETAINED
 
 
 async def test_detached_layer_session_failure_does_not_cancel_successor(tmp_path, monkeypatch):
     from backend.app.services import layer_timelapse
 
+    monkeypatch.setattr(layer_timelapse.settings, "base_dir", tmp_path)
+    monkeypatch.setattr(layer_timelapse, "_active_sessions", {})
     reached = asyncio.Event()
     release = asyncio.Event()
 
-    async def stitch(_):
+    async def stitch(_output, fps: int = 30):
         reached.set()
         await release.wait()
         raise RuntimeError("failed to stitch A")
 
-    old = SimpleNamespace(session_id="A", frame_count=1, frames_dir=tmp_path / "A", stitch=stitch, cleanup=MagicMock())
-    new = SimpleNamespace(cleanup=MagicMock())
-    monkeypatch.setattr(layer_timelapse, "_active_sessions", {1: old})
+    old = layer_timelapse.start_session(1, 80, "http://camera", "snapshot")
+    (old.frames_dir / "layer_00001.jpg").write_bytes(b"frame")
+    old.frame_count = 1
+    monkeypatch.setattr(old, "stitch", stitch)
     detached = layer_timelapse.take_session(1, old)
     task = asyncio.create_task(layer_timelapse.finish_session(detached))
     await asyncio.wait_for(reached.wait(), timeout=5)
-    layer_timelapse._active_sessions[1] = new
+    new = layer_timelapse.start_session(1, 81, "http://camera", "snapshot")
+    (new.frames_dir / "layer_00001.jpg").write_bytes(b"frame of the next print")
     release.set()
     assert await task is None
-    old.cleanup.assert_called_once()
-    new.cleanup.assert_not_called()
+    # A's failure keeps A's frames (G10 F) and touches nothing of B.
+    assert layer_timelapse._read_manifest(old.frames_dir)["state"] == layer_timelapse.STATE_RETAINED
+    assert (new.frames_dir / "layer_00001.jpg").read_bytes() == b"frame of the next print"
+    assert layer_timelapse._read_manifest(new.frames_dir)["state"] == layer_timelapse.STATE_ACTIVE
     assert layer_timelapse.get_session(1) is new
 
 
