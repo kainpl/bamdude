@@ -226,10 +226,13 @@ async def order_progress(db, access, args, request_id):
         blockers.append("printed_parts_shortage")
     if any(p.remaining for p in purchased):
         blockers.append("purchased_parts_shortage")
-    if unchecked:
-        blockers.append("unchecked_print_outcomes")
     if not fulfilment.can_complete:
         blockers.append("stock_receipt_or_issue_incomplete")
+    else:
+        # QC reminders do not add a new completion gate. A received/issued
+        # order can close under the Workshop's existing rules even if some
+        # historical print outcomes have not been explicitly checked.
+        blockers = []
     return _result(
         request_id,
         started,
@@ -248,6 +251,7 @@ async def order_progress(db, access, args, request_id):
                 "can_complete_by_workshop_rules": fulfilment.can_complete,
             },
             "quality": {
+                "warnings": ["unchecked_print_outcomes"] if unchecked else [],
                 "checked_completed_archives": sum(
                     a.status == "completed" and a.outcome_checked_at is not None for a in ctx.archives
                 ),
