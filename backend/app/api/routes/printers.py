@@ -872,12 +872,25 @@ async def archive_printer(
     queue_ids = (await db.execute(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))).scalars().all()
     cancelled = 0
     if queue_ids:
+        # Dated (G03 E3a): the "previous print succeeded" gate orders finished rows by their end, and on
+        # PostgreSQL an undated cancel sorted first and hid every later failure of an unarchived printer.
         cancel_result = await db.execute(
             sql_update(PrintQueueItem)
             .where(PrintQueueItem.queue_id.in_(queue_ids), PrintQueueItem.status == "pending")
-            .values(status="cancelled", waiting_reason=None, waiting_reason_code=None, waiting_reason_checked_at=None)
+            .values(
+                status="cancelled",
+                completed_at=printer.archived_at,
+                waiting_reason=None,
+                waiting_reason_code=None,
+                waiting_reason_checked_at=None,
+            )
         )
         cancelled = cancel_result.rowcount or 0
+        if cancelled:
+            from backend.app.services.queue_counters import update_queue_counters
+
+            for queue_id in sorted(queue_ids):
+                await update_queue_counters(db, queue_id)
 
     await db.commit()
     # Its scheduled dryings go the way of its queue: what waits is cancelled, its
@@ -1823,13 +1836,23 @@ async def get_current_print_user(
     Returns user info if available, empty object otherwise.
     This tracks users for reprints (which bypass the queue).
     For queue-based prints, use the queue item's created_by field instead.
+
+    ⚠️ The CURRENT run's user (G03 E-8): the record is kept per printer and addressed to the execution
+    archive it was set for, and a run closed outside the live completion (reconciliation, an operator's
+    close) leaves it behind -- the card then named the previous print's user for a later print. So the
+    record answers only for the archive of the run bound now, and ``{}`` when none is.
     """
+    from backend.app.services.print_run_binding import current_print_run
+
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()
     if not printer:
         raise HTTPException(404, "Printer not found")
 
-    user_info = printer_manager.get_current_print_user(printer_id)
+    run = current_print_run(printer_manager, printer_id)
+    if run is None:
+        return {}
+    user_info = printer_manager.get_current_print_user(printer_id, archive_id=run.archive_id)
     return user_info or {}
 
 

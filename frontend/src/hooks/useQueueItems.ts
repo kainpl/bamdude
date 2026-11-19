@@ -4,7 +4,7 @@ import type { AutoQueuePendingSummary, PrintQueueItem, QueueSummary } from '../a
 import { farmPollInterval, farmQueryResumeOptions, farmRead, farmReadRetry, farmReadRetryDelay } from '../api/farmReadBudget';
 
 /**
- * The farm-wide queue, as ONE query per status.
+ * The farm-wide queue, as ONE query for its active rows.
  *
  * ⚠️ **The key is the point.** Every screen that wants "everything pending" or
  * "everything printing" asks under ONE key; while two screens asked under two
@@ -15,6 +15,12 @@ import { farmPollInterval, farmQueryResumeOptions, farmRead, farmReadRetry, farm
  * page is no longer one of them: its queue section reads its own order's rows
  * from `GET /projects/{id}/queue`, spec workshop-order-queue.)
  *
+ * Pending and printing are one request too (G03 D9): `GET /queue/?status=
+ * pending,printing` answers both sets — the virtual current-print rows included,
+ * because the set names `printing` — and the two hooks below are views of that
+ * one cache entry, split by each row's own `status` exactly as the server's
+ * filter splits them. Both used to poll on their own every 10 s.
+ *
  * Polling intervals live here rather than at each call site for the same
  * reason: a second opinion about how often the queue changes is how two panels
  * of the same screen end up disagreeing about what is on a printer.
@@ -24,8 +30,8 @@ import { farmPollInterval, farmQueryResumeOptions, farmRead, farmReadRetry, farm
  * fallback. The 10 s interval is the screen's disconnected-WS safety poll,
  * not a reason for the shell to download all queued jobs.
  */
-const PENDING_POLL_MS = 10_000;
-const PRINTING_POLL_MS = 10_000;
+const ACTIVE_POLL_MS = 10_000;
+const ACTIVE_QUEUE_KEY = ['queue', 'all', 'active'] as const;
 
 /** Sidebar and closed issue headers need counts, not the complete queue rows. */
 export function useQueueSummary(enabled = true, poll = true) {
@@ -52,17 +58,27 @@ export function useAutoQueuePendingSummary(enabled = true) {
   });
 }
 
-/** Everything waiting, farm-wide. */
-export function usePendingQueueItems(enabled = true) {
+function useActiveQueueItems(enabled: boolean, select: (rows: PrintQueueItem[]) => PrintQueueItem[]) {
   return useQuery<PrintQueueItem[]>({
     ...farmQueryResumeOptions,
-    queryKey: ['queue', 'all', 'pending'],
-    queryFn: ({ signal }) => farmRead('queue-all-pending', signal, owned => api.getQueue(undefined, 'pending', { signal: owned })),
+    queryKey: ACTIVE_QUEUE_KEY,
+    queryFn: ({ signal }) => farmRead('queue-all-active', signal,
+      owned => api.getQueue(undefined, 'pending,printing', { signal: owned })),
     enabled,
-    refetchInterval: query => farmPollInterval(PENDING_POLL_MS, query),
+    refetchInterval: query => farmPollInterval(ACTIVE_POLL_MS, query),
     retry: farmReadRetry,
     retryDelay: farmReadRetryDelay,
+    select,
   });
+}
+
+// Module-level, so TanStack keeps each view until the rows themselves change.
+const pendingRows = (rows: PrintQueueItem[]) => rows.filter(row => row.status === 'pending');
+const printingRows = (rows: PrintQueueItem[]) => rows.filter(row => row.status === 'printing');
+
+/** Everything waiting, farm-wide. */
+export function usePendingQueueItems(enabled = true) {
+  return useActiveQueueItems(enabled, pendingRows);
 }
 
 /**
@@ -71,13 +87,5 @@ export function usePendingQueueItems(enabled = true) {
  * job nobody queued through BamDude.
  */
 export function usePrintingQueueItems(enabled = true) {
-  return useQuery<PrintQueueItem[]>({
-    ...farmQueryResumeOptions,
-    queryKey: ['queue', 'all', 'printing'],
-    queryFn: ({ signal }) => farmRead('queue-all-printing', signal, owned => api.getQueue(undefined, 'printing', { signal: owned })),
-    enabled,
-    refetchInterval: query => farmPollInterval(PRINTING_POLL_MS, query),
-    retry: farmReadRetry,
-    retryDelay: farmReadRetryDelay,
-  });
+  return useActiveQueueItems(enabled, printingRows);
 }

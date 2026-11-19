@@ -1995,6 +1995,7 @@ export default {
     searchPlaceholder: 'Search archives...',
     noArchivesSearch: 'No archives match your search',
     originalPrintNotVisible: 'Original print not visible - try clearing filters',
+    linkedArchiveNotVisible: 'The linked archive is not in the current list - try clearing filters',
     noArchivesYet: 'No archives yet',
     loadingArchives: 'Loading archives...',
     showAll: 'Show all',
@@ -2351,6 +2352,16 @@ export default {
     addingProgress: 'Adding {{current}}/{{total}}...',
     savingProgress: 'Saving {{current}}/{{total}}...',
     nextInQueue: 'Next in queue',
+    // When nothing in the queue can start by itself now: the job due first, or only staged ones.
+    nextScheduled: 'Scheduled for {{time}}',
+    nextStaged: 'Staged — starts only by hand',
+    // The printer's last print failed and "only if the previous print succeeded" jobs wait for it.
+    previousFailure: {
+      note: 'The last print on this printer failed. Jobs set to run only if the previous print succeeded are held until the failure is acknowledged.',
+      acknowledge: 'Acknowledge failure',
+      acknowledged: 'Failure acknowledged',
+      nothingToAcknowledge: 'No failure was holding jobs on this printer',
+    },
     clearPlate: 'Clear Plate & Start Next',
     repeatPrint: 'Repeat print',
     clearPlateShort: 'Clear plate',
@@ -2532,6 +2543,7 @@ export default {
       bumpedBottom: 'Item moved to bottom',
       cloned: 'Item cloned',
       skipped: 'Item skipped',
+      skipChanged: 'The item changed before it could be skipped — it may have started already. Nothing was skipped.',
       unskipped: 'Item restored to queue',
       retrying: 'Retry queued',
       manualStartToggled: 'Manual start toggled',
@@ -10967,7 +10979,6 @@ export default {
     selectionRequired: 'Selection required',
 
     // index.tsx
-    failedToUpdateQueue: 'Failed to update queue item',
     failedToComplete: 'Failed to complete operation',
     failedPrefix: 'Failed: {{error}}',
     partialSuccess: '{{success}} succeeded, {{failed}} failed',

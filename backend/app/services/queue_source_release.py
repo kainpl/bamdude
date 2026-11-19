@@ -32,6 +32,14 @@ print (S5).
 freed by its row going away (``queue_counters.detach_print_queue_refs`` and the
 delete routes), and the bytes are released only by the collector, after its grace
 window (§9: "не стирати в live completion callback").
+
+⚠️ **A cancel leaves the printer queues' cached counters behind, and the release
+cannot fix them itself.** It runs inside a deletion's guarded phase, which must not
+take another writer; so the queues it cancelled rows on are recorded on the session,
+kept only by the ROOT commit, and :func:`recount_released_queues` — called by the
+deletion's owner after that commit, outside its lock plan — recounts them in a short
+transaction of its own (``pending_count`` is a cache; a rolled-back or unknown commit
+recounts nothing, and the next writer of that queue fixes it anyway).
 """
 
 from __future__ import annotations
@@ -40,10 +48,12 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import or_, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import event, or_, select, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import Session
 
 from backend.app.core.config import settings
 from backend.app.models.archive import PrintArchive
@@ -78,6 +88,24 @@ _PENDING = "pending"
 #: already uses for a source it cannot read: a ``cancelled`` router row is
 #: invisible everywhere, which would hide the very thing this reason explains.
 _AUTO_DEAD = "failed"
+
+#: ``Session.info`` keys of the recount hand-off: the printer queues this transaction's
+#: releases cancelled rows on, and those a root commit has made true.
+_STAGED = "queue_source_release_recount"
+_COMMITTED = "queue_source_release_recount_committed"
+
+
+@dataclass(frozen=True, slots=True)
+class Released:
+    """What one release did to the queue.
+
+    ``queue_ids`` are the printer queues that lost a pending row — the ones whose cached
+    ``pending_count`` is now stale. A failed AutoQueue row is counted in ``cancelled`` but
+    names no queue: the distributor keeps no cached counter.
+    """
+
+    cancelled: int = 0
+    queue_ids: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,14 +154,15 @@ async def source_trashed(
     archive_ids: list[int] | tuple[int, ...] = (),
     library_file_ids: list[int] | tuple[int, ...] = (),
     reason: str,
-) -> int:
+) -> Released:
     """A soft delete: cancel only the pending jobs that cannot print without it.
 
     The navigational link is **kept**: a trashed row can be restored, and cutting
     the link here would destroy information the operator can still undo.
 
-    Returns how many jobs were cancelled. Does not commit — the caller owns the
-    transaction, as both delete paths always have.
+    Returns what was cancelled (:class:`Released`). Does not commit — the caller owns
+    the transaction, as both delete paths always have, and after its commit calls
+    :func:`recount_released_queues`.
     """
     return await _cancel_dependents(db, archive_ids=archive_ids, library_file_ids=library_file_ids, reason=reason)
 
@@ -144,7 +173,7 @@ async def source_purged(
     archive_ids: list[int] | tuple[int, ...] = (),
     library_file_ids: list[int] | tuple[int, ...] = (),
     reason: str,
-) -> int:
+) -> Released:
     """A hard delete: cancel the dependents, then cut the link on both tiers.
 
     ⚠️ **Order matters.** The cancel finds its rows *by* the id being deleted, so
@@ -156,9 +185,10 @@ async def source_purged(
     dangling is worse than untidy: it names a library file or archive that another
     row may later be given by rowid reuse.
 
-    Returns how many jobs were cancelled. Does not commit.
+    Returns what was cancelled (:class:`Released`). Does not commit; the caller
+    recounts after its own commit (:func:`recount_released_queues`).
     """
-    cancelled = await _cancel_dependents(db, archive_ids=archive_ids, library_file_ids=library_file_ids, reason=reason)
+    released = await _cancel_dependents(db, archive_ids=archive_ids, library_file_ids=library_file_ids, reason=reason)
     for model in (PrintQueueItem, AutoQueueItem):
         if archive_ids:
             await db.execute(update(model).where(model.archive_id.in_(archive_ids)).values(archive_id=None))
@@ -166,7 +196,65 @@ async def source_purged(
             await db.execute(
                 update(model).where(model.library_file_id.in_(library_file_ids)).values(library_file_id=None)
             )
-    return cancelled
+    return released
+
+
+async def recount_released_queues(db: AsyncSession) -> None:
+    """After the deletion's ROOT commit: recount the printer queues its releases cancelled rows on.
+
+    Called by the deletion's owner once its commit returned and its lock plan has ended
+    (beside ``library_delete_cleanup.finish``) — never inside the plan: the recount is a
+    write of its own, in a fresh short transaction, so the caller's session (whose objects
+    may still be read after its commit) is left as it is.
+
+    Only queues a root commit kept are recounted: a rollback, or a commit whose outcome is
+    unknown, recounts nothing. A queue named by a savepoint that was rolled back is
+    recounted too — harmless, the recount reads only what is committed. A call with
+    nothing to do issues no SQL, so a second owner on the same session costs nothing.
+
+    ⚠️ Never raises for the recount itself: ``pending_count`` is a cache, the deletion has
+    already happened, and the next writer of that queue recounts it anyway. A failure is
+    logged and dropped.
+    """
+    queue_ids = db.info.pop(_COMMITTED, None)
+    if not queue_ids:
+        return
+    from backend.app.services.queue_counters import update_queue_counters
+
+    ordered = sorted(queue_ids)
+    try:
+        async with async_sessionmaker(db.bind, expire_on_commit=False)() as recount:
+            for queue_id in ordered:
+                await update_queue_counters(recount, queue_id)
+            await recount.commit()
+    except Exception as error:
+        logger.warning(
+            "Queue counters not recounted after a source release: queues=%s error=%s",
+            ordered[:10],
+            type(error).__name__,
+        )
+
+
+def _stage_recount(db: AsyncSession, queue_ids: set[int]) -> None:
+    """Remember, for this transaction, the queues whose cached counters it made stale."""
+    if queue_ids:
+        db.info.setdefault(_STAGED, set()).update(queue_ids)
+
+
+@event.listens_for(Session, "after_commit")
+def _recount_committed(session) -> None:
+    # ``after_commit`` also fires for a savepoint's RELEASE; only the root commit is a fact.
+    if not session.in_nested_transaction():
+        staged = session.info.pop(_STAGED, None)
+        if staged:
+            session.info.setdefault(_COMMITTED, set()).update(staged)
+
+
+@event.listens_for(Session, "after_transaction_end")
+def _recount_dropped(session, transaction) -> None:
+    # A root transaction that ended without a commit (rollback, failed or unknown commit).
+    if transaction.parent is None:
+        session.info.pop(_STAGED, None)
 
 
 async def independent_archive_bytes(db: AsyncSession, archive_id: int | None) -> str | None:
@@ -268,9 +356,18 @@ async def _cancel_dependents(
     archive_ids: list[int] | tuple[int, ...],
     library_file_ids: list[int] | tuple[int, ...],
     reason: str,
-) -> int:
-    """Cancel the pending jobs that cannot print once this original is gone."""
+) -> Released:
+    """Cancel the pending jobs that cannot print once this original is gone.
+
+    A cancelled printer row is dated (G03 E3a): the "previous print succeeded" gate orders finished rows
+    by their end, and on PostgreSQL an undated cancel sorted first and hid every later failure.
+
+    The printer queues it cancelled rows on are handed back and staged on the session for
+    :func:`recount_released_queues` — their cached ``pending_count`` still counts these rows.
+    """
     cancelled = 0
+    queue_ids: set[int] = set()
+    now = datetime.now(timezone.utc)
     for row, ready in await _pending_rows(db, archive_ids=archive_ids, library_file_ids=library_file_ids):
         if ready:
             # It keeps printing. Nothing to do — and nothing to say, either: the
@@ -280,8 +377,11 @@ async def _cancel_dependents(
             row.status = _AUTO_DEAD
         else:
             row.status = "cancelled"
+            row.completed_at = now
+            queue_ids.add(row.queue_id)
         row.waiting_reason = reason
         cancelled += 1
     if cancelled:
         logger.info("%d queued job(s) cancelled: %s", cancelled, reason)
-    return cancelled
+    _stage_recount(db, queue_ids)
+    return Released(cancelled=cancelled, queue_ids=frozenset(queue_ids))

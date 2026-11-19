@@ -373,6 +373,80 @@ class TestPrintQueueAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_run_next_captures_auto_eject_like_the_queue_add(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """G03 D7.1: ``POST /queue`` asks ``order_auto_eject.capture``; "Run next" never did, so its rows landed
+        without the auto-eject the request, the order or the archive asked for."""
+        _printer, queue = await printer_factory()
+        urgent = await archive_factory()
+        payload = {
+            "items": [
+                {
+                    "queue_id": queue.id,
+                    "archive_id": urgent.id,
+                    "plate_id": plate,
+                    "enqueue_position": "next",
+                    "auto_eject_enabled": True,
+                }
+                for plate in (1, 2)
+            ]
+        }
+
+        response = await async_client.post("/api/v1/queue/next-block", json=payload)
+
+        assert response.status_code == 200, response.text
+        assert [item["auto_eject"] for item in response.json()] == [True, True]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_batch_move_is_checked_like_a_single_move(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """G03 follow-up: ``PATCH /queue/batch/{id}`` with a body ``queue_id`` moved every copy without the
+        model check the single PATCH asks -- an X1C job landed on an A1 mini -- and counted nobody."""
+        from backend.app.models.printer_queue import PrinterQueue
+
+        _printer, home = await printer_factory()
+        _a1, a1 = await printer_factory(model="A1MINI")
+        _twin, twin = await printer_factory()
+        archive = await archive_factory()
+        created = await async_client.post(
+            "/api/v1/queue/", json={"queue_id": home.id, "archive_id": archive.id, "quantity": 2}
+        )
+        assert created.status_code == 200, created.text
+        batch, ids = created.json()["batch_id"], created.json()["created_item_ids"]
+
+        refused = await async_client.patch(f"/api/v1/queue/batch/{batch}?queue_id={home.id}", json={"queue_id": a1.id})
+        missing = await async_client.patch(f"/api/v1/queue/batch/{batch}?queue_id={home.id}", json={"queue_id": 9999})
+
+        assert refused.status_code == 400, refused.text
+        assert "cannot be dispatched to a A1MINI printer" in refused.json()["detail"]
+        assert missing.status_code == 400, missing.text
+        rows = (
+            await db_session.execute(
+                select(PrintQueueItem).where(PrintQueueItem.id.in_(ids)).execution_options(populate_existing=True)
+            )
+        ).scalars()
+        assert {row.queue_id for row in rows} == {home.id}, "the whole batch stays"
+
+        moved = await async_client.patch(f"/api/v1/queue/batch/{batch}?queue_id={home.id}", json={"queue_id": twin.id})
+
+        assert moved.status_code == 200, moved.text
+        counts = {
+            queue.id: queue.pending_count
+            for queue in (
+                await db_session.execute(
+                    select(PrinterQueue)
+                    .where(PrinterQueue.id.in_([home.id, twin.id]))
+                    .execution_options(populate_existing=True)
+                )
+            ).scalars()
+        }
+        assert counts == {home.id: 0, twin.id: 2}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_run_next_rejects_manual_or_scheduled_work(
         self, async_client: AsyncClient, printer_factory, archive_factory
     ):
@@ -1815,11 +1889,19 @@ class TestBulkUpdateEndpoint:
         self, async_client: AsyncClient, queue_item_factory, printer_factory, db_session
     ):
         """Verify bulk update can reassign items to a different queue."""
+        from backend.app.models.printer_queue import PrinterQueue
+
         _new_printer, new_queue = await printer_factory(name="New Target Printer")
         item1 = await queue_item_factory()
         item2 = await queue_item_factory()
 
         original_queue_id = item1.queue_id
+        left = {item1.queue_id, item2.queue_id}
+        # Sentinels: only a recount of a queue moves its cached counter (G03 follow-up).
+        await db_session.execute(
+            PrinterQueue.__table__.update().where(PrinterQueue.id.in_([*left, new_queue.id])).values(pending_count=99)
+        )
+        await db_session.commit()
 
         response = await async_client.patch(
             "/api/v1/queue/bulk",
@@ -1832,6 +1914,17 @@ class TestBulkUpdateEndpoint:
         assert item1.queue_id == new_queue.id
         assert item2.queue_id == new_queue.id
         assert item1.queue_id != original_queue_id
+        counts = {
+            queue.id: queue.pending_count
+            for queue in (
+                await db_session.execute(
+                    select(PrinterQueue)
+                    .where(PrinterQueue.id.in_([*left, new_queue.id]))
+                    .execution_options(populate_existing=True)
+                )
+            ).scalars()
+        }
+        assert counts == {**dict.fromkeys(left, 0), new_queue.id: 2}, "both the queues left and the one joined"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -2516,3 +2609,434 @@ async def test_a_queue_row_says_which_order_it_is_filed_under(async_client: Asyn
     by_id = {row["id"]: row for row in listed.json()}
     assert by_id[filed.json()["id"]]["project_name"] == "O"
     assert by_id[unfiled.json()["id"]]["project_name"] is None
+
+
+# --------------------------------------------------------------------------- #
+# G03 D1 — a batch action touches only the queue the operator is looking at
+# --------------------------------------------------------------------------- #
+#
+# AutoQueue promotion copies the router row's ``batch_id`` onto every printer row it creates, so one
+# batch normally sits in several printer queues. Every ``/queue/batch/{batch_id}/…`` route used to take
+# the queue of the batch's first row and change every pending copy farm-wide.
+
+SPREAD = "spread-batch"
+
+
+async def _printer_and_queue(db_session, n: int):
+    from backend.app.models.printer import Printer
+    from backend.app.models.printer_queue import PrinterQueue
+
+    printer = Printer(
+        name=f"Spread {n}", ip_address=f"192.168.77.{n}", serial_number=f"SPREAD{n:04d}", access_code="12345678"
+    )
+    db_session.add(printer)
+    await db_session.flush()
+    queue = PrinterQueue(id=printer.id, printer_id=printer.id, pending_count=99)
+    db_session.add(queue)
+    await db_session.flush()
+    return queue
+
+
+@pytest.fixture
+async def spread_batch(db_session):
+    """Two printers, each holding two copies of one batch between two jobs of its own.
+
+    Positions 1..4: other, copy, copy, late. ``pending_count`` starts at a sentinel 99 so only a
+    recount of THAT queue can move it.
+    """
+    queues = [await _printer_and_queue(db_session, 1), await _printer_and_queue(db_session, 2)]
+    rows: dict[int, list[PrintQueueItem]] = {}
+    for queue in queues:
+        rows[queue.id] = [
+            PrintQueueItem(queue_id=queue.id, status="pending", position=1),
+            PrintQueueItem(queue_id=queue.id, status="pending", position=2, batch_id=SPREAD),
+            PrintQueueItem(queue_id=queue.id, status="pending", position=3, batch_id=SPREAD),
+            PrintQueueItem(queue_id=queue.id, status="pending", position=4),
+        ]
+        db_session.add_all(rows[queue.id])
+    await db_session.commit()
+    return queues[0], queues[1], rows
+
+
+async def _state(db_session, queue_id: int):
+    """(id, status, position, batch_id, manual_start) of every row of the queue, and its cached counter."""
+    from backend.app.models.printer_queue import PrinterQueue
+
+    rows = (
+        await db_session.execute(
+            select(PrintQueueItem)
+            .where(PrintQueueItem.queue_id == queue_id)
+            .order_by(PrintQueueItem.id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalars()
+    state = [(r.id, r.status, r.position, r.batch_id, r.manual_start) for r in rows]
+    queue = await db_session.get(PrinterQueue, queue_id, populate_existing=True)
+    return state, queue.pending_count
+
+
+_BATCH_DOORS = [
+    ("post", "ungroup", None),
+    ("post", "cancel", None),
+    ("post", "skip", None),
+    ("post", "reorder?direction=up", None),
+    ("post", "bump", None),
+    ("post", "bump-bottom", None),
+    ("patch", "", {"manual_start": True}),
+    ("post", "clone", None),
+]
+
+
+def _batch_url(suffix: str, queue_id: int | None = None) -> str:
+    url = f"/api/v1/queue/batch/{SPREAD}" + (f"/{suffix}" if suffix else "")
+    if queue_id is None:
+        return url
+    return url + ("&" if "?" in url else "?") + f"queue_id={queue_id}"
+
+
+async def _call(client, method: str, url: str, body):
+    return await (client.patch(url, json=body) if method == "patch" else client.post(url))
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestABatchActsOnItsOwnQueue:
+    @pytest.mark.parametrize(("method", "suffix", "body"), _BATCH_DOORS)
+    async def test_a_batch_over_several_queues_needs_its_queue_named(
+        self, async_client, db_session, spread_batch, method, suffix, body
+    ):
+        a, b, _rows = spread_batch
+        before = (await _state(db_session, a.id), await _state(db_session, b.id))
+
+        response = await _call(async_client, method, _batch_url(suffix), body)
+
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"]["error"] == "batch_spans_queues"
+        assert (await _state(db_session, a.id), await _state(db_session, b.id)) == before
+
+    async def test_cancel_touches_only_the_named_queue_and_dates_its_rows(self, async_client, db_session, spread_batch):
+        a, b, rows = spread_batch
+        b_before = await _state(db_session, b.id)
+
+        response = await async_client.post(_batch_url("cancel", a.id))
+
+        assert response.status_code == 200, response.text
+        assert response.json()["cancelled"] == 2
+        state, pending_count = await _state(db_session, a.id)
+        assert [s[1] for s in state] == ["pending", "cancelled", "cancelled", "pending"]
+        assert pending_count == 2, "the named queue is recounted"
+        for row in rows[a.id][1:3]:
+            await db_session.refresh(row)
+            assert row.completed_at is not None, "a cancel is dated for the previous-success gate"
+        assert await _state(db_session, b.id) == b_before, "another printer's copies and counter are untouched"
+
+    async def test_cancel_leaves_a_copy_the_scheduler_claimed_meanwhile(self, async_client, db_session, spread_batch):
+        """The write is a compare-and-set on ``pending``: a row claimed after the read stays printing."""
+        from sqlalchemy import update
+
+        a, _b, rows = spread_batch
+        await db_session.execute(
+            update(PrintQueueItem)
+            .where(PrintQueueItem.id == rows[a.id][1].id)
+            .values(status="printing")
+            .execution_options(synchronize_session=False)
+        )
+        await db_session.commit()
+
+        response = await async_client.post(_batch_url("cancel", a.id))
+
+        assert response.status_code == 200, response.text
+        assert response.json()["cancelled"] == 1
+        state, _count = await _state(db_session, a.id)
+        assert [s[1] for s in state] == ["pending", "printing", "cancelled", "pending"]
+
+    async def test_skip_touches_only_the_named_queue(self, async_client, db_session, spread_batch):
+        a, b, _rows = spread_batch
+        a_before = await _state(db_session, a.id)
+
+        response = await async_client.post(_batch_url("skip", b.id))
+
+        assert response.status_code == 200, response.text
+        assert response.json()["skipped"] == 2
+        state, pending_count = await _state(db_session, b.id)
+        assert [s[1] for s in state] == ["pending", "skipped", "skipped", "pending"]
+        assert pending_count == 2
+        assert await _state(db_session, a.id) == a_before
+
+    @pytest.mark.parametrize(
+        ("suffixes", "positions"),
+        [
+            # other, copy, copy, late
+            (["reorder?direction=up"], [3, 1, 2, 4]),
+            (["bump"], [2, 0, 1, 3]),
+            # Straight from 1-based positions: the copies sit just above the last row.
+            (["bump-bottom"], [0, 2, 3, 1]),
+        ],
+    )
+    async def test_a_block_move_moves_the_named_queues_copies(
+        self, async_client, db_session, spread_batch, suffixes, positions
+    ):
+        a, b, _rows = spread_batch
+        a_before = await _state(db_session, a.id)
+
+        for suffix in suffixes:
+            response = await async_client.post(_batch_url(suffix, b.id))
+            assert response.status_code == 200, response.text
+            assert response.json()["batch_size"] == 2
+
+        state, pending_count = await _state(db_session, b.id)
+        assert [s[2] for s in state] == positions
+        assert pending_count == 4
+        assert await _state(db_session, a.id) == a_before
+
+    async def test_patch_changes_only_the_named_queues_copies(self, async_client, db_session, spread_batch):
+        a, b, _rows = spread_batch
+        b_before = await _state(db_session, b.id)
+
+        response = await async_client.patch(_batch_url("", a.id), json={"manual_start": True})
+
+        assert response.status_code == 200, response.text
+        assert response.json()["updated"] == 2
+        state, pending_count = await _state(db_session, a.id)
+        assert [s[4] for s in state] == [False, True, True, False]
+        assert pending_count == 4, "the named queue is recounted"
+        assert await _state(db_session, b.id) == b_before
+
+    async def test_ungroup_releases_only_the_named_queues_copies(self, async_client, db_session, spread_batch):
+        a, b, _rows = spread_batch
+
+        response = await async_client.post(_batch_url("ungroup", a.id))
+
+        assert response.status_code == 200, response.text
+        assert response.json()["ungrouped"] == 2
+        state, _count = await _state(db_session, a.id)
+        assert [s[3] for s in state] == [None, None, None, None]
+        state, pending_count = await _state(db_session, b.id)
+        assert [s[3] for s in state] == [None, SPREAD, SPREAD, None]
+        assert pending_count == 99
+
+    async def test_clone_copies_only_the_named_queues_copies_into_that_queue(
+        self, async_client, db_session, spread_batch
+    ):
+        a, b, _rows = spread_batch
+        a_before = await _state(db_session, a.id)
+
+        response = await async_client.post(_batch_url("clone", b.id))
+
+        assert response.status_code == 200, response.text
+        assert response.json()["cloned"] == 2
+        new_batch = response.json()["new_batch_id"]
+        state, pending_count = await _state(db_session, b.id)
+        clones = [s for s in state if s[3] == new_batch]
+        assert [s[2] for s in clones] == [5, 6], "appended after the queue's own last position"
+        assert pending_count == 6
+        assert await _state(db_session, a.id) == a_before
+
+    async def test_a_batch_in_one_queue_needs_no_queue_named(self, async_client, db_session, spread_batch):
+        """Finished copies elsewhere do not spread the batch: only active rows decide it."""
+        a, b, rows = spread_batch
+        for row in rows[b.id][1:3]:
+            row.status = "completed"
+        await db_session.commit()
+
+        response = await async_client.post(_batch_url("cancel"))
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {"cancelled": 2, "batch_id": SPREAD, "queue_id": a.id}
+
+    async def test_a_queue_with_none_of_the_batch_is_a_404(self, async_client, db_session, spread_batch):
+        stranger = await _printer_and_queue(db_session, 3)
+        await db_session.commit()
+
+        response = await async_client.post(_batch_url("bump", stranger.id))
+
+        assert response.status_code == 404, response.text
+
+    async def test_a_rows_own_batch_doors_stay_in_its_queue(self, async_client, db_session, spread_batch):
+        """The per-row doors with batch cohesion: block moves, the manual-start toggle, clone scope=batch."""
+        a, b, rows = spread_batch
+        b_before = await _state(db_session, b.id)
+        copy = rows[a.id][1]
+
+        bumped = await async_client.post(f"/api/v1/queue/{copy.id}/bump")
+        toggled = await async_client.patch(f"/api/v1/queue/{copy.id}/manual-start")
+        cloned = await async_client.post(f"/api/v1/queue/{copy.id}/clone?scope=batch")
+
+        assert bumped.status_code == 200, bumped.text
+        assert bumped.json()["block_size"] == 2
+        assert toggled.status_code == 200, toggled.text
+        assert cloned.status_code == 200, cloned.text
+        state, _count = await _state(db_session, a.id)
+        assert len(state) == 6, "two clones, in this queue"
+        assert [s[4] for s in state[:4]] == [False, True, True, False]
+        assert await _state(db_session, b.id) == b_before
+
+
+# --------------------------------------------------------------------------- #
+# G03 D9 / E8 — the list takes several statuses and orders by position, then id
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestTheQueueListTakesSeveralStatuses:
+    @pytest.fixture
+    async def mixed(self, db_session):
+        queue = await _printer_and_queue(db_session, 1)
+        rows = [
+            PrintQueueItem(queue_id=queue.id, status="pending", position=3),
+            PrintQueueItem(queue_id=queue.id, status="failed", position=1),
+            PrintQueueItem(queue_id=queue.id, status="printing", position=0),
+            PrintQueueItem(queue_id=queue.id, status="pending", position=1),
+        ]
+        db_session.add_all(rows)
+        await db_session.commit()
+        return queue, rows
+
+    async def test_a_comma_separated_status_is_a_set(self, async_client, mixed, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from backend.app.services import queue_virtual
+
+        virtual = AsyncMock(return_value=[])
+        monkeypatch.setattr(queue_virtual, "build_virtual_current_prints", virtual)
+        _queue, rows = mixed
+
+        response = await async_client.get("/api/v1/queue/?status=pending, failed")
+
+        assert response.status_code == 200, response.text
+        # Position, then id: the two rows at position 1 come in insertion order.
+        assert [r["id"] for r in response.json()] == [rows[1].id, rows[3].id, rows[0].id]
+        virtual.assert_not_awaited()
+
+    async def test_printing_in_the_set_brings_the_current_prints(self, async_client, mixed, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        from backend.app.services import queue_virtual
+
+        virtual = AsyncMock(return_value=[])
+        monkeypatch.setattr(queue_virtual, "build_virtual_current_prints", virtual)
+        _queue, rows = mixed
+
+        response = await async_client.get("/api/v1/queue/?status=pending,printing")
+
+        assert response.status_code == 200, response.text
+        assert [r["id"] for r in response.json()] == [rows[2].id, rows[3].id, rows[0].id]
+        virtual.assert_awaited_once()
+
+    async def test_a_single_status_answers_as_before(self, async_client, mixed):
+        _queue, rows = mixed
+
+        response = await async_client.get("/api/v1/queue/?status=failed")
+
+        assert response.status_code == 200, response.text
+        assert [r["id"] for r in response.json()] == [rows[1].id]
+
+
+# --------------------------------------------------------------------------- #
+# G03 D6 / D7 — the add doors
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("field", ["archive_id", "library_file_id"])
+async def test_a_zero_source_id_is_refused_before_anything(async_client, db_session, field):
+    queue = await _printer_and_queue(db_session, 1)
+    await db_session.commit()
+    other = "library_file_id" if field == "archive_id" else "archive_id"
+
+    response = await async_client.post("/api/v1/queue/", json={"queue_id": queue.id, field: 0, other: 5})
+
+    assert response.status_code == 422, response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_trashed_library_file_is_refused_before_the_copy(async_client, db_session, tmp_path, monkeypatch):
+    """The AutoQueue door refused a trashed file before copying it; the printer door paid a copy first."""
+    from datetime import datetime, timezone
+
+    from backend.app.models.library import LibraryFile
+    from backend.app.services import queue_sources
+
+    queue = await _printer_and_queue(db_session, 1)
+    path = write_routing_3mf(
+        tmp_path / "trashed.gcode.3mf", {1: [{"id": 1, "type": "PLA", "color": "#FFFFFF", "used_g": "1"}]}
+    )
+    lib = LibraryFile(
+        filename="trashed.gcode.3mf",
+        file_path=str(path),
+        file_type="3mf",
+        file_size=path.stat().st_size,
+        deleted_at=datetime.now(timezone.utc),
+    )
+    db_session.add(lib)
+    await db_session.commit()
+
+    async def no_copy(_request):  # pragma: no cover - reaching it is the failure
+        raise AssertionError("a trashed file must be refused before it is copied")
+
+    monkeypatch.setattr(queue_sources, "capture", no_copy)
+
+    response = await async_client.post("/api/v1/queue/", json={"queue_id": queue.id, "library_file_id": lib.id})
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "Library file not found"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_unskip_reads_the_failure_by_its_end_then_its_id(db_session):
+    """G03 E3a: the acknowledgement reads the row the gate reads -- ``completed_at DESC NULLS LAST`` (an
+    undated cancel sorted first on PostgreSQL) and the id for rows that ended at the same moment."""
+    from datetime import datetime, timezone
+
+    from backend.app.api.routes.print_queue import _acknowledge_blocking_failure
+
+    queue = await _printer_and_queue(db_session, 1)
+    moment = datetime(2026, 11, 19, 12, 0, tzinfo=timezone.utc)
+    failure = PrintQueueItem(queue_id=queue.id, status="failed", position=0, completed_at=moment)
+    db_session.add(failure)
+    await db_session.flush()
+    db_session.add(PrintQueueItem(queue_id=queue.id, status="completed", position=0, completed_at=moment))
+    await db_session.commit()
+
+    statements: list[str] = []
+    engine = db_session.bind.sync_engine
+
+    def capture(_conn, _cursor, statement, *_args):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        await _acknowledge_blocking_failure(db_session, queue.id)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    await db_session.commit()
+
+    await db_session.refresh(failure)
+    assert failure.gate_acknowledged is False, "the newer row by id is the success: nothing is gating"
+    assert any("completed_at DESC NULLS LAST, print_queue.id DESC" in s for s in statements), statements
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_one_copy_from_the_batch_writer_is_no_batch(db_session, tmp_path):
+    """Every other door batches only 2+ copies (G03 D7.5); the plan's single plate got batch chrome."""
+    from backend.app.services.queue_batch import enqueue_batch_copies
+
+    printer, _queue = await _create_printer_with_queue(
+        db_session, name="Single", ip_address="192.168.9.8", serial_number="SINGLE0001", access_code="12345678"
+    )
+    lib_file, _order, _lines = await _order_catalog(db_session, tmp_path, materials=["PLA"])
+
+    one, one_batch = await enqueue_batch_copies(
+        db_session, printer_id=printer.id, count=1, library_file_id=lib_file.id, plate_id=1
+    )
+    two, two_batch = await enqueue_batch_copies(
+        db_session, printer_id=printer.id, count=2, library_file_id=lib_file.id, plate_id=1
+    )
+
+    assert one_batch is None and [item.batch_id for item in one] == [None]
+    assert two_batch and {item.batch_id for item in two} == {two_batch}

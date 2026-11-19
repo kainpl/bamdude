@@ -161,9 +161,11 @@ async def add_items_to_printer_queue(
         ensure_source_visible(current_user, archive=archive)
 
     # Validate library file exists (if provided) and get it for filament extraction.
+    # Trash bin (#1008): a trashed file is refused HERE, before the copy, as the AutoQueue
+    # door refuses it -- not by the publication after a walk over the share (G03 D7.4).
     library_file = None
     if data.library_file_id:
-        result = await db.execute(select(LibraryFile).where(LibraryFile.id == data.library_file_id))
+        result = await db.execute(LibraryFile.active().where(LibraryFile.id == data.library_file_id))
         library_file = result.scalar_one_or_none()
         if not library_file:
             raise HTTPException(400, "Library file not found")
@@ -675,8 +677,15 @@ def _new_rows_for_data(
     current_user: User | None,
     archive_id: int | None,
     library_file_id: int | None,
+    eject: tuple[bool, dict],
 ) -> list[PrintQueueItem]:
-    """Build one requested plate's rows without assigning their queue position."""
+    """Build one requested plate's rows without assigning their queue position.
+
+    ``eject`` is ``order_auto_eject.capture``'s answer for this plate, asked by the caller in the
+    publication's transaction exactly as ``POST /queue`` asks it (G03 D7.1): a "Run next" under an
+    auto-eject order, of an auto-eject archive or of an auto-eject job used to land without it.
+    """
+    auto_eject, auto_eject_settings = eject
     routing = (
         serialize_policy(
             choices_policy(data.model_dump(), printer_manager.get_feed_snapshot(printer_id)),
@@ -698,6 +707,8 @@ def _new_rows_for_data(
             queue_source_id=source.id,
             # One dict per job: a quantity of N is N jobs, each owning its payload.
             source_snapshot=deepcopy(source_snapshot),
+            auto_eject=auto_eject,
+            auto_eject_settings=deepcopy(auto_eject_settings),
             queue_id=data.queue_id,
             archive_id=archive_id,
             library_file_id=library_file_id,
@@ -826,8 +837,9 @@ async def add_next_block_to_printer_queue(
         ):
             raise HTTPException(404, "Archive not found")
     else:
+        # Trashed is refused before the copy, as the other doors refuse it (G03 D7.4).
         library_file = (
-            await db.execute(select(LibraryFile).where(LibraryFile.id == first.library_file_id))
+            await db.execute(LibraryFile.active().where(LibraryFile.id == first.library_file_id))
         ).scalar_one_or_none()
         if library_file is None:
             raise HTTPException(400, "Library file not found")
@@ -885,6 +897,8 @@ async def add_next_block_to_printer_queue(
             creator = await current_creator(session, authority, current_user)
             async with queue_scope_lock(session, first.queue_id):
                 rows: list[PrintQueueItem] = []
+                from backend.app.services.order_auto_eject import capture
+
                 for data, requirements, effective_project_id, swap_columns in resolved:
                     project_line_id = data.project_line_id
                     if project_line_id is None and effective_project_id is not None:
@@ -894,6 +908,7 @@ async def add_next_block_to_printer_queue(
                             library_file_id=data.library_file_id,
                             plate_index=data.plate_id,
                         )
+                    eject = await capture(session, project_id=effective_project_id, options=data)
                     rows.extend(
                         _new_rows_for_data(
                             data,
@@ -907,6 +922,7 @@ async def add_next_block_to_printer_queue(
                             current_user=creator,
                             archive_id=data.archive_id,
                             library_file_id=data.library_file_id,
+                            eject=eject,
                         )
                     )
                 await place_pending_block(session, first.queue_id, rows, enqueue_position="next")
@@ -1040,6 +1056,8 @@ async def _add_next_block_from_queue_source(
 
             creator = await current_creator(db, authority, current_user)
             async with queue_scope_lock(db, first.queue_id):
+                from backend.app.services.order_auto_eject import capture
+
                 rows: list[PrintQueueItem] = []
                 for (data, requirements, effective_project_id), swap_columns in zip(
                     resolved, swap_columns_for, strict=True
@@ -1052,6 +1070,15 @@ async def _add_next_block_from_queue_source(
                             library_file_id=source_item.library_file_id,
                             plate_index=data.plate_id,
                         )
+                    # A copy inherits the parent job's auto-eject, as ``POST /queue``'s copy does.
+                    eject = await capture(
+                        db,
+                        project_id=effective_project_id,
+                        options=data,
+                        inherited=source_item.auto_eject,
+                        inherited_settings=source_item.auto_eject_settings,
+                        preserve=True,
+                    )
                     rows.extend(
                         _new_rows_for_data(
                             data,
@@ -1065,6 +1092,7 @@ async def _add_next_block_from_queue_source(
                             current_user=creator,
                             archive_id=source_item.archive_id,
                             library_file_id=source_item.library_file_id,
+                            eject=eject,
                         )
                     )
                 await place_pending_block(db, first.queue_id, rows, enqueue_position="next")

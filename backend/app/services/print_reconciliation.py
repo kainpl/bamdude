@@ -418,6 +418,7 @@ async def _reconcile_complete_archive(
     from backend.app.main import _TERMINAL_ACCEPTANCE_KEY
     from backend.app.services import library_usage, swap_terminal
     from backend.app.services.archive_write_scope import locked_print
+    from backend.app.services.previous_print_gate import acknowledge_failures_before_success
     from backend.app.services.print_file_analysis import (
         begin_historical_print_file_analysis_finishing,
         discard_print_file_analysis,
@@ -649,6 +650,10 @@ async def _reconcile_complete_archive(
                 await set_queue_paused(db, item.queue_id, paused_item_id=item.id)
             elif not swap_owed:
                 await set_queue_idle(db, item.queue_id)
+            if status == "completed":
+                # A success closed by the sweep releases "only after a successful previous print" exactly as
+                # the live completion does — in the same transaction, before this row is cleaned up (G03 D1(a)).
+                await acknowledge_failures_before_success(db, item.queue_id, success_item_id=item.id)
             await update_queue_counters(db, item.queue_id)
             # ⚠️ Not while our table swap is owed: this row is the proof of the run ``_resolve_pending_swaps``
             # decides on, and it cleans the row up itself after a swap (swap-source-lifecycle spec r4 R2-5).
@@ -777,6 +782,12 @@ async def _recover_accepted_terminal_checkpoint(db: AsyncSession, archive: Print
     item.completed_at = now
     item.error_code = row_class(item.status, archive.failure_reason)
     await set_queue_paused(db, item.queue_id, paused_item_id=item.id, expected_item_id=item.id)
+    if item.status == "completed":
+        # The printer's own accepted finish: a success, whatever the effects. It releases the
+        # previous-success gate like every other completed row (G03 D1(a)); no effect is replayed.
+        from backend.app.services.previous_print_gate import acknowledge_failures_before_success
+
+        await acknowledge_failures_before_success(db, item.queue_id, success_item_id=item.id)
     await update_queue_counters(db, item.queue_id)
     logger.warning(
         "reconcile: structurally closed accepted terminal archive %s as %s; external effects were not replayed",
@@ -1213,6 +1224,13 @@ async def _repair_terminal_queue_items(
             item.error_code = row_class(outcome, archive.failure_reason)
             if outcome != "completed" and not item.error_message:
                 item.error_message = archive.failure_reason
+        newest = max(pairs, key=lambda pair: (pair[1].completed_at, pair[0].id))
+        if newest[2] == "completed":
+            from backend.app.services.previous_print_gate import acknowledge_failures_before_success
+
+            # The newest proven outcome on this queue is a success: the older failures stop gating, as at
+            # every other completed close (G03 D1(a)). A gate fact, not a completion effect — nothing is replayed.
+            await acknowledge_failures_before_success(db, queue_id, success_item_id=newest[0].id)
         queue.current_item_id = None
         if queue.status != "error":
             queue.status = "paused"

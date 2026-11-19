@@ -50,8 +50,11 @@ class PrintQueueItemCreate(FilamentRoutingChoices, AutoEjectSelection):
     # Exactly one source is required. ``source_queue_item_id`` reuses the
     # immutable managed bytes of an existing queued job; it is intentionally
     # not a file path and never makes the server read that job's original again.
-    archive_id: int | None = None
-    library_file_id: int | None = None
+    # ⚠️ ``gt=0`` on every id (G03 D6, upstream 0c571bc2c): the writer counts
+    # sources by truthiness, so a 0 beside a real id skipped every check and was
+    # stored -- a 500 after the copy on PostgreSQL, a row naming id 0 on SQLite.
+    archive_id: int | None = Field(default=None, gt=0)
+    library_file_id: int | None = Field(default=None, gt=0)
     source_queue_item_id: int | None = Field(default=None, gt=0)
     scheduled_time: datetime | None = None  # None = ASAP
     auto_off_after: bool = False

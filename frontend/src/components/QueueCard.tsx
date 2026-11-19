@@ -303,7 +303,17 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
       invalidateQueue();
       showToast(t('queueCard.toast.skipped'), 'success');
     },
-    onError: (err: Error) => showToast(err.message, 'error'),
+    onError: (err: Error) => {
+      // 409 is the skip's compare-and-set losing (`recovery_changed`): the row stopped being
+      // pending — most often the scheduler started it — and nothing was skipped. The detail is a
+      // bare code, so the sentence is ours; the list is refreshed to show what the row is now.
+      if (err instanceof ApiError && err.status === 409) {
+        invalidateQueue();
+        showToast(t('queueCard.toast.skipChanged'), 'error');
+        return;
+      }
+      showToast(err.message, 'error');
+    },
   });
 
   const toggleManualStartMutation = useMutation({
@@ -315,8 +325,11 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
     onError: (err: Error) => showToast(err.message, 'error'),
   });
 
+  // A batch action names THIS card's queue: the copies of one AutoQueue batch can sit on several
+  // printers, and the operator acts on the ones in front of them (G03 D1). A 409
+  // `batch_spans_queues` would arrive with its own translated sentence, toasted below.
   const cancelBatchMutation = useMutation({
-    mutationFn: (batchId: string) => api.cancelBatch(batchId),
+    mutationFn: (batchId: string) => api.cancelBatch(batchId, queue.id),
     onSuccess: () => {
       invalidateQueue();
       showToast(t('queueCard.toast.batchCancelled'), 'success');
@@ -326,7 +339,7 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
 
   const cloneBatchMutation = useMutation({
     mutationFn: ({ batchId, keepOrder }: { batchId: string; keepOrder: boolean }) =>
-      api.cloneBatch(batchId, 'batch', keepOrder),
+      api.cloneBatch(batchId, queue.id, 'batch', keepOrder),
     onSuccess: () => {
       invalidateQueue();
       showToast(t('queueCard.toast.batchCloned'), 'success');
@@ -381,7 +394,7 @@ export function QueueCard({ queue, onEditItem, virtualized = false }: QueueCardP
   });
 
   const ungroupMutation = useMutation({
-    mutationFn: (batchId: string) => api.ungroupBatch(batchId),
+    mutationFn: (batchId: string) => api.ungroupBatch(batchId, queue.id),
     onSuccess: () => {
       invalidateQueue();
       showToast(t('queueCard.batch.ungrouped'), 'success');
@@ -1392,9 +1405,8 @@ function PendingItemRow({
                       <button
                         onClick={() => {
                           setMenuOpen(false);
-                          navigate(
-                            `/archives?search=${encodeURIComponent(item.archive_name || '')}`,
-                          );
+                          // By id: a name is not an identity, and the page reads `highlight`.
+                          navigate(`/archives?highlight=${item.archive_id}`);
                         }}
                         className="w-full text-left px-3 py-1.5 text-white hover:bg-bambu-dark"
                       >

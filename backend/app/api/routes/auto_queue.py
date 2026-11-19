@@ -618,14 +618,37 @@ async def cancel_auto_queue_item(
         item.cancelled_at = now
 
         if item.assigned_to_item_id:
-            pq_result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item.assigned_to_item_id))
-            pq_item = pq_result.scalar_one_or_none()
-            if pq_item and pq_item.status == "pending":
-                pq_item.status = "cancelled"
+            # The printer row it was handed to, compare-and-set on ``pending`` and dated (G03 E3a):
+            # the "previous print succeeded" gate orders by the end time, and on PostgreSQL an undated
+            # cancel sorted first and hid every later failure. Its queue's counters follow.
+            await _cancel_promoted_rows(db, PrintQueueItem.id == item.assigned_to_item_id, now)
 
         await db.commit()
         await db.refresh(item)
         return _to_response(item)
+
+
+async def _cancel_promoted_rows(db: AsyncSession, which, now: datetime) -> int:
+    """Cancel the still-pending printer rows ``which`` names: dated, compare-and-set, counters recounted.
+
+    The rows' lanes are the caller's (``cancellation_scope``); a row the scheduler claimed meanwhile is
+    ``printing`` and is left alone.
+    """
+    from sqlalchemy import update
+
+    from backend.app.services.queue_counters import update_queue_counters
+
+    changed = (
+        await db.execute(
+            update(PrintQueueItem)
+            .where(which, PrintQueueItem.status == "pending")
+            .values(status="cancelled", completed_at=now)
+            .returning(PrintQueueItem.queue_id)
+        )
+    ).all()
+    for queue_id in sorted({row.queue_id for row in changed}):
+        await update_queue_counters(db, queue_id)
+    return len(changed)
 
 
 @router.post("/reorder")
@@ -786,37 +809,24 @@ async def cancel_auto_queue_batch(
         )
         pending = list(pending_result.scalars().all())
 
+        now = datetime.now(timezone.utc)
         # The per-printer clean-up runs first, while every row of the batch is
         # still there to be matched against: the ``source_auto_item_id`` lookup
         # below has to see the pending ids too, in case the scheduler routed one
-        # of them between our read and this transaction.
+        # of them between our read and this transaction. Each cancelled printer
+        # row is dated and its queue recounted (G03 E3a).
         if pending:
             assigned_ids = [it.assigned_to_item_id for it in pending if it.assigned_to_item_id is not None]
             # Pending in this batch shouldn't have assigned_to set, but defensive:
             if assigned_ids:
-                pq_result = await db.execute(
-                    select(PrintQueueItem).where(
-                        PrintQueueItem.id.in_(assigned_ids),
-                        PrintQueueItem.status == "pending",
-                    )
-                )
-                for pq_item in pq_result.scalars().all():
-                    pq_item.status = "cancelled"
+                await _cancel_promoted_rows(db, PrintQueueItem.id.in_(assigned_ids), now)
 
         # Also cancel assigned-but-pending items linked via source_auto_item_id
         auto_in_batch_ids_result = await db.execute(select(AutoQueueItem.id).where(AutoQueueItem.batch_id == batch_id))
         auto_ids = [row[0] for row in auto_in_batch_ids_result.all()]
         if auto_ids:
-            pq_pending_result = await db.execute(
-                select(PrintQueueItem).where(
-                    PrintQueueItem.source_auto_item_id.in_(auto_ids),
-                    PrintQueueItem.status == "pending",
-                )
-            )
-            for pq_item in pq_pending_result.scalars().all():
-                pq_item.status = "cancelled"
+            await _cancel_promoted_rows(db, PrintQueueItem.source_auto_item_id.in_(auto_ids), now)
 
-        now = datetime.now(timezone.utc)
         for item in pending:
             if item.assigned_to_item_id is None:
                 from backend.app.services.queue_counters import detach_auto_queue_refs

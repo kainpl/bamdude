@@ -1789,6 +1789,23 @@ def _get_start_ams_mapping(data: dict, archive_id: int | None, archive_identity:
     return stored_ams_mapping
 
 
+def _take_completion_ams_mapping(data: dict, archive_id: int | None, archive_identity: str | None) -> list[int] | None:
+    """The mapping a completion charges by, draining this execution's registered one either way (G03 E-9).
+
+    The terminal frame's own mapping (captured from the request topic, every print source) wins; the mapping
+    registered at dispatch (queue / reprint, before the print started) is the fallback. ⚠️ The registered entry
+    is removed whenever its identity matches, used or not: it was popped only when the frame carried none, and
+    our own dispatch's ``project_file`` echo is captured into nearly every terminal frame, so the entry stayed in
+    memory for the life of the process (the TTL sweep cannot see it once the start consumed its expected keys).
+    The identity guard stays: a reused archive id never reads, nor drains, another execution's mapping.
+    """
+    registered = None
+    if archive_id and _print_ams_mapping_identities.get(archive_id) == archive_identity:
+        registered = _print_ams_mappings.pop(archive_id, None)
+        _print_ams_mapping_identities.pop(archive_id, None)
+    return data.get("ams_mapping") or registered
+
+
 def _printer_reported_options(
     data: dict, archive_id: int | None, plate_id: int | None, archive_identity: str | None = None
 ) -> dict:
@@ -4691,6 +4708,34 @@ async def _dispatch_user_print_email(
         image_data=image_data,
         finish_photo_url=finish_photo_url,
     )
+
+
+async def _notify_completion_without_archive(printer_id: int, data: dict) -> None:
+    """The print-complete / failed / stopped notice of a completion that found no archive. Never raises.
+
+    ⚠️ **It guesses no owner** (owner, G03 E-4). In BamDude every print has an archive — every
+    dispatch creates its execution archive before the upload, every observed start gets one — so a
+    completion that finds none is recovery residue (an unproven start, a start missed while the
+    server was down, an archive another closer already ended), never one of our jobs with a known
+    owner. It used to take the owner of whatever queue row this printer finished in the last five
+    minutes and mail them "your print is done / failed / was stopped" about a print that was not
+    theirs; its estimate came from a library column that does not exist. Now only the providers
+    subscribed to the event are told, with no personal recipient and no archive figures.
+    """
+    logger = logging.getLogger(__name__)
+    try:
+        async with async_session() as db:
+            from backend.app.models.printer import Printer
+
+            printer_name = await db.scalar(select(Printer.name).where(Printer.id == printer_id))
+            status = data.get("status", "completed")
+            logger.info("[NOTIFY-BG] Sending notification without archive: printer=%s, status=%s", printer_id, status)
+            await notification_service.on_print_complete(
+                printer_id, printer_name or f"Printer {printer_id}", status, data, db, archive_data=None
+            )
+            logger.info("[NOTIFY-BG] Completed (no-archive path)")
+    except Exception as e:
+        logger.warning("[NOTIFY-BG] Failed to send notification without archive: %s", e, exc_info=True)
 
 
 def _load_objects_from_archive(archive, printer_id: int, logger, *, is_retrigger: bool = False) -> None:
@@ -9714,6 +9759,13 @@ async def _on_print_complete_impl(
                     )
                 elif queue_status == "completed":
                     await set_queue_idle(db, queue_item.queue_id, expected_item_id=queue_item.id)
+                    # A success releases "only after a successful previous print" by
+                    # itself, and must keep doing so after this row is cleaned up
+                    # below or at Clear plate: the older failures stop gating in
+                    # this same commit (G03 D1(a)).
+                    from backend.app.services.previous_print_gate import acknowledge_failures_before_success
+
+                    await acknowledge_failures_before_success(db, queue_item.queue_id, success_item_id=queue_item.id)
                 else:
                     # Cancelled — pause the queue so the operator inspects
                     # the printer before the next pending item dispatches.
@@ -10207,12 +10259,9 @@ async def _on_print_complete_impl(
         _bed_cooldown_tasks[printer_id] = task
 
     if not archive_id:
-        # The printer's own calibration run has no archive by design. Returning
-        # before the no-archive notification is not noise control: that path
-        # attributes an unmatched completion to a queue item this printer
-        # finished in the last five minutes — for a calibration run alongside a
-        # real print, an email to its owner that the print is done, early and
-        # twice (upstream 9c938843). Everything above has already run.
+        # The printer's own calibration run has no archive by design and is no
+        # print anybody asked to hear about: no no-archive notice for it
+        # (upstream 9c938843). Everything above has already run.
         if is_internal_printer_job(filename, subtask_name):
             logger.info(
                 "[CALLBACK] Internal printer job completed, no notification: filename=%s, subtask=%s",
@@ -10222,74 +10271,7 @@ async def _on_print_complete_impl(
             return
         logger.warning("Could not find archive for print complete: filename=%s, subtask=%s", filename, subtask_name)
 
-        # Still send print-complete/failed/stopped notifications even without an archive.
-        # Try to enrich with queue/library-file data so user-specific emails work too.
-        async def _notify_no_archive():
-            try:
-                async with async_session() as db:
-                    from backend.app.models.library import LibraryFile
-                    from backend.app.models.print_queue import PrintQueueItem
-                    from backend.app.models.printer import Printer
-
-                    result = await db.execute(select(Printer).where(Printer.id == printer_id))
-                    printer_obj = result.scalar_one_or_none()
-                    p_name = printer_obj.name if printer_obj else f"Printer {printer_id}"
-
-                    # Try to find the most-recent queue item for this printer so we can
-                    # recover created_by_id and estimated print time.
-                    # NOTE: By the time this task runs the queue item status has already
-                    # been updated to a terminal state (completed/failed/cancelled), so
-                    # we look for recently-completed items (within the last 5 minutes).
-                    no_archive_data: dict | None = None
-                    try:
-                        cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
-                        q_result = await db.execute(
-                            select(PrintQueueItem)
-                            .where(PrintQueueItem.queue_id == printer_id)
-                            .where(PrintQueueItem.status.in_(["completed", "failed", "cancelled"]))
-                            .where(PrintQueueItem.completed_at >= cutoff)
-                            .order_by(PrintQueueItem.completed_at.desc())
-                            .limit(1)
-                        )
-                        queue_item = q_result.scalar_one_or_none()
-                        if queue_item:
-                            no_archive_data = {"created_by_id": queue_item.created_by_id}
-                            # Pull estimated time from library file when available
-                            if queue_item.library_file_id:
-                                lib_result = await db.execute(
-                                    select(LibraryFile).where(LibraryFile.id == queue_item.library_file_id)
-                                )
-                                lib_file = lib_result.scalar_one_or_none()
-                                if lib_file and lib_file.print_time_seconds:
-                                    no_archive_data["print_time_seconds"] = lib_file.print_time_seconds
-                    except Exception as lookup_err:
-                        logger.debug(
-                            "[NOTIFY-BG] Could not look up queue item for no-archive notification: %s", lookup_err
-                        )
-
-                    ps = data.get("status", "completed")
-                    logger.info(
-                        "[NOTIFY-BG] Sending notification without archive: printer=%s, status=%s", printer_id, ps
-                    )
-                    await notification_service.on_print_complete(
-                        printer_id, p_name, ps, data, db, archive_data=no_archive_data
-                    )
-
-                    # Send user-specific email if we have a created_by_id
-                    if no_archive_data and no_archive_data.get("created_by_id"):
-                        raw_filename = data.get("subtask_name") or data.get("filename", "Unknown")
-                        await _dispatch_user_print_email(
-                            ps,
-                            no_archive_data["created_by_id"],
-                            p_name,
-                            raw_filename,
-                            db,
-                        )
-                    logger.info("[NOTIFY-BG] Completed (no-archive path)")
-            except Exception as e:
-                logger.warning("[NOTIFY-BG] Failed to send notification without archive: %s", e, exc_info=True)
-
-        task = asyncio.create_task(_notify_no_archive())
+        task = asyncio.create_task(_notify_completion_without_archive(printer_id, data))
         task.add_done_callback(lambda _t: None)
         return
 
@@ -10398,12 +10380,7 @@ async def _on_print_complete_impl(
     # Track filament consumption from AMS remain% deltas (skip if Spoolman handles usage)
     usage_results: list[dict] = []
     # Prefer ams_mapping captured from MQTT request topic (works for all print sources)
-    stored_ams_mapping = data.get("ams_mapping")
-    # Fallback to _print_ams_mappings for queue/reprint (set before print starts)
-    if not stored_ams_mapping and archive_id:
-        if _print_ams_mapping_identities.get(archive_id) == terminal_archive_identity:
-            stored_ams_mapping = _print_ams_mappings.pop(archive_id, None)
-            _print_ams_mapping_identities.pop(archive_id, None)
+    stored_ams_mapping = _take_completion_ams_mapping(data, archive_id, terminal_archive_identity)
     try:
         async with async_session() as db:
             from backend.app.api.routes.settings import get_setting

@@ -196,6 +196,8 @@ describe('useWebSocket hook', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queues'], refetchType: 'none' });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue-forecast'], refetchType: 'none' });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['auto-queue'], refetchType: 'none' });
+    // The card's Issues list is not under `['queue', 42]` (G03 D10.4).
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue', 'issues', 42], refetchType: 'none' });
   });
 
   it('refreshes the inbox when an item lands', async () => {
@@ -482,6 +484,8 @@ describe('useWebSocket hook', () => {
 
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['archives'], refetchType: 'none' });
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['archiveStats'], refetchType: 'none' });
+      // A failed print's row joins its card's Issues list (G03 D10.4).
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['queue', 'issues', 1], refetchType: 'none' });
 
       vi.useRealTimers();
       vi.unstubAllGlobals();

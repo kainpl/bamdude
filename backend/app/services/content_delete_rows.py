@@ -2,6 +2,8 @@
 
 These literal child policies also run on SQLite, where FK actions are disabled.
 No helper in this module takes a lock, commits, opens a session or touches disk.
+So the queue counters a source release made stale are the caller's too: after its
+root commit and outside its plan it calls ``queue_source_release.recount_released_queues``.
 """
 
 from dataclasses import dataclass

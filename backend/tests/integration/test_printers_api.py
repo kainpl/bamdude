@@ -205,6 +205,8 @@ class TestPrintersAPI:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_archive_sets_flag_and_cancels_pending(self, async_client: AsyncClient, printer_factory, db_session):
+        from sqlalchemy import select
+
         from backend.app.models.print_queue import PrintQueueItem
         from backend.app.models.printer_queue import PrinterQueue
 
@@ -228,6 +230,18 @@ class TestPrintersAPI:
         pm.disconnect_printer.assert_called_once_with(p.id)
         await db_session.refresh(p)
         assert p.archived is True
+        # G03 E3a: the cancelled rows are dated -- the "previous print succeeded" gate orders by the
+        # end, and an undated cancel sorted first on PostgreSQL -- and the queue's counter follows.
+        rows = (
+            await db_session.execute(
+                select(PrintQueueItem)
+                .where(PrintQueueItem.queue_id == queue.id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalars()
+        assert all(row.status == "cancelled" and row.completed_at is not None for row in rows)
+        await db_session.refresh(queue)
+        assert queue.pending_count == 0
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -722,19 +736,37 @@ class TestPrinterDataIntegrity:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_get_current_print_user_returns_user_info(self, async_client: AsyncClient, printer_factory):
-        """Verify user info is returned when tracked."""
+    @pytest.mark.parametrize(
+        ("bound_archive", "recorded_archive", "expected"),
+        [
+            # The current run's user.
+            (7, 7, {"user_id": 42, "username": "testuser", "archive_id": 7}),
+            # G03 E-8: a record left by an earlier run, closed outside the live completion, is not
+            # the user of the print running now -- and with no run bound there is no current user.
+            (7, 6, {}),
+            (None, 7, {}),
+        ],
+    )
+    async def test_get_current_print_user_answers_for_the_bound_run(
+        self, async_client: AsyncClient, printer_factory, bound_archive, recorded_archive, expected
+    ):
+        """The card names the user of the run bound now, never the previous run's."""
+        from backend.app.services.print_run_binding import PrintRunBinding
+        from backend.app.services.printer_manager import printer_manager
+
         printer = await printer_factory(name="Test Printer")
-
-        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
-            mock_pm.get_current_print_user.return_value = {"user_id": 42, "username": "testuser"}
-
+        bindings = printer_manager.__dict__.setdefault("_print_run_bindings", {})
+        if bound_archive is not None:
+            bindings[printer.id] = PrintRunBinding(printer_id=printer.id, archive_id=bound_archive)
+        printer_manager.set_current_print_user(printer.id, 42, "testuser", archive_id=recorded_archive)
+        try:
             response = await async_client.get(f"/api/v1/printers/{printer.id}/current-print-user")
+        finally:
+            bindings.pop(printer.id, None)
+            printer_manager.clear_current_print_user(printer.id)
 
-            assert response.status_code == 200
-            result = response.json()
-            assert result["user_id"] == 42
-            assert result["username"] == "testuser"
+        assert response.status_code == 200
+        assert response.json() == expected
 
 
 class TestPrintControlAPI:

@@ -139,7 +139,9 @@ async def _cancel_pending_queue_items(db: AsyncSession, library_file_id: int) ->
     copy of the bytes prints perfectly well without this file, so cancelling it
     would destroy work for no reason (spec §10). Which rows those are, on both
     tiers, is ``queue_source_release``'s question — it is the collector's owner
-    question read from the other side, and it is asked in exactly one place.
+    question read from the other side, and it is asked in exactly one place. The
+    queues it cancelled rows on wait, on the session, for the caller's commit:
+    the caller then calls ``queue_source_release.recount_released_queues``.
 
     ⚠️ **Only ``pending`` rows.** ``printing`` is a race the printer-side fail
     path catches anyway, and completed / failed / cancelled rows are history:
@@ -506,6 +508,8 @@ class LibraryTrashService:
                 await self.purge_rows(db, current)
             await db.commit()
         await finish(db)
+        # After the commit and outside the plan: the queues the purge cancelled rows on.
+        await queue_source_release.recount_released_queues(db)
 
     async def _sweep(self, db: AsyncSession) -> int:
         """Hard-delete trashed rows whose retention window has elapsed.
@@ -581,7 +585,9 @@ class LibraryTrashService:
         removed would be deleted anyway — the trip to the trash would be
         theatre. Detaching first means the file survives, and restore puts it
         at the library root, which is the only honest destination once its
-        folder is gone. Does not commit; the caller owns the transaction.
+        folder is gone. Does not commit; the caller owns the transaction, and
+        after its commit (outside its lock plan) calls
+        ``queue_source_release.recount_released_queues``.
         """
         from backend.app.services.library_delete_scope import require_library_plan
 
@@ -606,7 +612,11 @@ class LibraryTrashService:
         return file
 
     async def purge_rows(self, db: AsyncSession, file: LibraryFile, *, reason=queue_source_release.REASON_FILE_DELETED):
-        """Flush-only shared hard-delete phase under the caller's whole plan."""
+        """Flush-only shared hard-delete phase under the caller's whole plan.
+
+        After its commit the caller runs ``library_delete_cleanup.finish`` and
+        ``queue_source_release.recount_released_queues``, both outside the plan.
+        """
         from backend.app.services.content_delete_rows import library_rows
         from backend.app.services.library_delete_scope import require_library_plan
 
@@ -648,6 +658,7 @@ class LibraryTrashService:
             await self.purge_rows(db, current)
             await db.commit()
         await finish(db)
+        await queue_source_release.recount_released_queues(db)
 
     async def active_archive_references(self, db: AsyncSession, file_id: int) -> int:
         """Public wrapper around the internal counter — for routes / API."""

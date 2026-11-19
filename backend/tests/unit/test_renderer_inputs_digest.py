@@ -29,7 +29,10 @@ RENDER_INPUTS = (
 # 3: a dark filament raised to its lightness floor (spec §34). Re-pinned under 3 in E7 (2026-10-12, owner): a single
 # object's bbox is found by name beside the wipe tower and proven by its first layer (spec §5.3, condition 3), so such
 # plates now get `model` instead of `top_mask` -- the feature is unreleased, so no renderer-3 result exists to replace.
-PINNED = {3: "83fab1c8d4025e9a39bc3143a62663d4086bf2d02af413c5ab48ac8ab19754c8"}
+# Re-pinned under 3 after G04 (2026-11-19): threemf_parser_core's project-settings parse now takes the nozzle
+# temperature of the printed plate's first used filament. The renderer reads only `discover_plate_objects` from that
+# file, which does not reach the changed method, so no pixel moves and the version stays.
+PINNED = {3: "8f22a0f30381f2a48c91867290faa127afd227dbeb9589eed46f8525fe10d22e"}
 
 
 def digest() -> str:

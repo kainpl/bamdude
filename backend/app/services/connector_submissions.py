@@ -600,6 +600,30 @@ def _queue_request(manifest: dict, entry: dict):
     )
 
 
+def _auto_slicer_options(entry: dict) -> dict | None:
+    """The print options the operator chose in the plugin, for an AutoQueue target (G03 D2).
+
+    A router row's option columns are inert: promotion writes the job with the key owner's saved profile
+    for the printer that wins, so ``bed_levelling`` / ``flow_cali`` / ``timelapse`` / ``layer_inspect``
+    ticked in the plugin were silently dropped while the same entry sent to a printer honoured them. They
+    travel as ``slicer_options`` -- the m243 seam the Virtual Printer's AutoQueue jobs use, under the
+    printer queue's option names -- which the assignment lays over the profile: the plugin's choice, then
+    the profile, then the default. ``nozzle_offset_cali`` is not one: the schema keeps it ``auto`` for an
+    AutoQueue target and the printer's profile decides it.
+
+    Swap macros and G-code injection are forced off, exactly as for a printer target ("no side effect
+    the operator was not shown", spec r2 §9.3): left to the key owner's saved profile, an AutoQueue job
+    ran macros and injected G-code the plugin never offered. The rebalancer's forecast lays the same
+    ``slicer_options`` over the profile (``queue_rebalance.assignment_refusal``), so it and the
+    assignment agree about which swap printers would take the job.
+    """
+    if entry["target"]["kind"] != "auto":
+        return None
+    options = entry["options"]
+    chosen = {name: options[name] for name in ("bed_levelling", "flow_cali", "timelapse", "layer_inspect")}
+    return {**chosen, "execute_swap_macros": False, "swap_macro_events": None, "gcode_injection": False}
+
+
 def _writer_reason(exc: HTTPException) -> tuple[str, str | None]:
     """A writer's own refusal as a protocol code and its sentence (the writer's, already translatable)."""
     detail = exc.detail
@@ -627,7 +651,9 @@ async def _publish_entry(factory, actor: ConnectorActor, submission_id: int, ent
             # ``None`` exactly as the REST queue routes pass it for an API key: the key's library visibility is
             # all-or-none (``library:read_all`` above), never its owner's per-file ownership.
             if entry["target"]["kind"] == "auto":
-                await add_items_to_auto_queue(db, request, None, publication_receipt=receipt)
+                await add_items_to_auto_queue(
+                    db, request, None, publication_receipt=receipt, slicer_options=_auto_slicer_options(entry)
+                )
             else:
                 await add_items_to_printer_queue(db, request, None, publication_receipt=receipt)
         except (AlreadyPublished, ConnectorRefusal):

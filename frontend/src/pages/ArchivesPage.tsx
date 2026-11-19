@@ -2923,6 +2923,29 @@ const collections: { id: Collection; labelKey: string; icon: React.ReactNode }[]
   { id: 'duplicates', labelKey: 'archives.page.collection.duplicates', icon: <Copy className="w-4 h-4" /> },
 ];
 
+/** The list route's largest page; a linked archive is looked for in pages of this size. */
+const LOCATE_PAGE_SIZE = 200;
+/** How deep a link looks before it says the list does not hold the archive. */
+const LOCATE_MAX_PAGES = 5;
+
+/**
+ * The page of the list — with `params`' filters and sort, at `perPage` a page — that holds
+ * the archive, or null when its first `LOCATE_MAX_PAGES × LOCATE_PAGE_SIZE` rows do not.
+ * Asked of the server in its own order, never by the archive's name.
+ */
+async function locateArchivePage(archiveId: number, params: ArchiveListParams, perPage: number): Promise<number | null> {
+  for (let page = 1; page <= LOCATE_MAX_PAGES; page += 1) {
+    const response = await api.getArchives({ ...params, page, per_page: LOCATE_PAGE_SIZE, all: undefined });
+    const index = response.data.findIndex((archive) => archive.id === archiveId);
+    if (index >= 0) {
+      if (perPage === -1) return 1;
+      return Math.floor(((page - 1) * LOCATE_PAGE_SIZE + index) / perPage) + 1;
+    }
+    if (page >= response.meta.last_page) return null;
+  }
+  return null;
+}
+
 export function ArchivesPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -3147,7 +3170,7 @@ export function ArchivesPage() {
     sort_by: sortBy,
   };
 
-  const { data: archivesResponse, isLoading } = useQuery({
+  const { data: archivesResponse, isLoading, isFetching, isPlaceholderData } = useQuery({
     queryKey: ['archives', archiveParams],
     queryFn: () => api.getArchives(archiveParams),
     placeholderData: (prev) => prev,
@@ -3155,6 +3178,53 @@ export function ArchivesPage() {
 
   const archives = archivesResponse?.data;
   const paginationMeta = archivesResponse?.meta;
+
+  // `?highlight=<archive id>` — the queue card's «View archive» (G03 D10.2). By id, never by
+  // name: a name is not an identity. Read once and taken off the address, like `printer`. The
+  // list is paged on the server, so the archive is looked for in the list exactly as the operator
+  // has it filtered and sorted, the page that holds it is opened and the card marked; when that
+  // list does not hold it, a toast says so instead of leaving an unrelated page on screen.
+  const highlightParam = searchParams.get('highlight');
+  const handledHighlightRef = useRef<string | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+  const [linkedArchive, setLinkedArchive] = useState<{ id: number; page: number } | null>(null);
+  useEffect(() => {
+    if (!highlightParam || handledHighlightRef.current === highlightParam) return;
+    handledHighlightRef.current = highlightParam;
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete('highlight');
+      return next;
+    }, { replace: true });
+    const archiveId = Number(highlightParam);
+    if (!Number.isSafeInteger(archiveId) || archiveId <= 0) return;
+    // The calendar shows days, not archives.
+    if (viewMode === 'calendar') setViewMode('grid');
+    void locateArchivePage(archiveId, archiveParams, perPage).then(
+      (found) => {
+        if (!mountedRef.current) return;
+        if (found === null) {
+          showToast(t('archives.linkedArchiveNotVisible'), 'warning');
+          return;
+        }
+        setPage(found);
+        setLinkedArchive({ id: archiveId, page: found });
+      },
+      () => {
+        if (mountedRef.current) showToast(t('archives.linkedArchiveNotVisible'), 'warning');
+      },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per link, against the list as it stands
+  }, [highlightParam]);
+  // Marked once its page is on screen — the page's own answer, not the one it replaced.
+  useEffect(() => {
+    if (!linkedArchive || !archives || isFetching || isPlaceholderData) return;
+    setLinkedArchive(null);
+    if (page !== linkedArchive.page) return; // the operator moved on meanwhile
+    if (archives.some((archive) => archive.id === linkedArchive.id)) setHighlightedArchiveId(linkedArchive.id);
+    else showToast(t('archives.linkedArchiveNotVisible'), 'warning');
+  }, [linkedArchive, archives, isFetching, isPlaceholderData, page, showToast, t]);
 
   /**
    * How many per page and which page, in one control under the rows — the grid

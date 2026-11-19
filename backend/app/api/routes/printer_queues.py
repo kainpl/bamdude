@@ -17,12 +17,18 @@ from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.user import User
 from backend.app.schemas.printer_location import PrinterLocationOut
 from backend.app.schemas.printer_queue import (
+    AcknowledgeFailureResponse,
     PrinterQueueResponse,
     PrinterQueueUpdate,
     QueueStatusRow,
     QueueStatusSummary,
 )
 from backend.app.schemas.printer_tag import PrinterTagOut
+from backend.app.services.previous_print_gate import (
+    acknowledge_newest_failure,
+    blocking_failure_queue_ids,
+    failure_blocks,
+)
 from backend.app.services.queue_counters import get_queue_terminal_counts
 from backend.app.services.queue_status import effective_queue_state
 
@@ -31,7 +37,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/queues", tags=["queues"])
 
 
-def _to_response(queue: PrinterQueue, terminal_counts: dict[str, int]) -> PrinterQueueResponse:
+def _to_response(
+    queue: PrinterQueue, terminal_counts: dict[str, int], *, previous_print_failed: bool = False
+) -> PrinterQueueResponse:
     return PrinterQueueResponse(
         id=queue.id,
         printer_id=queue.printer_id,
@@ -50,6 +58,7 @@ def _to_response(queue: PrinterQueue, terminal_counts: dict[str, int]) -> Printe
         cancelled_count=terminal_counts.get("cancelled_count", 0),
         skipped_count=queue.skipped_count,
         total_count=terminal_counts.get("total_count", 0),
+        previous_print_failed=previous_print_failed,
         created_at=queue.created_at,
         updated_at=queue.updated_at,
     )
@@ -113,7 +122,9 @@ async def list_queues(
     )
     queues = [q for q in result.scalars().all() if in_key_scope(request, q.printer_id)]
     counts_by_queue = await _bulk_terminal_counts(db, [q.id for q in queues])
-    return [_to_response(q, counts_by_queue.get(q.id, {})) for q in queues]
+    # One query for the whole list: which printers' newest finished print is an unacknowledged failure.
+    failed_queues = await blocking_failure_queue_ids(db, [q.id for q in queues])
+    return [_to_response(q, counts_by_queue.get(q.id, {}), previous_print_failed=q.id in failed_queues) for q in queues]
 
 
 @router.get("/status-summary", response_model=QueueStatusSummary)
@@ -163,7 +174,7 @@ async def get_queue(
     if not queue:
         raise HTTPException(404, "Queue not found")
     terminal_counts = await get_queue_terminal_counts(db, queue.id)
-    return _to_response(queue, terminal_counts)
+    return _to_response(queue, terminal_counts, previous_print_failed=await failure_blocks(db, queue.printer_id))
 
 
 @router.patch("/{queue_id}", response_model=PrinterQueueResponse)
@@ -209,4 +220,32 @@ async def update_queue(
     await db.commit()
     await db.refresh(queue)
     terminal_counts = await get_queue_terminal_counts(db, queue.id)
-    return _to_response(queue, terminal_counts)
+    return _to_response(queue, terminal_counts, previous_print_failed=await failure_blocks(db, queue.printer_id))
+
+
+@router.post("/{queue_id}/acknowledge-failure", response_model=AcknowledgeFailureResponse)
+async def acknowledge_failure(
+    queue_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
+):
+    """The operator has dealt with this printer's last failure: "only after a successful previous print" passes again.
+
+    The release for work that waits on ``previous_print_failed`` without a skipped row to unskip — an AutoQueue
+    job, which routes around a failed printer instead of being skipped (G03 D4). Marks the newest finished row
+    ``gate_acknowledged`` only when it is the failure the gate reads — the same row ``unskip`` acknowledges — and
+    answers whether it did. The row stays ``failed``; only its weight in the gate goes. Each call retires the
+    failure the gate reads at that moment, under the queue's scope lock (as ``unskip``); when an older failure is
+    the newest row after that, the flag stays set and a second acknowledgement is a decision of its own.
+    """
+    from backend.app.services.queue_ops import queue_scope_lock
+
+    queue_exists = await db.scalar(select(PrinterQueue.id).where(PrinterQueue.id == queue_id))
+    if queue_exists is None:
+        raise HTTPException(404, "Queue not found")
+    async with queue_scope_lock(db, queue_id):
+        acknowledged = await acknowledge_newest_failure(db, queue_id)
+        await db.commit()
+    if acknowledged:
+        logger.info("Queue %s: the operator acknowledged the failure gating its next work", queue_id)
+    return AcknowledgeFailureResponse(acknowledged=acknowledged)

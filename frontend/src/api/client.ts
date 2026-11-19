@@ -7664,6 +7664,13 @@ export interface PrinterQueue {
   cancelled_count: number;
   skipped_count: number;
   total_count: number;
+  /**
+   * The printer's newest finished print failed and nobody acknowledged it: jobs set to run
+   * «only after a successful previous print» are held for this printer — AutoQueue work included,
+   * which waits with `previous_print_failed`. `POST /queues/{id}/acknowledge-failure` releases it.
+   * Absent from an older server.
+   */
+  previous_print_failed?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -11093,7 +11100,8 @@ export const api = {
       clump_pos: boolean;
     }>(`/printers/${printerId}/calibration/options`),
 
-  // Get current print user (for reprint tracking - Issue #206)
+  // Get current print user (for reprint tracking - Issue #206). `{}` when no run is bound to the
+  // printer: the user of an earlier run is never reported for the print on the plate now.
   getCurrentPrintUser: (printerId: number) =>
     request<{ user_id?: number; username?: string }>(`/printers/${printerId}/current-print-user`),
 
@@ -13005,29 +13013,56 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ item_ids: itemIds }),
     }),
-  ungroupBatch: (batchId: string) =>
-    request<{ ungrouped: number; batch_id: string }>(`/queue/batch/${batchId}/ungroup`, { method: 'POST' }),
-  cancelBatch: (batchId: string) =>
-    request<{ cancelled: number; batch_id: string }>(`/queue/batch/${batchId}/cancel`, { method: 'POST' }),
-  skipBatch: (batchId: string) =>
-    request<{ skipped: number; batch_id: string }>(`/queue/batch/${batchId}/skip`, { method: 'POST' }),
-  reorderBatch: (batchId: string, direction: 'up' | 'down') =>
-    request<{ moved: number; direction: string; batch_size: number }>(
-      `/queue/batch/${batchId}/reorder?direction=${direction}`,
+  // ⚠️ A batch action touches ONE printer queue — the one the operator acts in (G03 D1). AutoQueue
+  // promotion gives the copies of one AutoQueue batch to several printers under the same `batch_id`,
+  // so every call names its queue; without it the server refuses a batch that spans queues
+  // (409 `batch_spans_queues`) rather than cancel or move another printer's work.
+  ungroupBatch: (batchId: string, queueId: number) =>
+    request<{ ungrouped: number; batch_id: string; queue_id: number }>(
+      `/queue/batch/${batchId}/ungroup?queue_id=${queueId}`,
+      { method: 'POST' },
+    ),
+  /** `batch_id` / `queue_id` are absent when nothing was pending there (`{cancelled: 0}`). */
+  cancelBatch: (batchId: string, queueId: number) =>
+    request<{ cancelled: number; batch_id?: string; queue_id?: number }>(
+      `/queue/batch/${batchId}/cancel?queue_id=${queueId}`,
+      { method: 'POST' },
+    ),
+  skipBatch: (batchId: string, queueId: number) =>
+    request<{ skipped: number; batch_id?: string; queue_id?: number }>(
+      `/queue/batch/${batchId}/skip?queue_id=${queueId}`,
+      { method: 'POST' },
+    ),
+  reorderBatch: (batchId: string, queueId: number, direction: 'up' | 'down') =>
+    request<{ moved: number; direction: string; batch_size: number; queue_id: number }>(
+      `/queue/batch/${batchId}/reorder?direction=${direction}&queue_id=${queueId}`,
       { method: 'POST' }
     ),
-  bumpBatch: (batchId: string) =>
-    request<{ shifted: number; batch_size: number }>(`/queue/batch/${batchId}/bump`, { method: 'POST' }),
-  bumpBatchBottom: (batchId: string) =>
-    request<{ shifted: number; batch_size: number }>(`/queue/batch/${batchId}/bump-bottom`, { method: 'POST' }),
-  updateBatch: (batchId: string, data: PrintQueueItemUpdate) =>
-    request<{ updated: number; batch_id: string; fields: string[] }>(`/queue/batch/${batchId}`, {
-      method: 'PATCH',
-      body: JSON.stringify(data),
-    }),
-  cloneBatch: (batchId: string, scope: 'one' | 'batch' = 'batch', keepOrder = true) =>
-    request<{ cloned: number; scope: string; source_batch_id?: string; new_batch_id?: string; new_item_id?: number }>(
-      `/queue/batch/${batchId}/clone?scope=${scope}${keepOrder ? '' : '&keep_order=false'}`,
+  bumpBatch: (batchId: string, queueId: number) =>
+    request<{ shifted: number; batch_size: number; queue_id: number }>(
+      `/queue/batch/${batchId}/bump?queue_id=${queueId}`,
+      { method: 'POST' },
+    ),
+  bumpBatchBottom: (batchId: string, queueId: number) =>
+    request<{ shifted: number; batch_size: number; queue_id: number }>(
+      `/queue/batch/${batchId}/bump-bottom?queue_id=${queueId}`,
+      { method: 'POST' },
+    ),
+  /** `queueId` names whose copies change; `data.queue_id` is still where they move to. */
+  updateBatch: (batchId: string, queueId: number, data: PrintQueueItemUpdate) =>
+    request<{ updated: number; batch_id: string; fields: string[]; queue_id: number }>(
+      `/queue/batch/${batchId}?queue_id=${queueId}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      },
+    ),
+  cloneBatch: (batchId: string, queueId: number, scope: 'one' | 'batch' = 'batch', keepOrder = true) =>
+    request<{
+      cloned: number; scope: string; source_batch_id?: string; new_batch_id?: string; new_item_id?: number;
+      queue_id: number;
+    }>(
+      `/queue/batch/${batchId}/clone?scope=${scope}&queue_id=${queueId}${keepOrder ? '' : '&keep_order=false'}`,
       { method: 'POST' }
     ),
   reorderQueue: (items: { id: number; position: number }[]) =>
@@ -13149,6 +13184,13 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
+  /**
+   * The operator has dealt with the printer's last failure: «only after a successful previous
+   * print» passes again. `acknowledged: false` — no failure was holding anything. When an older
+   * failure is the newest finished row afterwards, `previous_print_failed` stays set.
+   */
+  acknowledgeQueueFailure: (queueId: number) =>
+    request<{ acknowledged: boolean }>(`/queues/${queueId}/acknowledge-failure`, { method: 'POST' }),
 
   // K-Profiles
   getKProfiles: (printerId: number, nozzleDiameter = '0.4') =>

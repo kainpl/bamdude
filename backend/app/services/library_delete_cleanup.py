@@ -86,6 +86,11 @@ def _owned_path(stored):
 
 async def finish(db):
     """Call outside the root mutation scope after commit. No new task/outbox is created."""
+    # First, and before the early return: a plain trash stages no removal, but its
+    # release may have cancelled queued jobs whose printer counters need the recount.
+    from backend.app.services.queue_source_release import recount_released_queues
+
+    await recount_released_queues(db)
     removals = db.info.pop(_READY, [])
     if not removals:
         return

@@ -1446,6 +1446,10 @@ class BackgroundDispatchService:
 
                         item.error_message = str((job.outcome or {}).get("error") or "Dispatch failed")
                         item.error_code = (job.outcome or {}).get("failure_code") or DISPATCH_INTERNAL_ERROR
+                        # A start that never went out failed no print: the next job's "only
+                        # after a successful previous print" must not read one (G03 O-3). A
+                        # published start the printer did not take still gates.
+                        item.gate_acknowledged = not _published(job)
                         if queue_error:
                             await set_queue_error(db, item.queue_id, failed_item_id=item.id)
                         else:
@@ -2836,10 +2840,17 @@ class BackgroundDispatchService:
             # the finally. Initialised here so that finally cannot trip over an
             # unbound name when the body fails before registration.
             _unconfirmed_expected_print: tuple[int, str] | None = None
+            # One plate for the whole dispatch: the injection patches the plate the start then names (G03 E9).
+            dispatch_plate_id = await source_probe(
+                ("plate", str(file_path), job.options.get("plate_id")),
+                self._resolve_plate_id,
+                file_path,
+                job.options.get("plate_id"),
+            )
             inject_spec = await self._build_injection_spec(
                 job=job,
                 printer_model=printer_model,
-                plate_id=job.options.get("plate_id") or 1,
+                plate_id=dispatch_plate_id,
             )
             if not job.options.get("mesh_mode_fast_check", True) or inject_spec is not None:
                 from backend.app.services.gcode_patcher import apply_3mf_transforms
@@ -3189,12 +3200,7 @@ class BackgroundDispatchService:
                 # already on disk.
                 file_md5 = await source_probe(("digest", str(upload_file_path)), _file_digest, upload_file_path)
 
-                plate_id = await source_probe(
-                    ("plate", str(file_path), job.options.get("plate_id")),
-                    self._resolve_plate_id,
-                    file_path,
-                    job.options.get("plate_id"),
-                )
+                plate_id = dispatch_plate_id
                 # H2C nozzle rack (upstream #1784): resolved here, before preheat,
                 # so a pick the rack no longer fits refuses before anything heats.
                 from backend.app.services.order_auto_eject import dispatch_admission
@@ -3835,10 +3841,17 @@ class BackgroundDispatchService:
             # the finally. Initialised here so that finally cannot trip over an
             # unbound name when the body fails before registration.
             _unconfirmed_expected_print: tuple[int, str] | None = None
+            # One plate for the whole dispatch: the injection patches the plate the start then names (G03 E9).
+            dispatch_plate_id = await source_probe(
+                ("plate", str(file_path), job.options.get("plate_id")),
+                self._resolve_plate_id,
+                file_path,
+                job.options.get("plate_id"),
+            )
             inject_spec_lib = await self._build_injection_spec(
                 job=job,
                 printer_model=printer_model,
-                plate_id=int(job.options.get("plate_id") or 1),
+                plate_id=int(dispatch_plate_id),
             )
             if not job.options.get("mesh_mode_fast_check", True) or inject_spec_lib is not None:
                 from backend.app.services.gcode_patcher import apply_3mf_transforms
@@ -4202,12 +4215,7 @@ class BackgroundDispatchService:
                 # already on disk.
                 file_md5 = await source_probe(("digest", str(upload_file_path)), _file_digest, upload_file_path)
 
-                plate_id = await source_probe(
-                    ("plate", str(file_path), job.options.get("plate_id")),
-                    self._resolve_plate_id,
-                    file_path,
-                    job.options.get("plate_id"),
-                )
+                plate_id = dispatch_plate_id
                 # H2C nozzle rack (upstream #1784): resolved here, before preheat,
                 # so a pick the rack no longer fits refuses before anything heats.
                 from backend.app.services.order_auto_eject import dispatch_admission
@@ -5032,20 +5040,28 @@ class BackgroundDispatchService:
 
     @staticmethod
     def _resolve_plate_id(file_path: Path, requested_plate_id: int | None) -> int:
+        """The plate a dispatch sends: the one asked for, else the file's LOWEST-numbered sliced plate.
+
+        Only a job without a routing plan reaches the fallback (calibration assets, raw G-code) — every 3MF
+        with a plan carries its resolved plate. ⚠️ The lowest number, not the first ZIP member: the members'
+        order is whatever the writer chose, and ``plate_10.gcode`` can come before ``plate_2.gcode`` (G03 E9).
+        A file it cannot read, or one with no sliced plate, falls back to plate 1, as before.
+        """
         if requested_plate_id is not None:
             return requested_plate_id
 
-        plate_id = 1
+        plates: list[int] = []
         try:
             with zipfile.ZipFile(file_path, "r") as zf:
                 for name in zf.namelist():
                     if name.startswith("Metadata/plate_") and name.endswith(".gcode"):
-                        plate_str = name[15:-6]
-                        plate_id = int(plate_str)
-                        break
-        except (ValueError, zipfile.BadZipFile, OSError):
+                        try:
+                            plates.append(int(name[15:-6]))
+                        except ValueError:
+                            continue
+        except (zipfile.BadZipFile, OSError):
             pass
-        return plate_id
+        return min((plate for plate in plates if plate > 0), default=1)
 
     @staticmethod
     def _is_sliced_file(filename: str) -> bool:

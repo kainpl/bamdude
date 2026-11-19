@@ -11,6 +11,9 @@ import { TimelineAxis } from './TimelineAxis';
 import { TimelineItem } from './TimelineItem';
 import { invalidateQueueViews } from '../../utils/queryInvalidation';
 
+/** A batch's copies in ONE printer queue — the unit a lane's batch label and action speak for. */
+const batchKey = (queueId: number, batchId: string) => `${queueId}:${batchId}`;
+
 const LANE_LABEL_WIDTH = 180;
 const LANE_HEIGHT = 48;
 const MIN_TRACK_WIDTH = 1200;
@@ -69,10 +72,15 @@ export function QueueTimelineView({ queues, items, onEditItem }: Props) {
   const timeline = useQueueTimeline({ queues, items, printers, now, rangeHours });
 
   // Batch counts - so items can render "1/N" labels and we can offer "Cancel batch".
+  // Per printer queue (G03 D1): the copies of one AutoQueue batch can sit in several lanes, and
+  // a lane's label and its «Cancel batch» speak for that lane's copies only.
   const batchStats = useMemo(() => {
     const counts = new Map<string, number>();
     (items ?? []).forEach(it => {
-      if (it.batch_id) counts.set(it.batch_id, (counts.get(it.batch_id) ?? 0) + 1);
+      if (it.batch_id) {
+        const key = batchKey(it.queue_id, it.batch_id);
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
     });
     return counts;
   }, [items]);
@@ -100,12 +108,11 @@ export function QueueTimelineView({ queues, items, onEditItem }: Props) {
     onError: (err: Error) => showToast(err.message || t('queue.timeline.cancelItemFailed'), 'error'),
   });
 
+  // The batch route, for the lane's queue: one compare-and-set on the pending copies there, never
+  // the other printers' copies of the same batch.
   const cancelBatch = useMutation({
-    mutationFn: async (batchId: string) => {
-      const batchItems = (items ?? []).filter(it => it.batch_id === batchId && it.status === 'pending');
-      await Promise.all(batchItems.map(it => api.cancelQueueItem(it.id)));
-      return batchItems.length;
-    },
+    mutationFn: async ({ batchId, queueId }: { batchId: string; queueId: number }) =>
+      (await api.cancelBatch(batchId, queueId)).cancelled,
     onSuccess: (count) => {
       invalidateQueueViews(queryClient);
       showToast(t('queue.timeline.cancelBatchSuccess', { count }));
@@ -137,15 +144,15 @@ export function QueueTimelineView({ queues, items, onEditItem }: Props) {
           danger: true,
           disabled: menu.item.status !== 'pending',
         },
-        ...(menu.item.batch_id && (batchStats.get(menu.item.batch_id) ?? 0) > 1
+        ...(menu.item.batch_id && (batchStats.get(batchKey(menu.item.queue_id, menu.item.batch_id)) ?? 0) > 1
           ? [
               { divider: true, label: '', onClick: () => {} } as ContextMenuItem,
               {
                 label: t('queue.timeline.cancelBatch', {
-                  count: batchStats.get(menu.item.batch_id!) ?? 0,
+                  count: batchStats.get(batchKey(menu.item.queue_id, menu.item.batch_id)) ?? 0,
                 }),
                 icon: <Layers className="w-4 h-4" />,
-                onClick: () => cancelBatch.mutate(menu.item.batch_id!),
+                onClick: () => cancelBatch.mutate({ batchId: menu.item.batch_id!, queueId: menu.item.queue_id }),
                 danger: true,
               } as ContextMenuItem,
             ]
@@ -251,7 +258,7 @@ export function QueueTimelineView({ queues, items, onEditItem }: Props) {
                     if (left > trackWidth) return null;
 
                     const batchTotal = slot.item.batch_id
-                      ? batchStats.get(slot.item.batch_id) ?? 1
+                      ? batchStats.get(batchKey(slot.item.queue_id, slot.item.batch_id)) ?? 1
                       : 1;
                     const batchIdx = slot.item.batch_id
                       ? batchIndexInLane(lane.slots, slot.itemId, slot.item.batch_id)

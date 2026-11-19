@@ -84,7 +84,9 @@ describe('farm queue read ownership', () => {
     );
 
     await waitFor(() => expect(getStatus.mock.calls.length).toBeGreaterThanOrEqual(count));
-    await waitFor(() => expect(reads.length).toBe(2));
+    // Pending and printing travel as ONE farm read (G03 D9).
+    await waitFor(() => expect(reads.length).toBe(1));
+    expect(reads[0].status).toBe('pending,printing');
     expect(reads.filter(({ queueId }) => queueId !== null)).toHaveLength(0);
 
     view.unmount();
@@ -112,12 +114,11 @@ describe('farm queue read ownership', () => {
     const view = render(<StrictMode><QueryClientProvider client={client}><Fleet /></QueryClientProvider></StrictMode>);
     try {
       await waitFor(() => {
-        expect(client.getQueryState(['queue', 'all', 'pending'])?.status).toBe('success');
-        expect(client.getQueryState(['queue', 'all', 'printing'])?.status).toBe('success');
+        expect(client.getQueryState(['queue', 'all', 'active'])?.status).toBe('success');
       });
-      // The development double mount neither repeats the shared reads nor
+      // The development double mount neither repeats the shared read nor
       // falls back to per-card ones.
-      expect(reads).toEqual([{ queueId: null, status: 'pending' }, { queueId: null, status: 'printing' }]);
+      expect(reads).toEqual([{ queueId: null, status: 'pending,printing' }]);
       expect(vi.getTimerCount()).toBeGreaterThan(0);
       view.unmount();
       expect(vi.getTimerCount()).toBe(0);
@@ -125,6 +126,34 @@ describe('farm queue read ownership', () => {
       client.clear();
       vi.useRealTimers();
     }
+  });
+
+  it('splits the one active read into its waiting and its running rows', async () => {
+    const reads: Array<string | null> = [];
+    server.use(http.get('/api/v1/queue/', ({ request }) => {
+      reads.push(new URL(request.url).searchParams.get('status'));
+      return HttpResponse.json([
+        { id: -3, queue_id: 3, status: 'printing', is_virtual: true },
+        { id: 1, queue_id: 1, status: 'pending' },
+        { id: 2, queue_id: 1, status: 'printing' },
+        { id: 4, queue_id: 3, status: 'pending' },
+      ]);
+    }));
+    const client = createAppQueryClient();
+    const seen: { pending?: number[]; printing?: number[] } = {};
+    function Fleet() {
+      const { data: pending } = usePendingQueueItems();
+      const { data: printing } = usePrintingQueueItems();
+      seen.pending = pending?.map(row => row.id);
+      seen.printing = printing?.map(row => row.id);
+      return null;
+    }
+    const view = render(<QueryClientProvider client={client}><Fleet /></QueryClientProvider>);
+    await waitFor(() => expect(seen.pending).toEqual([1, 4]));
+    expect(seen.printing).toEqual([-3, 2]);
+    expect(reads).toEqual(['pending,printing']);
+    view.unmount();
+    client.clear();
   });
 
   it('turns off scoped readers when a farm owner takes over', async () => {
@@ -158,7 +187,7 @@ describe('farm queue read ownership', () => {
     client.clear();
   });
 
-  it('keeps 50 closed-issues cards at two shared item polls across ten quiet minutes', async () => {
+  it('keeps 50 closed-issues cards at one shared item poll across ten quiet minutes', async () => {
     const reads: string[] = [];
     let issueReads = 0;
     server.use(
@@ -184,22 +213,20 @@ describe('farm queue read ownership', () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     const view = render(tree());
     try {
-      await waitFor(() => expect(reads).toHaveLength(2));
+      await waitFor(() => expect(reads).toHaveLength(1));
       for (let tick = 1; tick <= 60; tick += 1) {
         await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
         await waitFor(() => {
-          expect(client.getQueryState(['queue', 'all', 'pending'])?.fetchStatus).toBe('idle');
-          expect(client.getQueryState(['queue', 'all', 'printing'])?.fetchStatus).toBe('idle');
+          expect(client.getQueryState(['queue', 'all', 'active'])?.fetchStatus).toBe('idle');
         });
       }
-      const pendingReads = reads.filter(status => status === 'pending').length;
-      const printingReads = reads.filter(status => status === 'printing').length;
-      // Periodic work starts after the initial read and never exceeds one
-      // per ten seconds/key. A stable ≤1 s tab jitter reduces the exact count.
-      expect(pendingReads).toBeGreaterThanOrEqual(50);
-      expect(pendingReads).toBeLessThanOrEqual(61);
-      expect(printingReads).toBeGreaterThanOrEqual(50);
-      expect(printingReads).toBeLessThanOrEqual(61);
+      const activeReads = reads.filter(status => status === 'pending,printing').length;
+      // Periodic work starts after the initial read and never exceeds one per
+      // ten seconds — the two views (pending, printing) share the one read.
+      // A stable ≤1 s tab jitter reduces the exact count.
+      expect(activeReads).toBe(reads.length);
+      expect(activeReads).toBeGreaterThanOrEqual(50);
+      expect(activeReads).toBeLessThanOrEqual(61);
       expect(issueReads).toBe(0);
     } finally {
       view.unmount();

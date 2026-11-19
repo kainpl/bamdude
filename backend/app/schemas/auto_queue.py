@@ -29,9 +29,9 @@ UTCDatetime = Annotated[datetime | None, PlainSerializer(serialize_utc_datetime)
 
 class AutoQueueItemCreate(AutoEjectSelection):
     auto_eject_enabled: bool | None = None
-    # Source file (either archive_id OR library_file_id)
-    archive_id: int | None = None
-    library_file_id: int | None = None
+    # Source file (either archive_id OR library_file_id -- never both, never 0: G03 D6).
+    archive_id: int | None = Field(default=None, gt=0)
+    library_file_id: int | None = Field(default=None, gt=0)
     project_id: int | None = None
     # The order line this print is for; travels queue → dispatcher → archive.
     project_line_id: int | None = None
@@ -84,6 +84,15 @@ class AutoQueueItemCreate(AutoEjectSelection):
     @classmethod
     def _no_legacy_location(cls, values):
         return reject_legacy_key(values, "target_location", "target_location_id")
+
+    @model_validator(mode="after")
+    def _one_source(self):
+        """One source, as the printer queue's writer demands (G03 D6). With both ids the archive's
+        bytes were captured while the row kept the library id and its order line was filed by the
+        library file -- two answers to "what does this job print". Neither stays the writer's 400."""
+        if self.archive_id is not None and self.library_file_id is not None:
+            raise ValueError("Give either archive_id or library_file_id, not both")
+        return self
 
     @field_validator("plate_quantities")
     @classmethod
