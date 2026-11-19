@@ -45,6 +45,23 @@ def test_round_trip():
     assert load(dump(_record())) == _record()
 
 
+def test_old_records_keep_rotation_and_do_not_enable_long_search():
+    raw = json.loads(dump(_record()))
+    raw["layout"].pop("long_search")
+    restored = load(json.dumps(raw).encode())
+    assert restored.layout.rotation_step == 90
+    assert restored.layout.long_search is False
+    assert rotations(0) == (0.0,)
+
+
+def test_free_rotation_and_search_round_trip_explicitly():
+    value = _record(layout=LayoutInput(2, -1, True, False, True))
+    assert load(dump(value)) == value
+    assert len(rotations(-1)) == 24
+    assert len(rotations(5)) == 72
+    assert len(rotations(15)) == 24
+
+
 def test_rotations_per_step():
     assert rotations(0) == (0.0,) and rotations(180) == (0.0, 180.0)
     assert rotations(90) == (0.0, 90.0, 180.0, 270.0) and len(rotations(45)) == 8

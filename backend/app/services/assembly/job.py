@@ -664,7 +664,10 @@ async def _run(job_id: int, plan: Plan) -> dict:
             return _result(rows, outcome="failed", reason="staging_failed")
         try:
             packed = await run_assembly(
-                root, job_id=job_id, on_progress=lambda progress: slice_dispatch.set_progress(job_id, progress)
+                root,
+                job_id=job_id,
+                on_progress=lambda progress: slice_dispatch.set_progress(job_id, progress),
+                finish_requested=lambda: bool((job := slice_dispatch.get(job_id)) is not None and job.finish_requested),
             )
         except AssemblyFailed as failed:
             reason = failed.why if failed.outcome == "failed" and failed.why else failed.outcome

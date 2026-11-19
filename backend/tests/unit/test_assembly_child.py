@@ -127,6 +127,25 @@ def test_fill_part_gets_its_own_plate_and_reports_the_count(tmp_path):
     assert [p["fill"] for p in printer["plates"]] == [False, True] and printer["plates"][1]["counts"] == {"1": 16}
 
 
+def test_finish_search_keeps_real_projects_for_every_printer(tmp_path):
+    stage(
+        tmp_path,
+        [("lid", 3)],
+        [_printer("p0", 100), _printer("p1", 120)],
+        layout={"long_search": True, "rotation_step": -1},
+    )
+    (tmp_path / "finish").touch()
+    result = run(tmp_path)
+    assert result["outcome"] == "ok"
+    assert len(result["printers"]) == 2
+    for printer in result["printers"]:
+        assert printer["status"] == "ok"
+        project = _project(tmp_path, printer["files"][0]["member"])
+        assert len(project.instances) == 3
+        saved = record.load(project.extra_files[RECORD_MEMBER])
+        assert saved.layout.long_search and saved.layout.rotation_step == -1
+
+
 def test_one_printer_too_small_fails_alone(tmp_path):
     result = run(stage(tmp_path, [("big200", 1)], [_printer("p0", 180), _printer("p1", 256)]))
     assert result["outcome"] == "ok" and [p["status"] for p in result["printers"]] == ["failed", "ok"]

@@ -17,7 +17,7 @@ export const MAX_TARGETS = 8;
 export const MAX_SPACING = 50;
 
 export const ORIENTATIONS: AssemblyOrientation[] = ['as_is', 'x+90', 'x-90', 'y+90', 'y-90', 'x180'];
-export const ROTATION_STEPS: AssemblyRotationStep[] = [0, 180, 90, 45];
+export const ROTATION_STEPS: AssemblyRotationStep[] = [-1, 0, 180, 90, 45, 15, 5];
 
 export interface PartRow {
   /** Absent on a re-layout: the parts are the stored ones, in their stored order. */
@@ -47,6 +47,7 @@ export interface AssembleForm {
   centre: boolean;
   splitPlates: boolean;
   trashPrevious: boolean;
+  longSearch?: boolean;
 }
 
 export type FormIssue = 'name' | 'targets' | 'quantity' | 'copies' | 'spacing';
@@ -82,10 +83,11 @@ export function initialForm(files: { id: number; filename: string }[]): Assemble
     })),
     targets: [emptyTarget()],
     spacing: '2',
-    rotationStep: 90,
+    rotationStep: -1,
     centre: true,
     splitPlates: false,
     trashPrevious: true,
+    longSearch: false,
   };
 }
 
@@ -111,6 +113,7 @@ export function formFromRecord(record: AssemblyRecordResponse): AssembleForm {
     ],
     spacing: String(record.layout.spacing),
     rotationStep: record.layout.rotation_step,
+    longSearch: record.layout.long_search ?? false,
     centre: record.layout.centre,
     splitPlates: record.layout.split_plates,
     trashPrevious: true,
@@ -156,6 +159,7 @@ function layoutOf(form: AssembleForm): AssemblyLayout {
     rotation_step: form.rotationStep,
     centre: form.centre,
     split_plates: form.splitPlates,
+    ...(form.longSearch ? { long_search: true } : {}),
   };
 }
 

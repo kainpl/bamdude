@@ -6328,7 +6328,7 @@ export interface SliceJobState {
 
 // ── "Assemble project": dense layout of library models into project 3MFs ──
 export type AssemblyOrientation = 'as_is' | 'x+90' | 'x-90' | 'y+90' | 'y-90' | 'x180';
-export type AssemblyRotationStep = 0 | 45 | 90 | 180;
+export type AssemblyRotationStep = -1 | 0 | 5 | 15 | 45 | 90 | 180;
 
 export interface AssemblyPart {
   /** Required for a new assembly; absent on a re-layout (the stored order is used). */
@@ -6353,6 +6353,7 @@ export interface AssemblyLayout {
   rotation_step: AssemblyRotationStep;
   centre: boolean;
   split_plates: boolean;
+  long_search?: boolean;
 }
 
 export interface AssemblyRequest {
@@ -6425,9 +6426,15 @@ export interface AssemblyProgress {
   total?: number;
   /** Set while a "fill a plate" part is being laid out: `total` is then only the packer's upper bound. */
   fill_part?: number | null;
+  search_best_copies?: number;
+  search_best_plates?: number;
+  search_elapsed_ms?: number;
+  search_attempt?: number;
+  search_engine?: number;
 }
 
 export interface AssemblyJobState extends Omit<SliceJobState, 'result' | 'progress'> {
+  finish_requested?: boolean;
   progress: AssemblyProgress | null;
   result?: AssemblyJobResult;
 }
@@ -15804,6 +15811,8 @@ export const api = {
     request<AssemblyJobState>(`/slice-jobs/${jobId}`),
   cancelSliceJob: (jobId: number) =>
     request<void>(`/slice-jobs/${jobId}`, { method: 'DELETE' }),
+  finishAssemblySearch: (jobId: number) =>
+    request<void>(`/slice-jobs/${jobId}/finish-search`, { method: 'POST' }),
   // Unified slicer-preset listing — cloud + local + standard, deduped by name.
   // Drives the SliceModal preset dropdowns. See backend
   // routes/slicer_presets.py for the priority + dedup rules.
