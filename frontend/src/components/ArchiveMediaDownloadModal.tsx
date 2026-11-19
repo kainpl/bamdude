@@ -1,18 +1,21 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { CheckSquare, Download, Film, Loader2, MinusSquare, RefreshCw } from 'lucide-react';
+import { CheckSquare, Download, Film, Loader2, MinusSquare, RefreshCw, Trash2 } from 'lucide-react';
 import {
   api,
+  type ArchiveLocalVideo,
   type ArchiveMediaSources,
   type ArchiveRemoteVideo,
   type MediaSourceStatus,
 } from '../api/client';
+import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { parseUTCDate } from '../utils/date';
 import { formatFileSize } from '../utils/file';
 import { clickSelection } from '../utils/rangeSelection';
 import { Button } from './Button';
+import { ConfirmModal } from './ConfirmModal';
 import { Modal } from './Modal';
 import { SelectionBox } from './SelectionBox';
 import { DownloadCloseChoice } from './downloads/DownloadCloseChoice';
@@ -62,6 +65,10 @@ export function ArchiveMediaDownloadModal({ archiveId, archiveName, onClose }: A
   const [margin, setMargin] = useState<number>(MARGINS[0]);
   const [starting, setStarting] = useState(false);
   const [closeChoice, setCloseChoice] = useState(false);
+  const { hasAnyPermission } = useAuth();
+  const canRemoveSaved = hasAnyPermission('archives:delete_own', 'archives:delete_all');
+  const [removing, setRemoving] = useState<ArchiveLocalVideo | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
 
   const offsetMinutes = parseOffsetHours(offsetText);
   const offsetValid = offsetMinutes !== undefined;
@@ -171,6 +178,23 @@ export function ArchiveMediaDownloadModal({ archiveId, archiveName, onClose }: A
     }
   };
 
+  const removeSaved = async () => {
+    if (!removing) return;
+    setRemoveBusy(true);
+    try {
+      await api.deleteTimelapseVariant(archiveId, removing.asset);
+      setRemoving(null);
+      await refetch();
+    } catch (error) {
+      showToast(
+        t('archives.media.removeSavedFailed', { error: error instanceof Error ? error.message : String(error) }),
+        'error',
+      );
+    } finally {
+      setRemoveBusy(false);
+    }
+  };
+
   const dismissDownload = () => {
     const job = download.job;
     if (job && job.phase === 'ready' && !download.lost) {
@@ -237,7 +261,13 @@ export function ArchiveMediaDownloadModal({ archiveId, archiveName, onClose }: A
           </div>
         ) : (
           <div className="space-y-5 p-4">
-            <LocalSection data={data} selected={selected} onClick={click} onMany={setMany} />
+            <LocalSection
+              data={data}
+              selected={selected}
+              onClick={click}
+              onMany={setMany}
+              onRemove={canRemoveSaved ? setRemoving : undefined}
+            />
 
             {/* The clock settings only matter where the printer's files can be listed at all. */}
             {!remoteClosed && (
@@ -314,6 +344,17 @@ export function ArchiveMediaDownloadModal({ archiveId, archiveName, onClose }: A
           </div>
         )}
       </Modal>
+      {removing && (
+        <ConfirmModal
+          title={t('archives.media.removeSavedTitle')}
+          message={t('archives.media.removeSavedConfirm', { name: removing.name })}
+          confirmText={t('archives.media.removeSaved')}
+          variant="danger"
+          isLoading={removeBusy}
+          onConfirm={() => void removeSaved()}
+          onCancel={() => setRemoving(null)}
+        />
+      )}
       {closeChoice && (
         <DownloadCloseChoice
           onStay={() => setCloseChoice(false)}
@@ -423,11 +464,14 @@ function LocalSection({
   selected,
   onClick,
   onMany,
+  onRemove,
 }: {
   data: ArchiveMediaSources;
   selected: Set<string>;
   onClick: ClickHandler;
   onMany: ManyHandler;
+  /** Offered only for a video saved beside the original, and only to someone who may delete. */
+  onRemove?: (item: ArchiveLocalVideo) => void;
 }) {
   const { t } = useTranslation();
   const keys = data.local.items.map((item) => `${LOCAL}${item.asset}`);
@@ -441,13 +485,28 @@ function LocalSection({
           {data.local.items.map((item) => {
             const key = `${LOCAL}${item.asset}`;
             return (
-              <Row
-                key={key}
-                checked={selected.has(key)}
-                name={item.name}
-                detail={formatFileSize(item.size)}
-                onClick={(shift) => onClick('local', keys, key, shift)}
-              />
+              <div key={key} className="flex items-center gap-1">
+                <div className="min-w-0 flex-1">
+                  <Row
+                    checked={selected.has(key)}
+                    name={item.name}
+                    detail={formatFileSize(item.size)}
+                    note={item.variant ? { text: t('archives.media.savedCopy'), tone: 'muted' } : undefined}
+                    onClick={(shift) => onClick('local', keys, key, shift)}
+                  />
+                </div>
+                {item.variant && onRemove && (
+                  <button
+                    type="button"
+                    onClick={() => onRemove(item)}
+                    title={t('archives.media.removeSaved')}
+                    aria-label={t('archives.media.removeSaved')}
+                    className="flex-shrink-0 rounded p-2 text-bambu-gray hover:bg-red-500/20 hover:text-red-400"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
             );
           })}
         </div>

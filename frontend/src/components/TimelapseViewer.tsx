@@ -4,6 +4,7 @@ import { Button } from './Button';
 import { Modal } from './Modal';
 import { TimelapseEditorModal } from './TimelapseEditorModal';
 import { formatMediaTime } from '../utils/date';
+import { TIMELAPSE_VIEWER_VIDEO_CLASS } from './timelapse/videoBox';
 
 interface TimelapseViewerProps {
   src: string;
@@ -125,11 +126,15 @@ export function TimelapseViewer({
       >
         {/* Video */}
         <div className="p-4">
+          {/* The video takes the width it is given and never more height than leaves the controls
+              on screen: a portrait recording is letterboxed inside its box instead of pushing the
+              controls below the fold (upstream #3281). */}
           <video
             ref={videoRef}
             src={src}
             autoPlay
-            className="w-full rounded-lg"
+            className={TIMELAPSE_VIEWER_VIDEO_CLASS}
+            data-testid="timelapse-viewer-video"
             onClick={togglePlay}
           />
 
@@ -156,8 +161,9 @@ export function TimelapseViewer({
               </span>
             </div>
 
-            {/* Playback controls */}
-            <div className="flex items-center justify-between">
+            {/* Playback controls. They wrap: on a phone the speed buttons go under the play buttons
+                instead of running off the side of the window. */}
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2" data-testid="timelapse-viewer-controls">
               {/* Left: Play controls */}
               <div className="flex items-center gap-2">
                 <button
@@ -189,7 +195,7 @@ export function TimelapseViewer({
               {/* Right: Speed control */}
               <div className="flex items-center gap-2">
                 <span className="text-sm text-bambu-gray">Speed:</span>
-                <div className="flex gap-1">
+                <div className="flex flex-wrap gap-1">
                   {SPEED_OPTIONS.map((speed) => (
                     <button
                       key={speed}

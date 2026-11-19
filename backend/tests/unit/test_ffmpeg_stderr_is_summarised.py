@@ -11,7 +11,7 @@ every call site goes through it.
 
 import re
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -39,26 +39,32 @@ def test_no_ffmpeg_module_decodes_stderr_by_hand():
     assert offenders == [], offenders
 
 
-def _failed_process() -> MagicMock:
-    process = MagicMock()
-    process.returncode = 1
-    process.communicate = AsyncMock(return_value=(b"", BANNER + DIAGNOSIS))
-    return process
-
-
 @pytest.mark.asyncio
-async def test_a_failed_ffprobe_raises_with_the_diagnosis(tmp_path):
-    """The one site whose text leaves in an exception, not only a log line."""
+async def test_a_failed_ffprobe_raises_with_the_diagnosis(tmp_path, monkeypatch):
+    """The one site whose text leaves in an exception, not only a log line.
+
+    The probe is a child ``media_child`` owns (G10 E); a real process stands in
+    for ffprobe here and writes ffmpeg's banner and its diagnosis to stderr.
+    """
+    import subprocess
+    import sys
+
+    from backend.app.services import media_child
     from backend.app.services.timelapse_processor import TimelapseProcessor
 
     video = tmp_path / "t.mp4"
     video.write_bytes(b"x")
+    script = tmp_path / "fake_ffprobe.py"
+    script.write_text(
+        "\n".join(["import sys", f"sys.stderr.buffer.write({BANNER + DIAGNOSIS!r})", "sys.exit(1)", ""]),
+        encoding="utf-8",
+    )
+    real = subprocess.Popen
+    monkeypatch.setattr(
+        media_child.subprocess, "Popen", lambda _argv, **kwargs: real([sys.executable, str(script)], **kwargs)
+    )
     with (
         patch("backend.app.services.timelapse_processor.get_ffmpeg_path", return_value="/usr/bin/ffmpeg"),
-        patch(
-            "backend.app.services.timelapse_processor.asyncio.create_subprocess_exec",
-            new=AsyncMock(return_value=_failed_process()),
-        ),
         pytest.raises(RuntimeError) as raised,
     ):
         await TimelapseProcessor(video).get_info()

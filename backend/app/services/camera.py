@@ -15,7 +15,7 @@ import subprocess
 import time
 import traceback
 import uuid
-from datetime import datetime
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from backend.app.services.camera_cleanup import CameraAttempt
@@ -748,37 +748,29 @@ async def _capture_camera_frame_bytes_uncoalesced(
             _active_capture_pids.discard(process.pid)
 
 
-async def capture_finish_photo(
+async def capture_finish_frame(
     printer_id: int,
     ip_address: str,
     access_code: str,
     model: str | None,
-    archive_dir: Path,
     rotation: int = 0,
-) -> str | None:
-    """Capture a finish photo and save it to the archive's photos folder.
+) -> bytes | None:
+    """Capture one frame of the built-in camera for a finish photo, rotated. ``None`` when the camera gave none.
+
+    A FRAME, not a file (G10 G): the capture can take half a minute, and the
+    archive's folder may change during it — a 3MF attached meanwhile moves it.
+    Where the frame is written is decided after it exists, by the caller, at the
+    moment of the write (``finish_photo_store.save_frame``). No command is sent
+    to the printer: the frame comes through the camera runtime, as before.
 
     Args:
         printer_id: ID of the printer
         ip_address: Printer IP address
         access_code: Printer access code
         model: Printer model
-        archive_dir: Directory of the archive (where the 3MF is stored)
-        rotation: The printer's ``camera_rotation``, applied to the saved file
-            so this source agrees with every other finish-photo source (#2708).
-
-    Returns:
-        Filename of the captured photo, or None if capture failed
+        rotation: The printer's ``camera_rotation``, applied to the frame so this
+            source agrees with every other finish-photo source (#2708).
     """
-    # Create photos subdirectory
-    photos_dir = archive_dir / "photos"
-    photos_dir.mkdir(parents=True, exist_ok=True)
-
-    # Generate filename with timestamp
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"finish_{timestamp}_{uuid.uuid4().hex[:8]}.jpg"
-    output_path = photos_dir / filename  # SEC-PATH-OK: filename is the server-generated finish_<timestamp>_<uuid8>.jpg
-
     from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
     try:
@@ -796,14 +788,12 @@ async def capture_finish_photo(
         logger.exception("Failed to capture finish photo for printer %s", printer_id)
         return None
 
-    if result.frame:
-        await asyncio.to_thread(output_path.write_bytes, result.frame)
-        await apply_camera_rotation_to_file(output_path, rotation, logger)
-        logger.info("Finish photo saved: %s", filename)
-        return filename
-    else:
+    if not result.frame:
         logger.warning("Failed to capture finish photo for printer %s", printer_id)
         return None
+    if rotation:
+        return await asyncio.to_thread(apply_camera_rotation, result.frame, rotation, logger)
+    return result.frame
 
 
 async def test_camera_connection(
@@ -851,7 +841,73 @@ async def test_camera_connection(
     }
 
 
-async def extract_video_last_frame(video_path: Path, output_path: Path) -> bool:
+#: Seconds a killed frame extraction gets to exit before its caller's cleanup is left to a background owner.
+EXTRACT_KILL_WAIT = 5.0
+#: Cleanups waiting for an extraction that outlived :data:`EXTRACT_KILL_WAIT` to exit.
+_abandoned_extractions: set[asyncio.Task] = set()
+
+
+async def _through(awaitable) -> None:
+    """Run ``awaitable`` to its end however often the caller is cancelled meanwhile; log, never raise, its error."""
+    task = asyncio.ensure_future(awaitable)
+    while not task.done():
+        try:
+            await asyncio.wait({task})
+        except asyncio.CancelledError:
+            continue
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning("A frame extraction's cleanup failed: %s", type(task.exception()).__name__)
+
+
+async def _exited(process, seconds: float) -> bool:
+    """Wait for a killed process to exit, through any number of cancels. False = it still runs."""
+    waiter = asyncio.ensure_future(process.wait())
+    deadline = asyncio.get_running_loop().time() + seconds
+    while not waiter.done():
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            waiter.cancel()
+            return False
+        try:
+            await asyncio.wait({waiter}, timeout=remaining)
+        except asyncio.CancelledError:
+            continue
+    return True
+
+
+async def _after_exit(process, on_abandon: Callable[[], Awaitable[None]]) -> None:
+    await process.wait()
+    await on_abandon()
+
+
+async def _abandon(process, on_abandon: Callable[[], Awaitable[None]] | None) -> None:
+    """The extraction gave no still: ffmpeg must stop, and only then is its output cleaned up (Codex G2-R2, G2-R3).
+
+    ``process`` is ``None`` when ffmpeg never started — nothing can write, the
+    cleanup runs at once.
+    """
+    if process is not None and process.returncode is None:
+        try:
+            process.kill()
+        except (ProcessLookupError, OSError):
+            pass  # already exited
+        if not await _exited(process, EXTRACT_KILL_WAIT):
+            logger.warning("A cancelled frame extraction had not exited %.0fs after it was killed", EXTRACT_KILL_WAIT)
+            if on_abandon is not None:
+                owner = asyncio.ensure_future(_after_exit(process, on_abandon))
+                _abandoned_extractions.add(owner)
+                owner.add_done_callback(_abandoned_extractions.discard)
+            return
+    if on_abandon is not None:
+        await _through(on_abandon())
+
+
+async def extract_video_last_frame(
+    video_path: Path,
+    output_path: Path,
+    *,
+    on_abandon: Callable[[], Awaitable[None]] | None = None,
+) -> bool:
     """Extract the last frame of `video_path` as JPEG at `output_path`.
 
     Used to source finish photos from a Bambu timelapse. The Bambu firmware
@@ -871,14 +927,45 @@ async def extract_video_last_frame(video_path: Path, output_path: Path) -> bool:
     construction (<1 minute even on hours-long prints).
 
     Returns False on missing ffmpeg, missing video, subprocess failure or
-    timeout. Never raises.
+    timeout; a cancel of the caller, or any unexpected error, is re-raised.
+
+    ⚠️ ``on_abandon`` is the caller's cleanup of ``output_path``. From the call
+    on, every outcome but ``True`` belongs to the extractor (Codex G2-R2,
+    G2-R3): ``False`` and every exception alike, before ffmpeg started or after.
+    A running ffmpeg is killed first, and ``on_abandon`` runs once it can no
+    longer write — inline when it has exited (within :data:`EXTRACT_KILL_WAIT`
+    of the kill), else by a background owner after its exit. A caller that
+    passes ``on_abandon`` must not remove the still itself on such an outcome:
+    it may already be another owner's. On ``True`` ffmpeg has exited and the
+    still is the caller's.
     """
+    process: list = []  # the ffmpeg this call started, once it exists
+    try:
+        extracted = await _extract_last_frame(video_path, output_path, process)
+    except BaseException:
+        # Cancelled (a completion's budget, a shutdown) or an unexpected error: ffmpeg may still be
+        # writing the still. It is killed, and the caller's cleanup waits for it (Codex G2-R2).
+        await _abandon(process[0] if process else None, on_abandon)
+        raise
+    if not extracted:
+        # No still, for whatever reason — also a pipe that failed while ffmpeg went on decoding
+        # (Codex G2-R3): the same rule, ffmpeg stops first and the cleanup waits for it.
+        await _abandon(process[0] if process else None, on_abandon)
+    return extracted
+
+
+async def _extract_last_frame(video_path: Path, output_path: Path, started: list) -> bool:
+    """The extraction itself; ``started`` receives the ffmpeg process the moment it exists."""
     ffmpeg = get_ffmpeg_path()
     if not ffmpeg:
         logger.warning("Cannot extract video last frame: ffmpeg not available")
         return False
 
-    if not video_path.exists() or video_path.stat().st_size == 0:
+    try:
+        size = video_path.stat().st_size
+    except OSError:  # missing — also gone between a look and this read (a video being replaced)
+        size = 0
+    if size == 0:
         logger.warning("Cannot extract last frame: %s missing or empty", video_path)
         return False
 
@@ -903,6 +990,7 @@ async def extract_video_last_frame(video_path: Path, output_path: Path) -> bool:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        started.append(process)
         _, stderr = await asyncio.wait_for(process.communicate(), timeout=15.0)
         if process.returncode != 0:
             logger.warning(
@@ -925,7 +1013,8 @@ async def extract_video_last_frame(video_path: Path, output_path: Path) -> bool:
                 pass  # Already exited
         return False
     except OSError as e:
-        logger.warning("ffmpeg subprocess error for %s: %s", video_path, e)
+        # The process may still run (a pipe failed, not ffmpeg): the caller stops it before any cleanup.
+        logger.warning("ffmpeg subprocess error for %s: %s", video_path, type(e).__name__)
         return False
 
 

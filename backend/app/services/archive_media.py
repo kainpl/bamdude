@@ -62,6 +62,13 @@ removed; one that escapes is left alone and logged.
 SQLite hands a deleted archive's id to the next one, so every read here compares
 the identity and a row left under a reused id answers nothing.
 
+⚠️ **A variant is a video kept BESIDE the one the archive shows** (G10 E, the
+editor's "save as new"). :func:`publish_variant` gives it a row and a name of
+its own in the archive's video folder and never touches the pointer;
+:func:`remove_variant` takes exactly that row and, after the commit, its file.
+The checks are the primary's: the same incarnation and epoch, the video the
+edit started from, the caller's rights inside the transaction.
+
 ⚠️ **Rows from before the seam are reconciled, never trusted over the pointer**
 (review N1). m237 described the videos that existed then; until this seam every
 old writer could still replace or remove a video without touching its row. So a
@@ -90,6 +97,7 @@ from backend.app.models.archive_media_asset import (
     ROLE_PRIMARY,
     ROLE_RECEIPT,
     ROLE_RETIRED,
+    ROLE_VARIANT,
     ArchiveMediaAsset,
 )
 
@@ -851,3 +859,188 @@ async def detach_primary_in(db: AsyncSession, archive) -> str | None:
     await _keep_receipts(db, receipts)
     archive.timelapse_path = None
     return shown
+
+
+# ---------------------------------------------------------------------------
+# Variants — videos kept beside the one the archive shows (G10 E)
+# ---------------------------------------------------------------------------
+
+
+async def variants_of(db: AsyncSession, archive_id: int, archive_identity: str | None) -> list[ArchiveMediaAsset]:
+    """The archive's variant rows, oldest first. Rows of an earlier archive of that id answer nothing."""
+    if not archive_identity:
+        return []
+    return list(
+        (
+            await db.execute(
+                select(ArchiveMediaAsset)
+                .where(
+                    ArchiveMediaAsset.archive_id == archive_id,
+                    ArchiveMediaAsset.archive_identity == archive_identity,
+                    ArchiveMediaAsset.role == ROLE_VARIANT,
+                )
+                .order_by(ArchiveMediaAsset.revision, ArchiveMediaAsset.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def publish_variant(db: AsyncSession, archive_id: int, *, staged: Path, **kwargs) -> Publication:
+    """Keep ``staged`` as another video of the archive, beside the one it shows. See :func:`_publish_variant`."""
+    from backend.app.services.archive_media_runtime import (  # noqa: PLC0415
+        MediaAdmissionClosed,
+        archive_media_runtime,
+    )
+
+    try:
+        return await archive_media_runtime.own(
+            f"variant:{archive_id}", _publish_variant(db, archive_id, staged=staged, **kwargs)
+        )
+    except MediaAdmissionClosed:
+        await asyncio.to_thread(staged.unlink, missing_ok=True)
+        return Publication(False, REFUSED_RESTORING)
+
+
+async def _publish_variant(
+    db: AsyncSession,
+    archive_id: int,
+    *,
+    staged: Path,
+    directory: Path,
+    filename: str,
+    base_dir: Path,
+    origin: str,
+    expected_identity: str,
+    expected_epoch: int,
+    expected_token: str,
+    content_sha256: str | None = None,
+    size_bytes: int | None = None,
+    authority=None,
+    permissions: tuple = (),
+    may_run: Callable[[], bool] | None = None,
+) -> Publication:
+    """The variant's row and its file's name in one transaction; the pointer is not touched.
+
+    ``may_run`` is the caller's own last word (an edit that may still be
+    cancelled): asked under the locks and again immediately before the bytes
+    take their name, as :func:`_publish_primary` asks it.
+
+    ``expected_token`` is the video the edit was made FROM: a variant cut from a
+    video the archive no longer shows is refused ``source_changed`` like any
+    other late result. On a refusal or an error ``staged`` is removed.
+    """
+    from backend.app.services import queue_sources  # noqa: PLC0415
+    from backend.app.services.archive_write_scope import archive_write_scope  # noqa: PLC0415
+
+    final: Path | None = None
+    committed = False
+    try:
+        await db.commit()
+        async with (
+            queue_sources.storage_mutation(),
+            archive_write_scope(db, archive_id, first=lambda: _authorise(db, authority, permissions)),
+        ):
+            current = await _load_target(db, archive_id, expected_identity, expected_epoch)
+            if current is None:
+                await db.rollback()
+                return Publication(False, REFUSED_TARGET_GONE)
+            if await primary_token(db, current) != expected_token:
+                await db.rollback()
+                return Publication(False, REFUSED_SOURCE_CHANGED)
+            if may_run is not None and not may_run():
+                await db.rollback()
+                return Publication(False, REFUSED_RUN_CHANGED)
+            revision = await _next_revision(db, current)
+            shown = await asyncio.to_thread(contained, base_dir, (current.timelapse_path or "").strip())
+            target = await asyncio.to_thread(_free_name, directory, filename, shown)
+            relative = str(target.relative_to(base_dir))
+            row = ArchiveMediaAsset(
+                asset_uuid=str(uuid4()),
+                archive_id=current.id,
+                archive_identity=current.recovery_identity,
+                role=ROLE_VARIANT,
+                revision=revision,
+                relative_path=relative,
+                size_bytes=size_bytes,
+                content_sha256=content_sha256,
+                origin=origin,
+                created_at=_now(),
+            )
+            db.add(row)
+            await db.flush()
+            asset_uuid = row.asset_uuid
+            if may_run is not None and not may_run():
+                await db.rollback()
+                return Publication(False, REFUSED_RUN_CHANGED)
+            await asyncio.to_thread(os.replace, staged, target)
+            final = target
+            await db.commit()
+            committed = True
+    finally:
+        if not committed and final is not None:
+            await asyncio.shield(asyncio.to_thread(final.unlink, missing_ok=True))
+        await asyncio.shield(asyncio.to_thread(staged.unlink, missing_ok=True))
+    return Publication(True, None, relative, revision, asset_uuid)
+
+
+async def remove_variant(db: AsyncSession, archive_id: int, **kwargs) -> Publication:
+    """Take one variant away — an operation the media runtime owns. See :func:`_remove_variant`."""
+    from backend.app.services.archive_media_runtime import (  # noqa: PLC0415
+        MediaAdmissionClosed,
+        archive_media_runtime,
+    )
+
+    try:
+        return await archive_media_runtime.own(
+            f"variant-remove:{archive_id}", _remove_variant(db, archive_id, **kwargs)
+        )
+    except MediaAdmissionClosed:
+        return Publication(False, REFUSED_RESTORING)
+
+
+async def _remove_variant(
+    db: AsyncSession,
+    archive_id: int,
+    *,
+    asset_uuid: str,
+    base_dir: Path,
+    expected_identity: str,
+    expected_epoch: int,
+    authority=None,
+    permissions: tuple = (),
+) -> Publication:
+    """The row in one transaction, its file after the commit — and only when nothing else names that file."""
+    from backend.app.services import queue_sources  # noqa: PLC0415
+    from backend.app.services.archive_write_scope import archive_write_scope  # noqa: PLC0415
+
+    await db.commit()
+    async with (
+        queue_sources.storage_mutation(),
+        archive_write_scope(db, archive_id, first=lambda: _authorise(db, authority, permissions)),
+    ):
+        current = await _load_target(db, archive_id, expected_identity, expected_epoch)
+        if current is None:
+            await db.rollback()
+            return Publication(False, REFUSED_TARGET_GONE)
+        row = next(
+            (v for v in await variants_of(db, current.id, current.recovery_identity) if v.asset_uuid == asset_uuid),
+            None,
+        )
+        if row is None:
+            await db.rollback()
+            return Publication(False, REFUSED_SOURCE_CHANGED)
+        removed = row.relative_path
+        await db.delete(row)
+        await db.flush()
+        named = (
+            await db.execute(select(ArchiveMediaAsset.id).where(ArchiveMediaAsset.relative_path == removed).limit(1))
+        ).first()
+        shown = (current.timelapse_path or "").strip() == removed or await _still_shown_elsewhere(
+            db, removed, current.id
+        )
+        await db.commit()
+    if named is None and not shown:
+        await _unlink(base_dir, removed)
+    return Publication(True)

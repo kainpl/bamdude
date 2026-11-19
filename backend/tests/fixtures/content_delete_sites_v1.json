@@ -1258,6 +1258,14 @@
     },
     {
       "site": [
+        "services/archive_media.py::_remove_variant",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "G10 E archive_media sole writer: remove one variant row (a video the editor saved beside the primary) under the storage guard and the archive's write scope, the caller's rights asked inside the transaction; the parent archive and its primary stay; the file is unlinked after the commit and only when no other row or pointer names it."
+    },
+    {
+      "site": [
         "services/archive_media.py::_retire",
         "db.delete",
         "row"
