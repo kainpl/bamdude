@@ -60,6 +60,7 @@ async def get_slice_job(
         # slicer hasn't emitted yet (early "Initializing" phase) or the
         # sidecar doesn't support progress (older versions).
         "progress": job.progress,
+        "finish_requested": job.finish_requested,
     }
     if job.status == "completed":
         body["result"] = job.result
@@ -97,4 +98,25 @@ async def cancel_slice_job(
         raise HTTPException(status_code=409, detail="The job is saving its files and can no longer be stopped")
     if not slice_dispatch.cancel(job_id):
         raise HTTPException(status_code=409, detail="The job has already finished")
+    return Response(status_code=204)
+
+
+@router.post("/{job_id}/finish-search", status_code=204)
+async def finish_assembly_search(
+    job_id: int,
+    auth: tuple[User | None, bool] = Depends(
+        require_ownership_permission(Permission.LIBRARY_READ_ALL, Permission.LIBRARY_READ_OWN)
+    ),
+    _starter: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
+):
+    """Stop improving an existing layout and publish it through the normal assembly path."""
+    job = _visible_job(job_id, auth)
+    progress = job.progress or {}
+    if job.kind != "assembly" or job.status != "running" or progress.get("stage") != "packing":
+        raise HTTPException(409, "This job cannot be stopped")
+    if not progress.get("search_best_plates"):
+        raise HTTPException(409, "This job cannot be stopped")
+    # No cancellation: the child returns its incumbent, sources and publication
+    # authority are checked by the same writer as ordinary completed assemblies.
+    job.finish_requested = True
     return Response(status_code=204)

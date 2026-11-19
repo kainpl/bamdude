@@ -1,9 +1,11 @@
 """The packing engine of "Assemble project" is pinned exactly: we write files with it and read them back."""
 
+import re
 import subprocess
 import sys
-from importlib.metadata import version
 from pathlib import Path
+
+from packaging.requirements import Requirement
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -14,7 +16,13 @@ def _pin() -> str:
 
 
 def test_requirements_pin_the_installed_version_exactly():
-    assert _pin() == f"platenest=={version('platenest')}"
+    requirement = Requirement(_pin())
+    assert requirement.name == "platenest"
+    assert requirement.extras == {"optimize"}
+    assert re.fullmatch(r"https://github.com/[^/]+/platenest/archive/[0-9a-f]{40}\.tar\.gz", requirement.url)
+    from platenest import optimize
+
+    assert callable(optimize)
 
 
 def test_the_windows_installer_checks_for_it():
