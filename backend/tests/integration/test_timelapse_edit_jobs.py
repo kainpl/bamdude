@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,7 @@ from backend.app.api.routes import media_downloads as download_routes
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_media_asset import ROLE_PRIMARY, ROLE_VARIANT, ArchiveMediaAsset
 from backend.app.services import media_child, timelapse_editor, timelapse_processor
+from backend.app.services.encoder_slot import encoder_slot
 from backend.app.services.timelapse_editor import timelapse_edit_runtime
 from backend.tests.integration.test_media_download_jobs import _patient_authority  # noqa: F401 -- autouse here too
 from backend.tests.integration.test_workshop_library_rights import _jwt, _user
@@ -104,6 +106,7 @@ async def edit(monkeypatch, tmp_path, async_client, printer_factory, archive_fac
     monkeypatch.setattr(download_routes.settings, "base_dir", tmp_path)
     monkeypatch.setattr(timelapse_processor, "get_ffmpeg_path", lambda: FFMPEG)
     timelapse_edit_runtime.reopen()
+    encoder_slot.reset()
     timelapse_edit_runtime.root = tmp_path / "timelapse-edits"
     printer = await printer_factory()
 
@@ -143,6 +146,8 @@ async def edit(monkeypatch, tmp_path, async_client, printer_factory, archive_fac
         assert await timelapse_edit_runtime.quiesce(20)
         timelapse_edit_runtime.reopen()
         timelapse_edit_runtime.root = None
+        assert not encoder_slot.busy  # every edit gave the encoder back
+        encoder_slot.reset()
 
 
 async def _until(client, url, phases=TERMINAL, headers=None, seconds=60.0):
@@ -158,6 +163,7 @@ async def _until(client, url, phases=TERMINAL, headers=None, seconds=60.0):
 
 
 async def _start(client, box, *, content: bytes | None = None, headers=None, expect=202, **params):
+    params.setdefault("save_mode", "replace")
     response = await client.post(f"{box.base}/process", params=params, content=content, headers=headers)
     assert response.status_code == expect, response.text
     return response.json()
@@ -381,7 +387,9 @@ class TestNumbers:
     async def test_an_archive_without_a_video_is_404(self, async_client, edit, archive_factory, printer_factory):
         printer = await printer_factory()
         bare = await archive_factory(printer.id, print_name="Bare")
-        response = await async_client.post(f"/api/v1/archives/{bare.id}/timelapse/process")
+        response = await async_client.post(
+            f"/api/v1/archives/{bare.id}/timelapse/process", params={"save_mode": "replace"}
+        )
         assert response.status_code == 404
 
 
@@ -620,3 +628,311 @@ class TestRestoreAndRestart:
         assert not staged.exists() and not directory.exists() and not liar.exists()
         assert edit.file.exists()  # the archive's own video was named by a note and left alone
         assert (foreign / "keep.txt").is_file()
+
+
+class TestTheOldRequestIsRefused:
+    """Codex E1: a form read as the new request had no parameters at all — every field took a default,
+    and an old client's "save as new" replaced the original."""
+
+    @pytest.mark.parametrize("encoding", ["multipart", "urlencoded"])
+    async def test_a_form_is_refused_before_any_job_exists(self, async_client, edit, db_session, encoding):
+        before = edit.file.read_bytes()
+        fields = {"save_mode": "new", "speed": "2", "trim_start": "0"}
+        options = (
+            {"files": {name: (None, value) for name, value in fields.items()}}
+            if encoding == "multipart"
+            else {"data": fields}
+        )
+        response = await async_client.post(f"{edit.base}/process", **options)
+        assert response.status_code == 415, response.text
+        assert response.json()["detail"]["error"] == "legacy_request"
+        assert [job for job in timelapse_edit_runtime.jobs.values() if job.archive_id == edit.archive_id] == []
+        assert edit.file.read_bytes() == before and await _pointer(db_session, edit) == edit.relative
+        _no_leftovers(edit)
+
+    async def test_a_form_with_a_music_part_is_refused_too(self, async_client, edit, clips):
+        response = await async_client.post(
+            f"{edit.base}/process",
+            data={"save_mode": "new"},
+            files={"audio": ("track.wav", clips.music.read_bytes(), "audio/wav")},
+        )
+        assert response.status_code == 415
+        assert timelapse_edit_runtime.jobs == {}
+
+    async def test_a_request_that_does_not_say_how_to_save_keeps_the_original(self, async_client, edit, db_session):
+        """The default is the mode that destroys nothing; replacing is always asked for in words."""
+        response = await async_client.post(f"{edit.base}/process", params={"speed": 2})
+        assert response.status_code == 202, response.text
+        job = response.json()
+        assert job["save_mode"] == "new"
+        ended = await _ended(async_client, f"{edit.base}/edit-jobs/{job['job_id']}", job["job_id"])
+        assert ended["phase"] == "done", ended
+        assert edit.file.is_file() and await _pointer(db_session, edit) == edit.relative
+
+    async def test_the_current_request_still_passes(self, async_client, edit, db_session, clips):
+        done = await _finish(
+            async_client, edit, save_mode="new", audio_name="track.wav", content=clips.music.read_bytes()
+        )
+        assert done["phase"] == "done", done
+        assert edit.file.is_file() and await _pointer(db_session, edit) == edit.relative
+
+
+class TestOneEncoder:
+    """Codex E2: an edit delayed while its directory was prepared started a second encoder beside the
+    one that had overtaken it."""
+
+    async def test_two_edits_prepared_at_different_speeds_never_encode_together(self, async_client, edit, monkeypatch):
+        second = await edit.make()
+        staged, go, unlock = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        running: list = []
+        peak = 0
+        original = timelapse_edit_runtime.prepare_directory
+
+        async def prepare(job):
+            await original(job)
+            if job.archive_id == edit.archive_id:
+                staged.set()
+                await go.wait()  # the first edit is held here while the second overtakes it
+
+        async def encode(job):
+            nonlocal peak
+            running.append(job.job_id)
+            peak = max(peak, len(running))
+            try:
+                await unlock.wait()
+            finally:
+                running.remove(job.job_id)
+            raise RuntimeError("the end of a controlled encode")
+
+        monkeypatch.setattr(timelapse_edit_runtime, "prepare_directory", prepare)
+        monkeypatch.setattr(timelapse_edit_runtime, "_encode", encode)
+        first = asyncio.create_task(async_client.post(f"{edit.base}/process", params={"save_mode": "replace"}))
+        try:
+            await asyncio.wait_for(staged.wait(), 15)
+            assert (
+                await async_client.post(f"{second.base}/process", params={"save_mode": "replace"})
+            ).status_code == 202
+            for _ in range(100):
+                if running:
+                    break
+                await asyncio.sleep(0.02)
+            assert len(running) == 1
+            go.set()
+            assert (await first).status_code == 202
+            await asyncio.sleep(0.6)  # the first edit has had every chance to start its encoder
+            assert len(running) == 1 and peak == 1
+        finally:
+            go.set()
+            unlock.set()
+            await first
+            await asyncio.gather(*(job.done.wait() for job in timelapse_edit_runtime.jobs.values() if job.task))
+        assert peak == 1
+
+    async def test_a_cancelled_waiter_gives_its_place_to_the_one_behind_it(
+        self, async_client, edit, db_session, monkeypatch
+    ):
+        _hang(monkeypatch)
+        holder = await _start(async_client, edit)
+        await _until(async_client, f"{edit.base}/edit-jobs/{holder['job_id']}", phases=("encoding",))
+        second_box, third_box = await edit.make(), await edit.make()
+        second = await _start(async_client, second_box)
+        # A second account: one person may have two edits at a time.
+        await _user(db_session, "queue-editor", ["archives:read_all", "archives:update_all"])
+        other = await _jwt("queue-editor")
+        third = await _start(async_client, third_box, headers=other)
+        own = timelapse_edit_runtime.jobs
+        assert (own[second["job_id"]].phase, own[third["job_id"]].phase) == ("queued", "queued")
+        # The one in the middle leaves the queue; then the holder ends.
+        await async_client.delete(f"{second_box.base}/edit-jobs/{second['job_id']}")
+        await asyncio.wait_for(own[second["job_id"]].done.wait(), 10)
+        assert own[second["job_id"]].phase == "cancelled"
+        await async_client.delete(f"{edit.base}/edit-jobs/{holder['job_id']}")
+        await asyncio.wait_for(own[holder["job_id"]].done.wait(), 15)
+        for _ in range(100):
+            if own[third["job_id"]].phase == "encoding":
+                break
+            await asyncio.sleep(0.05)
+        assert own[third["job_id"]].phase == "encoding"  # not stuck behind a waiter that left
+        assert media_child.live() == 1
+        await async_client.delete(f"{third_box.base}/edit-jobs/{third['job_id']}", headers=other)
+        await asyncio.wait_for(own[third["job_id"]].done.wait(), 15)
+
+
+class TestCancelAndThePublication:
+    """Codex E3: a cancel answered 200 while the result was being hashed, and the original was replaced anyway."""
+
+    async def test_a_cancel_accepted_while_the_result_is_hashed_keeps_the_original(
+        self, async_client, edit, db_session, monkeypatch
+    ):
+        import threading
+
+        real = timelapse_editor._sha256
+        entered, release = threading.Event(), threading.Event()
+
+        def digest(path):
+            entered.set()
+            assert release.wait(20)
+            return real(path)
+
+        monkeypatch.setattr(timelapse_editor, "_sha256", digest)
+        before = edit.file.read_bytes()
+        job = await _start(async_client, edit)
+        url = f"{edit.base}/edit-jobs/{job['job_id']}"
+        try:
+            assert await asyncio.to_thread(entered.wait, 30)
+            response = await async_client.delete(url)
+        finally:
+            release.set()
+        assert response.status_code == 200, response.text
+        ended = await _ended(async_client, url, job["job_id"])
+        assert ended["phase"] == "cancelled", ended
+        assert edit.file.read_bytes() == before and await _pointer(db_session, edit) == edit.relative
+        _no_leftovers(edit)
+
+    @pytest.mark.parametrize("mode", ["replace", "new"])
+    async def test_a_cancel_accepted_while_the_publication_waits_for_its_locks_publishes_nothing(
+        self, async_client, edit, db_session, monkeypatch, mode
+    ):
+        """The seam asks the job once more under its own locks; the cancel arrived before that."""
+        from backend.app.services import archive_media
+
+        waiting, go = asyncio.Event(), asyncio.Event()
+        real = archive_media._load_target
+
+        async def held(db, archive_id, identity, epoch):
+            waiting.set()
+            await go.wait()
+            return await real(db, archive_id, identity, epoch)
+
+        monkeypatch.setattr(archive_media, "_load_target", held)
+        job = await _start(async_client, edit, save_mode=mode)
+        own = timelapse_edit_runtime.jobs[job["job_id"]]
+        try:
+            await asyncio.wait_for(waiting.wait(), 60)
+            assert timelapse_edit_runtime.request_cancel(own) is True  # under the locks, not yet past the last word
+        finally:
+            go.set()
+        await asyncio.wait_for(own.done.wait(), 30)
+        assert (own.phase, own.no_return) == ("cancelled", False)
+        assert edit.file.is_file() and await _pointer(db_session, edit) == edit.relative
+        assert [row.role for row in await _rows(db_session, edit)] == [ROLE_PRIMARY]
+        _no_leftovers(edit)
+
+    async def test_past_the_point_of_no_return_the_cancel_is_refused_and_the_edit_completes(
+        self, async_client, edit, db_session, monkeypatch
+    ):
+        from backend.app.services import archive_media
+
+        past, go = asyncio.Event(), asyncio.Event()
+        real = archive_media._next_revision
+        own_job: dict = {}
+
+        async def held(db, current):
+            # Called by the seam right after it asked the job its last word.
+            if own_job and own_job["job"].no_return:
+                past.set()
+                await go.wait()
+            return await real(db, current)
+
+        monkeypatch.setattr(archive_media, "_next_revision", held)
+        job = await _start(async_client, edit)
+        own_job["job"] = timelapse_edit_runtime.jobs[job["job_id"]]
+        url = f"{edit.base}/edit-jobs/{job['job_id']}"
+        try:
+            await asyncio.wait_for(past.wait(), 60)
+            refused = timelapse_edit_runtime.request_cancel(own_job["job"])
+        finally:
+            go.set()
+        assert refused is False
+        await asyncio.wait_for(own_job["job"].done.wait(), 30)
+        assert own_job["job"].phase == "done"
+        assert await _pointer(db_session, edit) != edit.relative  # it completed, as the refusal said it would
+        # And the door says so: 409, never a 200 the result contradicts.
+        again = await async_client.delete(url)
+        assert again.status_code == 409 and again.json()["detail"]["error"] == "cancel_too_late"
+
+
+class TestTheAdmittedInput:
+    """Codex E4: the job kept a PATH; another video put under it after admission became the result."""
+
+    @staticmethod
+    def _red(tmp_path: Path) -> Path:
+        other = tmp_path / "other.mp4"
+        subprocess.run(
+            [FFMPEG, "-y", "-v", "error", "-f", "lavfi", "-i", "color=red:size=160x120:duration=2:rate=10"]
+            + ["-c:v", "libx264", "-pix_fmt", "yuv420p", str(other)],
+            check=True,
+            timeout=120,
+        )
+        return other
+
+    @staticmethod
+    def _first_pixel(video: Path) -> tuple:
+        raw = subprocess.check_output(
+            [FFMPEG, "-v", "error", "-i", str(video), "-frames:v", "1", "-vf", "scale=1:1"]
+            + ["-pix_fmt", "rgb24", "-f", "rawvideo", "-"],
+            timeout=60,
+        )
+        return tuple(raw[:3])
+
+    async def test_a_video_swapped_in_after_admission_never_reaches_the_result(
+        self, async_client, edit, db_session, tmp_path, monkeypatch
+    ):
+        other = self._red(tmp_path)
+        size = max(edit.file.stat().st_size, other.stat().st_size)
+        for path in (other, edit.file):
+            with path.open("ab") as handle:
+                handle.truncate(size)
+        stamp = edit.file.stat()
+        original = timelapse_edit_runtime.prepare_directory
+
+        async def swap_after(job):
+            await original(job)
+            other.replace(edit.file)  # the same name, the same size, the same time — other bytes
+            os.utime(edit.file, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+
+        monkeypatch.setattr(timelapse_edit_runtime, "prepare_directory", swap_after)
+        done = await _finish(async_client, edit, save_mode="new")
+        assert done["phase"] == "done", done
+        saved = edit.root / (await _rows(db_session, edit))[-1].relative_path
+        red, green, blue = self._first_pixel(saved)
+        assert not (red > 220 and green < 40 and blue < 40), (red, green, blue)
+
+    async def test_a_video_swapped_in_before_the_pin_refuses_the_edit(
+        self, async_client, edit, db_session, tmp_path, monkeypatch
+    ):
+        """Between the archive being read and the place being prepared: nothing is encoded."""
+        other = self._red(tmp_path)
+        real = timelapse_editor._make_directory
+
+        def swap_then_make(root, job_id):
+            other.replace(edit.file)
+            return real(root, job_id)
+
+        monkeypatch.setattr(timelapse_editor, "_make_directory", swap_then_make)
+        refused = await _start(async_client, edit, expect=409)
+        assert refused["detail"]["error"] == "source_changed"
+        assert timelapse_edit_runtime.jobs == {}
+        assert [row.role for row in await _rows(db_session, edit)] == [ROLE_PRIMARY]
+        _no_leftovers(edit)
+
+    async def test_the_pin_is_the_admitted_file_and_goes_with_the_job(self, async_client, edit, monkeypatch):
+        _hang(monkeypatch)
+        job = await _start(async_client, edit)
+        url = f"{edit.base}/edit-jobs/{job['job_id']}"
+        await _until(async_client, url, phases=("encoding",))
+        own = timelapse_edit_runtime.jobs[job["job_id"]]
+        assert own.pinned.parent == own.directory and own.pinned.read_bytes() == edit.file.read_bytes()
+        await async_client.delete(url)
+        assert (await _until(async_client, url))["phase"] == "cancelled"
+        assert edit.file.is_file()  # removing the pin removed a name, not the archive's video
+        _no_leftovers(edit)
+
+    async def test_without_hard_links_the_pin_is_a_checked_copy(self, async_client, edit, db_session, monkeypatch):
+        def no_links(_source, _target):
+            raise OSError("this volume has no hard links")
+
+        monkeypatch.setattr(timelapse_editor.os, "link", no_links)
+        done = await _finish(async_client, edit, save_mode="new")
+        assert done["phase"] == "done", done
+        assert edit.file.is_file() and len(await _rows(db_session, edit)) == 2

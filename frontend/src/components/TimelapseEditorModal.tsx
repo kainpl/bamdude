@@ -635,10 +635,15 @@ export function TimelapseEditorModal({
                 variant="secondary"
                 size="sm"
                 onClick={() => void edit.cancel()}
-                disabled={phase === 'cancelling' || phase === 'publishing'}
+                disabled={phase === 'cancelling' || edit.cancelTooLate}
               >
                 {t('timelapseEditor.cancel')}
               </Button>
+              {edit.cancelTooLate && (
+                <p className="text-amber-400 text-xs max-w-md" data-testid="timelapse-cancel-too-late">
+                  {t('timelapseEditor.cancelTooLate')}
+                </p>
+              )}
             </>
           )}
         </div>

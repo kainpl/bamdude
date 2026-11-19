@@ -10,6 +10,14 @@ handler can cap it or choose where it lands. A raw body is read here chunk by
 chunk into the job's own directory, every byte counted, after the caller was
 authorised and the edit admitted.
 
+⚠️ **The request of before this unit is refused, never reinterpreted.** That
+request was a form (multipart, or URL-encoded) whose fields carried the same
+names — ``save_mode`` among them. Read as the new request it has no query
+parameters at all, so every field would silently take a default: an old client
+asking to *save as new* would have its original replaced. A form content type
+is answered 415 before anything is read, and the default of ``save_mode`` is the
+one that keeps the original (``new``): replacing it is always asked for in words.
+
 Every job door asks three things: the route's permission (``archives:update_all``),
 that the job is this very credential's, and — through the live-authority
 coordinator's own read — that the caller still holds what the job was made
@@ -62,8 +70,10 @@ def _descriptor(request: Request, archive) -> LiveDescriptor:
 
 
 async def _shown_video(db, archive_id: int):
-    """The archive, the video it shows as a contained path, and that video's token — or the 404."""
+    """The archive, the video it shows (a contained path and that file's identity) and its token — or the 404."""
     import asyncio
+    import os
+    import stat
 
     from backend.app.services import archive_media
     from backend.app.services.archive import ArchiveService
@@ -72,19 +82,48 @@ async def _shown_video(db, archive_id: int):
     if not archive or not (archive.timelapse_path or "").strip():
         raise HTTPException(404, "Timelapse not found")
     path = await asyncio.to_thread(archive_media.contained, settings.base_dir, archive.timelapse_path)
-    if path is None or not await asyncio.to_thread(path.is_file):
+
+    def look():
+        try:
+            info = os.stat(path)
+        except OSError:
+            return None
+        return info if stat.S_ISREG(info.st_mode) else None
+
+    info = await asyncio.to_thread(look) if path is not None else None
+    if info is None:
         raise HTTPException(404, "Timelapse file not found")
-    return archive, path, await archive_media.primary_token(db, archive)
+    # Which file the archive shows NOW: the edit is admitted for these bytes and encodes no others.
+    identity = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+    return archive, path, identity, await archive_media.primary_token(db, archive)
 
 
-@router.post("/archives/{archive_id}/timelapse/process", status_code=202)
+_FORM_TYPES = ("multipart/form-data", "application/x-www-form-urlencoded")
+
+
+def _refuse_legacy_form(request: Request) -> None:
+    """The form this door took before it answered 202 is refused before anything is read (see the module)."""
+    content_type = (request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    if content_type in _FORM_TYPES:
+        raise HTTPException(
+            415,
+            {
+                "error": "legacy_request",
+                "message": "This request format is no longer accepted: send the edit as query parameters "
+                "and the music as the request body",
+            },
+        )
+
+
+@router.post("/archives/{archive_id}/timelapse/process", status_code=202, dependencies=[Depends(_refuse_legacy_form)])
 async def process_timelapse(
     archive_id: int,
     request: Request,
     trim_start: float = Query(0),
     trim_end: float | None = Query(None),
     speed: float = Query(1.0),
-    save_mode: str = Query("replace"),
+    # The default never destroys anything: a request that does not say how to save keeps the original.
+    save_mode: str = Query("new"),
     audio_volume: float = Query(1.0),
     mute: bool = Query(False),
     audio_name: str | None = Query(None, max_length=255, description="The music file's name; its bytes are the body"),
@@ -97,7 +136,7 @@ async def process_timelapse(
 
     epoch = queue_sources.current_epoch()
     async with database.async_session() as db:
-        archive, source, token = await _shown_video(db, archive_id)
+        archive, source, source_identity, token = await _shown_video(db, archive_id)
         scope = JobScope("archive", archive.id, _descriptor(request, archive))
     declared = request.headers.get("content-length") or ""
     if audio_name and declared.isdigit() and int(declared) > timelapse_editor.AUDIO_LIMIT:
@@ -133,6 +172,7 @@ async def process_timelapse(
             info=info,
             request=edit,
             output_name=f"{prefix}-{int(time.time())}-{{job}}.mp4",
+            source_identity=source_identity,
         )
     except EditRefused as exc:
         raise _refusal(exc) from None
@@ -180,9 +220,18 @@ async def get_timelapse_edit_job(archive_id: int, job_id: str, request: Request,
 
 @router.delete("/archives/{archive_id}/timelapse/edit-jobs/{job_id}")
 async def cancel_timelapse_edit_job(archive_id: int, job_id: str, request: Request, _=_UPDATE):
-    """Ask the edit to stop. It reads ``cancelled`` only once its encoder has ended and its files are gone."""
+    """Ask the edit to stop. It reads ``cancelled`` only once its encoder has ended and its files are gone.
+
+    An accepted cancel is honoured — nothing of the edit is published. When the
+    publication can no longer be stopped the answer is 409 ``cancel_too_late``,
+    never a 200 the result then contradicts.
+    """
     job = await _own_job(request, archive_id, job_id)
-    timelapse_edit_runtime.request_cancel(job)
+    if not timelapse_edit_runtime.request_cancel(job):
+        raise HTTPException(
+            409,
+            {"error": "cancel_too_late", "message": "The edited video is already being saved and cannot be cancelled"},
+        )
     return job.status()
 
 

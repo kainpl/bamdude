@@ -4853,6 +4853,7 @@ export default {
     progressLabel: 'Encoding progress',
     backgroundHint: 'You can close this window: the edit goes on, and you can come back to it.',
     cancel: 'Cancel the edit',
+    cancelTooLate: 'Too late to cancel: the edited video is already being saved.',
     done: {
       replace: 'The timelapse was replaced with the edited video.',
       new: 'The edited video was saved beside the original. Find it under "Download print videos".',

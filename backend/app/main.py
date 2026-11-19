@@ -13089,6 +13089,9 @@ async def _application_lifespan(app: FastAPI):
     from backend.app.services.timelapse_editor import timelapse_edit_runtime
 
     try:
+        from backend.app.services.encoder_slot import encoder_slot
+
+        encoder_slot.reset()  # a new process has no encoder running
         timelapse_edit_runtime.reopen()
         removed, kept = await asyncio.to_thread(
             timelapse_editor.clean_scratch, timelapse_edit_runtime.scratch_root(), app_settings.base_dir
