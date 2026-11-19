@@ -16,8 +16,8 @@ import {
   type UnifiedPresetsResponse,
 } from '../../api/client';
 import { useSliceJobTracker } from '../../contexts/SliceJobTrackerContext';
-import { TIER_ORDER, resolvePresetName } from '../../utils/presetPickerUtils';
-import { findPreset, pickDefault, pickFilamentForSlot, pickProcessDefault } from '../../utils/slicePresetPicker';
+import { resolvePresetName } from '../../utils/presetPickerUtils';
+import { findPreset, pickPrinterDefault, pickFilamentForSlot, pickProcessDefault } from '../../utils/slicePresetPicker';
 import { buildCompatibilityIndex, presetCompatibility, type PrinterCompatibilityIndex } from '../../utils/slicerPrinterMatch';
 import { Button } from '../Button';
 import { Modal } from '../Modal';
@@ -64,18 +64,6 @@ const INPUT =
   'px-3 py-2 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-white text-sm focus:outline-none focus:border-bambu-gray';
 
 /**
- * The listing's first printer entry may be a model card ("Bambu Lab A1") rather than a machine preset
- * ("Bambu Lab A1 0.4 nozzle"); only the latter says where the printer can print.
- */
-function firstMachinePreset(data: UnifiedPresetsResponse): PresetRef | null {
-  for (const tier of TIER_ORDER) {
-    const found = data[tier].printer.find((preset) => /nozzle/i.test(preset.name));
-    if (found) return { source: found.source, id: found.id };
-  }
-  return null;
-}
-
-/**
  * A chosen preset the listing no longer holds — a re-layout opens with the presets the file was made with,
  * and one of them may have been deleted since. Its select shows nothing, so the row has to say it.
  */
@@ -100,7 +88,7 @@ function defaultsFor(
   compatIndex: PrinterCompatibilityIndex,
   onlyMine = false,
 ): Pick<TargetRow, 'printer' | 'process' | 'filament'> {
-  const chosen = printer ?? firstMachinePreset(data) ?? pickDefault(data, 'printer');
+  const chosen = printer ?? pickPrinterDefault(data);
   const printerName = resolvePresetName(data, chosen, 'printer');
   const fits = (ref: PresetRef | null, slot: 'process' | 'filament') => {
     const preset = findPreset(data, ref, slot);

@@ -15,7 +15,7 @@ const listing = {
   local: { printer: [], process: [preset('10', 'My 3-3-3-15', 'local', { compatible_printers: [MINI] })], filament: [preset('20', '333 Print', 'local', { filament_type: 'PETG', compatible_printers: [MINI] })] },
   orca_cloud: { printer: [], process: [], filament: [] },
   cloud: { printer: [], process: [], filament: [] },
-  standard: { printer: [preset(A1, A1, 'standard'), preset(MINI, MINI, 'standard')], process: [preset('stock-process', 'Stock process', 'standard')], filament: [preset('stock-filament', 'Stock PLA', 'standard', { filament_type: 'PLA' })] },
+  standard: { printer: [preset(A1, A1, 'standard'), preset('Bambu Lab A1 mini 0.2 nozzle', 'Bambu Lab A1 mini 0.2 nozzle', 'standard'), preset(MINI, MINI, 'standard')], process: [preset('stock-process', 'Stock process', 'standard')], filament: [preset('stock-filament', 'Stock PLA', 'standard', { filament_type: 'PLA' })] },
   cloud_status: 'not_authenticated', orca_cloud_status: 'not_authenticated',
 };
 

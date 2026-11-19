@@ -54,7 +54,7 @@ import {
   SLICE_MODAL_TIER_ORDER,
   findPreset,
   findPresetByName,
-  pickDefault,
+  pickPrinterDefault,
   pickEmbeddedFilament,
   pickFilamentForSlot,
   pickOfferedFilamentForSlot,
@@ -1173,7 +1173,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       // any lookup by name.
       const built = builtFrom && findPreset(data, builtFrom.printer, 'printer') ? builtFrom.printer : null;
       setPrinterPreset(
-        built ?? findPresetByName(visibility.visible, 'printer', embeddedPrinter) ?? pickDefault(visibility.visible, 'printer'),
+        built ?? findPresetByName(visibility.visible, 'printer', embeddedPrinter) ?? pickPrinterDefault(visibility.visible),
       );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -47,6 +47,18 @@ export function pickDefault(by: UnifiedPresetsResponse, slot: Slot): PresetRef |
   return null;
 }
 
+/** Prefer the common 0.4 mm machine within the user's source tier, before finer nozzle variants. */
+export function pickPrinterDefault(by: UnifiedPresetsResponse): PresetRef | null {
+  for (const tier of SLICE_MODAL_TIER_ORDER) {
+    const list = by[tier].printer;
+    const preset = list.find((p) => /\b0\.40*\s+nozzle\b/i.test(p.name))
+      ?? list.find((p) => /\bnozzle\b/i.test(p.name))
+      ?? list[0];
+    if (preset) return { source: preset.source, id: preset.id };
+  }
+  return null;
+}
+
 // Resolve a PresetRef back to its UnifiedPreset within the named slot, or null
 // if it no longer resolves (e.g. the preset was deleted between the listing
 // fetch and selection).
