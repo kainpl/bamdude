@@ -36,7 +36,7 @@ async def test_real_print_start_classifies_clear_occupied_and_unavailable(
     from backend.app import main
 
     caplog.set_level(logging.INFO)
-    p = await printer_factory(auto_archive=False, plate_detection_enabled=True)
+    p = await printer_factory(plate_detection_enabled=True)
     p.plate_detection_polygon = POLYGON if polygon else None
     await db_session.commit()
     monkeypatch.setattr(main, "async_session", async_sessionmaker(test_engine, expire_on_commit=False))
@@ -83,6 +83,18 @@ async def test_real_print_start_classifies_clear_occupied_and_unavailable(
         "backend.app.main.smart_plug_manager.on_print_start",
     ]:
         monkeypatch.setattr(path, AsyncMock())
+    # The plate check is this test's subject. Every print is archived, so the
+    # handler would go on to create the archive against the mocked manager: it
+    # stops owning the start as soon as the check has answered.
+    real_check = main._check_plate_at_print_start
+
+    async def check_then_lose_the_start(*args, **kwargs):
+        try:
+            return await real_check(*args, **kwargs)
+        finally:
+            manager.life_holds.return_value = False
+
+    monkeypatch.setattr(main, "_check_plate_at_print_start", check_then_lose_the_start)
     data = {"filename": "Product A.gcode", "subtask_name": "Product A"}
     if job == "internal-path":
         data = {"filename": "/usr/etc/print/auto_cali_for_user.gcode", "subtask_name": "auto_cali_for_user"}

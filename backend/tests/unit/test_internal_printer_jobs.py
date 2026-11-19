@@ -35,11 +35,24 @@ class TestWhatCountsAsInternal:
 
     @pytest.mark.parametrize(
         "subtask",
-        ["auto_pa_line_calib_mode", "pa_line_calib_mode", "pa_pattern_calib_mode", "auto_cali_for_user"],
+        [
+            "auto_pa_line_calib_mode",
+            "pa_line_calib_mode",
+            "pa_pattern_calib_mode",
+            "auto_cali_for_user",
+            "auto_cali_for_user_param",
+        ],
     )
     def test_a_calibration_reported_by_name_only(self, subtask):
         assert is_internal_printer_job(None, subtask)
         assert is_internal_printer_job("", subtask)
+
+    def test_the_a1_p1_calibration_reported_as_a_bare_gcode_name(self):
+        # Upstream c9c13b644: A1 / A1 mini / P1 / A2L report it with no /usr/ path, and it was
+        # archived as a print without a 3MF and announced.
+        assert is_internal_printer_job("auto_cali_for_user_param.gcode", None)
+        assert is_internal_printer_job("auto_cali_for_user_param.gcode", "auto_cali_for_user_param")
+        assert not is_internal_printer_job("auto_cali_for_user_param_holder.gcode.3mf", None)
 
     def test_the_name_is_normalised(self):
         assert is_internal_printer_job("/data/Metadata/AUTO_PA_LINE_CALIB_MODE.gcode.3mf", None)

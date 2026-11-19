@@ -129,6 +129,11 @@
     "title_template": "Наближається пауза",
     "body_template": "{printer}: {filename}\nПауза на шарі {layer}/{total_layers} — {time_to_pause}"
   },
+  "print_outcome_unchecked": {
+    "name": "Результат друку не перевірено",
+    "title_template": "Результат друку не перевірено",
+    "body_template": "{printer}: {filename}\nЗавершено {finished_at}. Результат ще ніхто не перевірив.\n{archive_url}"
+  },
   "test": {
     "name": "Тестове сповіщення",
     "title_template": "Тест BamDude",

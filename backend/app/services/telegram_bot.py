@@ -510,6 +510,16 @@ async def restart_telegram_bot() -> None:
         await _start_locked()
 
 
+def _notify_sent(on_sent, bot, sent) -> None:
+    """Hand a delivered message to the caller's ``on_sent``; its failure is never the send's."""
+    if on_sent is None:
+        return
+    try:
+        on_sent(bot, sent)
+    except Exception:  # noqa: BLE001 — bookkeeping about a message that WAS delivered
+        logger.debug("on_sent callback failed", exc_info=True)
+
+
 async def send_message(provider_id: int, chat_id: str | int, text: str, **kwargs) -> bool:
     """Send a text message as the bot of ``provider_id``.
 
@@ -519,8 +529,11 @@ async def send_message(provider_id: int, chat_id: str | int, text: str, **kwargs
     bot = _bots.get(provider_id)
     if bot is None:
         return False
+    # ``on_sent(bot, message)`` — for a caller that needs the id Telegram gave the message.
+    on_sent = kwargs.pop("on_sent", None)
     try:
-        await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+        sent = await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+        _notify_sent(on_sent, bot, sent)
         return True
     except Exception as e:
         logger.error("Failed to send Telegram message (%s)", type(e).__name__)
@@ -532,11 +545,13 @@ async def send_photo(provider_id: int, chat_id: str | int, photo: bytes, caption
     bot = _bots.get(provider_id)
     if bot is None:
         return False
+    on_sent = kwargs.pop("on_sent", None)
     try:
         from aiogram.types import BufferedInputFile
 
         file = BufferedInputFile(photo, filename="photo.jpg")
-        await bot.send_photo(chat_id=chat_id, photo=file, caption=caption, **kwargs)
+        sent = await bot.send_photo(chat_id=chat_id, photo=file, caption=caption, **kwargs)
+        _notify_sent(on_sent, bot, sent)
         return True
     except Exception as e:
         logger.error("Failed to send Telegram photo (%s)", type(e).__name__)

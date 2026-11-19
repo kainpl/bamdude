@@ -13,7 +13,14 @@ from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Filter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery,
+    ForceReply,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    MessageReactionUpdated,
+)
 from sqlalchemy import select
 
 from backend.app.i18n import escape_md, get_language, t
@@ -21,6 +28,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.print_completion_receipt import PrintCompletionReceipt
 from backend.app.models.printer import Printer
+from backend.app.services import archive_outcome, telegram_outcome_messages
 from backend.app.services.archive_defects import DefectsWrite
 from backend.app.services.archive_parts import load_rows
 from backend.app.services.plate_answers import (
@@ -652,6 +660,221 @@ async def cb_defects_cancel(callback: CallbackQuery, state: FSMContext, tg_chat:
         await state.clear()
     await _replace_prompt(callback.message, escape_md(t(lang, NS, "defects.cancelled")))
     await callback.answer()
+
+
+# ── «checked, no defects» — the button and the reaction shortcut ──
+#
+# Neither is a verdict: fitness is the defect count, and these only say that
+# somebody looked at the plate (``services/archive_outcome``). They ask what the
+# «Брак…» button asks — ``printers:clear_plate`` and the chat's printer scope.
+
+THUMBS_UP = "\U0001f44d"
+THUMBS_DOWN = "\U0001f44e"
+_OUTCOME_CALLBACKS = ("action:defects:", "defok:")
+
+
+def _same_print(archive: PrintArchive, identity: str, *, exact: bool) -> bool:
+    """Whether ``archive`` is the print a button or a remembered message named.
+
+    SQLite hands a deleted print's id to the next one, so the id alone proves
+    nothing. A button carries the start of the identity (callback data is 64
+    bytes); a remembered message carries all of it. A button rendered without
+    an identity (its sender could not read one) is taken by id, as «Брак…» is.
+    """
+    own = archive.recovery_identity or ""
+    if exact:
+        return bool(identity) and own == identity
+    return not identity or own.startswith(identity)
+
+
+async def _mark_no_defects(
+    archive_id: int, identity: str, tg_chat: TelegramChat | None, *, exact: bool
+) -> tuple[str, PrintArchive | None]:
+    """Mark one print's result as checked; the outcome code and the print.
+
+    ``ok`` (this call made the mark) · ``already`` · ``gone`` · ``no_permission`` ·
+    ``not_in_scope`` · ``not_completed``. The defect count is not touched.
+    """
+    from backend.app.core.database import async_session
+    from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+
+    async with async_session() as db, archive_write_scope(db, archive_id):
+        archive = await load_active_archive_for_write(db, archive_id)
+        if archive is None or not _same_print(archive, identity, exact=exact):
+            return "gone", None
+        if not has_perm(tg_chat, "printers:clear_plate"):
+            return "no_permission", archive
+        if not chat_allows_printer(tg_chat, archive.printer_id):
+            return "not_in_scope", archive
+        try:
+            made = await archive_outcome.mark_checked_explicitly(db, archive, by=_actor(tg_chat))
+        except archive_outcome.NotCheckable:
+            return "not_completed", archive
+        await db.commit()
+        return ("ok" if made else "already"), archive
+
+
+def _who(user) -> str:
+    return (getattr(user, "full_name", None) or getattr(user, "username", None) or "").strip() or "—"
+
+
+def _without_outcome_buttons(markup: InlineKeyboardMarkup | None) -> InlineKeyboardMarkup | None:
+    """The card's keyboard without «Брак…» / «Без браку»; the plate answers stay."""
+    rows = [
+        kept
+        for row in (getattr(markup, "inline_keyboard", None) or [])
+        if (kept := [b for b in row if not (b.callback_data or "").startswith(_OUTCOME_CALLBACKS)])
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
+_REFUSALS = {
+    "gone": "defects.gone",
+    "no_permission": "auth.no_permission",
+    "not_in_scope": "auth.not_in_scope",
+    "not_completed": "defects.not_completed",
+}
+
+
+@router.callback_query(F.data.startswith("defok:"))
+async def cb_no_defects(callback: CallbackQuery, tg_chat: TelegramChat | None = None) -> None:
+    """«Без браку» on a completion or reminder message: the result is checked."""
+    lang = await get_language()
+    parts = (callback.data or "").split(":")
+    try:
+        archive_id = int(parts[1])
+    except (IndexError, ValueError):
+        await callback.answer(t(lang, NS, "defects.stale_prompt"), show_alert=True)
+        return
+    identity = parts[2] if len(parts) > 2 else ""
+    code, _archive = await _mark_no_defects(archive_id, identity, tg_chat, exact=False)
+    if code in _REFUSALS:
+        await callback.answer(t(lang, NS, _REFUSALS[code]), show_alert=True)
+        return
+    await callback.answer(t(lang, NS, "defects.checked" if code == "ok" else "defects.checked_already"))
+    message = callback.message
+    remaining = _without_outcome_buttons(getattr(message, "reply_markup", None))
+    try:
+        if code == "ok":
+            # Say who confirmed, on the card itself. ``md_text`` is the card as
+            # MarkdownV2 again (the bot's parse mode), so its formatting survives.
+            line = escape_md(t(lang, NS, "defects.checked_by", who=_who(callback.from_user)))
+            text = f"{message.md_text}\n\n{line}"
+            if getattr(message, "photo", None):
+                await message.edit_caption(caption=text, reply_markup=remaining)
+            else:
+                await message.edit_text(text, reply_markup=remaining)
+        else:
+            await message.edit_reply_markup(reply_markup=remaining)
+    except Exception:  # noqa: BLE001 — the mark is committed; the card is only its echo
+        logger.info("Could not update the card after a «no defects» answer", exc_info=True)
+
+
+class _ReplyTo:
+    """``message.answer`` for a reaction, which brings no Message to answer on."""
+
+    def __init__(self, bot, chat_id: int, message_id: int):
+        self._bot, self._chat_id, self._message_id = bot, chat_id, message_id
+
+    async def answer(self, text: str, **kwargs):
+        return await self._bot.send_message(
+            chat_id=self._chat_id, text=text, reply_to_message_id=self._message_id, **kwargs
+        )
+
+
+async def _reaction_chat(bot_account_id: int, chat_id: int) -> TelegramChat | None:
+    """The authorized chat a reaction came from, or None.
+
+    Reactions do not pass the auth middleware (it would answer an unknown chat's
+    reaction with a registration message), so the same three facts are read here:
+    this bot's chat, active, with a role.
+    """
+    from backend.app.core.database import async_session
+    from backend.app.models.telegram_chat import TelegramChat as Chat
+    from backend.app.services.telegram_bot import provider_id_for_bot
+
+    provider_id = provider_id_for_bot(bot_account_id)
+    if provider_id is None:
+        return None
+    async with async_session() as db:
+        chat = await db.scalar(select(Chat).where(Chat.provider_id == provider_id, Chat.chat_id == chat_id))
+    if chat is None or not chat.is_active or chat.group_id is None:
+        return None
+    return chat
+
+
+def _added_reactions(event: MessageReactionUpdated) -> set[str]:
+    def emojis(reactions) -> set[str]:
+        return {emoji for r in (reactions or []) if isinstance(emoji := getattr(r, "emoji", None), str)}
+
+    return emojis(event.new_reaction) - emojis(event.old_reaction)
+
+
+@router.message_reaction()
+async def on_outcome_reaction(event: MessageReactionUpdated) -> None:
+    """👍 on a completion or reminder message = «checked, no defects»; 👎 = ask for the defects.
+
+    👎 records nothing — it only opens the same prompt the «Брак…» button opens.
+    A reaction that is removed, one by an anonymous admin (no user), one on a
+    message this process does not remember, or one from a chat without the right
+    does nothing, silently: a reaction is not a command that deserves an error.
+    """
+    user = event.user
+    if user is None or getattr(user, "is_bot", False):
+        return
+    added = _added_reactions(event)
+    if THUMBS_UP not in added and THUMBS_DOWN not in added:
+        return
+    bot = event.bot
+    target = telegram_outcome_messages.lookup(bot.id, event.chat.id, event.message_id)
+    if target is None:
+        return
+    archive_id, identity = target
+    tg_chat = await _reaction_chat(bot.id, event.chat.id)
+    if tg_chat is None:
+        return
+    lang = await get_language()
+    reply = _ReplyTo(bot, event.chat.id, event.message_id)
+
+    if THUMBS_DOWN in added:
+        await _prompt_after_reaction(reply, lang, archive_id, identity, tg_chat, user.id)
+        return
+    code, archive = await _mark_no_defects(archive_id, identity, tg_chat, exact=True)
+    if code == "ok" and archive is not None:
+        await reply.answer(
+            f"{await _context(lang, archive)}\n{escape_md(t(lang, NS, 'defects.checked_by', who=_who(user)))}"
+        )
+
+
+async def _prompt_after_reaction(
+    reply: _ReplyTo, lang: str, archive_id: int, identity: str, tg_chat: TelegramChat, user_id: int
+) -> None:
+    from backend.app.core.database import async_session
+
+    async with async_session() as db:
+        archive, rows = await _load(db, archive_id)
+        receipt = await db.scalar(select(PrintCompletionReceipt).where(PrintCompletionReceipt.archive_id == archive_id))
+    if archive is None or not _same_print(archive, identity, exact=True):
+        return
+    if archive.status != "completed" or not archive.quantity:
+        return
+    if not has_perm(tg_chat, "printers:clear_plate") or not chat_allows_printer(tg_chat, archive.printer_id):
+        return
+    if receipt is not None and receipt.assessment is not None:
+        done = t(
+            lang,
+            NS,
+            "defects.done",
+            defective=receipt.assessment.get("defective_count", 0),
+            quantity=archive.quantity or 0,
+        )
+        await reply.answer(f"{await _context(lang, archive)}\n{escape_md(done)}")
+        return
+    draft = _new(archive, rows, (tg_chat.provider_id, reply._chat_id, user_id))
+    if draft is None:
+        await reply.answer(escape_md(t(lang, NS, "defects.too_many")))
+        return
+    await _ask(reply, lang, archive, draft)
 
 
 @router.callback_query(F.data.startswith("defects:"))

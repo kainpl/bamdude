@@ -277,6 +277,13 @@ async def add_to_auto_queue(
     from backend.app.models.library import LibraryFile
     from backend.app.services.queue_add import ensure_source_visible
 
+    if data.archive_id:
+        # Work made from an archive is a reprint of it: the printer queue's door asks the
+        # reprint right beside ``queue:create`` (``_ensure_may_queue_archives``), and so
+        # does this one — reading the archive is not enough to print from it.
+        from backend.app.api.routes.archives import ensure_may_print_from_archive
+
+        await ensure_may_print_from_archive(creds, await db.get(PrintArchive, data.archive_id), current_user)
     ensure_source_visible(
         current_user,
         archive=await db.get(PrintArchive, data.archive_id) if data.archive_id else None,

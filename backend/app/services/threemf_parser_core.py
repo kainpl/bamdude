@@ -228,6 +228,14 @@ class ThreeMFParser:
         except Exception:
             pass  # Skip unparseable slice_info metadata
 
+    def _first_used_filament_index(self) -> int:
+        """0-based index of the first filament the printed plate consumes; 0 when unknown."""
+        for slot in self.metadata.get("filament_slots") or []:
+            slot_id = slot.get("slot_id")
+            if isinstance(slot_id, int) and slot_id >= 1:
+                return slot_id - 1
+        return 0
+
     def _parse_project_settings(self, zf: zipfile.ZipFile):
         """Parse project settings for print configuration."""
         try:
@@ -384,12 +392,18 @@ class ThreeMFParser:
             if bed_temp is not None:
                 self.metadata["bed_temperature"] = bed_temp
 
-            # Nozzle temperature
+            # Nozzle temperature: one value per filament, so the printed plate's
+            # first USED filament's — not filament 1's. A plate that prints only
+            # filament 3 (PETG) showed filament 1's PLA temperature (upstream
+            # 879acdbf1). ``filament_slots`` is what slice_info says this plate
+            # consumes (parsed before the project settings); without it, the
+            # first value as before.
             for key in ["nozzle_temperature_initial_layer", "nozzle_temperature"]:
                 if key in data:
                     val = data[key]
                     if isinstance(val, list) and val:
-                        self.metadata["nozzle_temperature"] = int(float(val[0]))
+                        index = self._first_used_filament_index()
+                        self.metadata["nozzle_temperature"] = int(float(val[index if index < len(val) else 0]))
                     elif isinstance(val, (int, float, str)):
                         self.metadata["nozzle_temperature"] = int(float(val))
                     break

@@ -1101,6 +1101,46 @@ describe('PrintModal', () => {
       });
     });
 
+    // An archive opens on the plate it printed (upstream d9d58de1), and a plate
+    // its file cannot offer falls back to the first one instead of staying
+    // selected with nothing to show.
+    it.each([
+      [3, 3],
+      [7, 1],
+    ])('queues the preselected plate %i of an archive as plate %i', async (preselected, queued) => {
+      const queueRequests: unknown[] = [];
+      server.use(
+        http.post('/api/v1/queue/', async ({ request }) => {
+          queueRequests.push(await request.json());
+          return HttpResponse.json({ id: queueRequests.length, status: 'pending' });
+        }),
+      );
+
+      const user = userEvent.setup();
+      render(
+        <PrintModal
+          mode="add-to-queue"
+          archiveId={1}
+          archiveName="MultiPlate.3mf"
+          preselectedPlateId={preselected}
+          onClose={mockOnClose}
+          onSuccess={mockOnSuccess}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Select All 3 Plates')).toBeInTheDocument();
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      });
+      await user.click(screen.getByText('X1 Carbon'));
+      await user.click(document.querySelector('button[type="submit"]') as HTMLElement);
+
+      await waitFor(() => {
+        expect(queueRequests.length).toBe(1);
+      });
+      expect((queueRequests[0] as { plate_id: number }).plate_id).toBe(queued);
+    });
+
     it('allows selecting a subset of plates to queue', async () => {
       const queueRequests: unknown[] = [];
       server.use(

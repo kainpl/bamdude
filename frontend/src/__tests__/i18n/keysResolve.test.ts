@@ -95,8 +95,6 @@ const KNOWN_MISSING = new Set([
   'common.copy',
   'common.saved',
   'common.target',
-  'inventory.archiveFailed',
-  'inventory.archiveSpoolNotFound',
   'inventory.deleteFailed',
   'inventory.kProfileSaveFailed',
   'inventory.restoreFailed',

@@ -59,7 +59,7 @@ from backend.app.models.settings import Settings
 from backend.app.models.spool import Spool
 from backend.app.models.spool_usage_history import SpoolUsageHistory
 from backend.app.schemas.git_backup import RestoreCategory
-from backend.app.services import meter_watch, swap_compatibility, wear_cost
+from backend.app.services import archive_outcome, meter_watch, swap_compatibility, wear_cost
 from backend.app.services.git_providers.factory import get_provider_backend
 from backend.app.services.git_restore_fields import (
     INVALID,
@@ -1733,6 +1733,10 @@ class GitRestoreService:
                 write, declared = swap_compatibility.restored_declaration(entry, None if insert else row)
                 if insert or write:
                     swap_compatibility.write_archive_fact(row, declared)
+            # «Result checked» is an operator's mark: carried for a protected row too, never
+            # over a local mark, and a restored print without one comes back as checked —
+            # history must not light up as unchecked or be reminded about.
+            archive_outcome.carry_restored(row, _parse_dt(entry.get("outcome_checked_at")), insert=insert)
             if insert:
                 db.add(row)
             await db.flush()

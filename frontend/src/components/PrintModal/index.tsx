@@ -1161,16 +1161,22 @@ export function PrintModal({
   );
 
   // Keep a library selection valid when an external file is replaced in place
-  // and its refreshed plate list is shorter or has different real indices.
+  // and its refreshed plate list is shorter or has different real indices. An
+  // archive opens on the plate it printed (`preselectedPlateId`), which is
+  // checked against its file the same way: a plate the file cannot offer falls
+  // back to the first one rather than staying selected with nothing to show.
+  // A queue row being edited keeps its own plate — its bytes are the job's.
+  const selectionFollowsPlates =
+    isLibraryFile || (!!archiveId && !isSnapshotSource && (mode === 'reprint' || mode === 'add-to-queue'));
   useEffect(() => {
     if (!platesData?.plates?.length) return;
     const available = new Set(platesData.plates.map(plate => plate.index));
     setSelectedPlates(current => {
-      const valid = isLibraryFile ? new Set([...current].filter(index => available.has(index))) : current;
+      const valid = selectionFollowsPlates ? new Set([...current].filter(index => available.has(index))) : current;
       if (valid.size === current.size && valid.size > 0) return current;
       return valid.size ? valid : new Set([platesData.plates[0].index]);
     });
-  }, [platesData, isLibraryFile, selectedPlates.size]);
+  }, [platesData, selectionFollowsPlates, selectedPlates.size]);
 
   // --- Which ORDER this print is filed under -------------------------------
   // ⚠️ The dialog asks only when nobody has already answered. A caller that

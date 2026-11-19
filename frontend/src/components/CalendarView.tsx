@@ -60,15 +60,18 @@ export function CalendarView({ buckets, printerMap }: CalendarViewProps) {
     return result;
   }, []);
 
-  // The server keys each bucket on `completed_at ?? created_at`, which is the
-  // axis this calendar has always shown.
+  // A print's day is the day it was CREATED (`started`, keyed on `created_at`) —
+  // the same axis, in the same zone, as the list an opened day shows
+  // (`GET /archives?date_from=&date_to=` filters `created_at`) and as statistics
+  // select a period. Counted on `ended` (`completed_at`), a print that ran past
+  // midnight was in one day's number and in the other day's list.
   const countsByDate = useMemo(() => {
     const map = new Map<string, { count: number; success: number; failed: number }>();
     buckets.forEach(bucket => {
       map.set(bucket.at, {
-        count: bucket.ended.prints,
-        success: bucket.ended.completed,
-        failed: bucket.ended.failed,
+        count: bucket.started.prints,
+        success: bucket.started.completed,
+        failed: bucket.started.failed,
       });
     });
     return map;
@@ -78,9 +81,9 @@ export function CalendarView({ buckets, printerMap }: CalendarViewProps) {
   today.setHours(0, 0, 0, 0);
 
   // Stats for the 30-day period
-  const totalPrints = buckets.reduce((sum, b) => sum + b.ended.prints, 0);
-  const successCount = buckets.reduce((sum, b) => sum + b.ended.completed, 0);
-  const failedCount = buckets.reduce((sum, b) => sum + b.ended.failed, 0);
+  const totalPrints = buckets.reduce((sum, b) => sum + b.started.prints, 0);
+  const successCount = buckets.reduce((sum, b) => sum + b.started.completed, 0);
+  const failedCount = buckets.reduce((sum, b) => sum + b.started.failed, 0);
 
   // Find max prints per day for scaling
   const maxPerDay = useMemo(() => {

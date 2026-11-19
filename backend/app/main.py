@@ -670,6 +670,17 @@ _HMS_FAILURE_REASONS: dict[str, str] = {
     "0701_8007": "cloggedNozzle",
     "0701_8013": "cloggedNozzle",
     "0702_8003": "cloggedNozzle",
+    # The printer's own AI monitor halting the print: spaghetti / the model off
+    # the plate (upstream a6ce26205). ``spaghettiDetached`` is a key the archive
+    # editor already offers. 0C00_8042 is a FULL short code with a documented
+    # meaning, so the module-0x0C warning above does not apply (the H2D cancel
+    # echo is 0C00_001B). 0300_8003 arrives with the print already paused,
+    # offering only "resume with defects" / "stop".
+    # Left out on purpose: 0C00_C004 ("possible spaghetti" -- a warning about a
+    # print still running) and 0300_800A (a pile-up in the waste chute -- not
+    # the print failing).
+    "0300_8003": "spaghettiDetached",
+    "0C00_8042": "spaghettiDetached",
 }
 
 
@@ -1826,6 +1837,18 @@ def _printer_reported_options(
     return {"ams_mapping": _get_start_ams_mapping(data, archive_id, archive_identity), "plate_id": plate_id}
 
 
+def mqtt_tray_color_to_hex(value) -> str:
+    """The printer's ``RRGGBBAA`` tray colour as the archive stores colours: ``#RRGGBB``.
+
+    Every other writer of ``PrintArchive.filament_color`` (the 3MF, the loaded
+    spool) stores the ``#``-prefixed six digits, and the Archives page uses the
+    token as a CSS colour — a bare ``FF8800FF`` painted an empty chip (upstream
+    879acdbf1). Anything that is not a hex colour is no colour.
+    """
+    hex_color = str(value or "").strip().lstrip("#").upper()[:6]
+    return f"#{hex_color}" if re.fullmatch(r"[0-9A-F]{6}", hex_color) else ""
+
+
 def _extract_filament_data_from_mqtt(data: dict, ams_mapping: list[int] | None = None) -> dict[str, str]:
     """Best-effort filament metadata from the MQTT print-start snapshot.
 
@@ -1858,7 +1881,13 @@ def _extract_filament_data_from_mqtt(data: dict, ams_mapping: list[int] | None =
     if not isinstance(ams_units, list) or not ams_units:
         return result
 
-    # Map global tray id (unit * 4 + tray) → (type, color).
+    from backend.app.services.usage_tracker import _global_tray_id
+
+    # Map global tray id → (type, color), addressed as the print's ams_mapping
+    # addresses it: unit * 4 + tray, or the bare unit id for an AMS-HT (from
+    # 128, one tray). ``unit * 4`` for an HT put its spool at 512 while the
+    # mapping names 128, so an HT-fed print got no filament at all (upstream
+    # 879acdbf1).
     loaded: dict[int, tuple[str, str]] = {}
     for unit in ams_units:
         if not isinstance(unit, dict):
@@ -1875,10 +1904,10 @@ def _extract_filament_data_from_mqtt(data: dict, ams_mapping: list[int] | None =
             except (TypeError, ValueError):
                 continue
             ttype = (tray.get("tray_type") or "").strip()
-            tcolor = (tray.get("tray_color") or "").strip().upper()
+            tcolor = mqtt_tray_color_to_hex(tray.get("tray_color"))
             if not ttype:
                 continue  # Empty / unloaded slot.
-            loaded[unit_id * 4 + tray_id] = (ttype, tcolor)
+            loaded[_global_tray_id(unit_id, tray_id)] = (ttype, tcolor)
 
     if not loaded:
         return result
@@ -1894,15 +1923,18 @@ def _extract_filament_data_from_mqtt(data: dict, ams_mapping: list[int] | None =
     # Comma + space, each material once — the form every other writer of the
     # column uses (a two-slot PLA job is "PLA", not "PLA,PLA").
     types_joined = ", ".join(dict.fromkeys(f[0] for f in filaments))
-    colors_joined = ",".join(f[1] for f in filaments if f[1])
-
     # Column limits per backend/app/models/archive.py: filament_type=50,
-    # filament_color=50 (upstream's column is 200 — ours is 50, so truncate
-    # tighter or PostgreSQL raises on a long multi-filament color string).
+    # filament_color=50 (upstream's column is 200 — ours is 50, or PostgreSQL
+    # raises on a long multi-filament color string). Whole colours only: a
+    # string cut at 50 characters ended in half a colour.
+    colors: list[str] = []
+    for color in (f[1] for f in filaments):
+        if color and len(",".join([*colors, color])) <= 50:
+            colors.append(color)
     if types_joined:
         result["filament_type"] = types_joined[:50]
-    if colors_joined:
-        result["filament_color"] = colors_joined[:50]
+    if colors:
+        result["filament_color"] = ",".join(colors)
     return result
 
 
@@ -3817,9 +3849,14 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                     from backend.app.services import spool_single_slot as _single_slot
 
                     _settled = await _single_slot.resolve_duplicates(db, printer_id)
+                    # A spool archived before archiving vacated its slots still holds
+                    # its row here; it goes once the printer reports that it is idle.
+                    _retired = await _single_slot.release_archived(db, printer_id)
                     await db.commit()
-                    if _settled.vacated:
-                        _single_slot._pending_announce.setdefault(printer_id, []).extend(_settled.vacated)
+                    if _settled.vacated or _retired.vacated:
+                        _single_slot._pending_announce.setdefault(printer_id, []).extend(
+                            _settled.vacated + _retired.vacated
+                        )
                 except Exception:  # noqa: BLE001 — a duplicate row survives until the next pass
                     await db.rollback()
                     logger.exception("Could not settle doubled spool assignments for printer %s", printer_id)
@@ -5317,13 +5354,15 @@ async def _on_print_start_impl(printer_id: int, data: dict):
             if not owns_start():
                 return
 
-        if not printer or not printer.auto_archive:
-            # Send notification without archive data (auto-archive disabled)
-            logger.info(
-                f"[CALLBACK] Skipping archive - printer: {printer is not None}, auto_archive: {printer.auto_archive if printer else 'N/A'}"
-            )
+        # The archive is the print log: every physical print is one row. There is
+        # no "auto-archive" switch — the ``auto_archive`` column of ``printers`` is an upstream
+        # leftover column nothing reads (owner, 2026-11-19); a row that still
+        # holds False is archived like any other.
+        if not printer:
+            # Send notification without archive data (no printer row to archive under)
+            logger.info("[CALLBACK] Skipping archive - printer %s is not in the DB", printer_id)
             if not notification_sent and owns_start():
-                # Even with auto-archive disabled, try to recover created_by_id from
+                # Even without an archive, try to recover created_by_id from
                 # a registered expected print (e.g. a library-file queue item) so the
                 # user start email can still be sent.
                 _fn = data.get("filename", "")
@@ -5438,6 +5477,8 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                 from backend.app.services import dispatch_phase as _dispatch_phase
 
                 _dispatch_phase.mark_seen_running(archive)
+                # ...and the end that watchdog wrote is not this print's.
+                _dispatch_phase.forget_earlier_outcome(archive)
 
                 # Reprint of an archive reuses the source row. Without resetting
                 # ``timelapse_path`` _scan_for_timelapse_with_retries early-returns
@@ -7205,11 +7246,6 @@ async def _adopt_running_print(printer_id: int, data: dict, logger, *, still_cur
             printer = (await db.execute(select(Printer).where(Printer.id == printer_id))).scalar_one_or_none()
             if printer is None:
                 logger.warning("[ADOPT] Printer %s is not in the DB — nothing to adopt the print onto", printer_id)
-                return None
-            if not printer.auto_archive:
-                # The operator turned archiving off for this machine;
-                # ``on_print_start`` would have returned here too.
-                logger.info("[ADOPT] Printer %s has auto_archive off — the running print is not adopted", printer_id)
                 return None
 
             archive = PrintArchive(
@@ -9723,7 +9759,11 @@ async def _on_print_complete_impl(
                         ended_at=terminal_at,
                         record_holds=lambda: printer_manager.life_holds(printer_id, data.get("_bamdude_printer_life")),
                     )
-                    if queue_status == "failed" and not bound_archive.failure_reason:
+                    if queue_status == "completed":
+                        # A print that completed has no failure reason, whatever an
+                        # earlier end of this row left on it.
+                        bound_archive.failure_reason = None
+                    elif queue_status == "failed" and not bound_archive.failure_reason:
                         bound_archive.failure_reason = (
                             derive_failure_reason(
                                 queue_status,

@@ -79,6 +79,8 @@ ALL_NOTIFY_EVENTS = [
     "first_layer_complete",
     # A heads-up before a slicer pause. Not in DEFAULT_NOTIFY_EVENTS: a chat asks for it.
     "pause_coming_up",
+    # A reminder about a finished print nobody has checked. Not in DEFAULT_NOTIFY_EVENTS either.
+    "print_outcome_unchecked",
     # Queue
     "queue_job_added",
     "queue_job_started",

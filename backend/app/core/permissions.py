@@ -476,13 +476,16 @@ DEFAULT_GROUPS = {
             Permission.PRINTERS_AMS_RFID.value,
             Permission.PRINTERS_CLEAR_PLATE.value,
             # Archives - read farm-wide (BamDude is a shared farm; operators
-            # see every operator's prints), write/delete/reprint own only.
+            # see every operator's prints), write/delete own only. Reprint any
+            # archive (m249): queueing or re-slicing a colleague's print, or an
+            # ownerless one started at the printer, is ordinary operator work.
             Permission.ARCHIVES_READ.value,  # legacy — frontend download/preview gate
             Permission.ARCHIVES_READ_ALL.value,
             Permission.ARCHIVES_CREATE.value,
             Permission.ARCHIVES_UPDATE_OWN.value,
             Permission.ARCHIVES_DELETE_OWN.value,
             Permission.ARCHIVES_REPRINT_OWN.value,
+            Permission.ARCHIVES_REPRINT_ALL.value,
             # Queue - read farm-wide, write/delete own only
             Permission.QUEUE_READ.value,  # legacy — frontend gate
             Permission.QUEUE_READ_ALL.value,

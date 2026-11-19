@@ -109,6 +109,7 @@ EVENT_VARIABLES: dict[str, list[str]] = {
         "timestamp",
         "app_name",
     ],
+    "print_outcome_unchecked": ["printer", "filename", "finished_at", "archive_url", "timestamp", "app_name"],
     # Events whose templates are editable like the rest (the variables each default template uses).
     "plate_not_empty": ["printer", "timestamp", "app_name"],
     "filament_deficit": ["printer", "print_name", "needed", "slot", "available", "missing", "timestamp", "app_name"],
@@ -449,6 +450,14 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "total_layers": "250",
         "time_to_pause": "in about 5 min",
         "minutes": "5",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "BamDude",
+    },
+    "print_outcome_unchecked": {
+        "printer": "Bambu X1C",
+        "filename": "Benchy",
+        "finished_at": "2024-01-15 13:30",
+        "archive_url": "https://bamdude.example/archives?outcome=unchecked",
         "timestamp": "2024-01-15 14:30",
         "app_name": "BamDude",
     },

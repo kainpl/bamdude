@@ -935,6 +935,9 @@ class GitBackupService:
                     # Wear: the figure charged to this run and the rate applied -- facts of the run.
                     "wear_cost": a.wear_cost,
                     "wear_rate": a.wear_rate,
+                    # When somebody looked at this print's result (an operator's mark, not a
+                    # verdict). Without it every restored print would read «not checked yet».
+                    "outcome_checked_at": a.outcome_checked_at.isoformat() if a.outcome_checked_at else None,
                     "quantity": a.quantity,
                     "created_at": a.created_at.isoformat() if a.created_at else None,
                     # ⚠️ Soft-deleted archives are collected too — the row is kept

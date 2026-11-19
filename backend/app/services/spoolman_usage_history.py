@@ -405,6 +405,21 @@ async def delete_row(db: AsyncSession, spool_id: int, usage_id: int) -> bool:
     return bool(result.rowcount)
 
 
+async def archives_with_usage(db: AsyncSession, archive_ids: list[int]) -> set[int]:
+    """Which of these archives have a usage row here — a yes/no per print, no row is shown.
+
+    For the archive list's «this cost is one full print's» mark: a print with a row
+    in either ledger was measured. Not fenced to Spoolman mode on purpose — the
+    question is whether the run was ever measured, whatever inventory is in use now.
+    """
+    if not archive_ids:
+        return set()
+    rows = await db.execute(
+        select(SpoolmanUsageHistory.archive_id).where(SpoolmanUsageHistory.archive_id.in_(archive_ids)).distinct()
+    )
+    return {archive_id for archive_id in rows.scalars() if archive_id is not None}
+
+
 async def detach_archive(db: AsyncSession, archive_id: int) -> None:
     """A deleted archive leaves its rows without a link (SQLite runs no FK actions,
     and on PostgreSQL the reference would block the delete). The caller commits."""

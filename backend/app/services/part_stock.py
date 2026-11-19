@@ -111,6 +111,9 @@ NOTE_DEFECTS_RECORDED = "defects_recorded"
 NOTE_ASSEMBLED = "assembled"
 # Kits a completed order never assembled go back on the shelf (spec workshop-order-issue, rule 12).
 NOTE_ORDER_COMPLETED = "order_completed"
+# The print's status was changed by hand: leaving ``completed`` takes its credit off the shelf, entering it
+# puts the credit on (:func:`follow_status_change`).
+NOTE_STATUS_EDITED = "status_edited"
 
 NOTE_TOKENS = (
     NOTE_ORDER_CANCELLED,
@@ -123,6 +126,7 @@ NOTE_TOKENS = (
     NOTE_DEFECTS_RECORDED,
     NOTE_ASSEMBLED,
     NOTE_ORDER_COMPLETED,
+    NOTE_STATUS_EDITED,
 )
 
 #: The one archive status a print may be credited from. Spelled here rather
@@ -1532,7 +1536,9 @@ async def credit_if_unfiled(
         return []
 
 
-async def reverse_unfiled_print(db: AsyncSession, archive: PrintArchive, note: str) -> list[ProductPartStockMovement]:
+async def reverse_unfiled_print(
+    db: AsyncSession, archive: PrintArchive, note: str, *, created_by: int | None = None
+) -> list[ProductPartStockMovement]:
     """Take back what an archive put on the shelf, once (Decision 3).
 
     Filing a print under an order after the fact means the order's own figures
@@ -1541,8 +1547,9 @@ async def reverse_unfiled_print(db: AsyncSession, archive: PrintArchive, note: s
     and the same ``archive_id``, so the product's history reads as a pair
     rather than as a number that changed by itself.
 
-    ``note`` is a token from :data:`NOTE_TOKENS` (Ruling 17) — in practice
-    ``NOTE_FILED_UNDER_ORDER``, the only reason this reversal ever runs.
+    ``note`` is a token from :data:`NOTE_TOKENS` (Ruling 17):
+    ``NOTE_FILED_UNDER_ORDER`` for a filing, ``NOTE_STATUS_EDITED`` when the
+    print was taken out of ``completed`` by hand (:func:`follow_status_change`).
 
     **Idempotent by arithmetic, not by a flag**: the sum of everything carrying
     this ``archive_id`` is what gets negated, so a second filing finds zero and
@@ -1580,7 +1587,15 @@ async def reverse_unfiled_print(db: AsyncSession, archive: PrintArchive, note: s
             logger.info("part_stock: part %s no longer holds stock; archive %s not reversed on it", part_id, archive.id)
             continue
         try:
-            movement = await move(db, part_id=part_id, delta=-net, reason="manual", archive_id=archive.id, note=note)
+            movement = await move(
+                db,
+                part_id=part_id,
+                delta=-net,
+                reason="manual",
+                archive_id=archive.id,
+                note=note,
+                created_by=created_by,
+            )
         except PartStockError:
             refused.append(part_id)
             continue
@@ -1695,6 +1710,52 @@ async def adjust_unfiled_print(
             continue
         if movement is not None:
             result.written.append(movement)
+    return result
+
+
+async def follow_status_change(
+    db: AsyncSession, archive: PrintArchive, *, status_before: str, created_by: int | None = None
+) -> AdjustResult:
+    """Make the shelf follow a status set by hand — ``archive.status`` already holds the new value.
+
+    The credit of an order-less print belongs to ``completed`` alone
+    (:func:`credit_unfiled_print`), so an edit that crosses that line moves it:
+
+    * **leaving ``completed``** takes back whatever this archive still holds on
+      the shelf (:func:`reverse_unfiled_print` — every row carrying its id, so a
+      late-defects correction is taken back with the credit);
+    * **entering ``completed``** credits it as the completion hook would
+      (:func:`credit_unfiled_print`: order-less, a library file, ``printed −
+      defective`` per part, nothing for a part already standing).
+
+    Any other edit — between two failure statuses, or the same status sent
+    again — writes nothing, and both halves are idempotent by the archive's net,
+    so the same edit twice moves the shelf once.
+
+    **Never raises for a refusal**, as :func:`adjust_unfiled_print` does not: a
+    part whose stock was already spent is returned in ``refused`` after every
+    other part was taken back. The archive is the print history and must be
+    allowed to say what the print became; the shelf is corrected by hand.
+    Flushes through :func:`move`; the caller commits.
+    """
+    result = AdjustResult()
+    status_now = archive.status
+    if (status_before == _COMPLETED) == (status_now == _COMPLETED):
+        return result
+    if status_now == _COMPLETED:
+        result.written = await credit_unfiled_print(db, archive, created_by=created_by, note=NOTE_STATUS_EDITED)
+        return result
+    standing = {part_id for part_id, net in (await _net_by_part(db, archive.id)).items() if net > 0}
+    if not standing:
+        return result
+    try:
+        result.written = await reverse_unfiled_print(db, archive, NOTE_STATUS_EDITED, created_by=created_by)
+    except PartStockError:
+        # ``reverse_unfiled_print`` wrote what it could before it raised: the parts
+        # still standing afterwards are the ones the ledger refused.
+        result.refused = sorted(
+            part_id for part_id, net in (await _net_by_part(db, archive.id)).items() if net > 0 and part_id in standing
+        )
     return result
 
 

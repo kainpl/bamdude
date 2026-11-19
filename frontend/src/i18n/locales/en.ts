@@ -1888,6 +1888,19 @@ export default {
 
   // Archives page
   archives: {
+    outcome: {
+      unchecked: 'Not checked',
+      uncheckedTitle: 'Nobody has checked the result of this print yet. Record its defects, or mark it as having none.',
+      noDefects: 'No defects',
+      noDefectsHelp: 'The result of this print has not been checked yet. Record defects above, or confirm there are none.',
+      marked: 'Marked as checked, no defects',
+      markedCount: 'Marked as checked: {{count}}',
+      markFailed: 'Could not mark the print as checked',
+      noneUncheckedSelected: 'None of the selected prints is waiting to be checked',
+      filter: 'Unchecked',
+      filterShow: 'Show only prints whose result has not been checked',
+      filterShowAll: 'Show all prints',
+    },
     media: {
       title: 'Print videos',
       open: 'Download print videos',
@@ -1926,6 +1939,18 @@ export default {
       },
     },
     costEstimate: 'Estimate at the default filament price. The cost is taken from the spools when the print ends.',
+    costFullPrint: 'The cost of one full print of this plate. This print did not finish and the filament it used was not measured.',
+    // A print's status by name — one source for the editor and wherever a status is spelled out.
+    stockNotFollowed: 'The status was changed, but free stock could not be corrected: some of this print\'s parts are already used. Correct the stock by hand on the product page.',
+    statusNames: {
+      completed: 'Completed',
+      failed: 'Failed',
+      aborted: 'Aborted',
+      cancelled: 'Cancelled',
+      stopped: 'Stopped',
+      printing: 'Printing',
+      archived: 'Not printed',
+    },
     wear: {
       title: 'Printer wear charged to this print',
       titleWithRate: 'Printer wear charged to this print, at {{rate}} per printing hour',
@@ -3630,6 +3655,8 @@ export default {
     pauseWarningMinutes: 'Pause heads-up lead time',
     pauseWarningMinutesHelp: 'How long before a pause added in the slicer the “Pause coming up” event is sent. The time is known only at Standard speed for a file with time markers; otherwise the event is sent when the print reaches the layer before the pause. 0 switches the event off.',
     pauseWarningMinutesUnit: 'min',
+    outcomeReminderMinutes: 'Unchecked result reminder',
+    outcomeReminderMinutesHelp: 'How long a completed print may stay unchecked before the “Result not checked” event is sent, once per print. Recording defects or marking the print “No defects” makes it checked.',
     userNotificationsEnabled: 'User Notifications',
     userNotificationsEnabledDescription: 'Enable the user notifications menu and email notifications for print job events. Requires Advanced Authentication.',
     addProvider: 'Add Provider',
@@ -8987,6 +9014,7 @@ export default {
       defects_recorded: 'defects recorded after the print was counted',
       assembled: 'assembled into a stock position',
       order_completed: 'the order was completed without assembling them',
+      status_edited: 'the print\'s status was changed by hand',
     },
     adjust: {
       open: 'Adjust',
@@ -9949,6 +9977,7 @@ export default {
       failed: '{{action}} failed for all {{count}} spools',
       failedGeneric: 'Bulk action failed',
       deleteRefused: 'Deleted {{ok}}. {{count}} spool(s) have usage history or are in use and were kept - archive them instead.',
+      archiveRefused: 'Archived {{ok}}. {{count}} spool(s) are in a slot a running print feeds from and were kept - archive them when the print ends.',
       action: {
         archive: 'Archive',
         restore: 'Restore',
@@ -10086,6 +10115,8 @@ export default {
     spoolRestored: 'Spool restored',
     deleteConfirm: 'Are you sure you want to delete this spool? This cannot be undone.',
     archiveConfirm: 'Are you sure you want to archive this spool?',
+    archiveFailed: 'Could not archive the spool',
+    archiveSpoolNotFound: 'Spool not found',
     // Tabs
     filamentInfoTab: 'Filament Info',
     paProfileTab: 'PA Profile',
@@ -11216,8 +11247,6 @@ export default {
     title: 'Edit Archive',
     name: 'Name',
     namePlaceholder: 'Print name',
-    printer: 'Printer',
-    noPrinter: 'No printer',
     order: 'Order',
     line: 'Line',
     itemsPrinted: 'Items Printed',
@@ -11273,13 +11302,7 @@ export default {
       dispatchPreparationError: 'Dispatch: preparation error',
       dispatchInternalError: 'Dispatch: internal error'
     },
-    // Archive statuses
-    statuses: {
-      completed: 'Completed',
-      failed: 'Failed',
-      aborted: 'Cancelled',
-      printing: 'Printing'
-    }
+    statusLocked: 'This print is still running — its status follows the printer and cannot be changed here.',
   },
 
   // K-Profiles
@@ -12260,6 +12283,8 @@ export default {
     firstLayerCompleteDescription: 'Notify with snapshot when first layer finishes',
     pauseComingUpLabel: 'Pause Coming Up',
     pauseComingUpDescription: 'A heads-up shortly before a pause added in the slicer',
+    printOutcomeUncheckedLabel: 'Result Not Checked',
+    printOutcomeUncheckedDescription: 'A reminder when nobody has checked the result of a completed print',
     missingSpoolAssignmentLabel: 'Missing Spool Assignment',
     missingSpoolAssignmentDescription: 'Notify when a print starts with trays that have no assigned spool, and when a finished print could not charge its filament to one',
     // Inventory stock alert events (upstream #1184)
@@ -12495,6 +12520,7 @@ export default {
         print_missing_spool_assignment: 'Missing spool assignment (at print start, or filament not charged)',
         first_layer_complete: 'First layer complete',
         pause_coming_up: 'Pause coming up',
+        print_outcome_unchecked: 'Print result not checked',
         bed_cooled: 'Bed cooled down',
         printer_error: 'Printer error',
         printer_offline: 'Printer offline',

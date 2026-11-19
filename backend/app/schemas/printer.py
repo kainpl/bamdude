@@ -97,7 +97,6 @@ class PrinterBase(BaseModel):
     def _no_legacy_location(cls, values):
         return reject_legacy_key(values, "location", "location_id")
 
-    auto_archive: bool = True
     cleanup_after_print: bool = True
     # Wear cost per printing hour; empty or 0 = off. Applies to prints that end after it was set.
     wear_cost_per_hour: float | None = Field(default=None, ge=0, le=100000)
@@ -158,7 +157,6 @@ class PrinterUpdate(IgnoresNullForRequiredColumns):
     def _no_legacy_location(cls, values):
         return reject_legacy_key(values, "location", "location_id")
 
-    auto_archive: bool | None = None
     cleanup_after_print: bool | None = None
     mqtt_connection_timeout: int | None = None
     print_hours_offset: float | None = None

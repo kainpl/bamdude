@@ -1349,6 +1349,7 @@ export function SettingsPage() {
       (baseline.telemetry_enabled ?? true) !== (localSettings.telemetry_enabled ?? true) ||
       (baseline.bed_cooled_threshold ?? 35) !== (localSettings.bed_cooled_threshold ?? 35) ||
       (baseline.pause_warning_minutes ?? 5) !== (localSettings.pause_warning_minutes ?? 5) ||
+      (baseline.outcome_reminder_after_minutes ?? 60) !== (localSettings.outcome_reminder_after_minutes ?? 60) ||
       baseline.ams_humidity_good !== localSettings.ams_humidity_good ||
       baseline.ams_humidity_fair !== localSettings.ams_humidity_fair ||
       baseline.ams_temp_good !== localSettings.ams_temp_good ||
@@ -1476,6 +1477,7 @@ export function SettingsPage() {
         telemetry_enabled: localSettings.telemetry_enabled,
         bed_cooled_threshold: localSettings.bed_cooled_threshold,
         pause_warning_minutes: localSettings.pause_warning_minutes,
+        outcome_reminder_after_minutes: localSettings.outcome_reminder_after_minutes,
         ams_humidity_good: localSettings.ams_humidity_good,
         ams_humidity_fair: localSettings.ams_humidity_fair,
         ams_temp_good: localSettings.ams_temp_good,
@@ -4099,6 +4101,31 @@ export function SettingsPage() {
                   </div>
                 </div>
               </div>
+
+              {/* How long a completed print may stay unchecked before its one reminder */}
+              <div className="space-y-3 pt-4 border-t border-bambu-dark-tertiary">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <label htmlFor="outcome-reminder-minutes" className="block text-sm text-white">
+                      {t('settings.outcomeReminderMinutes')}
+                    </label>
+                    <p className="text-xs text-bambu-gray mt-1">{t('settings.outcomeReminderMinutesHelp')}</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <NumberInput
+                      id="outcome-reminder-minutes"
+                      min={5}
+                      max={10080}
+                      step={5}
+                      value={localSettings.outcome_reminder_after_minutes ?? 60}
+                      onChange={(v) => updateSetting('outcome_reminder_after_minutes', Math.round(v))}
+                      fallback={60}
+                      className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
+                    />
+                    <span className="text-bambu-gray">{t('settings.pauseWarningMinutesUnit')}</span>
+                  </div>
+                </div>
+              </div>
             </CardContent>
           </Card>
 
@@ -5148,6 +5175,7 @@ export function SettingsPage() {
                   bed_cooled: { group: 'print', channel: 'all' },
                   first_layer_complete: { group: 'print', channel: 'all' },
                   pause_coming_up: { group: 'print', channel: 'all' },
+                  print_outcome_unchecked: { group: 'print', channel: 'all' },
                   // Printer status
                   printer_offline: { group: 'printer', channel: 'all' },
                   printer_error: { group: 'printer', channel: 'all' },

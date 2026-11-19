@@ -991,7 +991,6 @@ export interface Printer {
   // (Maintenance Mode). GET /printers/ excludes them unless include_archived.
   archived: boolean;
   archived_at: string | null;
-  auto_archive: boolean;
   cleanup_after_print: boolean;
   mqtt_connection_timeout: number;
   /** Wear cost per printing hour; null or 0 = off. Older servers omit it. */
@@ -1648,7 +1647,6 @@ export interface PrinterCreate {
   model?: string;
   location_id?: number | null;
   tag_ids?: number[];
-  auto_archive?: boolean;
   // Maintenance Mode (#1476). Backend already gates MQTT, queue dispatch,
   // scheduler, metrics and the print picker on this; PATCH /printers/{id}
   // disconnects or reconnects MQTT accordingly.
@@ -1934,6 +1932,12 @@ export interface Archive {
   /** The print still runs: `cost` is the start placeholder at the default
    *  filament price, replaced from the spools when the print ends. */
   cost_is_estimate?: boolean;
+  /** A print that did not finish and whose filament was never measured: `cost` is the whole
+   *  plate's figure, not what this run used. Sent by the list and the detail reads only. */
+  cost_is_full_print?: boolean;
+  /** Only in the answer to an edit: the status changed, but free stock could not follow on
+   *  some part (already used) — the shelf needs a correction by hand. */
+  stock_not_followed?: boolean;
   photos: string[] | null;
   failure_reason: string | null;
   quantity: number;
@@ -1941,6 +1945,11 @@ export interface Archive {
    *  (the printer's own s_obj list, so screen-initiated skips count too) and
    *  editable by hand. Never subtracted from quantity or any total. */
   defective_count: number;
+  /** When somebody looked at this print's result — a defects write (a zero too) or the explicit
+   *  «No defects» mark. Not a verdict: fitness is `defective_count`. Older servers omit both. */
+  outcome_checked_at?: string | null;
+  /** The server's answer to «is this completed print still waiting for that look». */
+  outcome_unchecked?: boolean;
   energy_kwh: number | null;
   energy_cost: number | null;
   /** Wear charged to this run and the rate per printing hour that was applied; null = no figure
@@ -2116,6 +2125,8 @@ export interface ArchiveListParams {
   hide_duplicates?: boolean;
   tag?: string;
   kind?: string;
+  /** 'unchecked' — completed prints whose result nobody has checked yet. */
+  outcome?: 'unchecked';
   sort_by?: string;
 }
 
@@ -3942,6 +3953,7 @@ export const STOCK_NOTE_TOKENS = [
   'defects_recorded',
   'assembled',
   'order_completed',
+  'status_edited',
 ] as const;
 
 export type StockNoteToken = (typeof STOCK_NOTE_TOKENS)[number];
@@ -5221,6 +5233,8 @@ export interface AppSettings {
   bed_cooled_threshold: number;
   // Minutes before a slicer pause at which the pause-coming-up event fires (0 = never)
   pause_warning_minutes: number;
+  // Minutes a completed print may stay unchecked before its one reminder (5…10080)
+  outcome_reminder_after_minutes: number;
   // Inventory low stock threshold
   low_stock_threshold: number;
   // Session policy (#1706, adapted): admin ceiling on session lifetime in hours (default 720 = 30d)
@@ -8033,6 +8047,7 @@ export interface NotificationProvider {
   on_first_layer_complete: boolean;
   // A pause the slicer put into the print is coming up
   on_pause_coming_up: boolean;
+  on_print_outcome_unchecked: boolean;
   // Print queue events
   on_queue_job_added: boolean;
   on_queue_job_started: boolean;
@@ -8114,6 +8129,7 @@ export interface NotificationProviderCreate {
   // First layer complete
   on_first_layer_complete?: boolean;
   on_pause_coming_up?: boolean;
+  on_print_outcome_unchecked?: boolean;
   // Print queue events
   on_queue_job_added?: boolean;
 
@@ -8187,6 +8203,7 @@ export interface NotificationProviderUpdate {
   // First layer complete
   on_first_layer_complete?: boolean;
   on_pause_coming_up?: boolean;
+  on_print_outcome_unchecked?: boolean;
   // Print queue events
   on_queue_job_added?: boolean;
 
@@ -11619,6 +11636,7 @@ export const api = {
     if (params.hide_duplicates) qs.set('hide_duplicates', 'true');
     if (params.tag) qs.set('tag', params.tag);
     if (params.kind) qs.set('kind', params.kind);
+    if (params.outcome) qs.set('outcome', params.outcome);
     if (params.sort_by) qs.set('sort_by', params.sort_by);
     return request<PaginatedArchiveResponse>(`/archives/?${qs}`);
   },
@@ -11729,7 +11747,7 @@ export const api = {
   },
   rebuildSearchIndex: () => request<{ message: string }>('/archives/search/rebuild-index', { method: 'POST' }),
   updateArchive: (id: number, data: {
-    printer_id?: number | null;
+    // No `printer_id`: the printer is a fact of the run, and the server refuses a change (422).
     project_id?: number | null;
     // Pass 2. ⚠️ The server rejects (400) a line that belongs to a different
     // order than the one being set, and moving `project_id` without naming a
@@ -11742,6 +11760,8 @@ export const api = {
     cost?: number;
     failure_reason?: string | null;
     error_message?: string | null;
+    // Terminal statuses only (`HAND_SET_ARCHIVE_STATUSES`); a running print's status is not
+    // edited by hand at all (409).
     status?: string;
     quantity?: number;
     defective_count?: number;
@@ -11757,6 +11777,9 @@ export const api = {
     }),
   toggleFavorite: (id: number) =>
     request<Archive>(`/archives/${id}/favorite`, { method: 'POST' }),
+  /** «Checked, no defects»: marks the result as looked at; records no defects. */
+  markArchiveOutcomeChecked: (id: number) =>
+    request<Archive>(`/archives/${id}/outcome-checked`, { method: 'POST' }),
   deleteArchive: (id: number) =>
     request<void>(`/archives/${id}`, { method: 'DELETE' }),
   // Pre-flight for the delete-confirm modal (#1734): how many queue items are

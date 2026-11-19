@@ -2334,26 +2334,54 @@ async def bulk_archive_spools(
     Already-archived spools are left alone and counted separately so the UI can
     tell "nothing to do" apart from "that row is gone".
     """
+    from contextlib import AsyncExitStack
     from datetime import datetime, timezone
+
+    from backend.app.main import _get_ams_assignment_lock
+    from backend.app.services import spool_single_slot
 
     result = await db.execute(select(Spool).where(Spool.id.in_(data.spool_ids)))
     spools = list(result.scalars().all())
     found_ids = {s.id for s in spools}
     not_found = [i for i in data.spool_ids if i not in found_ids]
 
+    # An archived spool leaves its slots (see ``archive_spool``). A spool whose
+    # slot feeds a running print is not archived: it is reported in ``refused``
+    # and the rest of the selection goes through, as bulk-delete does.
+    lock_ids: set[int] = set()
+    for spool in spools:
+        lock_ids |= await spool_single_slot.printers_holding(db, spool_id=spool.id, keep=spool_single_slot.NOWHERE)
+
     now = datetime.now(timezone.utc)
     archived: list[int] = []
     already: list[int] = []
-    for spool in spools:
-        if spool.archived_at is not None:
-            already.append(spool.id)
-            continue
-        spool.archived_at = now
-        archived.append(spool.id)
-    await db.commit()
+    refused: list[int] = []
+    vacated: list[spool_single_slot.Slot] = []
+    async with AsyncExitStack() as locks:
+        for printer_id in sorted(lock_ids):
+            await locks.enter_async_context(_get_ams_assignment_lock(printer_id))
+        for spool in spools:
+            if spool.archived_at is not None:
+                already.append(spool.id)
+                continue
+            try:
+                released = await spool_single_slot.release_every_slot(db, spool_id=spool.id, locked=lock_ids)
+            except spool_single_slot.SpoolFeedsPrint:
+                refused.append(spool.id)
+                continue
+            vacated += released.vacated
+            spool.archived_at = now
+            archived.append(spool.id)
+        await db.commit()
 
+    await spool_single_slot.announce(vacated)
     await ws_manager.broadcast({"type": "inventory_changed"})
-    return {"archived": len(archived), "already_archived": len(already), "not_found": not_found}
+    return {
+        "archived": len(archived),
+        "already_archived": len(already),
+        "not_found": not_found,
+        "refused": sorted(refused),
+    }
 
 
 @router.post("/spools/bulk-restore")
@@ -2452,16 +2480,41 @@ async def archive_spool(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
-    """Soft-delete a spool by setting archived_at."""
+    """Soft-delete a spool by setting archived_at; it leaves the slots it sat in.
+
+    An archived spool that kept its slot row was charged for the next print from
+    that slot and stayed on the printer card, and nothing could remove the row:
+    delete answers "archive it instead" for an assigned spool, and the assign
+    picker refuses an archived one (upstream 23d04c864). The row goes through the
+    single-slot rule's writer, under the printers' assignment locks, and a spool
+    whose slot feeds a running print is not archived at all (409) — the same
+    rule a move obeys.
+    """
+    from contextlib import AsyncExitStack
     from datetime import datetime, timezone
 
-    result = await db.execute(select(Spool).where(Spool.id == spool_id))
-    spool = result.scalar_one_or_none()
-    if not spool:
-        raise HTTPException(404, "Spool not found")
+    from backend.app.main import _get_ams_assignment_lock
+    from backend.app.services import spool_single_slot
 
-    spool.archived_at = datetime.now(timezone.utc)
-    await db.commit()
+    lock_ids = sorted(await spool_single_slot.printers_holding(db, spool_id=spool_id, keep=spool_single_slot.NOWHERE))
+    async with AsyncExitStack() as locks:
+        for printer_id in lock_ids:
+            await locks.enter_async_context(_get_ams_assignment_lock(printer_id))
+        result = await db.execute(select(Spool).where(Spool.id == spool_id))
+        spool = result.scalar_one_or_none()
+        if not spool:
+            raise HTTPException(404, "Spool not found")
+        try:
+            released = await spool_single_slot.release_every_slot(db, spool_id=spool_id, locked=set(lock_ids))
+        except spool_single_slot.SpoolFeedsPrint as feeding:
+            await db.rollback()
+            raise spool_single_slot.archive_refusal(feeding) from feeding
+        spool.archived_at = datetime.now(timezone.utc)
+        await db.commit()
+
+    await spool_single_slot.announce(released.vacated)
+    # The single archive announced nothing: other tabs kept the spool as active.
+    await ws_manager.broadcast({"type": "inventory_changed"})
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == spool_id))
     return result.scalar_one()
 

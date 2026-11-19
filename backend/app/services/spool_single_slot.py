@@ -167,10 +167,11 @@ async def _release(
         result = await db.execute(delete(model).where(model.id == row_id, column == spool_id))
         if result.rowcount:
             out.vacated.append(slot)
+    where = "left the active inventory" if keep == NOWHERE else f"moved to {keep}"
     if out.vacated:
-        logger.info("Spool %s moved to %s: taken out of %s", spool_id, keep, out.vacated)
+        logger.info("Spool %s %s: taken out of %s", spool_id, where, out.vacated)
     if out.feeding:
-        logger.info("Spool %s moved to %s: left in %s, which feeds a running print", spool_id, keep, out.feeding)
+        logger.info("Spool %s %s: left in %s, which feeds a running print", spool_id, where, out.feeding)
     return out
 
 
@@ -204,6 +205,118 @@ async def release_other_spoolman_slots(db, *, spoolman_spool_id: int, keep: Slot
         keep=keep,
         locked=None,
         refuse=refuse,
+    )
+
+
+# No slot at all: ``keep`` for a spool that leaves every slot it sits in.
+NOWHERE: Slot = (-1, -1, -1)
+
+
+async def _release_all(db, model, column, *, spool_id: int, locked: set[int] | None, refuse: bool) -> Released:
+    # The move's own writer with no slot to keep: every row is "another" slot.
+    return await _release(db, model, column, spool_id=spool_id, keep=NOWHERE, locked=locked, refuse=refuse)
+
+
+async def release_every_slot(db, *, spool_id: int, locked: set[int], refuse: bool = True) -> Released:
+    """A built-in spool is archived: it leaves EVERY slot it sits in. Does not commit.
+
+    An archived spool that kept its row went on being charged for the next print
+    from that slot and stayed on the printer card (upstream 23d04c864). The same
+    rule as a move: a slot a running print feeds from is never vacated —
+    :class:`SpoolFeedsPrint` is raised before anything is removed, and the caller
+    refuses the archive. ``locked`` as in :func:`release_other_slots`; a row on a
+    printer outside it (it appeared after the caller read the holders) is left
+    and reported as ``deferred``.
+    """
+    return await _release_all(
+        db, SpoolAssignment, SpoolAssignment.spool_id, spool_id=spool_id, locked=locked, refuse=refuse
+    )
+
+
+async def release_every_spoolman_slot(db, *, spoolman_spool_id: int, refuse: bool) -> Released:
+    """The same for a Spoolman spool's ledger rows, on every printer. Does not commit."""
+    return await _release_all(
+        db,
+        SpoolmanSlotAssignment,
+        SpoolmanSlotAssignment.spoolman_spool_id,
+        spool_id=spoolman_spool_id,
+        locked=None,
+        refuse=refuse,
+    )
+
+
+# A printer in one of these states may be feeding from any of its slots, and a
+# spool the runout close-out archived mid-print still has a tail to be charged.
+_PRINTING_STATES = frozenset({"RUNNING", "PAUSE", "PREPARE", "SLICING"})
+
+
+async def release_archived(db, printer_id: int) -> Released:
+    """Take ARCHIVED spools out of ``printer_id``'s slots. Does not commit.
+
+    A spool archived before archiving vacated its slots still holds its row: the
+    next print from that slot is charged to it and the card shows it. Settled as
+    the printer reports in, like the doubled rows — and only while it reports
+    that it is NOT printing: a printing, silent or unreported printer keeps the
+    row (the runout close-out archives a reel in the middle of the print that is
+    still being charged to it), and so does a print still to be booked.
+    """
+    from backend.app.models.spool import Spool
+    from backend.app.services import usage_tracker
+    from backend.app.services.printer_manager import printer_manager
+
+    rows = (
+        await db.execute(
+            select(SpoolAssignment.spool_id, SpoolAssignment.ams_id, SpoolAssignment.tray_id)
+            .join(Spool, Spool.id == SpoolAssignment.spool_id)
+            .where(SpoolAssignment.printer_id == printer_id, Spool.archived_at.is_not(None))
+            .order_by(SpoolAssignment.ams_id, SpoolAssignment.tray_id)
+        )
+    ).all()
+    out = Released()
+    if not rows:
+        return out
+    state = printer_manager.get_status(printer_id)
+    reported = (getattr(state, "state", "") or "").upper()
+    if (
+        not getattr(state, "connected", False)
+        or not reported
+        or reported in _PRINTING_STATES
+        or usage_tracker.print_is_unbooked(printer_id, state)
+    ):
+        out.feeding = [(printer_id, ams_id, tray_id) for _spool_id, ams_id, tray_id in rows]
+        return out
+    # The archive's own writer, holding this printer's lock only: the spool's rows
+    # on other printers come back as ``deferred`` and wait for that printer's pass.
+    for spool_id in sorted({spool_id for spool_id, _ams_id, _tray_id in rows}):
+        released = await release_every_slot(db, spool_id=spool_id, locked={printer_id}, refuse=False)
+        out.vacated += released.vacated
+        out.feeding += released.feeding
+    return out
+
+
+def archive_refusal(error: SpoolFeedsPrint):
+    """The 409 an archive of a spool that feeds a running print answers with."""
+    from fastapi import HTTPException
+
+    return HTTPException(
+        status_code=409,
+        detail={
+            "error": "spool_feeds_print",
+            "message": "This spool is in a slot a running print feeds from; it can be archived when the print ends",
+        },
+    )
+
+
+def delete_refusal(error: SpoolFeedsPrint):
+    """The 409 a delete of a spool that feeds a running print answers with."""
+    from fastapi import HTTPException
+
+    return HTTPException(
+        status_code=409,
+        detail={
+            "error": "spool_feeds_print",
+            "message": "This spool is in a slot a running print feeds from; it can be deleted when the print ends",
+        },
     )
 
 

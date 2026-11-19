@@ -17,7 +17,7 @@ import { PrintersPage } from '../../pages/PrintersPage';
 const printer = {
   id: 1, name: 'X1C', ip_address: '192.168.1.100', serial_number: '00M09A350100001', access_code: '12345678',
   model: 'X1C', enabled: true, nozzle_count: 1, nozzle_diameter: 0.4, nozzle_type: 'hardened_steel',
-  location: 'Workshop', auto_archive: true, created_at: '2024-01-01T00:00:00Z', updated_at: '2024-01-01T00:00:00Z',
+  location: 'Workshop', created_at: '2024-01-01T00:00:00Z', updated_at: '2024-01-01T00:00:00Z',
 };
 
 function mount(objectCount: number) {

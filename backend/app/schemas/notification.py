@@ -94,6 +94,11 @@ class NotificationProviderBase(BaseModel):
     # Event triggers - a pause the slicer put into the print is coming up
     on_pause_coming_up: bool = Field(default=False, description="Notify shortly before a pause added in the slicer")
 
+    # Event triggers - a finished print whose result nobody has checked yet
+    on_print_outcome_unchecked: bool = Field(
+        default=False, description="Remind about a completed print whose result has not been checked"
+    )
+
     # Event triggers - Print queue
     on_queue_job_added: bool = Field(default=False, description="Notify when job is added to queue")
     on_queue_job_started: bool = Field(default=False, description="Notify when queue job starts printing")
@@ -211,6 +216,7 @@ class NotificationProviderUpdate(IgnoresNullForRequiredColumns):
     # Event triggers - First layer complete
     on_first_layer_complete: bool | None = None
     on_pause_coming_up: bool | None = None
+    on_print_outcome_unchecked: bool | None = None
 
     # Event triggers - Print queue
     on_queue_job_added: bool | None = None

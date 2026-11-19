@@ -3906,7 +3906,9 @@ async def resume_print(
 @router.post("/{printer_id}/print-speed")
 async def set_print_speed(
     printer_id: int,
-    mode: int = Query(..., description="Speed mode (1=silent, 2=standard, 3=sport, 4=ludicrous)"),
+    # Bounded here: an unknown mode is the caller's mistake (422), not "Failed to
+    # set print speed" (500) after the client refused it (upstream 85097fbfd).
+    mode: int = Query(..., ge=1, le=4, description="Speed mode (1=silent, 2=standard, 3=sport, 4=ludicrous)"),
     _=RequirePermission(Permission.PRINTERS_CONTROL),
     db: AsyncSession = Depends(get_db),
 ):

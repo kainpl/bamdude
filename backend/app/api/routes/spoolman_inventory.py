@@ -1100,12 +1100,50 @@ async def delete_spool(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ) -> dict:
-    """Permanently delete a spool from Spoolman."""
+    """Permanently delete a spool from Spoolman; its local slot rows go with it."""
+    from backend.app.services import spool_single_slot  # noqa: PLC0415
+
     client = await _get_client(db)
+    await _refuse_while_feeding(db, spool_id, spool_single_slot.delete_refusal)
     async with _translate_spoolman_errors():
         await client.delete_spool(spool_id)
+    await _leave_slots(db, spool_id)
     await ws_manager.broadcast({"type": "inventory_changed"})
     return {"status": "deleted"}
+
+
+async def _refuse_while_feeding(db: AsyncSession, spool_id: int, refusal) -> None:
+    """409 before Spoolman is touched when the spool's slot feeds a running print.
+
+    The single-slot rule's own question; in Spoolman mode no session names the
+    trays a print uses, so every slot of a printing printer counts.
+    """
+    from backend.app.services import spool_single_slot  # noqa: PLC0415
+
+    for slot in await spool_single_slot.other_spoolman_slots(
+        db, spoolman_spool_id=spool_id, keep=spool_single_slot.NOWHERE
+    ):
+        if spool_single_slot.slot_feeds_running_print(*slot):
+            raise refusal(spool_single_slot.SpoolFeedsPrint(slot))
+
+
+async def _leave_slots(db: AsyncSession, spool_id: int) -> None:
+    """A spool that left the active inventory leaves its slots (upstream 23d04c864).
+
+    Spoolman has already archived / deleted it, so this never refuses: a row
+    whose slot started feeding a print meanwhile stays until that print ends.
+    A failure here leaves a stale row, never an error for a change that happened.
+    """
+    from backend.app.services import spool_single_slot  # noqa: PLC0415
+
+    try:
+        released = await spool_single_slot.release_every_spoolman_slot(db, spoolman_spool_id=spool_id, refuse=False)
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001
+        await db.rollback()
+        logger.warning("Could not remove the slot assignment of Spoolman spool %s: %s", spool_id, exc)
+        return
+    await spool_single_slot.announce(released.vacated)
 
 
 @router.post("/spools/{spool_id}/archive")
@@ -1114,10 +1152,14 @@ async def archive_spool(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ) -> dict:
-    """Archive a spool in Spoolman (soft-delete)."""
+    """Archive a spool in Spoolman (soft-delete); it leaves the slots it sat in."""
+    from backend.app.services import spool_single_slot  # noqa: PLC0415
+
     client = await _get_client(db)
+    await _refuse_while_feeding(db, spool_id, spool_single_slot.archive_refusal)
     async with _translate_spoolman_errors():
         spool = await client.set_spool_archived(spool_id, archived=True)
+    await _leave_slots(db, spool_id)
     try:
         mapped = _map_spoolman_spool(spool)
     except ValueError as exc:
@@ -1177,7 +1219,9 @@ async def _bulk_fanout(spool_ids: list[int], action) -> dict:
             await action(spool_id)
             succeeded += 1
         except HTTPException as exc:
-            errors.append({"id": spool_id, "status": exc.status_code, "detail": str(exc.detail)})
+            # A coded refusal carries its sentence under ``message``.
+            detail = exc.detail.get("message") if isinstance(exc.detail, dict) else exc.detail
+            errors.append({"id": spool_id, "status": exc.status_code, "detail": str(detail)})
         except Exception as exc:  # noqa: BLE001 — a remote blip must not void the batch
             logger.warning("Bulk action failed for Spoolman spool %s: %s", spool_id, exc)
             errors.append({"id": spool_id, "status": 500, "detail": str(exc)})

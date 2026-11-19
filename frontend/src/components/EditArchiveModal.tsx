@@ -16,6 +16,8 @@ import { OrderLinePicker } from './pickers/OrderLinePicker';
 import { useOrderDetail } from '../hooks/useOrderDetail';
 import { invalidateOrderViews, invalidateProductCatalog } from '../utils/queryInvalidation';
 import { Select } from './Select';
+import { HAND_SET_ARCHIVE_STATUSES, archiveStatusLabel } from '../utils/archiveStatus';
+import { useMarkOutcomeChecked } from '../hooks/useMarkOutcomeChecked';
 
 // Keys for failure reasons - translated at render time. The backend stores
 // exactly these (utils/failure_reasons.py; a test pins the two lists).
@@ -44,9 +46,6 @@ const FAILURE_REASON_KEYS = [
   'dispatchPreparationError',
   'dispatchInternalError',
 ] as const;
-
-// Keys for archive statuses - translated at render time
-const ARCHIVE_STATUS_KEYS = ['completed', 'failed', 'aborted', 'printing'] as const;
 
 interface EditArchiveModalProps {
   archive: Archive;
@@ -89,7 +88,6 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
 
   const queryClient = useQueryClient();
   const [printName, setPrintName] = useState(archive.print_name || '');
-  const [printerId, setPrinterId] = useState<number | null>(archive.printer_id);
   const [projectId, setProjectId] = useState<number | null>(archive.project_id ?? null);
   // Pass 2: which LINE of the order the print counts against. ⚠️ Reset whenever
   // the order changes — the server rejects (400) a line belonging to another
@@ -130,6 +128,12 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
       : null;
   const [errorMessage, setErrorMessage] = useState(archive.error_message || '');
   const [status, setStatus] = useState(archive.status);
+  // A running print's status follows the printer (the server answers 409): shown, never offered.
+  const statusLocked = archive.status === 'printing';
+  // A stored status the editor does not offer (`printing`, the legacy `stopped` / `archived`,
+  // anything unknown) is still the print's status: shown as itself, so the dialog never opens
+  // on some other option and a save without touching it sends nothing.
+  const storedStatusIsOffered = (HAND_SET_ARCHIVE_STATUSES as readonly string[]).includes(archive.status);
   const [quantity, setQuantity] = useState(archive.quantity ?? 1);
   // Filament used, typed by hand (audit D6 part 2) — above all for a print whose
   // 3MF never arrived, which has no figure and no file to rescan. Sent only
@@ -137,6 +141,7 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
   const initialFilamentGrams = archive.filament_used_grams == null ? '' : String(archive.filament_used_grams);
   const [filamentGrams, setFilamentGrams] = useState(initialFilamentGrams);
   const [defectiveCount, setDefectiveCount] = useState(archive.defective_count ?? 0);
+  const markChecked = useMarkOutcomeChecked(archive.id);
   // Per-part defective counts, keyed by part id. Only meaningful when
   // archive.parts is non-empty — see the render block below.
   const [partsDefective, setPartsDefective] = useState<Record<number, number>>(
@@ -177,11 +182,6 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
   const tagInputRef = useRef<HTMLInputElement>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const blurTimeoutRef = useRef<number | null>(null);
-
-  const { data: printers } = useQuery({
-    queryKey: ['printers'],
-    queryFn: api.getPrinters,
-  });
 
   // Fetch all tags using the dedicated API
   const { data: tagsData } = useQuery({
@@ -254,7 +254,8 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
     mutationFn: (data: Parameters<typeof api.updateArchive>[1]) =>
       api.updateArchive(archive.id, data),
     onMutate: () => setSaveError(null),
-    onSuccess: () => {
+    onSuccess: (saved) => {
+      if (saved?.stock_not_followed) showToast(t('archives.stockNotFollowed'), 'warning');
       queryClient.invalidateQueries({ queryKey: ['archives'] });
       // Re-filing a print moves it between orders and between customers, so
       // both pages the edit could have touched are stale — hence prefixes,
@@ -341,7 +342,6 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
     // Build update data
     const updateData: Parameters<typeof api.updateArchive>[1] = {
       print_name: printName || undefined,
-      printer_id: printerId,
       notes: notes || undefined,
       tags: tags || undefined,
       quantity: quantity,
@@ -372,7 +372,10 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
         }));
         updateData.defective_count = partsDefectiveSum;
       }
-    } else {
+    } else if (defectiveCount !== (archive.defective_count ?? 0)) {
+      // Only a count that was changed: every defects write marks the result as
+      // checked, and saving a note must not say somebody graded the plate. An
+      // unchanged zero is confirmed with «No defects» below.
       updateData.defective_count = defectiveCount;
     }
 
@@ -385,8 +388,9 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
     if (status === 'failed' || status === 'aborted') {
       updateData.failure_reason = failureReason || undefined;
       updateData.error_message = errorMessage || null;
-    } else if (archive.status === 'failed' || archive.status === 'aborted') {
-      // Clear failure_reason + error_message when leaving failed/aborted
+    } else if (status === 'completed' && archive.status !== 'completed') {
+      // A print that becomes completed carries no reason — «cancelled by user» on a
+      // completed print included. Moving to cancelled keeps what was recorded.
       updateData.failure_reason = null;
       updateData.error_message = null;
     }
@@ -415,23 +419,6 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
             className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
             placeholder={t('editArchive.namePlaceholder')}
           />
-        </div>
-
-        {/* Printer */}
-        <div>
-          <label className="block text-sm text-bambu-gray mb-1">{t('editArchive.printer')}</label>
-          <Select
-            className="w-full"
-            value={printerId ?? ''}
-            onChange={(e) => setPrinterId(e.target.value ? Number(e.target.value) : null)}
-          >
-            <option value="">{t('editArchive.noPrinter')}</option>
-            {printers?.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </Select>
         </div>
 
         {/* Order */}
@@ -556,6 +543,23 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
           onFlatChange={setDefectiveCount}
         />
 
+        {/* Nobody has looked at this print's result yet: defects above, or «none». */}
+        {archive.outcome_unchecked && !markChecked.isSuccess && (
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-400/40 bg-amber-400/5 px-3 py-2">
+            <p className="text-xs text-bambu-gray">{t('archives.outcome.noDefectsHelp')}</p>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="flex-shrink-0"
+              onClick={() => markChecked.mutate()}
+              disabled={markChecked.isPending}
+            >
+              {t('archives.outcome.noDefects')}
+            </Button>
+          </div>
+        )}
+
         {/* Notes */}
         <div>
           <label className="block text-sm text-bambu-gray mb-1">{t('editArchive.notes')}</label>
@@ -654,10 +658,13 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
 
         {/* Status */}
         <div>
-          <label className="block text-sm text-bambu-gray mb-1">{t('editArchive.status')}</label>
+          <label htmlFor="edit-archive-status" className="block text-sm text-bambu-gray mb-1">{t('editArchive.status')}</label>
           <Select
             className="w-full"
+            id="edit-archive-status"
             value={status}
+            disabled={statusLocked}
+            aria-describedby={statusLocked ? 'edit-archive-status-locked' : undefined}
             onChange={(e) => {
               setStatus(e.target.value);
               // Clear failure reason + error details when changing to completed
@@ -667,12 +674,22 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
               }
             }}
           >
-            {ARCHIVE_STATUS_KEYS.map((statusKey) => (
+            {!storedStatusIsOffered && (
+              <option value={archive.status} disabled>
+                {archiveStatusLabel(t, archive.status)}
+              </option>
+            )}
+            {HAND_SET_ARCHIVE_STATUSES.map((statusKey) => (
               <option key={statusKey} value={statusKey}>
-                {t(`editArchive.statuses.${statusKey}`)}
+                {archiveStatusLabel(t, statusKey)}
               </option>
             ))}
           </Select>
+          {statusLocked && (
+            <p id="edit-archive-status-locked" className="text-xs text-bambu-gray mt-1">
+              {t('editArchive.statusLocked')}
+            </p>
+          )}
         </div>
 
         {/* Failure Reason - only show for failed/aborted prints */}

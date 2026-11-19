@@ -53,12 +53,12 @@ async def test_maintenance_type_and_item(async_client: AsyncClient, printer_fact
 
 
 async def test_printer(async_client: AsyncClient, printer_factory):
-    printer = await printer_factory(auto_archive=True)
+    printer = await printer_factory(cleanup_after_print=True)
 
-    kept = await async_client.patch(f"/api/v1/printers/{printer.id}", json={"auto_archive": None, "name": None})
+    kept = await async_client.patch(f"/api/v1/printers/{printer.id}", json={"cleanup_after_print": None, "name": None})
 
     assert kept.status_code == 200, kept.text
-    assert (kept.json()["auto_archive"], kept.json()["name"]) == (True, "Test Printer")
+    assert (kept.json()["cleanup_after_print"], kept.json()["name"]) == (True, "Test Printer")
 
 
 async def test_archive(async_client: AsyncClient, printer_factory, archive_factory):

@@ -94,3 +94,18 @@ class TestPrintSpeedAPI:
             assert result["success"] is True
             assert expected_name in result["message"]
             mock_client.set_print_speed.assert_called_once_with(mode)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", [0, 5, -1, 99])
+    async def test_a_mode_outside_one_to_four_is_a_422(self, async_client: AsyncClient, printer_factory, mode):
+        """Upstream 85097fbfd: it reached the client, was refused there and answered 500."""
+        printer = await printer_factory(name="Test Printer")
+
+        mock_client = MagicMock()
+        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+
+            response = await async_client.post(f"/api/v1/printers/{printer.id}/print-speed?mode={mode}")
+
+        assert response.status_code == 422
+        mock_client.set_print_speed.assert_not_called()

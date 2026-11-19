@@ -92,11 +92,37 @@ async def test_a_job_with_no_bound_run_is_closed_by_the_route(
     assert queue.status == "paused" and queue.current_item_id is None
 
 
-async def test_an_unreachable_printer_closes_the_row_and_its_archive(
+async def test_an_unreachable_printer_leaves_a_bound_run_open_and_says_the_stop_was_not_sent(
+    async_client, db_session, printer_factory, archive_factory, monkeypatch
+):
+    """Not stopped is not closed: the row and the archive wait for the printer's report or reconciliation."""
+    from backend.app import main
+
+    (printer, queue, archive, item, _pending), _tick = await prepare_stuck_print(
+        db_session, printer_factory, archive_factory, monkeypatch
+    )
+    monkeypatch.setattr(print_control.printer_manager, "stop_print", lambda _printer_id: False)
+    monkeypatch.setattr(printer_manager, "ensure_fresh_connection", AsyncMock(return_value=False))
+    monkeypatch.setattr(main, "_user_stopped_printers", {})
+
+    response = await async_client.post(f"/api/v1/queue/{item.id}/stop")
+
+    assert response.status_code == 503, response.text
+    assert response.json()["detail"]["error"] == "stop_not_sent"
+    for row in (queue, archive, item):
+        await db_session.refresh(row)
+    assert (item.status, archive.status) == ("printing", "printing")
+    assert (item.completed_at, archive.completed_at, archive.failure_reason) == (None, None, None)
+    assert (queue.is_paused, queue.status, queue.current_item_id) == (True, "printing", item.id)
+    assert printer.id not in main._user_stopped_printers
+    assert current_print_run(printer_manager, printer.id) is not None
+
+
+async def test_an_unreachable_printer_with_no_bound_run_closes_the_row_and_its_archive(
     async_client, db_session, printer_factory, archive_factory, monkeypatch
 ):
     (printer, _queue, archive, item, _pending), _tick = await prepare_stuck_print(
-        db_session, printer_factory, archive_factory, monkeypatch
+        db_session, printer_factory, archive_factory, monkeypatch, with_context=False
     )
     _printer_takes_the_stop(monkeypatch, sent=False)
 

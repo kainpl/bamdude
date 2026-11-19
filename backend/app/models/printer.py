@@ -114,6 +114,8 @@ class Printer(Base):
     # "since when" about a recording nobody remembers switching on.
     mqtt_recording: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     mqtt_recording_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Legacy column: nothing reads it — every print is archived. Kept because the
+    # released migrations that name it are frozen.
     auto_archive: Mapped[bool] = mapped_column(Boolean, default=True)
     # Remove the print's files from the printer once it finishes — ours and the
     # copies the printer derives from them, on the card and in internal storage.

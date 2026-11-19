@@ -33,6 +33,9 @@ class PrintArchive(Base):
         # An order's prints — the figures' loaders and the order's queue section
         # (spec workshop-order-queue); measured plan in m191.
         Index("ix_print_archives_project_created", "project_id", "created_at"),
+        # «Not checked yet» is the rare NULL among stamped rows: the list's filter
+        # and the reminder sweep (once a minute) find it without walking the table (m248).
+        Index("ix_print_archives_outcome_checked_at", "outcome_checked_at"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -175,6 +178,15 @@ class PrintArchive(Base):
     # ``quantity`` or any of the "printed" totals — those still count what came
     # off the plate, and the split between the two is the point.
     defective_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+
+    # Whether somebody has looked at what came off the plate (m248). NOT a verdict:
+    # fitness is the defect count above. ``outcome_checked_at`` is stamped by every
+    # defects write (an explicit zero too) and by the explicit «no defects» mark;
+    # NULL on a completed print = «not checked yet». ``outcome_reminded_at`` is the
+    # one reminder such a print gets. Naive UTC. Both are written only by
+    # ``services/archive_outcome.py``.
+    outcome_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    outcome_reminded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Energy tracking
     energy_kwh: Mapped[float | None] = mapped_column(Float)  # Energy consumed in kWh

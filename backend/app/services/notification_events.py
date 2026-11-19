@@ -48,6 +48,9 @@ EVENT_CATALOG: dict[str, EventMeta] = {
     # ``info`` on purpose: the inbox's default subscription is every warning and
     # error, so this heads-up reaches nobody who did not ask for it.
     "pause_coming_up": _e("info", "print"),
+    # A reminder that nobody has checked a finished print's result. ``info`` for
+    # the same reason: off for everybody until asked for.
+    "print_outcome_unchecked": _e("info", "print"),
     "bed_cooled": _e("info", "print"),
     # printer
     "printer_error": _e("error", "printer"),

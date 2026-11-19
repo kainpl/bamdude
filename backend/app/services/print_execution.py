@@ -415,7 +415,10 @@ async def publish_start(db, archive, decision, *, options=None, still_current=No
                 raise ExecutionChanged("adopted execution changed")
             archive = current
             if archive.status == "failed":
+                from backend.app.services import dispatch_phase
+
                 archive.status, archive.started_at = "printing", datetime.now(timezone.utc)
+                dispatch_phase.forget_earlier_outcome(archive)
         else:
             db.add(archive)
             await db.flush()

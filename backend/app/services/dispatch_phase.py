@@ -71,6 +71,26 @@ def mark_seen_running(archive) -> bool:
     return False
 
 
+def forget_earlier_outcome(archive) -> None:
+    """A row taken back as the print now running keeps nothing of the end it had.
+
+    The dispatch watchdog fails a slow attempt (``failed`` + its reason, its
+    message and an end time); when the printer then reports that very job
+    running, the row is the live print again. Without this the print that
+    completed still read "dispatch: no acknowledgement", and one that really
+    failed kept the dispatch reason instead of the printer's own (upstream
+    a8270b8fa / bb0bf03f6, adapted: our only row reuse is this one).
+    Set on the caller's loaded row, in the caller's transaction.
+    """
+    archive.failure_reason = None
+    archive.error_message = None
+    archive.completed_at = None
+    # Nor the «result checked» mark and reminder of that end (the outcome writer's columns).
+    from backend.app.services import archive_outcome
+
+    archive_outcome.forget(archive)
+
+
 async def advance(db, archive_id: int | None, to: str, *, boot_id: str | None) -> bool:
     """Move this attempt's archive forward to ``to``; False when the row is no longer this attempt's.
 
