@@ -892,6 +892,8 @@ async def remove_vanished(
                     await library_trash_service.purge_rows(db, row, reason=queue_source_release.REASON_FILE_VANISHED)
                 await db.commit()
             await finish(db)
+            # After the chunk's commit, outside its plan: the queues its purge cancelled rows on.
+            await queue_source_release.recount_released_queues(db)
             counters["files_removed"] += len(proofs)
 
     # Subfolder rows whose directory is gone, deepest first so a parent is only

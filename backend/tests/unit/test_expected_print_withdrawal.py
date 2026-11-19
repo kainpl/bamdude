@@ -141,3 +141,46 @@ def test_withdrawal_cannot_remove_a_later_registration_of_the_same_filename():
         assert 91001 not in main._print_ams_mappings
     finally:
         main.withdraw_expected_print(9999, "same.3mf", expected_archive_id=91002)
+
+
+class TestTheCompletionDrainsItsOwnMapping:
+    """G03 E-9: the mapping registered at dispatch leaves at completion whenever it is this execution's.
+
+    It was popped only when the terminal frame carried no mapping of its own, and our own dispatch's
+    ``project_file`` echo is captured into nearly every terminal frame: the entry stayed for the life of the
+    process. The identity guard stays — a reused archive id never reads or drains another execution's.
+    """
+
+    @staticmethod
+    def _registered(archive_id: int, identity: str) -> None:
+        from backend.app import main
+
+        # What dispatch registered and the start left behind once it consumed the expected keys.
+        main._print_ams_mappings[archive_id] = [0, 1]
+        main._print_ams_mapping_identities[archive_id] = identity
+
+    def test_a_captured_mapping_still_drains_the_registered_one(self) -> None:
+        from backend.app import main
+
+        self._registered(93001, "run-a")
+        assert main._take_completion_ams_mapping({"ams_mapping": [4]}, 93001, "run-a") == [4]
+        assert 93001 not in main._print_ams_mappings
+        assert 93001 not in main._print_ams_mapping_identities
+
+    def test_without_a_captured_one_the_registered_mapping_is_charged(self) -> None:
+        from backend.app import main
+
+        self._registered(93002, "run-b")
+        assert main._take_completion_ams_mapping({}, 93002, "run-b") == [0, 1]
+        assert 93002 not in main._print_ams_mappings
+
+    def test_another_executions_mapping_is_neither_read_nor_drained(self) -> None:
+        from backend.app import main
+
+        self._registered(93003, "run-c")
+        try:
+            assert main._take_completion_ams_mapping({}, 93003, "another-run") is None
+            assert main._print_ams_mappings[93003] == [0, 1]
+        finally:
+            main._print_ams_mappings.pop(93003, None)
+            main._print_ams_mapping_identities.pop(93003, None)

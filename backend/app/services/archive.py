@@ -2328,6 +2328,11 @@ class ArchiveService:
             deleted = await self._delete_archive_locked(
                 archive_id, refuse_kept=refuse_kept, trashed_only=trashed_only, retention_cutoff=retention_cutoff
             )
+        # After the scope (the delete committed inside it): recount the printer queues whose
+        # queued jobs of this source the release cancelled. No SQL when there are none.
+        from backend.app.services.queue_source_release import recount_released_queues
+
+        await recount_released_queues(self.db)
         return deleted
 
     async def delete_archive_rows(self, archive):

@@ -235,6 +235,51 @@ class TestABodyThatNamesAPrinter:
 
         assert response.status_code == 403
 
+    async def test_a_batch_route_that_names_its_queue_is_asked_of_that_queue(self, async_client, db_session, farm):
+        """G03 D1: with ``?queue_id=`` a batch route acts on that queue's rows only, so the key's list is
+        asked of that queue -- its own printer's copies, not every printer the batch reached."""
+        from sqlalchemy import select
+
+        from backend.app.models.print_queue import PrintQueueItem
+
+        a, b, items, _archive, keys = farm
+        items[a.id].batch_id = "mixed"
+        items[b.id].batch_id = "mixed"
+        await db_session.commit()
+        a_id, b_id, a_item, b_item = a.id, b.id, items[a.id].id, items[b.id].id
+
+        theirs = await async_client.post(
+            f"/api/v1/queue/batch/mixed/cancel?queue_id={b_id}", headers=_as(keys["only_a"])
+        )
+        mine = await async_client.post(f"/api/v1/queue/batch/mixed/cancel?queue_id={a_id}", headers=_as(keys["only_a"]))
+
+        assert theirs.status_code == 403
+        assert mine.status_code == 200, mine.text
+        assert mine.json()["cancelled"] == 1
+        statuses = {
+            row.id: row.status
+            for row in (
+                await db_session.execute(
+                    select(PrintQueueItem)
+                    .where(PrintQueueItem.id.in_([a_item, b_item]))
+                    .execution_options(populate_existing=True)
+                )
+            ).scalars()
+        }
+        assert statuses == {a_item: "cancelled", b_item: "pending"}
+
+    async def test_moving_a_named_queues_copies_asks_the_target_too(self, async_client, db_session, farm):
+        a, b, items, _archive, keys = farm
+        items[a.id].batch_id = "mixed"
+        items[b.id].batch_id = "mixed"
+        await db_session.commit()
+
+        response = await async_client.patch(
+            f"/api/v1/queue/batch/mixed?queue_id={a.id}", json={"queue_id": b.id}, headers=_as(keys["only_a"])
+        )
+
+        assert response.status_code == 403
+
 
 @pytest.mark.asyncio
 @pytest.mark.integration

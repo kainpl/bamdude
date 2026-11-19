@@ -526,11 +526,17 @@ class MQTTRelayService:
         """Publish ``queue/job_added`` for committed printer-queue rows (see ``queue_job_relay``).
 
         Each row is read here, after its commit: the file name is the archive's, else the library
-        file's. A row that is gone again by now is skipped. Never raises.
+        file's, else -- a job whose original rows are gone, first-class since m173 -- the name its own
+        captured snapshot was queued under (G03 D7.3). A row that is gone again by now is skipped.
+
+        A calibration print is the wizard's own job, not work somebody queued: it is not announced
+        (G03 D7.3 -- skipped rather than marked, the smaller change to a published payload). Never raises.
         """
         if not item_ids or not self.enabled or not self.connected:
             return
         try:
+            from contextlib import suppress
+
             from sqlalchemy import select
 
             from backend.app.core.database import async_session
@@ -538,6 +544,9 @@ class MQTTRelayService:
             from backend.app.models.library import LibraryFile
             from backend.app.models.print_queue import PrintQueueItem
             from backend.app.models.printer import Printer
+            from backend.app.models.queue_source import QueueSource
+            from backend.app.services.queue_source_descriptor import stored_descriptor
+            from backend.app.services.source_io import SourceUnavailable
 
             async with async_session() as db:
                 rows = (
@@ -548,18 +557,28 @@ class MQTTRelayService:
                             PrintArchive.filename,
                             LibraryFile.filename,
                             Printer.name,
+                            QueueSource,
+                            PrintQueueItem.source_snapshot,
                         )
                         .outerjoin(PrintArchive, PrintArchive.id == PrintQueueItem.archive_id)
                         .outerjoin(LibraryFile, LibraryFile.id == PrintQueueItem.library_file_id)
                         .outerjoin(Printer, Printer.id == PrintQueueItem.queue_id)
-                        .where(PrintQueueItem.id.in_(item_ids))
+                        .outerjoin(QueueSource, QueueSource.id == PrintQueueItem.queue_source_id)
+                        .where(PrintQueueItem.id.in_(item_ids), PrintQueueItem.is_calibration.is_(False))
                         .order_by(PrintQueueItem.id)
                     )
                 ).all()
-            for job_id, printer_id, archive_name, library_name, printer_name in rows:
+            for job_id, printer_id, archive_name, library_name, printer_name, source, snapshot in rows:
+                filename = archive_name or library_name or ""
+                if not filename and source is not None:
+                    from backend.app.services.filament_intake import source_display_filename
+
+                    # ``source_display_filename`` refuses the object's hash: an unreadable snapshot names nothing.
+                    with suppress(SourceUnavailable):
+                        filename = source_display_filename(stored_descriptor(source, snapshot))
                 await self.on_queue_job_added(
                     job_id=job_id,
-                    filename=archive_name or library_name or "",
+                    filename=filename,
                     printer_id=printer_id,
                     printer_name=printer_name,
                 )

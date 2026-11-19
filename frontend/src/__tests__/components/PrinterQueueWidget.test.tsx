@@ -152,6 +152,60 @@ describe('PrinterQueueWidget', () => {
     });
   });
 
+  // G03 E8: the scheduler starts the first row that is neither staged (manual start) nor
+  // scheduled for later. The card names that one, not simply the head of the list.
+  describe('the job that will really start next', () => {
+    const row = (id: number, name: string, extra: Record<string, unknown> = {}) => ({
+      ...mockQueueItems[0], id, position: id, archive_id: id, archive_name: name, manual_start: false, ...extra,
+    });
+    const inHours = (hours: number) => new Date(Date.now() + hours * 3_600_000).toISOString();
+    const serve = (rows: unknown[]) => server.use(http.get('/api/v1/queue/', () => HttpResponse.json(rows)));
+
+    it('passes over a staged head and a later one to the row that starts now', async () => {
+      serve([
+        row(1, 'Staged Head', { manual_start: true }),
+        row(2, 'Tomorrow', { scheduled_time: inHours(20) }),
+        row(3, 'Runs Now'),
+      ]);
+      render(<PrinterQueueWidget printerId={1} />);
+
+      expect(await screen.findByText('Runs Now')).toBeInTheDocument();
+      expect(screen.getByText('Next in queue')).toBeInTheDocument();
+      expect(screen.queryByText('Staged Head')).not.toBeInTheDocument();
+      expect(screen.getByText('+2')).toBeInTheDocument();
+    });
+
+    it('takes a scheduled row whose time has come as one that starts now', async () => {
+      serve([row(1, 'Staged Head', { manual_start: true }), row(2, 'Due Already', { scheduled_time: inHours(-1) })]);
+      render(<PrinterQueueWidget printerId={1} />);
+
+      expect(await screen.findByText('Due Already')).toBeInTheDocument();
+      expect(screen.getByText('Next in queue')).toBeInTheDocument();
+    });
+
+    it('names the row due first, as scheduled, when nothing can start now', async () => {
+      serve([
+        row(1, 'Staged Head', { manual_start: true }),
+        row(2, 'Later Still', { scheduled_time: inHours(10) }),
+        row(3, 'Sooner', { scheduled_time: inHours(2) }),
+      ]);
+      render(<PrinterQueueWidget printerId={1} />);
+
+      expect(await screen.findByText('Sooner')).toBeInTheDocument();
+      expect(screen.getByText(/^Scheduled for /)).toBeInTheDocument();
+      expect(screen.queryByText('Next in queue')).not.toBeInTheDocument();
+    });
+
+    it('says the queue only holds staged work when that is all there is', async () => {
+      serve([row(1, 'Staged Head', { manual_start: true }), row(2, 'Staged Too', { manual_start: true })]);
+      render(<PrinterQueueWidget printerId={1} />);
+
+      expect(await screen.findByText('Staged Head')).toBeInTheDocument();
+      expect(screen.getByText('Staged — starts only by hand')).toBeInTheDocument();
+      expect(screen.queryByText('Next in queue')).not.toBeInTheDocument();
+    });
+  });
+
   describe('link behavior', () => {
     it('links to queue page', async () => {
       render(<PrinterQueueWidget printerId={1} />);

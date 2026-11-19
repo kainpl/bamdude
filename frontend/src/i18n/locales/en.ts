@@ -2000,6 +2000,7 @@ export default {
     searchPlaceholder: 'Search archives...',
     noArchivesSearch: 'No archives match your search',
     originalPrintNotVisible: 'Original print not visible - try clearing filters',
+    linkedArchiveNotVisible: 'The linked archive is not in the current list - try clearing filters',
     noArchivesYet: 'No archives yet',
     loadingArchives: 'Loading archives...',
     showAll: 'Show all',
@@ -2356,6 +2357,16 @@ export default {
     addingProgress: 'Adding {{current}}/{{total}}...',
     savingProgress: 'Saving {{current}}/{{total}}...',
     nextInQueue: 'Next in queue',
+    // When nothing in the queue can start by itself now: the job due first, or only staged ones.
+    nextScheduled: 'Scheduled for {{time}}',
+    nextStaged: 'Staged — starts only by hand',
+    // The printer's last print failed and "only if the previous print succeeded" jobs wait for it.
+    previousFailure: {
+      note: 'The last print on this printer failed. Jobs set to run only if the previous print succeeded are held until the failure is acknowledged.',
+      acknowledge: 'Acknowledge failure',
+      acknowledged: 'Failure acknowledged',
+      nothingToAcknowledge: 'No failure was holding jobs on this printer',
+    },
     clearPlate: 'Clear Plate & Start Next',
     repeatPrint: 'Repeat print',
     clearPlateShort: 'Clear plate',
@@ -2537,6 +2548,7 @@ export default {
       bumpedBottom: 'Item moved to bottom',
       cloned: 'Item cloned',
       skipped: 'Item skipped',
+      skipChanged: 'The item changed before it could be skipped — it may have started already. Nothing was skipped.',
       unskipped: 'Item restored to queue',
       retrying: 'Retry queued',
       manualStartToggled: 'Manual start toggled',
@@ -6016,14 +6028,6 @@ export default {
   },
 
   slice: {
-    visibility: {
-      onlyFarm: "Only models in my farm",
-      onlyMine: "Only my processes and filaments",
-      hint: "Turn a filter off to browse the full catalogue. Paused, offline or maintenance printers still belong to the farm. Your current selection stays.",
-      noMine: "No custom process or filament profiles yet.",
-      showAll: "Show all profiles",
-      unavailable: "Could not read the farm models. All printers are shown.",
-    },
     title: 'Slice model',
     action: 'Slice',
     pipelines: {
@@ -6660,7 +6664,7 @@ export default {
     schedulePrint: 'Schedule',
     computeOrder: 'Calculate',
     assemble: {
-      editAndRetry: "Edit and try again",
+      editAndRetry: 'Edit and try again',
       action: 'Assemble project',
       hint: 'Lay the selected models out densely and save project files for your printers',
       onlyMeshes: 'Only STL, OBJ and STEP models can be assembled — the selection holds another kind of file',
@@ -11041,7 +11045,6 @@ export default {
     selectionRequired: 'Selection required',
 
     // index.tsx
-    failedToUpdateQueue: 'Failed to update queue item',
     failedToComplete: 'Failed to complete operation',
     failedPrefix: 'Failed: {{error}}',
     partialSuccess: '{{success}} succeeded, {{failed}} failed',

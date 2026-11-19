@@ -745,49 +745,8 @@ async def test_a_printer_created_with_the_reused_id_right_after_the_commit_conne
         printer_manager.disconnect_printer(printer.id)
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("deleted", [False, True], ids=["control", "deleted-during-the-boot-wait"])
-async def test_a_power_on_wait_connects_only_the_record_it_started_for(monkeypatch, deleted):
-    from backend.app.services import print_scheduler as ps
-
-    scheduler = ps.PrintScheduler()
-    calls = []
-    pid = 4848
-
-    async def connect(printer, *, life=None):
-        calls.append(life)
-        return True
-
-    class _Service:
-        async def get_status(self, _plug):
-            return {"reachable": True, "state": "ON"}
-
-        async def turn_on(self, _plug):
-            return True
-
-    async def service_for(_plug, _db):
-        return _Service()
-
-    async def boot_wait(_seconds):
-        if deleted and not calls:
-            life = printer_manager.begin_printer_deletion(pid)
-            printer_manager.end_printer_deletion(pid, life)
-
-    class _Db:
-        async def execute(self, _stmt):
-            return type("R", (), {"scalar_one_or_none": lambda self: object()})()
-
-    started_life = printer_manager.printer_life(pid)
-    monkeypatch.setattr(printer_manager, "connect_printer", connect)
-    monkeypatch.setattr(ps.smart_plug_manager, "get_service_for_plug", service_for)
-    monkeypatch.setattr(ps.asyncio, "sleep", boot_wait)
-
-    result = await scheduler._power_on_and_wait(type("Plug", (), {"name": "plug"})(), pid, _Db())
-
-    if deleted:
-        assert result is False and calls == []
-    else:
-        assert result is True and calls == [started_life]
+# The per-printer plug wake no longer waits or connects inside the pass (G03): its record-life
+# proof lives in test_scheduler_busy_reasons_3018.py::TestTheWakeDoesNotBlockThePass.
 
 
 @pytest.mark.asyncio

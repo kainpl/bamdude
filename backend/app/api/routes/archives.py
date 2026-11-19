@@ -1680,6 +1680,9 @@ _archives_read_all = require_permission(Permission.ARCHIVES_READ_ALL)
 _archives_read_own = require_permission(Permission.ARCHIVES_READ_OWN)
 _archives_reprint_all = require_permission(Permission.ARCHIVES_REPRINT_ALL)
 _archives_reprint_own = require_permission(Permission.ARCHIVES_REPRINT_OWN)
+# A reprint with copies puts them all in the printer's queue: the queue's own create right, asked
+# before the file is copied (G03 D7.6), never left to the publication after it.
+_queue_create = require_permission(Permission.QUEUE_CREATE)
 
 
 async def ensure_may_print_from_archive(
@@ -2002,7 +2005,13 @@ async def delete_archive(
         locked = await _lock_exit_orders(db, archive_id)
 
     async with archive_write_scope(db, archive_id, first=first):
-        return await _delete_archive_locked(archive_id, db, auth_result, creds, locked)
+        result = await _delete_archive_locked(archive_id, db, auth_result, creds, locked)
+    # Outside the scope: the trash may have cancelled queued jobs of this source on
+    # other printers, whose cached counters are recounted after the commit.
+    from backend.app.services.queue_source_release import recount_released_queues
+
+    await recount_released_queues(db)
+    return result
 
 
 async def _delete_archive_locked(
@@ -4039,6 +4048,7 @@ async def reprint_archive(
     if qty > 1:
         from backend.app.services.queue_batch import enqueue_batch_copies
 
+        await creds.check(_queue_create)
         items, batch_id = await enqueue_batch_copies(
             db,
             authority=await creds.capture(),
@@ -4069,6 +4079,10 @@ async def reprint_archive(
             project_id=project_id,
             project_line_id=project_line_id,
         )
+        if not items:
+            # The printer has no queue row at all — a broken install. "Queued, 0 copies" was a
+            # success for nothing (G03 D7.7); the plan's enqueue says the same.
+            raise HTTPException(409, "That printer has no queue")
         logger.info(
             "Queued %s reprint copies for archive %s on printer %s (batch %s)",
             len(items),

@@ -89,9 +89,6 @@ const part = (index: number) => screen.getByTestId(`assemble-part-${index}`);
 const target = (index: number) => screen.getByTestId(`assemble-target-${index}`);
 
 beforeEach(() => {
-  // These catalogue/assembly fixtures predate the default visibility preferences.
-  localStorage.setItem('bamdude:presets:only-farm', 'off');
-  localStorage.setItem('bamdude:presets:only-mine', 'off');
   posted = [];
   cancelled = 0;
   jobState = { job_id: 31, status: 'completed', kind: 'assembly', progress: null, result: okResult() };
@@ -489,7 +486,10 @@ describe('AssembleProjectModal', () => {
     expect(await screen.findByText('This file was not assembled here, or its record is damaged')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Re-layout' })).not.toBeInTheDocument();
   });
-  it('returns from a finished assembly to the same form and submits a fresh job only on request', async () => {
+  it.each(['completed', 'failed'] as const)('returns from a %s assembly to the same form and submits only on request', async (status) => {
+    if (status === 'failed') {
+      jobState = { job_id: 31, status, kind: 'assembly', error_detail: 'Could not lay out this model' };
+    }
     open();
     await waitFor(() => expect(screen.getByRole('button', { name: 'Assemble' })).toBeEnabled());
     fireEvent.change(screen.getByLabelText('Gap between parts, mm'), { target: { value: '3' } });

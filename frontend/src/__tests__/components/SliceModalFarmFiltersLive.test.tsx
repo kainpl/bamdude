@@ -96,8 +96,6 @@ function serve() {
 }
 
 function open() {
-  localStorage.setItem('bamdude:presets:only-farm', 'off');
-  localStorage.setItem('bamdude:presets:only-mine', 'off');
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   const Providers = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>

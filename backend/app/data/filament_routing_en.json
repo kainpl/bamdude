@@ -45,6 +45,7 @@
   "override_slot_not_used": "A channel override refers to an unused slot.",
   "printer_busy": "Printer queue is occupied.",
   "previous_print_failed": "The previous print failed.",
+  "queue_halted": "The printer's queue is stopped after a failed or cancelled print; resume it to give it new work.",
   "feed_state_changed": "The filament in a slot this print uses changed while it was being prepared, so it was not started.",
   "dispatch_claim_changed": "This dispatch attempt no longer owns the queue item.",
   "source_read_forbidden": "You do not have permission to read this source.",

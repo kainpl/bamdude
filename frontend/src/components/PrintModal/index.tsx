@@ -1572,18 +1572,14 @@ export function PrintModal({
     mutationFn: (items: PrintQueueItemCreate[]) => api.addNextQueueBlock(items),
   });
 
-  // Update queue item mutation
+  // Update queue item mutation. ⚠️ No onSuccess / onError of its own: the submit
+  // loop is its only caller and reports once, after every entry was sent — the
+  // saved edit AND the copies for further printers. Reporting here as well gave
+  // two toasts and two closes for one save, two error toasts for one refusal, and
+  // closed the dialog while the loop was still adding to the other printers
+  // (G03 D10.1).
   const updateQueueMutation = useMutation({
     mutationFn: (data: PrintQueueItemUpdate) => api.updateQueueItem(queueItem!.id, data),
-    onSuccess: () => {
-      invalidateQueueViews(queryClient);
-      showToast(t('printModal.queueItemUpdated'));
-      onSuccess?.();
-      onClose();
-    },
-    onError: (error: Error) => {
-      showToast(error.message || t('printModal.failedToUpdateQueue'), 'error');
-    },
   });
 
   // Get mapping for a specific printer (per-printer override or default).

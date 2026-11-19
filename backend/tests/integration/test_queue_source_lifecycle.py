@@ -341,6 +341,8 @@ async def test_trashing_a_library_file_still_cancels_a_legacy_job(db_session, tm
     job = await reread(db_session, job)
     assert job.status == "cancelled"
     assert job.waiting_reason == "Source file deleted"
+    # Dated (G03 E3a): the "previous print succeeded" gate orders finished rows by their end.
+    assert job.completed_at is not None
 
 
 async def test_trashing_a_library_file_fails_a_legacy_auto_row(db_session, tmp_path, printer_factory, sessions):

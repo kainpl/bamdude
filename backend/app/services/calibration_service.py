@@ -662,6 +662,14 @@ class CalibrationService:
         )
 
         session.print_queue_item_id = print_queue_item_id
+        # The calibration row is a pending queue row like any other: the card's counter
+        # (``GET /queues/`` answers the cached column) is recounted with it (G03 D7.2).
+        from backend.app.models.print_queue import PrintQueueItem
+        from backend.app.services.queue_counters import update_queue_counters
+
+        queue_id = await db.scalar(select(PrintQueueItem.queue_id).where(PrintQueueItem.id == print_queue_item_id))
+        if queue_id is not None:
+            await update_queue_counters(db, queue_id)
         await db.commit()
         await db.refresh(session)
         return session
@@ -1321,8 +1329,23 @@ async def reconcile_session_status(db: AsyncSession, session: CalibrationSession
                 new_status = _classify(archive.status)
             if new_status is None and session.print_queue_item_id is not None:
                 item = await db.get(PrintQueueItem, session.print_queue_item_id)
+                # ⚠️ The row by its id AND its own session link (G03 D4): SQLite hands a deleted
+                # row's id to the next queue row, and an unrelated job sitting ``completed`` read
+                # as this calibration having printed. The enqueue stamps ``calibration_session_id``
+                # on the row, so a row that is no calibration, or names another session, is not
+                # this one. A calibration row with no link at all predates that stamp and keeps
+                # the old answer.
+                if item is not None and not (item.is_calibration and item.calibration_session_id in (None, session.id)):
+                    item = None
                 if item is not None:
                     new_status = _classify(item.status)
+                elif archive is None:
+                    # No print of it and no row any more: the job was deleted before it ever
+                    # printed (any queue delete door). Left ``running``, the wizard waited for
+                    # ever and ``start`` refused every new calibration on the printer. A NULL id
+                    # is the window between the enqueue and the session storing it -- "not yet",
+                    # never "gone" -- and is not asked here.
+                    new_status = "cancelled"
 
         if new_status and new_status != session.status:
             session.status = new_status

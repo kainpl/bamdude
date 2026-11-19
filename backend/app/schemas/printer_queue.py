@@ -46,10 +46,20 @@ class PrinterQueueResponse(BaseModel):
     cancelled_count: int
     skipped_count: int
     total_count: int
+    #: The newest finished print on this printer failed and nobody acknowledged it: work marked "only after a
+    #: successful previous print" waits for this printer (AutoQueue routes it elsewhere or holds it). A later
+    #: success, a Retry of the failure or ``POST /queues/{id}/acknowledge-failure`` clears it.
+    previous_print_failed: bool = False
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class AcknowledgeFailureResponse(BaseModel):
+    """``POST /queues/{id}/acknowledge-failure``: whether a failure was gating, and is acknowledged now."""
+
+    acknowledged: bool
 
 
 class PrinterQueueUpdate(IgnoresNullForRequiredColumns):

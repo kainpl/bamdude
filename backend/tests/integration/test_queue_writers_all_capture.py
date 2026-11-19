@@ -111,6 +111,13 @@ async def count_of(db, model) -> int:
     return (await db.execute(select(func.count()).select_from(model))).scalar()
 
 
+async def pending_count_of(db, queue_id: int) -> int:
+    """The queue's CACHED counter -- what ``GET /queues/`` answers -- read fresh."""
+    from backend.app.models.printer_queue import PrinterQueue
+
+    return (await db.get(PrinterQueue, queue_id, populate_existing=True)).pending_count
+
+
 def a_callback():
     return SimpleNamespace(answer=AsyncMock(), message=SimpleNamespace())
 
@@ -196,6 +203,7 @@ async def test_the_bots_library_add_queues_from_a_captured_copy(
     assert object_of(rows[0]).is_file()
     assert staging_litter() == []
     assert callback.answer.await_args.kwargs.get("show_alert") is not True
+    assert await pending_count_of(db_session, queue.id) == 1, "the card's counter is recounted (G03 D7.2)"
 
 
 async def test_the_bots_library_add_refuses_a_file_id_that_names_an_archive(
@@ -304,6 +312,7 @@ async def test_the_bots_queue_confirm_captures_once_and_routes_off_the_copy(
     assert item.filament_routing and json.loads(item.filament_routing)["resolved_plate_id"] == 15
     assert item.source_snapshot["display_filename"] == source.filename
     assert staging_litter() == []
+    assert await pending_count_of(db_session, queue.id) == 1, "the card's counter is recounted (G03 D7.2)"
 
 
 @pytest.mark.parametrize("scene", ["library", "queue"])
@@ -405,6 +414,7 @@ async def test_a_slicer_send_all_captures_once_for_every_plate(
     # The late-MQTT registry still names the rows it may retro-stamp.
     assert vp._recent_queue_items[Path(source.file_path).name][0] == [item.id for item in items]
     assert staging_litter() == []
+    assert await pending_count_of(db_session, queue.id) == 2, "the card's counter is recounted (G03 D7.2)"
 
 
 async def test_a_slicer_upload_naming_a_plate_the_file_lacks_leaves_nothing(

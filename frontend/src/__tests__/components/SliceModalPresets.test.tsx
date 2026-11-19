@@ -60,8 +60,6 @@ function serve(listing: Listing, extra: Parameters<typeof server.use> = []) {
 }
 
 function open() {
-  localStorage.setItem('bamdude:presets:only-farm', 'off');
-  localStorage.setItem('bamdude:presets:only-mine', 'off');
   return render(
     <SliceJobTrackerProvider>
       <SliceModal source={{ kind: 'libraryFile', id: 1, filename: 'Cube.3mf' }} onClose={() => undefined} />

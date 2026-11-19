@@ -1,5 +1,13 @@
-/** The dialog owns its pickers. Its visible catalogue preferences are separate
- * from calibration's legacy three-state owner control. */
+/**
+ * The dialog owns its pickers, and no longer offers the owner filter.
+ *
+ * ⚠️ All / My / Built-in was a leftover from the sidecar-bundle era — the
+ * other half of that control was deleted with the bundles (#1712) and this
+ * half stayed hanging. Source is chosen by the tier picker now.
+ *
+ * ⚠️ Dropped for the DIALOG only: calibration still shows it, and taking it
+ * from there is a different decision about a different flow.
+ */
 import { describe, it, expect } from 'vitest';
 
 import modalSource from '../../components/SliceModal.tsx?raw';
@@ -22,7 +30,7 @@ describe('SliceModal pickers', () => {
     expect(modalSource).not.toContain('export function SlicerPicker');
   });
 
-  it('does not restore calibration’s legacy owner control', () => {
+  it('has no trace of the owner filter left', () => {
     // ⚠️ Hiding the control while still filtering by it would look the same
     // on screen and quietly drop presets from the dropdowns.
     expect(modalSource).not.toContain('matchesOwnerFilter');

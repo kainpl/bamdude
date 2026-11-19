@@ -610,6 +610,10 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
                 session.add(item)
                 await session.flush()
                 positions.append(item.position)
+                # The card's counter in the transaction that adds the row, as every web door does (G03 D7.2).
+                from backend.app.services.queue_counters import update_queue_counters
+
+                await update_queue_counters(session, queue_id)
 
         from backend.app.services.domain_authority import chat_source_access
 

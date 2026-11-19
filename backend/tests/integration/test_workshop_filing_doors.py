@@ -391,6 +391,27 @@ class TestTheLibraryPrintDoor:
             closed = await committing_client.post(url, json={"project_id": project.id})
             assert closed.status_code == 409, closed.text
 
+    @pytest.mark.asyncio
+    async def test_print_now_with_copies_asks_the_queues_create_right_first(
+        self, committing_client, db_session, printer_with_queue, linked_file
+    ):
+        """G03 D7.6: the route's own gate is ``printers:control``; the copies are queue work."""
+        from unittest.mock import AsyncMock, patch
+
+        await _user(db_session, "ff_printer_no_queue", ["printers:control", "library:read_all"])
+        url = f"/api/v1/library/files/{linked_file.id}/print?printer_id={printer_with_queue.id}"
+        with (
+            patch("backend.app.services.printer_manager.printer_manager.is_connected", return_value=True),
+            patch("backend.app.services.queue_batch.enqueue_batch_copies", new=AsyncMock()) as copies,
+        ):
+            refused = await committing_client.post(url, json={"quantity": 2}, headers=await _jwt("ff_printer_no_queue"))
+            assert refused.status_code == 403, refused.text
+            assert copies.await_count == 0
+            copies.return_value = ([], None)
+            empty = await committing_client.post(url, json={"quantity": 2})
+            assert empty.status_code == 409, empty.text
+            assert empty.json()["detail"] == "That printer has no queue"
+
 
 class TestTheOrderPlanDoors:
     @pytest.mark.asyncio
@@ -565,13 +586,50 @@ class TestTheReprintDoor:
         with (
             patch("backend.app.services.printer_manager.printer_manager.is_connected", return_value=True),
             patch(
-                "backend.app.services.queue_batch.enqueue_batch_copies", new=AsyncMock(return_value=([], "b"))
+                "backend.app.services.queue_batch.enqueue_batch_copies",
+                new=AsyncMock(return_value=([object(), object()], "b")),
             ) as copies,
         ):
             r = await committing_client.post(url, json={"quantity": 2, "keep_order": False})
         assert r.status_code == 200, r.text
         assert copies.await_args.kwargs["project_id"] is None
         assert copies.await_args.kwargs["project_line_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_copies_ask_the_queues_create_right_before_the_copy(
+        self, committing_client, db_session, filed_print, printer_with_queue
+    ):
+        """G03 D7.6: copies go to the queue, so ``queue:create`` is asked before anything is copied --
+        not by the publication afterwards, with its wording."""
+        from unittest.mock import AsyncMock, patch
+
+        await _user(db_session, "ff_reprinter_no_queue", ["archives:reprint_all"])
+        url = f"/api/v1/archives/{filed_print['archive']}/reprint?printer_id={printer_with_queue.id}"
+        with (
+            patch("backend.app.services.printer_manager.printer_manager.is_connected", return_value=True),
+            patch("backend.app.services.queue_batch.enqueue_batch_copies", new=AsyncMock()) as copies,
+        ):
+            r = await committing_client.post(
+                url, json={"quantity": 2, "keep_order": False}, headers=await _jwt("ff_reprinter_no_queue")
+            )
+        assert r.status_code == 403, r.text
+        assert copies.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_copies_for_a_printer_without_a_queue_are_refused(
+        self, committing_client, db_session, filed_print, printer_with_queue
+    ):
+        """G03 D7.7: "queued, 0 copies" was a success for nothing."""
+        from unittest.mock import AsyncMock, patch
+
+        url = f"/api/v1/archives/{filed_print['archive']}/reprint?printer_id={printer_with_queue.id}"
+        with (
+            patch("backend.app.services.printer_manager.printer_manager.is_connected", return_value=True),
+            patch("backend.app.services.queue_batch.enqueue_batch_copies", new=AsyncMock(return_value=([], None))),
+        ):
+            r = await committing_client.post(url, json={"quantity": 2, "keep_order": False})
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"] == "That printer has no queue"
 
 
 class TestTheCloneDoors:

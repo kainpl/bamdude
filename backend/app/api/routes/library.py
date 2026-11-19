@@ -5626,6 +5626,9 @@ async def get_library_file_filament_requirements(
 
 _LIBRARY_READ_ALL = require_permission(Permission.LIBRARY_READ_ALL)
 _LIBRARY_READ_OWN = require_permission(Permission.LIBRARY_READ_OWN)
+# Print now with copies puts them all in the printer's queue: the queue's own create right, asked
+# before the file is copied (G03 D7.6), never left to the publication after it.
+_QUEUE_CREATE = require_permission(Permission.QUEUE_CREATE)
 
 
 @router.post("/files/{file_id}/print")
@@ -5735,6 +5738,7 @@ async def print_library_file(
     if qty > 1:
         from backend.app.services.queue_batch import enqueue_batch_copies
 
+        await creds.check(_QUEUE_CREATE)
         items, batch_id = await enqueue_batch_copies(
             db,
             authority=await creds.capture(),
@@ -5768,6 +5772,10 @@ async def print_library_file(
             # inside does not read it again.
             library_file=lib_file,
         )
+        if not items:
+            # The printer has no queue row at all — a broken install. "Queued, 0 copies" was a
+            # success for nothing (G03 D7.7); the plan's enqueue says the same.
+            raise HTTPException(status_code=409, detail="That printer has no queue")
         return {
             "status": "queued",
             "printer_id": printer_id,

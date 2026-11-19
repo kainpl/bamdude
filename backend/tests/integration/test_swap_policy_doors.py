@@ -651,6 +651,39 @@ async def test_a_move_keeps_the_swap_request_for_the_way_back(
     assert (json.loads(row.swap_macro_events) if row.swap_macro_events else None) == (START if stored else None)
 
 
+@pytest.mark.parametrize(("fact", "code", "stored"), [(None, 409, True), (True, 200, False)])
+async def test_a_batch_move_asks_the_targets_swap_rule_like_a_single_move(
+    fact, code, stored, committing_client, db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    """G03 follow-up: the batch PATCH judged the swap columns without the target (``_swap_update(..., None)``),
+    so copies asking for our macros over an unknown source moved onto a swap printer, and a baked source kept
+    them asked for there. Now the target decides, for the whole batch or none of it."""
+    from backend.app.services.printer_manager import printer_manager
+
+    printer, queue = await a_swap_printer(db_session, tmp_path, printer_factory, monkeypatch)
+    plain = await a_second_printer(
+        db_session, printer_factory, monkeypatch, printer_manager._clients[printer.id], swap_mode=False
+    )
+    jobs = [
+        await pending_job(db_session, sessions, tmp_path, queue, fact=fact, batch_id="b-move", name=f"{n}.gcode.3mf")
+        for n in ("one", "two")
+    ]
+    for job in jobs:
+        job.queue_id = plain.id
+        job.execute_swap_macros, job.swap_macro_events = True, json.dumps(START)
+    await db_session.commit()
+
+    response = await committing_client.patch(
+        f"/api/v1/queue/batch/b-move?queue_id={plain.id}", json={"queue_id": queue.id, "manual_mapping": False}
+    )
+
+    assert response.status_code == code, response.text
+    for job in jobs:
+        row = await db_session.get(PrintQueueItem, job.id, populate_existing=True)
+        assert row.queue_id == (queue.id if code == 200 else plain.id)
+        assert row.execute_swap_macros is stored
+
+
 # --- the order plan: printer and auto both go through the captured fact (§8, T4.1) ---------------------------------
 
 

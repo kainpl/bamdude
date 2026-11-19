@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.print_queue import PrintQueueItem
@@ -174,18 +174,66 @@ class CloneScope:
     batch = "batch"
 
 
-async def get_batch_pending_items(db: AsyncSession, batch_id: str) -> list[PrintQueueItem]:
+#: The rows of a batch that are still in a printer queue (ungroup reaches both).
+ACTIVE_BATCH_STATUSES = ("pending", "printing")
+
+
+class BatchSpansQueues(ValueError):
+    """A batch action named no queue, and the batch's active rows sit in several (G03 D1).
+
+    AutoQueue promotion copies the router row's ``batch_id`` onto every printer row it creates, so one
+    batch normally spreads over the printers that took its copies. A batch action belongs to the queue the
+    operator is looking at; without one named, acting on every printer's copies at once is refused rather
+    than done by accident.
+    """
+
+    def __init__(self, queue_ids):
+        super().__init__(f"batch spans queues {sorted(queue_ids)}")
+        self.queue_ids = sorted(queue_ids)
+
+
+async def batch_queue_id(db: AsyncSession, batch_id: str, queue_id: int | None) -> int | None:
+    """The one printer queue a batch action acts on (G03 D1, owner decision 2026-11-19).
+
+    A named queue is the answer. Without one: the queue holding the batch's active rows (pending or
+    printing) when there is exactly one, ``None`` when there are none, and :class:`BatchSpansQueues` when
+    they span several. Finished rows never decide it -- history keeps its grouping wherever it printed.
+    """
+    if queue_id is not None:
+        return queue_id
+    queues = set(
+        (
+            await db.scalars(
+                select(PrintQueueItem.queue_id)
+                .where(PrintQueueItem.batch_id == batch_id, PrintQueueItem.status.in_(ACTIVE_BATCH_STATUSES))
+                .distinct()
+            )
+        ).all()
+    )
+    if len(queues) > 1:
+        raise BatchSpansQueues(queues)
+    return next(iter(queues), None)
+
+
+async def get_batch_pending_items(
+    db: AsyncSession, batch_id: str, *, queue_id: int | None = None
+) -> list[PrintQueueItem]:
     """All pending items sharing this batch_id, ordered by position.
 
     Items in ``printing``/``completed``/``failed``/``cancelled`` status
     are intentionally excluded — batch operations only touch pending.
+    ``queue_id`` keeps the rows of one printer queue: a batch spread over
+    several printers by AutoQueue is acted on per queue (G03 D1).
     """
-    result = await db.execute(
+    stmt = (
         select(PrintQueueItem)
         .where(PrintQueueItem.batch_id == batch_id)
         .where(PrintQueueItem.status == "pending")
         .order_by(PrintQueueItem.position, PrintQueueItem.id)
     )
+    if queue_id is not None:
+        stmt = stmt.where(PrintQueueItem.queue_id == queue_id)
+    result = await db.execute(stmt)
     return list(result.scalars().all())
 
 
@@ -193,7 +241,8 @@ async def resolve_block_ids(db: AsyncSession, item_id: int) -> tuple[int, list[i
     """Return ``(queue_id, ids)`` — all items that move together as a unit.
 
     * Solo item (``batch_id`` is NULL) → ``[item_id]``
-    * Batched item → all pending siblings' ids (including *item_id*).
+    * Batched item → its pending siblings' ids in ITS queue (including *item_id*):
+      the copies AutoQueue gave other printers are their queues' work (G03 D1).
     """
     item = (await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))).scalar_one_or_none()
     if item is None:
@@ -202,7 +251,7 @@ async def resolve_block_ids(db: AsyncSession, item_id: int) -> tuple[int, list[i
     if not item.batch_id:
         return item.queue_id, [item.id]
 
-    siblings = await get_batch_pending_items(db, item.batch_id)
+    siblings = await get_batch_pending_items(db, item.batch_id, queue_id=item.queue_id)
     return item.queue_id, [s.id for s in siblings]
 
 
@@ -330,18 +379,17 @@ async def _bump_block_to_bottom_unlocked(db: AsyncSession, queue_id: int, block_
     if not block_ids:
         return 0
     pending = await _pending_items_in_queue(db, queue_id)
-    id_to_item = {it.id: it for it in pending}
-    block_items = [id_to_item[i] for i in block_ids if i in id_to_item]
+    wanted = set(block_ids)
+    # In the queue's own order (position, then id), so a tie cannot reorder the block.
+    block_items = [it for it in pending if it.id in wanted]
     if not block_items:
         return 0
-    non_block = [it for it in pending if it.id not in {b.id for b in block_items}]
-    block_items.sort(key=lambda it: it.position)
+    non_block = [it for it in pending if it.id not in wanted]
 
-    # Already at bottom?
-    total = len(pending)
-    if block_items[-1].position == total - 1 and all(
-        block_items[-1 - i].position == total - 1 - i for i in range(len(block_items))
-    ):
+    # Already at bottom? Asked of the ORDER, never of the position values: pending positions start at 1
+    # (``place_pending_block``), and a check that assumed 0..n-1 took a block sitting just above the last
+    # row for one already at the bottom -- the bump did nothing (G03 follow-up).
+    if [it.id for it in pending[-len(block_items) :]] == [it.id for it in block_items]:
         return 0
 
     # Assign new positions: non-block items keep their relative order at the
@@ -511,13 +559,19 @@ async def clone_batch(
     db: AsyncSession,
     batch_id: str,
     *,
+    queue_id: int | None = None,
     created_by_id: int | None | str = "source",
     keep_order: bool = True,
     authority=None,
 ) -> list[PrintQueueItem]:
     """Create a fresh batch (new batch_id) duplicating every pending item
-    in the source batch.  Copies appended to end of queue, preserve
-    intra-batch order.
+    of the source batch in ONE printer queue.  Copies appended to end of
+    that queue, preserve intra-batch order.
+
+    ⚠️ **One queue** (G03 D1): ``queue_id``, or the batch's only queue —
+    :class:`BatchSpansQueues` when its active rows sit in several. The
+    positions, the lane and the counters are that queue's; cloning another
+    printer's copies here gave them positions of a queue they were not in.
 
     ⚠️ **Every sibling's blob**, in one acquisition of the guard: a batch normally
     shares one source, but nothing in the model requires it (rows can be grouped
@@ -536,13 +590,15 @@ async def clone_batch(
 
     for member in all_siblings:
         await require_repeatable(db, member, whole_batch=True)
-    siblings = await get_batch_pending_items(db, batch_id)
+    queue_id = await batch_queue_id(db, batch_id, queue_id)
+    if queue_id is None:
+        return []
+    siblings = await get_batch_pending_items(db, batch_id, queue_id=queue_id)
     if not siblings:
         return []
     pins = tuple((row.id, row.recovery_identity, row.queue_source_id, row.queue_id) for row in siblings)
 
     new_batch_id = str(uuid.uuid4())
-    queue_id = siblings[0].queue_id
     clones: list[PrintQueueItem] = []
     from backend.app.services.publication_authority import queue_item_access
 
@@ -554,7 +610,7 @@ async def clone_batch(
         printer_id=queue_id,
         source_access=queue_item_access(siblings),
     ):
-        siblings = await get_batch_pending_items(db, batch_id)
+        siblings = await get_batch_pending_items(db, batch_id, queue_id=queue_id)
         if tuple((row.id, row.recovery_identity, row.queue_source_id, row.queue_id) for row in siblings) != pins:
             from backend.app.services.queue_sources import SourceUnreadable
 
@@ -587,21 +643,68 @@ async def clone_batch(
     return clones
 
 
-async def set_status(db: AsyncSession, item_id: int, new_status: str) -> bool:
-    """Set status on a single item.  Returns True if changed."""
-    item = (await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))).scalar_one_or_none()
-    if item is None or item.status == new_status:
+async def set_status(
+    db: AsyncSession, item_id: int, new_status: str, *, completed_at=None, commit: bool = True
+) -> bool:
+    """Move one PENDING item to ``new_status``.  Returns True if it changed.
+
+    ⚠️ A compare-and-set on ``status='pending'`` (G03 E-2): the route read the row a moment
+    earlier, and the scheduler may have claimed it since. An ORM write from that read would
+    overwrite ``printing`` and leave the printer's claim behind; the Core ``UPDATE`` simply
+    matches nothing. ``completed_at`` is stamped by a caller that ends the row.
+    """
+    if new_status == "pending":
         return False
-    item.status = new_status
-    await db.commit()
-    return True
-
-
-async def set_status_for_batch(db: AsyncSession, batch_id: str, new_status: str) -> int:
-    """Apply new_status to all pending items in batch.  Returns count."""
-    pending = await get_batch_pending_items(db, batch_id)
-    for it in pending:
-        it.status = new_status
-    if pending:
+    values: dict = {"status": new_status}
+    if completed_at is not None:
+        values["completed_at"] = completed_at
+    changed = (
+        await db.execute(
+            update(PrintQueueItem)
+            .where(PrintQueueItem.id == item_id, PrintQueueItem.status == "pending")
+            .values(**values)
+            .returning(PrintQueueItem.id)
+        )
+    ).all()
+    if changed and commit:
         await db.commit()
-    return len(pending)
+    return bool(changed)
+
+
+async def set_status_for_batch(
+    db: AsyncSession,
+    batch_id: str,
+    new_status: str,
+    *,
+    queue_id: int | None = None,
+    completed_at=None,
+    commit: bool = True,
+) -> int:
+    """Move the batch's PENDING items of one printer queue to ``new_status``.  Returns count.
+
+    One queue: ``queue_id``, or the batch's only queue (:func:`batch_queue_id` raises
+    :class:`BatchSpansQueues` when its active rows sit in several, G03 D1). A compare-and-set
+    on ``status='pending'``, like :func:`set_status`: a row claimed since the caller looked is
+    left alone, never written over.
+    """
+    queue_id = await batch_queue_id(db, batch_id, queue_id)
+    if queue_id is None or new_status == "pending":
+        return 0
+    values: dict = {"status": new_status}
+    if completed_at is not None:
+        values["completed_at"] = completed_at
+    changed = (
+        await db.execute(
+            update(PrintQueueItem)
+            .where(
+                PrintQueueItem.batch_id == batch_id,
+                PrintQueueItem.queue_id == queue_id,
+                PrintQueueItem.status == "pending",
+            )
+            .values(**values)
+            .returning(PrintQueueItem.id)
+        )
+    ).all()
+    if changed and commit:
+        await db.commit()
+    return len(changed)

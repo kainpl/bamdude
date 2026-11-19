@@ -263,6 +263,41 @@ async def test_an_auto_entry_publishes_into_the_auto_queue(farm, sessions):
     assert len({job["identity"] for job in receipt["jobs"]}) == 3
 
 
+async def test_the_plugins_options_reach_an_auto_queue_job_as_its_slicer_choices(farm, sessions):
+    """G03 D2: a router row's option columns are inert -- promotion writes the key owner's saved profile --
+    so the options ticked in the plugin were dropped for an AutoQueue target. They travel as the row's
+    ``slicer_options`` (m243), which the assignment lays over the profile."""
+    entry = {
+        "entry_id": str(uuid.uuid4()),
+        "plate_id": 15,
+        "quantity": 1,
+        "target": {"kind": "auto", "target_model": "P1P"},
+        "action": "queue_asap",
+        "options": {"bed_levelling": "off", "flow_cali": "on", "timelapse": True, "layer_inspect": True},
+    }
+
+    result = await _submit(farm, _body(farm, entry))
+
+    assert result.state == "complete"
+    async with sessions() as db:
+        row = (await db.execute(select(AutoQueueItem))).scalar_one()
+    assert row.slicer_options == {
+        "bed_levelling": "off",
+        "flow_cali": "on",
+        "timelapse": True,
+        "layer_inspect": True,
+        # Forced off, as for a printer target: nothing the plugin did not offer.
+        "execute_swap_macros": False,
+        "swap_macro_events": None,
+        "gcode_injection": False,
+    }
+
+
+async def test_a_printer_entry_writes_no_slicer_choices_of_its_own(farm, sessions):
+    """The printer target takes the options on its own columns; ``slicer_options`` is the router's seam."""
+    assert cs._auto_slicer_options(_printer_entry(farm, options={"timelapse": True})) is None
+
+
 async def test_a_restricted_key_cannot_use_the_auto_queue(farm, sessions):
     async with sessions() as db:
         await db.execute(update(APIKey).where(APIKey.id == farm["key"].id).values(printer_ids=[farm["printer"].id]))

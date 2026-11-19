@@ -130,8 +130,6 @@ function providers() {
 }
 
 function open() {
-  localStorage.setItem('bamdude:presets:only-farm', 'off');
-  localStorage.setItem('bamdude:presets:only-mine', 'off');
   const { Providers, readFarmAgain } = providers();
   render(<SliceModal source={{ kind: 'libraryFile', id: 1, filename: 'Cube.3mf' }} onClose={() => undefined} />, {
     wrapper: Providers,

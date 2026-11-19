@@ -40,8 +40,6 @@ import {
 } from '../utils/sliceFilamentColours';
 import { Select } from './Select';
 import { SliceFarmFilterToggles } from './SliceFarmFilters';
-import { usePresetVisibility } from '../hooks/usePresetVisibility';
-import { PresetVisibilityFilters } from './PresetVisibilityFilters';
 import { useSliceFarmFilters, type PresetKeep } from '../hooks/useSliceFarmFilters';
 import { buildPrinterParents } from '../utils/printerPresetParents';
 import {
@@ -54,7 +52,7 @@ import {
   SLICE_MODAL_TIER_ORDER,
   findPreset,
   findPresetByName,
-  pickPrinterDefault,
+  pickDefault,
   pickEmbeddedFilament,
   pickFilamentForSlot,
   pickOfferedFilamentForSlot,
@@ -271,8 +269,11 @@ function formatElapsed(seconds: number): string {
 // the layout. Calibration keeps its own copy under
 // `calibration/preset-picker/`; these belong here and change with the dialog.
 //
-// Display preferences use existing source identities and printer matching.
-// Pickers stay local to this dialog; assembly keeps its own rendering.
+// ⚠️ `PresetSourceControl` (All / My / Built-in) is deliberately absent. It was
+// a leftover from the sidecar-bundle era — the other half of that control was
+// deleted with the bundles (#1712) and this half stayed hanging — and source is
+// chosen by the tier grouping below. It still exists for calibration, which is
+// a separate question about a separate flow.
 // ---------------------------------------------------------------------------
 
 interface PresetDropdownProps {
@@ -292,6 +293,9 @@ interface PresetDropdownProps {
   // Accessible name for that control. Required alongside the handler because
   // the visible label belongs to the preset select, not to the swatch.
   swatchColorLabel?: string;
+  // 3-state owner filter applied per-section: 'all' shows everything,
+  // 'custom' keeps user-imported + user-cloud, 'builtin' keeps standard
+  // + bundled cloud presets. Empty tiers collapse out.
   // Selected printer context (#1325). When provided for a process / filament
   // slot, presets that resolve to a *different* printer (per the @BBL name
   // registry in compatIndex, plus the slicer's own compatible_printers list)
@@ -1046,8 +1050,6 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     enabled: !platesQuery.isLoading && !needsPlatePicker && !(isAssembled && assemblyQuery.isLoading),
   });
 
-  const visibility = usePresetVisibility(presetsQuery.data);
-
   // Manual refresh — bypasses the backend's cloud + bundled preset caches for
   // one call so a user who deleted a preset in Bambu Studio / Handy sees the
   // change immediately (#1581). The cache write inside the backend fetchers
@@ -1167,17 +1169,17 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // arrive; later re-renders preserve any manual choice (#1325).
   useEffect(() => {
     const data = presetsQuery.data;
-    if (!data || !visibility.ready || !visibility.visible) return;
+    if (!data) return;
     if (printerPreset == null) {
       // The preset an assembled project was built from, by identity, before
       // any lookup by name.
       const built = builtFrom && findPreset(data, builtFrom.printer, 'printer') ? builtFrom.printer : null;
       setPrinterPreset(
-        built ?? findPresetByName(visibility.visible, 'printer', embeddedPrinter) ?? pickPrinterDefault(visibility.visible),
+        built ?? findPresetByName(data, 'printer', embeddedPrinter) ?? pickDefault(data, 'printer'),
       );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [presetsQuery.data, embeddedPrinter, builtFrom, visibility.ready, visibility.visible]);
+  }, [presetsQuery.data, embeddedPrinter, builtFrom]);
 
   // Process pre-pick / re-pick (#1325): defaults to a process compatible with
   // the selected printer (honouring the 3MF's embedded process first), and
@@ -1208,12 +1210,9 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       if (built && presetCompatibility(built, 'process', selectedPrinterName, compatIndex) !== 'mismatch') {
         return { source: built.source, id: built.id };
       }
-      const candidates = visibility.visible ?? data;
-      const picked = pickProcessDefault(candidates, selectedPrinterName, compatIndex, embeddedProcess);
-      const preset = findPreset(candidates, picked, 'process');
-      return !visibility.onlyMine || (preset && presetCompatibility(preset, 'process', selectedPrinterName, compatIndex) !== 'mismatch') ? picked : null;
+      return pickProcessDefault(data, selectedPrinterName, compatIndex, embeddedProcess);
     });
-  }, [presetsQuery.data, selectedPrinterName, compatIndex, embeddedProcess, builtFrom, visibility.visible, visibility.onlyMine]);
+  }, [presetsQuery.data, selectedPrinterName, compatIndex, embeddedProcess, builtFrom]);
 
   // A plate switch renumbers the slots, so the colour picks are dropped when
   // the slot count changes (see `resizeColourOverrides`).
@@ -1295,23 +1294,20 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
             return cur;
           }
         }
-        const candidates = visibility.visible ?? data;
-        const picked = autoFilamentPick(candidates, slot);
-        const preset = findPreset(candidates, picked, 'filament');
-        return !visibility.onlyMine || (preset && presetCompatibility(preset, 'filament', selectedPrinterName, compatIndex) !== 'mismatch') ? picked : null;
+        return autoFilamentPick(data, slot);
       });
     });
     // `autoFilamentPick` closes over nothing but the dependencies below and
     // `preferFilament`, whose changes the next effect answers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [presetsQuery.data, filamentSlots, selectedPrinterName, compatIndex, embeddedFilaments, builtFrom, printerSource, visibility.visible, visibility.onlyMine]);
+  }, [presetsQuery.data, filamentSlots, selectedPrinterName, compatIndex, embeddedFilaments, builtFrom, printerSource]);
 
   // Turning "only loaded filaments" on or off, or a new farm answer, runs the
   // AUTOMATIC filament picks again — only those: a slot chosen by hand keeps
   // its preset and an empty slot stays empty. An answer that merely stopped
   // being readable (the switch is on, nothing to prefer) re-picks nothing.
   useEffect(() => {
-    const data = visibility.visible ?? presetsQuery.data;
+    const data = presetsQuery.data;
     if (!data || (preferFilament === undefined && onlyLoadedFilaments)) return;
     setFilamentPresets((current) => {
       const next = filamentSlots.map((slot, i) => {
@@ -1967,7 +1963,6 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
             {/* Any manual re-pick retires the "bundle had missing presets"
                 banner — it describes the state right after a load, and the
                 user is now driving the slots by hand. */}
-            <PresetVisibilityFilters filters={visibility} disabled={isEnqueuing || useEmbedded} />
             <SliceFarmFilterToggles filters={farmFilters} disabled={isEnqueuing || useEmbedded} />
             {/* A choice made by hand that the listing no longer has was
                 replaced by an automatic pick — said, never done in silence. */}
@@ -2006,7 +2001,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
               slot="printer"
               data={presetsQuery.data}
               value={printerPreset}
-              keep={(p) => visibility.keep(p, 'printer') && (farmFilters.keepPrinter?.(p) ?? true)}
+              keep={farmFilters.keepPrinter}
               onChange={(ref) => {
                 retireBundleNotes();
                 setPrinterPreset(ref);
@@ -2020,7 +2015,6 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
             <PresetDropdown
               label={t('slice.process', 'Process profile')}
               slot="process"
-              keep={(p) => visibility.keep(p, 'process')}
               data={presetsQuery.data}
               value={processPreset}
               onChange={(ref) => {
@@ -2070,7 +2064,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                     slot="filament"
                     data={presetsQuery.data}
                     value={filamentPresets[idx] ?? null}
-                    keep={(p) => visibility.keep(p, 'filament') && (farmFilters.keepFilament?.(p) ?? true)}
+                    keep={farmFilters.keepFilament}
                     onChange={(ref) => {
                       if (ref) explicitFilamentSlots.current.set(idx, ref);
                       else explicitFilamentSlots.current.delete(idx);

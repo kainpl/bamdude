@@ -46,6 +46,8 @@ ACTIONABLE_REASONS = frozenset(
         "distinct_sources_required",
         "override_slot_not_used",
         "previous_print_failed",
+        # The printer's queue is halted (paused/error after a failed or cancelled print): only Resume helps.
+        "queue_halted",
         "pinned_source_empty",
         "invalid_plate_id",
         "invalid_plate_metadata",

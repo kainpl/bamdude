@@ -299,6 +299,85 @@ async def test_cancelling_a_batch_deletes_its_unrouted_rows(async_client: AsyncC
     assert list(rows) == [], "batch cancel must delete un-routed rows"
 
 
+async def _promoted(db_session, *, auto_status: str, batch_id: str | None = None, assigned: bool = True):
+    """A router row and the printer row its promotion wrote, the printer's counter at a sentinel."""
+    from backend.app.models.auto_queue import AutoQueueItem
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.printer import Printer
+    from backend.app.models.printer_queue import PrinterQueue
+
+    printer = Printer(name="AQ cascade", ip_address="192.168.66.1", serial_number="AQCASCADE1", access_code="12345678")
+    db_session.add(printer)
+    await db_session.flush()
+    queue = PrinterQueue(id=printer.id, printer_id=printer.id, pending_count=99)
+    auto = AutoQueueItem(status=auto_status, batch_id=batch_id)
+    db_session.add_all([queue, auto])
+    await db_session.flush()
+    row = PrintQueueItem(queue_id=queue.id, status="pending", position=1, source_auto_item_id=auto.id)
+    db_session.add(row)
+    await db_session.flush()
+    if assigned:
+        auto.assigned_to_item_id = row.id
+    await db_session.commit()
+    return auto, row, queue
+
+
+async def _reread(db_session, model, row_id):
+    return await db_session.get(model, row_id, populate_existing=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_cancelling_a_routed_item_dates_its_printer_row(async_client: AsyncClient, db_session):
+    """G03 E3a: the cascade onto the promoted printer row stamps its end (the previous-success gate orders
+    finished rows by it; an undated cancel sorted first on PostgreSQL) and recounts that queue."""
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.printer_queue import PrinterQueue
+
+    auto, row, queue = await _promoted(db_session, auto_status="assigned")
+
+    response = await async_client.delete(f"/api/v1/auto-queue/{auto.id}")
+
+    assert response.status_code == 200, response.text
+    row = await _reread(db_session, PrintQueueItem, row.id)
+    assert row.status == "cancelled" and row.completed_at is not None
+    assert (await _reread(db_session, PrinterQueue, queue.id)).pending_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_cancelling_a_batch_dates_the_printer_rows_it_reaches(async_client: AsyncClient, db_session):
+    """The batch cancel's second cascade -- a copy the scheduler routed between the read and the write."""
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.printer_queue import PrinterQueue
+
+    _auto, row, queue = await _promoted(db_session, auto_status="pending", batch_id="aq-cascade", assigned=False)
+
+    response = await async_client.delete("/api/v1/auto-queue/batch/aq-cascade")
+
+    assert response.status_code == 200, response.text
+    row = await _reread(db_session, PrintQueueItem, row.id)
+    assert row.status == "cancelled" and row.completed_at is not None
+    assert (await _reread(db_session, PrinterQueue, queue.id)).pending_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"archive_id": 0, "library_file_id": 5},
+        {"archive_id": 5, "library_file_id": 0},
+        # G03 D6: both at once -- the archive's bytes were captured while the row kept the library id.
+        {"archive_id": 5, "library_file_id": 6},
+    ],
+)
+async def test_the_auto_queue_door_takes_exactly_one_real_source(async_client: AsyncClient, body):
+    response = await async_client.post("/api/v1/auto-queue/", json=body)
+
+    assert response.status_code == 422, response.text
+
+
 # ======================================================================
 # Filing an auto-queue row under its order line (spec pass 7, Decision 4a)
 # ======================================================================

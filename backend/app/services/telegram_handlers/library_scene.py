@@ -443,6 +443,11 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
                         created_by_id=principal.user.id if principal is not None else None,
                     )
                 )
+                await session.flush()
+                # The card's counter in the transaction that adds the row, as every web door does (G03 D7.2).
+                from backend.app.services.queue_counters import update_queue_counters
+
+                await update_queue_counters(session, queue_id)
 
         from backend.app.services.domain_authority import chat_source_access
 

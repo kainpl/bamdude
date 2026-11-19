@@ -310,6 +310,20 @@ async def test_start_calibration_manual_enqueues_print(
 
     preset_ref = PresetRef(source="standard", id="dummy")
 
+    # The enqueue writes a real pending row (the wizard's own), so the card's counter can be checked:
+    # a calibration row is recounted like every other pending insert (G03 D7.2).
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.printer_queue import PrinterQueue
+
+    queue = PrinterQueue(id=printer.id, printer_id=printer.id, pending_count=99)
+    db_session.add(queue)
+    await db_session.commit()
+
+    async def enqueue(**_kwargs):
+        db_session.add(PrintQueueItem(id=42, queue_id=queue.id, status="pending", position=1, is_calibration=True))
+        await db_session.commit()
+        return 42
+
     with (
         patch("backend.app.services.calibration_service.printer_manager") as pm,
         patch(
@@ -345,7 +359,7 @@ async def test_start_calibration_manual_enqueues_print(
         ) as persist,
         patch(
             "backend.app.services.background_dispatch.enqueue_calibration_print",
-            new=AsyncMock(return_value=42),
+            new=AsyncMock(side_effect=enqueue),
         ) as enq,
     ):
         pm.get_client.return_value = mock_client
@@ -372,6 +386,8 @@ async def test_start_calibration_manual_enqueues_print(
     enqueue_kwargs = enq.call_args.kwargs
     assert enqueue_kwargs["library_file_id"] == 99
     assert enqueue_kwargs["calibration_session_id"] == session.id
+    await db_session.refresh(queue)
+    assert queue.pending_count == 1, "the calibration row is counted on the card like any other"
 
 
 @pytest.mark.asyncio
@@ -715,6 +731,93 @@ def _tower_session(printer_id: int, *, cali_mode: str = "vfa_tower", status: str
         status=status,
         stage=1,
     )
+
+
+class TestASessionWhoseJobIsGone:
+    """G03 D4: a manual session whose queue row was deleted before it printed stayed ``running`` for ever,
+    and ``start`` refused every new calibration on that printer."""
+
+    async def _running(self, db_session, printer_id: int, item_id: int | None) -> CalibrationSession:
+        session = _tower_session(printer_id, cali_mode=CaliMode.PA_PATTERN.value, status="running")
+        session.print_queue_item_id = item_id
+        db_session.add(session)
+        await db_session.commit()
+        return session
+
+    async def _row(self, db_session, printer_id: int, **fields):
+        from backend.app.models.print_queue import PrintQueueItem
+        from backend.app.models.printer_queue import PrinterQueue
+
+        if await db_session.get(PrinterQueue, printer_id) is None:
+            db_session.add(PrinterQueue(id=printer_id, printer_id=printer_id))
+            await db_session.flush()
+        row = PrintQueueItem(queue_id=printer_id, position=1, **fields)
+        db_session.add(row)
+        await db_session.commit()
+        return row
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_row_with_no_print_ends_as_cancelled(self, db_session, printer_factory):
+        from backend.app.services.calibration_service import reconcile_session_status
+
+        printer = await printer_factory(model="P1S")
+        session = await self._running(db_session, printer.id, 987654)
+
+        assert await reconcile_session_status(db_session, session) is True
+        assert session.status == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_the_moment_before_the_id_is_stored_is_not_gone(self, db_session, printer_factory):
+        """The enqueue commits its row before the session stores the id: NULL means "not yet"."""
+        from backend.app.services.calibration_service import reconcile_session_status
+
+        printer = await printer_factory(model="P1S")
+        session = await self._running(db_session, printer.id, None)
+
+        assert await reconcile_session_status(db_session, session) is False
+        assert session.status == "running"
+
+    @pytest.mark.asyncio
+    async def test_a_reused_id_naming_another_job_is_not_this_calibration(self, db_session, printer_factory):
+        """SQLite hands a deleted row's id to the next row: an unrelated completed job is no print of it."""
+        from backend.app.services.calibration_service import reconcile_session_status
+
+        printer = await printer_factory(model="P1S")
+        stranger = await self._row(db_session, printer.id, status="completed")
+        session = await self._running(db_session, printer.id, stranger.id)
+
+        assert await reconcile_session_status(db_session, session) is True
+        assert session.status == "cancelled", "not awaiting_user_input for a calibration that never printed"
+
+    @pytest.mark.asyncio
+    async def test_its_own_row_still_decides(self, db_session, printer_factory):
+        from backend.app.services.calibration_service import reconcile_session_status
+
+        printer = await printer_factory(model="P1S")
+        session = await self._running(db_session, printer.id, None)
+        row = await self._row(
+            db_session, printer.id, status="completed", is_calibration=True, calibration_session_id=session.id
+        )
+        session.print_queue_item_id = row.id
+        await db_session.commit()
+
+        assert await reconcile_session_status(db_session, session) is True
+        assert session.status == "awaiting_user_input"
+
+    @pytest.mark.asyncio
+    async def test_a_pending_row_keeps_it_running(self, db_session, printer_factory):
+        from backend.app.services.calibration_service import reconcile_session_status
+
+        printer = await printer_factory(model="P1S")
+        session = await self._running(db_session, printer.id, None)
+        row = await self._row(
+            db_session, printer.id, status="pending", is_calibration=True, calibration_session_id=session.id
+        )
+        session.print_queue_item_id = row.id
+        await db_session.commit()
+
+        assert await reconcile_session_status(db_session, session) is False
+        assert session.status == "running"
 
 
 @pytest.mark.asyncio

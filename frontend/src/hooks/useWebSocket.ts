@@ -691,8 +691,13 @@ export function useWebSocket() {
         // transaction, not through this tab's mutation. Refresh only the
         // affected card plus farm-wide aggregate views immediately; polling is
         // the disconnected-socket fallback, not the primary update path.
+        // The Issues list of an open card (`['queue', 'issues', queueId]`) is not under
+        // `['queue', printerId]`: a row that just failed, was cancelled or skipped by the
+        // scheduler shows there now, not on its 30 s poll (G03 D10.4). A queue's id is its printer's.
         if (message.printer_id !== undefined) {
-          debouncedInvalidate(['queue', message.printer_id]);
+          debouncedInvalidate(['queue', message.printer_id], ['queue', 'issues', message.printer_id]);
+        } else {
+          debouncedInvalidate(['queue', 'issues']);
         }
         debouncedInvalidate(['queue', 'all'], ['queue', 'summary'], 'queues', 'queue-forecast', 'auto-queue', 'project-queue');
         break;
@@ -772,6 +777,8 @@ export function useWebSocket() {
         debouncedInvalidate('queues');
         if (message.printer_id !== undefined) {
           debouncedInvalidate(['queue', message.printer_id], ['queue', 'all'], ['queue', 'summary'], 'queue-forecast');
+          // A failed print's row joins this card's Issues list (G03 D10.4).
+          debouncedInvalidate(['queue', 'issues', message.printer_id]);
           // Calibration wizard's active-session list + bound session query
           // need to refetch immediately after a print-complete so the
           // running-step page picks up the lazy-reconciled status flip

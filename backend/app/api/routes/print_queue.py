@@ -609,7 +609,9 @@ async def retire_queue_leftovers(
 async def list_queue(
     request: Request,
     queue_id: int | None = Query(None, description="Filter by printer queue"),
-    status: str | None = Query(None, description="Filter by status"),
+    status: str | None = Query(
+        None, description="Filter by status; several are comma-separated (pending,printing), as on /auto-queue/"
+    ),
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
@@ -618,12 +620,18 @@ async def list_queue(
         )
     ),
 ):
-    """List all queue items, optionally filtered by queue or status."""
+    """List all queue items, optionally filtered by queue or status.
+
+    ``status`` takes one value or several, comma-separated (G03 D9): ``pending,printing`` used to be
+    compared as one literal and answered nothing, while the AutoQueue list split it. The rows come in
+    the order the claim reads them -- position, then id, inside each queue (G03 E8).
+    """
     user, can_read_all = auth_result
+    statuses = [value.strip() for value in status.split(",") if value.strip()] if status else []
     query = (
         select(PrintQueueItem)
         .options(*queue_item_load_options())
-        .order_by(PrintQueueItem.queue_id, PrintQueueItem.position)
+        .order_by(PrintQueueItem.queue_id, PrintQueueItem.position, PrintQueueItem.id)
     )
     if user is not None and not can_read_all:
         query = query.where(PrintQueueItem.created_by_id == user.id)
@@ -633,8 +641,8 @@ async def list_queue(
 
     if queue_id is not None:
         query = query.where(PrintQueueItem.queue_id == queue_id)
-    if status:
-        query = query.where(PrintQueueItem.status == status)
+    if statuses:
+        query = query.where(PrintQueueItem.status.in_(statuses))
 
     result = await db.execute(query)
     items = result.scalars().all()
@@ -646,8 +654,8 @@ async def list_queue(
     # Augment with virtual current-print items for printers whose queue
     # doesn't have a printing item but whose printer is actively busy
     # (external / direct-dispatch prints).  Skipped when the caller
-    # filtered by a specific non-matching status.
-    if not status or status == "printing":
+    # filtered by statuses that leave ``printing`` out.
+    if not statuses or "printing" in statuses:
         from backend.app.services.queue_virtual import build_virtual_current_prints
 
         virtual = await build_virtual_current_prints(
@@ -809,6 +817,7 @@ async def bulk_update_queue_items(
 
     # Check every row that will really move before the first mutation. A row
     # skipped for status/ownership cannot veto the entire operator action.
+    printer_model = None
     if new_queue and new_queue.printer_id is not None:
         printer_model = (
             await db.execute(select(Printer.model).where(Printer.id == new_queue.printer_id))
@@ -832,6 +841,7 @@ async def bulk_update_queue_items(
         if item.status == "pending" and (can_modify_all or item.created_by_id == user.id)
     }
 
+    touched_queues: set[int] = set()
     for item in items:
         if item.status != "pending":
             skipped_count += 1
@@ -842,10 +852,10 @@ async def bulk_update_queue_items(
             skipped_count += 1
             continue
 
+        touched_queues.add(item.queue_id)
         item_update = await routing_update(db, item, update_data)
         item_update.update(swap_updates[item.id])
-        if new_queue is not None and new_queue.printer_id is not None:
-            _drop_rack_pick_on_move(item, item_update, new_queue, printer_model)
+        _drop_rack_pick_on_move(item, item_update, new_queue, printer_model)
         if isinstance(item_update.get("ams_mapping"), list):
             item_update["ams_mapping"] = json.dumps(item_update["ams_mapping"])
         for field, value in item_update.items():
@@ -853,8 +863,17 @@ async def bulk_update_queue_items(
                 _set_calibration_mode(item, field, value)
             else:
                 setattr(item, field, value)
+        touched_queues.add(item.queue_id)
         updated_count += 1
 
+    # A move changes two queues' pending counts: the one each job left and the one it joined, both
+    # recounted in the transaction that moves them (G03 follow-up; ``GET /queues/`` answers the cache).
+    if new_queue is not None and updated_count:
+        from backend.app.services.queue_counters import update_queue_counters
+
+        await db.flush()
+        for queue_id in sorted(touched_queues):
+            await update_queue_counters(db, queue_id)
     await db.commit()
     _end_capture_cooldowns(swap_updates)
 
@@ -874,10 +893,19 @@ def _drop_rack_pick_on_move(item, changes: dict, new_queue, printer_model: str |
     next printer the same number is another hotend, and the dispatcher sends a stored mapping as it
     is. Cleared, the dispatcher assigns positions from the new printer's own rack. An edit that sets
     the mapping itself is left alone.
+
+    The operator's pick, ``nozzle_rack_choice``, names positions of the OLD printer's rack too: on
+    another H2C it fits by chance or refuses the print after the upload and halts that queue (G03 E6,
+    upstream 2699bebc3). It goes on every move the same request does not set it in, whatever the
+    target model -- a printer without a rack has no use for it either.
     """
     from backend.app.utils.printer_models import is_nozzle_rack_model
 
-    if new_queue is None or new_queue.id == item.queue_id or "nozzle_mapping" in changes:
+    if new_queue is None or new_queue.id == item.queue_id:
+        return
+    if "nozzle_rack_choice" not in changes and getattr(item, "nozzle_rack_choice", None):
+        changes["nozzle_rack_choice"] = None
+    if "nozzle_mapping" in changes:
         return
     if item.nozzle_mapping and is_nozzle_rack_model(printer_model):
         changes["nozzle_mapping"] = None
@@ -1825,7 +1853,12 @@ async def clone_item_endpoint(
     src = (await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))).scalar_one_or_none()
     if not src:
         raise HTTPException(404, "Queue item not found")
-    rows = await get_batch_pending_items(db, src.batch_id) if scope == "batch" and src.batch_id else [src]
+    # The batch of THIS row's queue (G03 D1): the copies AutoQueue gave other printers are not cloned here.
+    rows = (
+        await get_batch_pending_items(db, src.batch_id, queue_id=src.queue_id)
+        if scope == "batch" and src.batch_id
+        else [src]
+    )
     await _ensure_may_clone(db, creds, current_user, rows or [src], keep_order)
     as_new = {
         "created_by_id": current_user.id if current_user else None,
@@ -1837,7 +1870,7 @@ async def clone_item_endpoint(
         if scope == "batch":
             if not src.batch_id:
                 raise HTTPException(400, "Item is not part of a batch")
-            clones = await clone_batch(db, src.batch_id, **as_new)
+            clones = await clone_batch(db, src.batch_id, queue_id=src.queue_id, **as_new)
             if not clones:
                 raise HTTPException(400, "No pending items in batch to clone")
             await update_queue_counters(db, clones[0].queue_id)
@@ -1874,7 +1907,11 @@ async def skip_item(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
 ):
-    """Set a pending item's status to ``skipped`` — scheduler won't pick it."""
+    """Set a pending item's status to ``skipped`` — scheduler won't pick it.
+
+    A compare-and-set on ``pending`` (G03 E-2): a row the scheduler claimed after the read above is
+    left printing, and the answer says the row moved on instead of reporting a skip that did not happen.
+    """
     from backend.app.services.queue_counters import update_queue_counters
     from backend.app.services.queue_ops import set_status
 
@@ -1884,8 +1921,16 @@ async def skip_item(
     if item.status != "pending":
         raise HTTPException(400, f"Only pending items can be skipped, current status: '{item.status}'")
 
-    await set_status(db, item_id, "skipped")
-    await update_queue_counters(db, item.queue_id)
+    queue_id = item.queue_id
+    if not await set_status(db, item_id, "skipped", commit=False):
+        raise HTTPException(
+            409,
+            detail={
+                "error": "recovery_changed",
+                "message": "This job changed before it could be skipped. It may have started already; nothing was skipped.",
+            },
+        )
+    await update_queue_counters(db, queue_id)
     await db.commit()
     return {"status": "skipped", "item_id": item_id}
 
@@ -1893,23 +1938,14 @@ async def skip_item(
 async def _acknowledge_blocking_failure(db: AsyncSession, queue_id: int) -> None:
     """Retire the failure that the ``require_previous_success`` gate is reading.
 
-    Deliberately mirrors ``PrintScheduler.previous_print_succeeded``: same
-    lookback, same ordering. It marks the newest finished row only when that row
-    is the failure — if a print has succeeded since, nothing is gating and there
-    is nothing to acknowledge.
+    The gate has ONE reader, ``services/previous_print_gate``: the same lookback and order
+    (``completed_at DESC NULLS LAST, id DESC``, G03 E3a) as the gate itself. It marks the newest
+    finished row only when that row is the failure — if a print has succeeded since, nothing is
+    gating and there is nothing to acknowledge. Never commits.
     """
-    blocking = (
-        await db.execute(
-            select(PrintQueueItem)
-            .where(PrintQueueItem.queue_id == queue_id)
-            .where(PrintQueueItem.status.in_(["completed", "failed", "cancelled"]))
-            .where(PrintQueueItem.gate_acknowledged.is_(False))
-            .order_by(PrintQueueItem.completed_at.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if blocking is not None and blocking.status == "failed":
-        blocking.gate_acknowledged = True
+    from backend.app.services.previous_print_gate import acknowledge_newest_failure
+
+    await acknowledge_newest_failure(db, queue_id)
 
 
 @router.post("/{item_id}/unskip")
@@ -1972,8 +2008,9 @@ async def toggle_manual_start(
 ):
     """Toggle the ``manual_start`` flag on a pending item.
 
-    If the item is part of a batch, toggle is propagated to all pending
-    siblings so the batch behaves consistently.
+    If the item is part of a batch, toggle is propagated to the pending
+    siblings in ITS queue so the batch behaves consistently there -- the
+    copies AutoQueue gave other printers keep their own flag (G03 D1).
     """
     from backend.app.services.queue_ops import get_batch_pending_items
 
@@ -1985,7 +2022,7 @@ async def toggle_manual_start(
 
     new_value = not item.manual_start
     if item.batch_id:
-        for sibling in await get_batch_pending_items(db, item.batch_id):
+        for sibling in await get_batch_pending_items(db, item.batch_id, queue_id=item.queue_id):
             sibling.manual_start = new_value
     else:
         item.manual_start = new_value
@@ -2055,7 +2092,13 @@ async def retry_failed_item(
 
             item = await db.get(PrintQueueItem, item_id, populate_existing=True, with_for_update=True)
             if item is None or item.status not in ("failed", "cancelled"):
-                raise HTTPException(409, "recovery_changed")
+                raise HTTPException(
+                    409,
+                    detail={
+                        "error": "recovery_changed",
+                        "message": "This job changed before it could be retried. Refresh the queue; nothing was retried.",
+                    },
+                )
             await require_repeatable(db, item)
             from backend.app.services.plate_hold import plate_gate_owner_ids
 
@@ -2117,6 +2160,36 @@ async def retry_failed_item(
 # ============================================================================
 # Batch-level operations
 # ============================================================================
+#
+# ⚠️ A batch action touches ONE printer queue (G03 D1, owner decision 2026-11-19). AutoQueue promotion
+# copies the router row's ``batch_id`` onto every printer row it creates, so the copies of one AutoQueue
+# batch sit in the queues of the printers that took them. Every ``/batch/{batch_id}/…`` route takes the
+# queue the operator is looking at as ``?queue_id=``; without it the batch's only queue is used, and a
+# batch whose active rows span several is refused (409 ``batch_spans_queues``) -- an old client must
+# not cancel or move other printers' work by accident. The archive keeps the shared ``batch_id``, so
+# history still groups every copy.
+
+_BATCH_QUEUE = Query(
+    None,
+    gt=0,
+    description="The printer queue whose rows of the batch to act on; required when the batch spans several",
+)
+
+
+async def _batch_queue_id(db: AsyncSession, batch_id: str, queue_id: int | None) -> int | None:
+    """The queue a batch route acts on, or the 409 that says the caller must name one."""
+    from backend.app.services.queue_ops import BatchSpansQueues, batch_queue_id
+
+    try:
+        return await batch_queue_id(db, batch_id, queue_id)
+    except BatchSpansQueues as exc:
+        raise HTTPException(
+            409,
+            detail={
+                "error": "batch_spans_queues",
+                "message": "This batch has jobs in several printer queues. Choose the printer queue to act on.",
+            },
+        ) from exc
 
 
 @router.post("/batch")
@@ -2156,162 +2229,188 @@ async def group_items_into_batch(
 @router.post("/batch/{batch_id}/ungroup")
 async def ungroup_batch(
     batch_id: str,
+    queue_id: int | None = _BATCH_QUEUE,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
 ):
     """Disband a batch (upstream #1743): clear batch_id from its still-in-queue
-    members (pending + printing). Completed/cancelled history keeps its grouping."""
-    result = await db.execute(
-        select(PrintQueueItem).where(
-            PrintQueueItem.batch_id == batch_id,
-            PrintQueueItem.status.in_(["pending", "printing"]),
+    members (pending + printing) of one printer queue (G03 D1). Completed/cancelled
+    history keeps its grouping, and so do the copies other printers hold."""
+    from backend.app.services.queue_ops import ACTIVE_BATCH_STATUSES
+
+    target = await _batch_queue_id(db, batch_id, queue_id)
+    items = []
+    if target is not None:
+        result = await db.execute(
+            select(PrintQueueItem).where(
+                PrintQueueItem.batch_id == batch_id,
+                PrintQueueItem.queue_id == target,
+                PrintQueueItem.status.in_(ACTIVE_BATCH_STATUSES),
+            )
         )
-    )
-    items = result.scalars().all()
+        items = result.scalars().all()
     if not items:
         raise HTTPException(404, "No active items in this batch")
-    queue_id = items[0].queue_id
     for it in items:
         it.batch_id = None
 
     from backend.app.services.queue_counters import update_queue_counters
 
-    await update_queue_counters(db, queue_id)
+    await update_queue_counters(db, target)
     await db.commit()
-    logger.info("Ungrouped batch %s (%s items)", batch_id, len(items))
-    return {"ungrouped": len(items), "batch_id": batch_id}
+    logger.info("Ungrouped batch %s in queue %s (%s items)", batch_id, target, len(items))
+    return {"ungrouped": len(items), "batch_id": batch_id, "queue_id": target}
 
 
 @router.post("/batch/{batch_id}/cancel")
 async def cancel_batch(
     batch_id: str,
+    queue_id: int | None = _BATCH_QUEUE,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
 ):
-    """Cancel all pending items in a batch.  Active (printing) item is unaffected."""
+    """Cancel the batch's pending items in one printer queue (G03 D1).  Active (printing) item is unaffected.
+
+    The rows' lanes are taken before the authoritative read (``cancellation_scope``), the write is a
+    compare-and-set on ``status='pending'`` -- a copy the scheduler claimed meanwhile is left printing --
+    and each cancelled row is dated, which the "previous print succeeded" gate orders by (G03 E3a).
+    """
     from backend.app.core import database
     from backend.app.services.queue_cancel_scope import cancellation_scope, selection_changed
     from backend.app.services.queue_counters import update_queue_counters
-    from backend.app.services.queue_ops import get_batch_pending_items, set_status_for_batch
+    from backend.app.services.queue_ops import set_status_for_batch
+
+    def _rows_of(target):
+        return select(PrintQueueItem.id).where(PrintQueueItem.batch_id == batch_id, PrintQueueItem.queue_id == target)
 
     async with database.async_session() as preflight:
-        ids = list(
-            (await preflight.scalars(select(PrintQueueItem.id).where(PrintQueueItem.batch_id == batch_id))).all()
-        )
+        target = await _batch_queue_id(preflight, batch_id, queue_id)
+        ids = [] if target is None else list((await preflight.scalars(_rows_of(target))).all())
+    if target is None:
+        return {"cancelled": 0}
     async with cancellation_scope(ids) as db:
-        current_ids = set(
-            (await db.scalars(select(PrintQueueItem.id).where(PrintQueueItem.batch_id == batch_id))).all()
-        )
-        if not current_ids <= set(ids):
+        current_ids = set((await db.scalars(_rows_of(target))).all())
+        if not current_ids <= set(ids) or await _batch_queue_id(db, batch_id, queue_id) != target:
             raise selection_changed()
-        pending = await get_batch_pending_items(db, batch_id)
-        if not pending:
+        count = await set_status_for_batch(
+            db, batch_id, "cancelled", queue_id=target, completed_at=datetime.now(timezone.utc), commit=False
+        )
+        if not count:
             return {"cancelled": 0}
-        queue_id = pending[0].queue_id
-        count = await set_status_for_batch(db, batch_id, "cancelled")
-        await update_queue_counters(db, queue_id)
+        await update_queue_counters(db, target)
         await db.commit()
-        return {"cancelled": count, "batch_id": batch_id}
+        return {"cancelled": count, "batch_id": batch_id, "queue_id": target}
 
 
 @router.post("/batch/{batch_id}/skip")
 async def skip_batch(
     batch_id: str,
+    queue_id: int | None = _BATCH_QUEUE,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
 ):
-    """Skip all pending items in a batch."""
+    """Skip the batch's pending items in one printer queue (G03 D1), compare-and-set on ``pending``."""
     from backend.app.services.queue_counters import update_queue_counters
-    from backend.app.services.queue_ops import get_batch_pending_items, set_status_for_batch
+    from backend.app.services.queue_ops import set_status_for_batch
 
-    pending = await get_batch_pending_items(db, batch_id)
-    if not pending:
+    target = await _batch_queue_id(db, batch_id, queue_id)
+    if target is None:
         return {"skipped": 0}
-    queue_id = pending[0].queue_id
-    count = await set_status_for_batch(db, batch_id, "skipped")
-    await update_queue_counters(db, queue_id)
+    count = await set_status_for_batch(db, batch_id, "skipped", queue_id=target, commit=False)
+    if not count:
+        return {"skipped": 0}
+    await update_queue_counters(db, target)
     await db.commit()
-    return {"skipped": count, "batch_id": batch_id}
+    return {"skipped": count, "batch_id": batch_id, "queue_id": target}
+
+
+async def _pending_block(db: AsyncSession, batch_id: str, queue_id: int | None) -> tuple[int, list[int]]:
+    """The batch's pending rows of the one queue a block move acts on -- 404 when it has none there."""
+    from backend.app.services.queue_ops import get_batch_pending_items
+
+    target = await _batch_queue_id(db, batch_id, queue_id)
+    pending = [] if target is None else await get_batch_pending_items(db, batch_id, queue_id=target)
+    if not pending:
+        raise HTTPException(404, "No pending items in batch")
+    return target, [i.id for i in pending]
 
 
 @router.post("/batch/{batch_id}/reorder")
 async def reorder_batch(
     batch_id: str,
     direction: str = Query(..., pattern="^(up|down)$"),
+    queue_id: int | None = _BATCH_QUEUE,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
 ):
-    """Move a whole batch block one step up/down."""
+    """Move a whole batch block one step up/down in one printer queue (G03 D1)."""
     from backend.app.services.queue_counters import update_queue_counters
-    from backend.app.services.queue_ops import get_batch_pending_items, reorder_block
+    from backend.app.services.queue_ops import reorder_block
 
-    pending = await get_batch_pending_items(db, batch_id)
-    if not pending:
-        raise HTTPException(404, "No pending items in batch")
-    queue_id = pending[0].queue_id
-    block_ids = [i.id for i in pending]
-    moved = await reorder_block(db, queue_id, block_ids, direction)
+    target, block_ids = await _pending_block(db, batch_id, queue_id)
+    moved = await reorder_block(db, target, block_ids, direction)
     if moved:
-        await update_queue_counters(db, queue_id)
+        await update_queue_counters(db, target)
         await db.commit()
-    return {"moved": moved, "direction": direction, "batch_size": len(block_ids)}
+    return {"moved": moved, "direction": direction, "batch_size": len(block_ids), "queue_id": target}
 
 
 @router.post("/batch/{batch_id}/bump")
 async def bump_batch(
     batch_id: str,
+    queue_id: int | None = _BATCH_QUEUE,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
 ):
-    """Move a whole batch to the top of its queue."""
+    """Move a whole batch to the top of one printer queue (G03 D1)."""
     from backend.app.services.queue_counters import update_queue_counters
-    from backend.app.services.queue_ops import bump_block_to_top, get_batch_pending_items
+    from backend.app.services.queue_ops import bump_block_to_top
 
-    pending = await get_batch_pending_items(db, batch_id)
-    if not pending:
-        raise HTTPException(404, "No pending items in batch")
-    queue_id = pending[0].queue_id
-    block_ids = [i.id for i in pending]
-    shifted = await bump_block_to_top(db, queue_id, block_ids)
+    target, block_ids = await _pending_block(db, batch_id, queue_id)
+    shifted = await bump_block_to_top(db, target, block_ids)
     if shifted:
-        await update_queue_counters(db, queue_id)
+        await update_queue_counters(db, target)
         await db.commit()
-    return {"shifted": shifted, "batch_size": len(block_ids)}
+    return {"shifted": shifted, "batch_size": len(block_ids), "queue_id": target}
 
 
 @router.post("/batch/{batch_id}/bump-bottom")
 async def bump_batch_bottom(
     batch_id: str,
+    queue_id: int | None = _BATCH_QUEUE,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
 ):
-    """Move a whole batch to the bottom of its queue."""
+    """Move a whole batch to the bottom of one printer queue (G03 D1)."""
     from backend.app.services.queue_counters import update_queue_counters
-    from backend.app.services.queue_ops import bump_block_to_bottom, get_batch_pending_items
+    from backend.app.services.queue_ops import bump_block_to_bottom
 
-    pending = await get_batch_pending_items(db, batch_id)
-    if not pending:
-        raise HTTPException(404, "No pending items in batch")
-    queue_id = pending[0].queue_id
-    block_ids = [i.id for i in pending]
-    shifted = await bump_block_to_bottom(db, queue_id, block_ids)
+    target, block_ids = await _pending_block(db, batch_id, queue_id)
+    shifted = await bump_block_to_bottom(db, target, block_ids)
     if shifted:
-        await update_queue_counters(db, queue_id)
+        await update_queue_counters(db, target)
         await db.commit()
-    return {"shifted": shifted, "batch_size": len(block_ids)}
+    return {"shifted": shifted, "batch_size": len(block_ids), "queue_id": target}
 
 
 @router.patch("/batch/{batch_id}")
 async def update_batch(
     batch_id: str,
     data: PrintQueueItemUpdate,
+    queue_id: int | None = _BATCH_QUEUE,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.QUEUE_UPDATE_ALL),
 ):
-    """Apply a partial update to every pending item in the batch."""
+    """Apply a partial update to the batch's pending items in one printer queue (G03 D1).
+
+    ``?queue_id=`` names the queue whose copies change; the body's own ``queue_id`` moves them to
+    another queue. Both queues' counters are recounted.
+    """
+    from backend.app.services.queue_counters import update_queue_counters
     from backend.app.services.queue_ops import get_batch_pending_items
 
-    pending = await get_batch_pending_items(db, batch_id)
+    target = await _batch_queue_id(db, batch_id, queue_id)
+    pending = [] if target is None else await get_batch_pending_items(db, batch_id, queue_id=target)
     if not pending:
         raise HTTPException(404, "No pending items in batch")
 
@@ -2331,18 +2430,38 @@ async def update_batch(
         ids = update_data["selected_macro_ids"]
         update_data["selected_macro_ids"] = json.dumps(ids) if ids is not None else None
 
-    # Every member's swap columns before the first write (swap-source-lifecycle spec r4 §8):
-    # the batch is refused whole, or written whole.
-    swap_updates = {item.id: await _swap_update(db, item, update_data, None) for item in pending}
-    update_data.pop("swap_macro_events", None)
-
+    # A move is checked as the single PATCH checks it (G03 follow-up): the target must exist, every
+    # member's own bytes must fit the target printer -- or the queue it stays in, for a new plate -- and
+    # the target's swap rule decides the swap columns. All of it before the first write: the batch is
+    # refused whole, or written whole (swap-source-lifecycle spec r4 §8).
     batch_queue, batch_model = None, None
     if update_data.get("queue_id") is not None:
         batch_queue = await db.get(PrinterQueue, update_data["queue_id"])
-        if batch_queue is not None and batch_queue.printer_id is not None:
+        if batch_queue is None:
+            raise HTTPException(400, "Queue not found")
+        if batch_queue.printer_id is not None:
             batch_model = (
                 await db.execute(select(Printer.model).where(Printer.id == batch_queue.printer_id))
             ).scalar_one_or_none()
+    moves = batch_queue is not None and batch_queue.id != target
+    if "plate_id" in update_data or moves:
+        check_queue = batch_queue if moves else await db.get(PrinterQueue, target)
+        if check_queue is not None and check_queue.printer_id is not None:
+            check_model = (
+                batch_model
+                if moves
+                else (
+                    await db.execute(select(Printer.model).where(Printer.id == check_queue.printer_id))
+                ).scalar_one_or_none()
+            )
+            cache = PrintRequirementsCache()
+            for item in pending:
+                await _check_item_model_for_queue(
+                    db, item, check_queue, update_data.get("plate_id", item.plate_id), cache, check_model
+                )
+
+    swap_updates = {item.id: await _swap_update(db, item, update_data, batch_queue) for item in pending}
+    update_data.pop("swap_macro_events", None)
 
     for item in pending:
         item_update = await routing_update(db, item, update_data)
@@ -2355,9 +2474,12 @@ async def update_batch(
                 _set_calibration_mode(item, field, value)
             else:
                 setattr(item, field, value)
+    await db.flush()
+    for changed_queue in sorted({target, *(item.queue_id for item in pending)}):
+        await update_queue_counters(db, changed_queue)
     await db.commit()
     _end_capture_cooldowns(item.id for item in pending)
-    return {"updated": len(pending), "batch_id": batch_id, "fields": list(update_data.keys())}
+    return {"updated": len(pending), "batch_id": batch_id, "fields": list(update_data.keys()), "queue_id": target}
 
 
 @router.post("/batch/{batch_id}/clone")
@@ -2365,15 +2487,19 @@ async def clone_batch_endpoint(
     batch_id: str,
     scope: str = Query("batch", pattern="^(one|batch)$"),
     keep_order: bool = Query(True, description="Clone under the source's order (the default) or without it"),
+    queue_id: int | None = _BATCH_QUEUE,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.QUEUE_CREATE),
     creds: RequestCredentials = Depends(request_credentials),
 ):
-    """Clone a batch.
+    """Clone a batch's copies in one printer queue (G03 D1).
 
     ``scope='one'`` — add one more copy to the same batch (appended).
     ``scope='batch'`` — create a whole new batch with the same
     configuration as the source.
+
+    Every member of the batch is still asked ``require_repeatable``, wherever it
+    sits: a stale claim among the other printers' copies refuses the clone as before.
 
     ⚠️ m173: the SECOND door onto ``clone_item`` / ``clone_batch``, and therefore
     the second that has to answer the capture taxonomy. Both services refuse a
@@ -2391,10 +2517,10 @@ async def clone_batch_endpoint(
             await require_repeatable(db, member, whole_batch=True)
     except QueueSourceError as exc:
         raise refusal(exc) from exc
-    pending = await get_batch_pending_items(db, batch_id)
+    target = await _batch_queue_id(db, batch_id, queue_id)
+    pending = [] if target is None else await get_batch_pending_items(db, batch_id, queue_id=target)
     if not pending:
         raise HTTPException(404, "No pending items in batch")
-    queue_id = pending[0].queue_id
     await _ensure_may_clone(db, creds, current_user, pending[:1] if scope == "one" else pending, keep_order)
     as_new = {
         "created_by_id": current_user.id if current_user else None,
@@ -2407,14 +2533,14 @@ async def clone_batch_endpoint(
             new_item = await clone_item(db, pending[0].id, keep_batch=True, **as_new)
             if new_item is None:
                 raise HTTPException(500, "Clone failed")
-            await update_queue_counters(db, queue_id)
+            await update_queue_counters(db, target)
             await db.commit()
-            return {"cloned": 1, "scope": "one", "batch_id": batch_id, "new_item_id": new_item.id}
+            return {"cloned": 1, "scope": "one", "batch_id": batch_id, "new_item_id": new_item.id, "queue_id": target}
 
-        clones = await clone_batch(db, batch_id, **as_new)
+        clones = await clone_batch(db, batch_id, queue_id=target, **as_new)
         if not clones:
             raise HTTPException(500, "Clone failed")
-        await update_queue_counters(db, queue_id)
+        await update_queue_counters(db, target)
         await db.commit()
     except QueueSourceError as exc:
         raise refusal(exc) from exc
@@ -2423,4 +2549,5 @@ async def clone_batch_endpoint(
         "scope": "batch",
         "source_batch_id": batch_id,
         "new_batch_id": clones[0].batch_id,
+        "queue_id": target,
     }
