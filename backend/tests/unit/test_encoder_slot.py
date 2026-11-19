@@ -1,8 +1,9 @@
-"""One encoder for the process, first come first served (G10 E2 / F3)."""
+"""One encoder for the process, first come first served, held until its child has ended (G10 E2 / F3)."""
 
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 
@@ -96,3 +97,38 @@ async def test_a_holder_that_fails_still_frees_it_for_the_next():
     ticket = await asyncio.wait_for(slot.acquire(), 2)
     assert ticket is not None
     slot.release(ticket)
+
+
+class TestAnEncoderWhoseEndWasNotSeen:
+    """Codex E2-R / F3-R: the place was given back while the unreaped child still ran."""
+
+    async def test_the_place_stays_taken_until_the_child_has_ended(self):
+        slot = EncoderSlot()
+        ticket = await slot.acquire()
+        ended = threading.Event()
+        slot.keep_until_reaped(ticket, ended)
+        slot.release(ticket)  # the holder's own finally: no longer the holder
+        assert slot.busy
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(slot.acquire(), 0.3)
+        ended.set()  # the child really went
+        nxt = await asyncio.wait_for(slot.acquire(), 2)
+        assert nxt is not None
+        slot.release(nxt)
+        assert not slot.busy
+
+    async def test_without_an_end_to_wait_for_it_stays_taken(self):
+        slot = EncoderSlot()
+        ticket = await slot.acquire()
+        slot.keep_until_reaped(ticket, None)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(slot.acquire(), 0.3)
+        assert slot.busy and slot.waiting() == 0
+        slot.reset()  # only a new process frees it
+        assert not slot.busy
+
+    async def test_a_ticket_that_does_not_hold_it_cannot_keep_it(self):
+        slot = EncoderSlot()
+        slot.keep_until_reaped(object(), None)
+        slot.keep_until_reaped(None, None)
+        assert not slot.busy
