@@ -18,6 +18,12 @@ description: Investigate a BamDude printer farm through its configured read-only
 6. Offer the next action in BamDude's normal UI, where the operator's current
    permissions and confirmation apply. MCP diagnostics do not execute repairs.
 
+If `orders_contract=1` and the order tools are advertised, follow the reference's
+Orders section: search by order name/code, read its progress, and inspect its
+linked work. UI production counts can include unchecked output. Keep checked
+good, unchecked net, recount adjustments and stock receipts separate; never
+infer an order or quantity from filenames or add repeated page totals.
+
 Choose the relevant route in [the diagnostic reference](references/diagnostics.md):
 
 | Question | First narrow read after capabilities and guide |
