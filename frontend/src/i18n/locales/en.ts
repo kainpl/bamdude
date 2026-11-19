@@ -1517,6 +1517,8 @@ export default {
       cleanupAfterPrintHint: 'By default files are moved to a cache folder.',
       mqttConnectionTimeoutLabel: 'MQTT Connection Timeout',
       mqttConnectionTimeoutHint: 'seconds (0 = disabled)',
+      wearCostPerHourLabel: 'Wear cost per printing hour',
+      wearCostPerHourHint: 'Added to the cost of every print that ends on this printer from now on, for the time it actually ran. Empty or 0 turns it off; earlier prints keep their figures.',
       staggerInterval: 'Stagger interval (minutes)',
       staggerIntervalHint: '0 = use system default',
       amsCompat: {
@@ -1924,6 +1926,10 @@ export default {
       },
     },
     costEstimate: 'Estimate at the default filament price. The cost is taken from the spools when the print ends.',
+    wear: {
+      title: 'Printer wear charged to this print',
+      titleWithRate: 'Printer wear charged to this print, at {{rate}} per printing hour',
+    },
     energy: {
       estimated: '≈ {{kwh}} kWh, estimated from the plug\'s power history ({{coverage}}% of the print covered): its energy counter stood still.',
       approximate: '≈ {{kwh}} kWh, approximate: the counter was read at a moment other than the print\'s own start or end.',
@@ -2723,6 +2729,8 @@ export default {
     energyWhilePrintingTooltip: 'Measured between the start and end of each print — what the jobs themselves drew.',
     energyAtThePlug: 'Energy At The Plug',
     energyCostAtThePlug: 'Cost At The Plug',
+    wearCost: 'Printer Wear',
+    wearCostTooltip: 'Wear charged to the prints in this period: the measured time of each print at the hourly rate its printer had when it ended.',
     energyAtThePlugTooltip: 'Everything the smart plugs counted: printing, idling, warming up, and anything else on the same socket. The gap between this and the printing figure is what standing still costs.',
     energyEstimatedNote_one: '{{count}} print is estimated from power history',
     energyEstimatedNote_other: '{{count}} prints are estimated from power history',
@@ -2836,6 +2844,7 @@ export default {
     // print's own page instead of reading as a wrong filament cost.
     filamentCostShort: 'filament',
     energyCostShort: 'power',
+    wearCostShort: 'wear',
     busiestDay: 'Busiest Day',
     successStreak: 'Success Streak',
     streakPrint: 'consecutive print',
@@ -3008,6 +3017,7 @@ export default {
     printerRemoved: 'Printer removed',
     // Confirmation
     deleteTypeConfirm: 'Delete "{{name}}"?',
+    deleteTypeAllPrinters: 'This removes it from every printer, together with its maintenance history.',
     deleteSystemTypeTitle: 'Delete default maintenance task?',
     deleteSystemTypeMessage: 'Are you sure you want to delete the default maintenance task "{{name}}"?',
     // Permissions
@@ -4528,6 +4538,16 @@ export default {
     currency: 'Currency',
     defaultFilamentCost: 'Default filament cost (per kg)',
     electricityCost: 'Electricity cost per kWh',
+    electricityPriceSource: 'Electricity price source',
+    electricityPriceSourceFixed: 'Fixed price',
+    electricityPriceSourceHA: 'Home Assistant sensor',
+    electricityPriceEntity: 'Price sensor',
+    electricityPriceEntityHelp: 'A sensor whose value is the price per kWh (a price per MWh or per Wh is converted). It is read once an hour.',
+    electricityPriceApply: 'Read the price from this sensor',
+    electricityPriceReading: 'Reading…',
+    electricityPriceNeedsHA: 'Home Assistant is not connected yet — connect it in its own card first.',
+    electricityCostLastRead: 'Last price read from Home Assistant (per kWh)',
+    electricityCostFromHAHelp: 'Read from Home Assistant once an hour; it cannot be entered by hand while the sensor is the source. Energy is costed at the price that was in effect when it was used.',
     // File Manager
     fileManager: 'File Manager',
     lowDiskSpaceWarning: 'Low Disk Space Warning',
@@ -4587,6 +4607,18 @@ export default {
     connectionFailed: 'Connection Failed',
     haConnectionSuccess: 'Successfully connected to Home Assistant.',
     haConnectionFailed: 'Failed to connect to Home Assistant.',
+    haTestReasons: {
+      invalid_url: 'This address is not accepted. Enter an http or https address of your Home Assistant.',
+      unauthorized: 'Home Assistant refused the access token. Create a new long-lived token and paste it here.',
+      unreachable: 'Nothing answered at this address. Check the host, the port and that Home Assistant is running.',
+      timeout: 'Home Assistant did not answer in time. Check the address and the network.',
+      certificate_untrusted: 'Home Assistant\'s certificate is not issued by an authority this server trusts. Use a certificate from a trusted authority, or add your own authority to the trust store of the machine BamDude runs on.',
+      certificate_mismatch: 'Home Assistant\'s certificate was issued for another name. Enter the host name the certificate was issued for, not an IP address or another name.',
+      certificate_expired: 'Home Assistant\'s certificate has expired. Renew it.',
+      not_https: 'The secure connection failed. Check that this address and port serve https, or enter the address with http.',
+      redirect: 'The server answered with a redirect. Enter the address Home Assistant itself answers at.',
+      unexpected_answer: 'Something answered at this address, but not Home Assistant. Check the address and the port.',
+    },
     // MQTT
     mqttPublishing: 'MQTT Publishing',
     mqttDescription: 'Publish BamDude events to an external MQTT broker for integration with Node-RED, Home Assistant, and other automation systems.',
@@ -7506,6 +7538,7 @@ export default {
         cost: 'cost: {{parts}}',
         costFilament: 'filament {{amount}}',
         costEnergy: 'electricity {{amount}}',
+        costWear: 'wear {{amount}}',
         costEnergyEstimated: 'electricity ≈ {{amount}}',
         energyUnknown_one: '{{count}} print without a reliable energy figure',
         energyUnknown_other: '{{count}} prints without a reliable energy figure',
@@ -11987,6 +12020,19 @@ export default {
     alertAbove: 'Alert if above (W)',
     alertBelow: 'Alert if below (W)',
     alertDescription: 'Get notified when power consumption crosses these thresholds. Leave empty to disable that direction.',
+    needsAttention: {
+      title: 'This plug\'s settings need correcting',
+      advice: 'BamDude will not switch or poll it until then. Open Edit and fill in what is missing.',
+      problems: {
+        unknown_plug_type: 'Its saved type is not one BamDude knows. Choose the type again.',
+        ip_address_required: 'A Tasmota plug needs an IP address.',
+        ha_entity_required: 'A Home Assistant plug needs an entity.',
+        mqtt_topic_required: 'An MQTT plug needs at least one topic: power, energy or state.',
+        rest_url_required: 'A REST plug needs an ON or an OFF address.',
+        zigbee_address_required: 'A Zigbee plug needs a paired device.',
+        invalid_value: 'One of its saved values is no longer valid. Check the fields and save again.',
+      },
+    },
     meterWatch: {
       title: 'Energy counter watch',
       description: 'BamDude compares the plug\'s energy counter with its power history. A counter that stands still while the plug reports a load is a suspicion, not a verdict about the device.',

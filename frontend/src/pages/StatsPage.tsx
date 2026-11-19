@@ -23,6 +23,7 @@ import {
   ChevronDown,
   BarChart3,
   Unplug,
+  Wrench,
 } from 'lucide-react';
 import {
   BarChart,
@@ -211,6 +212,7 @@ function EnergyWidget({
     total_energy_kwh: number;
     total_energy_cost: number;
     energy_data_warming_up?: boolean;
+    total_wear_cost?: number;
   } | undefined;
   currency: string;
 }) {
@@ -233,6 +235,8 @@ function EnergyWidget({
   // on rows that already exist.
   const warmingUp = stats?.energy_data_warming_up === true;
   const warmingUpTooltip = warmingUp ? t('stats.energyWarmingUpTooltip') : undefined;
+  // Wear: the server's sum of the figures stamped on the prints. No tile while nothing was charged.
+  const wearCost = stats?.total_wear_cost ?? 0;
 
   return (
     <>
@@ -270,6 +274,17 @@ function EnergyWidget({
           warning: warmingUp,
           tooltip: warmingUpTooltip ?? t('stats.energyAtThePlugTooltip'),
         },
+        ...(wearCost > 0
+          ? [
+              {
+                icon: Wrench,
+                color: 'text-orange-500',
+                label: t('stats.wearCost'),
+                value: `${currency} ${wearCost.toFixed(2)}`,
+                tooltip: t('stats.wearCostTooltip'),
+              },
+            ]
+          : []),
       ]}
     />
     {printNotes.length > 0 && (
@@ -1036,9 +1051,16 @@ function RecordsWidget({ aggregate, currency }: { aggregate: ArchiveAggregate | 
       // can be reconciled against the print's own page rather than looking like
       // the filament cost is wrong.
       const energy = records.costliest.energy_cost;
+      const wear = records.costliest.wear_cost ?? 0;
       const breakdown =
-        energy > 0
-          ? `${t('stats.filamentCostShort')} ${currency}${records.costliest.cost.toFixed(2)} + ${t('stats.energyCostShort')} ${currency}${energy.toFixed(2)}`
+        energy > 0 || wear > 0
+          ? [
+              `${t('stats.filamentCostShort')} ${currency}${records.costliest.cost.toFixed(2)}`,
+              energy > 0 ? `${t('stats.energyCostShort')} ${currency}${energy.toFixed(2)}` : null,
+              wear > 0 ? `${t('stats.wearCostShort')} ${currency}${wear.toFixed(2)}` : null,
+            ]
+              .filter(Boolean)
+              .join(' + ')
           : null;
       result.push({
         icon: DollarSign, iconColor: 'text-green-600 dark:text-green-400', label: t('stats.mostExpensivePrint'),

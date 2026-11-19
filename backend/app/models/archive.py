@@ -183,6 +183,12 @@ class PrintArchive(Base):
     # Persisted so per-print tracking survives backend restarts mid-print (upstream #941).
     energy_start_kwh: Mapped[float | None] = mapped_column(Float)
 
+    # Wear (m246): the figure charged for this run's measured printing time and the printer's
+    # rate per hour that was applied. NULL = no figure (no rate, or an end nobody measured),
+    # never 0. Written only by ``services/wear_cost.py``; never recomputed.
+    wear_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    wear_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     # Swap mode compatibility (processed for plate swapper)
     swap_compatible: Mapped[bool] = mapped_column(Boolean, default=False)
     # An operator's declaration of this archive's SOURCE for a future reprint (swap-source-declaration spec r3

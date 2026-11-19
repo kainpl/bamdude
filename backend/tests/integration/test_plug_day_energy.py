@@ -47,7 +47,8 @@ def _local_midnight(days_ago: int, tz=KYIV) -> datetime:
 
 
 async def _plug(db_session, name: str = "Zigbee Plug") -> int:
-    plug = SmartPlug(name=name, plug_type="zigbee", enabled=True)
+    # A paired device's address: a Zigbee row without one is shown as needing correction and is not read.
+    plug = SmartPlug(name=name, plug_type="zigbee", enabled=True, zigbee_ieee="00:11:22:33:44:55:66:77")
     db_session.add(plug)
     await db_session.commit()
     await db_session.refresh(plug)

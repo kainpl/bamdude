@@ -403,6 +403,7 @@ def import_all_models() -> None:
         connector_submission,
         credential_rollout,
         customer,
+        energy_price_history,
         external_link,
         filament_calibration,
         filament_sku_settings,

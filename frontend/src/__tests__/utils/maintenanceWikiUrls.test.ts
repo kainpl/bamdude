@@ -76,6 +76,16 @@ describe('getMaintenanceWikiUrl', () => {
     });
   });
 
+  describe('P1 belt tension (upstream #3302)', () => {
+    // Bambu Lab's belt page covers X1 and P1 ("X1/P1 Series Belt tensioning procedure"); there is no P1 page
+    // of its own. The link used to go to the P1 series' general maintenance recommendations.
+    it.each(['P1S', 'P1P', 'P1 S'])('%s links to the X1/P1 belt tensioning page', (model) => {
+      expect(getMaintenanceWikiUrl('check_belt_tension', model)).toBe(
+        'https://wiki.bambulab.com/en/x1/maintenance/belt-tension',
+      );
+    });
+  });
+
   describe('regression: other families untouched', () => {
     it('X1C belt tension unchanged', () => {
       expect(getMaintenanceWikiUrl('check_belt_tension', 'X1C')).toBe(

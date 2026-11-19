@@ -33,6 +33,8 @@ OPERATOR_TIME_PATTERN = r"^([01][0-9]|2[0-3]):[0-5][0-9]$"
 # the stricter OIDC guard instead.
 LAN_SERVICE_URL_SETTINGS = ("ha_url", "obico_ml_url", "orcaslicer_api_url", "bambu_studio_api_url")
 SERVICE_CREDENTIAL_URL_FIELDS = frozenset({"ha_url", "obico_ml_url", "ldap_server_url"})
+#: A numeric Home Assistant entity, or empty. The id goes into a request path, so its shape is closed.
+ENERGY_PRICE_ENTITY_PATTERN = r"^$|^(sensor|input_number|number)\.[a-z0-9_]+$"
 
 
 def opaque_service_url(value: str | None) -> bool:
@@ -155,6 +157,17 @@ class AppSettings(BaseModel):
     default_filament_cost: float = Field(default=0.0, description="Default filament cost per kg (0 = unset)")
     currency: str = Field(default="USD", description="Currency for cost tracking")
     energy_cost_per_kwh: float = Field(default=0.15, description="Electricity cost per kWh for energy tracking")
+    # Where the price comes from (m245). With "homeassistant" the sensor is read hourly and
+    # energy_cost_per_kwh holds the last price read; services/energy_price.py owns both.
+    energy_price_source: Literal["fixed", "homeassistant"] = Field(
+        default="fixed", description="Electricity price source: a fixed price or a Home Assistant sensor"
+    )
+    energy_price_ha_entity: str = Field(
+        default="",
+        max_length=255,
+        pattern=ENERGY_PRICE_ENTITY_PATTERN,
+        description="Home Assistant entity that reports the electricity price",
+    )
     # Dispatch notes (spec workshop-dispatch-notes, rule 10) — copied into each new note.
     document_supplier_name: str = Field(default="", max_length=255, description="Supplier name on dispatch notes")
     document_supplier_address: str = Field(default="", max_length=255, description="Supplier address")
@@ -901,6 +914,16 @@ class AppSettingsUpdate(BaseModel):
     default_filament_cost: float | None = None
     currency: str | None = None
     energy_cost_per_kwh: float | None = None
+    energy_price_source: Literal["fixed", "homeassistant"] | None = None
+    energy_price_ha_entity: str | None = Field(default=None, max_length=255, pattern=ENERGY_PRICE_ENTITY_PATTERN)
+
+    @field_validator("energy_price_source", "energy_price_ha_entity")
+    @classmethod
+    def energy_price_source_not_null(cls, value):
+        if value is None:
+            raise ValueError("Electricity price source settings cannot be null")
+        return value
+
     document_supplier_name: str | None = Field(default=None, max_length=255)
     document_supplier_address: str | None = Field(default=None, max_length=255)
     document_supplier_phone: str | None = Field(default=None, max_length=255)

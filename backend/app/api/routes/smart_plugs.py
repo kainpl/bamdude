@@ -36,14 +36,15 @@ from backend.app.schemas.smart_plug import (
     SmartPlugStatus,
     SmartPlugTestConnection,
     SmartPlugUpdate,
+    plug_type_problems,
 )
 from backend.app.services.discovery import tasmota_scanner
-from backend.app.services.homeassistant import homeassistant_service
+from backend.app.services.homeassistant import HA_TEST_FAILURES, homeassistant_service
 from backend.app.services.mqtt_relay import mqtt_relay
 from backend.app.services.mqtt_smart_plug import subscribe_plug_to_mqtt
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.rest_smart_plug import rest_smart_plug_service
-from backend.app.services.smart_plug_manager import smart_plug_manager
+from backend.app.services.smart_plug_manager import plug_switched, smart_plug_manager
 from backend.app.services.tasmota import tasmota_service
 
 logger = logging.getLogger(__name__)
@@ -151,7 +152,7 @@ async def list_smart_plugs(
 
     responses = []
     for plug in plugs:
-        payload = SmartPlugResponse.model_validate(plug, from_attributes=True)
+        payload = SmartPlugResponse.of(plug)
         payload.is_main_plug = plug.id in main_ids
         responses.append(payload)
     return responses
@@ -179,15 +180,8 @@ async def create_smart_plug(
         # Check if printer already has a plug assigned
         # Tasmota plugs: only one per printer (physical power device)
         # HA entities: allow multiple per printer (for different automations)
-        if data.plug_type == "tasmota":
-            result = await db.execute(
-                select(SmartPlug).where(
-                    SmartPlug.printer_id == data.printer_id,
-                    SmartPlug.plug_type == "tasmota",
-                )
-            )
-            if result.scalar_one_or_none():
-                raise HTTPException(400, "This printer already has a Tasmota plug assigned")
+        if data.plug_type == "tasmota" and await _printer_has_other_tasmota_plug(db, data.printer_id):
+            raise HTTPException(400, "This printer already has a Tasmota plug assigned")
 
     # For Zigbee plugs the address must belong to a device that is actually on
     # our mesh. Validated here rather than in the schema because only the route
@@ -270,7 +264,19 @@ async def create_smart_plug(
         logger.info("Created Home Assistant plug '%s' (%s)", plug.name, plug.ha_entity_id)
     else:
         logger.info("Created Tasmota plug '%s' at %s", plug.name, plug.ip_address)
-    return plug
+    return SmartPlugResponse.of(plug)
+
+
+async def _printer_has_other_tasmota_plug(db: AsyncSession, printer_id: int, except_plug_id: int | None = None) -> bool:
+    """Whether the printer already has a Tasmota plug other than ``except_plug_id``.
+
+    Asks for one id, never "the" row: a printer that already holds two (rows saved before every
+    edit was checked) must get the same refusal, not a 500 on ``scalar_one_or_none``.
+    """
+    query = select(SmartPlug.id).where(SmartPlug.printer_id == printer_id, SmartPlug.plug_type == "tasmota")
+    if except_plug_id is not None:
+        query = query.where(SmartPlug.id != except_plug_id)
+    return (await db.execute(query.limit(1))).scalar() is not None
 
 
 def _is_script_plug(plug: SmartPlug) -> bool:
@@ -388,7 +394,7 @@ async def get_card_plugs_batch(
             by_printer[plug.printer_id].append(plug)
 
     def shown(plug: SmartPlug | None) -> SmartPlugResponse | None:
-        return SmartPlugResponse.model_validate(plug, from_attributes=True) if plug is not None else None
+        return SmartPlugResponse.of(plug) if plug is not None else None
 
     return {
         pid: PrinterCardPlugs(main=shown(_pick_main_plug(plugs)), scripts=[shown(p) for p in _card_script_plugs(plugs)])
@@ -408,7 +414,8 @@ async def get_smart_plug_by_printer(
     returns the one that best fits the card's power controls. See
     ``_main_plug_rank`` for the order and why.
     """
-    return _pick_main_plug(await _plugs_for_printer(db, printer_id))
+    main = _pick_main_plug(await _plugs_for_printer(db, printer_id))
+    return SmartPlugResponse.of(main) if main is not None else None
 
 
 @router.get("/by-printer/{printer_id}/scripts", response_model=list[SmartPlugResponse])
@@ -430,7 +437,7 @@ async def get_script_plugs_by_printer(
     # twice. A SCRIPT is not excluded, because a printer whose only entities are
     # scripts falls back to showing one of them in the power row — taking it out
     # of this row too would cost the one-click run it has always had there.
-    return _card_script_plugs(plugs)
+    return [SmartPlugResponse.of(plug) for plug in _card_script_plugs(plugs)]
 
 
 def _card_script_plugs(plugs: list[SmartPlug]) -> list[SmartPlug]:
@@ -612,10 +619,12 @@ async def test_ha_connection(
     await db.rollback()
     result = await homeassistant_service.test_connection(url, token)
     if result.get("success"):
-        result = {"success": True, "message": "Home Assistant connection successful."}
-    else:
-        result = {"success": False, "error": "Home Assistant connection failed. Check the URL and credentials."}
-    return HATestConnectionResponse(**result)
+        return HATestConnectionResponse(success=True, message="Home Assistant connection successful.")
+    # WHY it failed, as a code of a closed set with its fixed sentence (owner, 2026-11-18): the
+    # caller already holds the right to run this test against an address of its choosing. Never the
+    # exception's own text, which can repeat the address or a header.
+    reason = result.get("reason") if result.get("reason") in HA_TEST_FAILURES else "unexpected_answer"
+    return HATestConnectionResponse(success=False, reason=reason, error=HA_TEST_FAILURES[reason])
 
 
 @router.post("/rest/test-connection", response_model=RESTTestConnectionResponse)
@@ -758,7 +767,7 @@ async def get_smart_plug(
     plug = result.scalar_one_or_none()
     if not plug:
         raise HTTPException(404, "Smart plug not found")
-    return plug
+    return SmartPlugResponse.of(plug)
 
 
 class PowerOnBehaviorUpdate(BaseModel):
@@ -894,27 +903,25 @@ async def update_smart_plug(
 
         # Validate new printer_id if being changed
         if "printer_id" in update_data and update_data["printer_id"] is not None:
-            new_printer_id = update_data["printer_id"]
-
             # Check printer exists
-            result = await db.execute(select(Printer).where(Printer.id == new_printer_id))
+            result = await db.execute(select(Printer).where(Printer.id == update_data["printer_id"]))
             if not result.scalar_one_or_none():
                 raise HTTPException(400, "Printer not found")
 
-            # Check if that printer already has a different Tasmota plug assigned
-            # Tasmota plugs: only one per printer (physical power device)
-            # HA entities: allow multiple per printer (for different automations)
-            new_plug_type = update_data.get("plug_type", plug.plug_type)
-            if new_plug_type == "tasmota":
-                result = await db.execute(
-                    select(SmartPlug).where(
-                        SmartPlug.printer_id == new_printer_id,
-                        SmartPlug.id != plug_id,
-                        SmartPlug.plug_type == "tasmota",
-                    )
-                )
-                if result.scalar_one_or_none():
-                    raise HTTPException(400, "This printer already has a Tasmota plug assigned")
+        # Tasmota plugs: only one per printer (physical power device); HA entities: several are
+        # fine (different automations). Asked of the EFFECTIVE row on every edit — a request that
+        # changes only the type makes a second Tasmota plug as surely as one that names the printer
+        # (upstream 47fbd23ff). An edit that changes neither is not refused, so a printer that
+        # already holds two can still have either one corrected.
+        effective_type = resolved.get("plug_type")
+        effective_printer = resolved.get("printer_id")
+        becomes_tasmota_here = (
+            effective_type == "tasmota"
+            and effective_printer is not None
+            and (plug.plug_type != "tasmota" or plug.printer_id != effective_printer)
+        )
+        if becomes_tasmota_here and await _printer_has_other_tasmota_plug(db, effective_printer, plug_id):
+            raise HTTPException(400, "This printer already has a Tasmota plug assigned")
 
         # The old printer's in-flight measurement dies with the binding, whether the
         # plug is moving to another printer or being unlinked entirely. Read the OLD
@@ -1004,7 +1011,7 @@ async def update_smart_plug(
             subscribe_plug_to_mqtt(mqtt_relay.smart_plug_service, plug)
 
     logger.info("Updated smart plug '%s'", plug.name)
-    return plug
+    return SmartPlugResponse.of(plug)
 
 
 @router.delete("/{plug_id}")
@@ -1071,6 +1078,8 @@ async def control_smart_plug(
     if not plug:
         raise HTTPException(404, "Smart plug not found")
 
+    _refuse_incomplete(plug)
+
     # MQTT plugs used to be refused here as monitor-only. They now have a
     # command channel (mqtt_command_topic + payloads), and a plug configured
     # without one is handled a layer down: the driver returns False and this
@@ -1120,52 +1129,26 @@ async def control_smart_plug(
     plug.last_checked = datetime.now(timezone.utc)
     await db.commit()
 
-    # Trigger associated scripts if this is a main (non-script) plug
-    is_main_plug = not (
-        plug.plug_type == "homeassistant" and plug.ha_entity_id and plug.ha_entity_id.startswith("script.")
-    )
-    if is_main_plug and plug.printer_id and expected_state:
-        await trigger_associated_scripts(plug.printer_id, expected_state, db)
-
-    # MQTT relay - publish smart plug state change
+    # The relay announce and, after an explicit on / off of a plug that is not itself a script,
+    # the scripts linked to its printer. A toggle runs none, as before: the state it ended in is
+    # the device's to say.
     switched_to = expected_state or toggled_state
     if switched_to:
-        from backend.app.services.mqtt_relay import mqtt_relay
-
-        await mqtt_relay.on_smart_plug_switched(plug.id, switched_to == "ON")
+        await plug_switched(plug, switched_to == "ON", scripts="manual" if expected_state else "none", db=db)
 
     return {"success": True, "action": control.action}
 
 
-async def trigger_associated_scripts(printer_id: int, plug_state: str, db: AsyncSession):
-    """Trigger scripts linked to a printer based on main plug state change.
+def _refuse_incomplete(plug: SmartPlug) -> None:
+    """No driver is asked to act on a row its own type's rule refuses (``plug_type_problems``).
 
-    When the main plug turns ON, triggers scripts with auto_on=True.
-    When the main plug turns OFF, triggers scripts with auto_off=True.
+    Such a row is listed with ``needs_attention`` so it can be corrected; switching it would send a
+    command to an address or entity the row does not have, or reach no driver at all.
     """
-    result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
-    plugs = result.scalars().all()
-
-    # Find scripts that should be triggered
-    for plug in plugs:
-        is_script = plug.plug_type == "homeassistant" and plug.ha_entity_id and plug.ha_entity_id.startswith("script.")
-        if not is_script:
-            continue
-
-        should_trigger = False
-        if plug_state == "ON" and plug.auto_on:
-            should_trigger = True
-            logger.info("Auto-triggering script '%s' on printer power-on", plug.name)
-        elif plug_state == "OFF" and plug.auto_off:
-            should_trigger = True
-            logger.info("Auto-triggering script '%s' on printer power-off", plug.name)
-
-        if should_trigger:
-            try:
-                service = await _get_service_for_plug(plug, db)
-                await service.turn_on(plug)  # Scripts are triggered by calling turn_on
-            except Exception as e:
-                logger.error("Failed to trigger script '%s': %s", plug.name, e)
+    if plug_type_problems(plug):
+        raise HTTPException(
+            409, "This smart plug's saved configuration is incomplete. Edit it and fill in what its type requires."
+        )
 
 
 @router.get("/{plug_id}/status", response_model=SmartPlugStatus)
@@ -1180,6 +1163,11 @@ async def get_plug_status(
     plug = result.scalar_one_or_none()
     if not plug:
         raise HTTPException(404, "Smart plug not found")
+
+    # Polled by every card: an incomplete row answers "unreachable" without asking a driver, and
+    # its card says why (``needs_attention``) — an error per poll would only repeat that.
+    if plug_type_problems(plug):
+        return SmartPlugStatus(state=None, reachable=False, device_name=None, energy=None)
 
     # Handle MQTT plugs - get data from subscription service
     if plug.plug_type == "mqtt":

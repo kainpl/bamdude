@@ -1541,6 +1541,8 @@ export default {
       cleanupAfterPrintHint: 'За замовчуванням файли переміщуються в кеш-папку.',
       mqttConnectionTimeoutLabel: 'Тайм-аут з\'єднання MQTT',
       mqttConnectionTimeoutHint: 'секунд (0 = вимкнено)',
+      wearCostPerHourLabel: 'Вартість зносу за годину друку',
+      wearCostPerHourHint: 'Додається до собівартості кожного друку, який відтепер завершиться на цьому принтері, — за час, який він справді тривав. Порожнє поле або 0 вимикає; попередні друки зберігають свої суми.',
       staggerInterval: 'Інтервал поетапного запуску (хвилини)',
       staggerIntervalHint: '0 = системне значення',
       amsCompat: {
@@ -1947,6 +1949,10 @@ export default {
       },
     },
     costEstimate: 'Оцінка за типовою ціною філаменту. Після завершення друку вартість буде взято з котушок.',
+    wear: {
+      title: 'Знос принтера, віднесений на цей друк',
+      titleWithRate: 'Знос принтера, віднесений на цей друк, за ставкою {{rate}} за годину друку',
+    },
     energy: {
       estimated: '≈ {{kwh}} кВт·год, оцінено за історією потужності розетки (покрито {{coverage}}% друку): її лічильник енергії стояв.',
       approximate: '≈ {{kwh}} кВт·год, приблизно: лічильник прочитано не в момент власного початку чи кінця друку.',
@@ -2733,6 +2739,8 @@ export default {
     energyWhilePrintingTooltip: 'Виміряно між початком і кінцем кожного друку — те, що спожили самі завдання.',
     energyAtThePlug: 'Енергія на розетках',
     energyCostAtThePlug: 'Вартість на розетках',
+    wearCost: 'Знос принтерів',
+    wearCostTooltip: 'Знос, віднесений на друки за цей період: виміряний час кожного друку за погодинною ставкою, яку мав його принтер на момент завершення.',
     energyAtThePlugTooltip: 'Усе, що нарахували розетки: друк, простій, прогрів і будь-що інше в тій самій розетці. Різниця з попередньою парою — це ціна простою.',
     energyEstimatedNote_one: '{{count}} друк оцінено за історією потужності',
     energyEstimatedNote_few: '{{count}} друки оцінено за історією потужності',
@@ -2856,6 +2864,7 @@ export default {
     // сторінкою самого друку, а не читати як помилкову вартість філаменту.
     filamentCostShort: 'філамент',
     energyCostShort: 'е/е',
+    wearCostShort: 'знос',
     busiestDay: 'Найзавантаженіший день',
     successStreak: 'Серія успіхів',
     streakPrint: 'послідовний друк',
@@ -3028,6 +3037,7 @@ export default {
     printerRemoved: 'Принтер видалено',
     // Confirmation
     deleteTypeConfirm: 'Видалити "{{name}}"?',
+    deleteTypeAllPrinters: 'Завдання зникне з усіх принтерів разом з історією його виконання.',
     deleteSystemTypeTitle: 'Видалити стандартне завдання обслуговування?',
     deleteSystemTypeMessage: 'Ви впевнені, що хочете видалити стандартне завдання обслуговування "{{name}}"?',
     // Permissions
@@ -4560,6 +4570,16 @@ export default {
     currency: 'Валюта',
     defaultFilamentCost: 'Вартість філаменту за замовчуванням (за кг)',
     electricityCost: 'Вартість електроенергії за кВт\u00b7год',
+    electricityPriceSource: 'Джерело ціни електроенергії',
+    electricityPriceSourceFixed: 'Фіксована ціна',
+    electricityPriceSourceHA: 'Сенсор Home Assistant',
+    electricityPriceEntity: 'Сенсор ціни',
+    electricityPriceEntityHelp: 'Сенсор, значення якого — ціна за кВт\u00b7год (ціну за МВт\u00b7год чи за Вт\u00b7год буде перераховано). Зчитується раз на годину.',
+    electricityPriceApply: 'Зчитати ціну з цього сенсора',
+    electricityPriceReading: 'Зчитуємо…',
+    electricityPriceNeedsHA: 'Home Assistant ще не підключено — спершу підключіть його у відповідній картці.',
+    electricityCostLastRead: 'Остання ціна, зчитана з Home Assistant (за кВт\u00b7год)',
+    electricityCostFromHAHelp: 'Ціна зчитується з Home Assistant раз на годину; поки джерелом є сенсор, вручну її не ввести. Енергія рахується за ціною, що діяла на час її споживання.',
     // File Manager
     fileManager: 'Файловий менеджер',
     lowDiskSpaceWarning: 'Попередження про мало місця на диску',
@@ -4623,6 +4643,18 @@ export default {
     connectionFailed: 'Помилка підключення',
     haConnectionSuccess: 'Успішно підключено до Home Assistant.',
     haConnectionFailed: 'Не вдалося підключитися до Home Assistant.',
+    haTestReasons: {
+      invalid_url: 'Таку адресу не прийнято. Вкажіть адресу свого Home Assistant, що починається з http або https.',
+      unauthorized: 'Home Assistant відхилив токен доступу. Створіть новий довготривалий токен і вставте його тут.',
+      unreachable: 'За цією адресою ніхто не відповів. Перевірте хост, порт і чи запущено Home Assistant.',
+      timeout: 'Home Assistant не відповів вчасно. Перевірте адресу й мережу.',
+      certificate_untrusted: 'Сертифікат Home Assistant видано центром, якому цей сервер не довіряє. Використайте сертифікат довіреного центру або додайте власний центр до сховища довіри машини, на якій працює BamDude.',
+      certificate_mismatch: 'Сертифікат Home Assistant видано на інше ім\'я. Вкажіть ім\'я хоста, на яке видано сертифікат, а не IP-адресу чи іншу назву.',
+      certificate_expired: 'Термін дії сертифіката Home Assistant минув. Поновіть його.',
+      not_https: 'Захищене з\'єднання не вдалося. Перевірте, що за цією адресою і портом працює https, або вкажіть адресу з http.',
+      redirect: 'Сервер відповів перенаправленням. Вкажіть адресу, за якою відповідає сам Home Assistant.',
+      unexpected_answer: 'За цією адресою хтось відповів, але це не Home Assistant. Перевірте адресу й порт.',
+    },
     // MQTT
     mqttPublishing: 'Публікація MQTT',
     mqttDescription: 'Публікуйте події BamDude на зовнішній MQTT брокер для інтеграції з Node-RED, Home Assistant та іншими системами автоматизації.',
@@ -7613,6 +7645,7 @@ export default {
         cost: 'собівартість: {{parts}}',
         costFilament: 'філамент {{amount}}',
         costEnergy: 'електрика {{amount}}',
+        costWear: 'знос {{amount}}',
         costEnergyEstimated: 'електрика ≈ {{amount}}',
         energyUnknown_one: '{{count}} друк без надійного виміру енергії',
         energyUnknown_few: '{{count}} друки без надійного виміру енергії',
@@ -12208,6 +12241,19 @@ export default {
     alertAbove: 'Сповіщати якщо вище (Вт)',
     alertBelow: 'Сповіщати якщо нижче (Вт)',
     alertDescription: 'Отримувати сповіщення, коли споживання перевищує ці пороги. Залиште порожнім для вимкнення.',
+    needsAttention: {
+      title: 'Налаштування цієї розетки треба виправити',
+      advice: 'Доти BamDude її не перемикає й не опитує. Відкрийте «Редагувати» й заповніть те, чого бракує.',
+      problems: {
+        unknown_plug_type: 'Збережений тип BamDude не відомий. Виберіть тип заново.',
+        ip_address_required: 'Розетці Tasmota потрібна IP-адреса.',
+        ha_entity_required: 'Розетці Home Assistant потрібна сутність.',
+        mqtt_topic_required: 'Розетці MQTT потрібна хоча б одна тема: потужності, енергії чи стану.',
+        rest_url_required: 'Розетці REST потрібна адреса ввімкнення або вимкнення.',
+        zigbee_address_required: 'Розетці Zigbee потрібен спарений пристрій.',
+        invalid_value: 'Одне зі збережених значень більше не чинне. Перевірте поля й збережіть ще раз.',
+      },
+    },
     meterWatch: {
       title: 'Нагляд за лічильником енергії',
       description: 'BamDude порівнює лічильник енергії розетки з історією її потужності. Лічильник, що стоїть, коли розетка звітує про навантаження, — це підозра, а не вирок пристрою.',

@@ -532,11 +532,14 @@ async def collect(
             "costliest": await _one_record(
                 db,
                 filters,
-                func.coalesce(PrintArchive.cost, 0.0) + func.coalesce(PrintArchive.energy_cost, 0.0),
+                func.coalesce(PrintArchive.cost, 0.0)
+                + func.coalesce(PrintArchive.energy_cost, 0.0)
+                + func.coalesce(PrintArchive.wear_cost, 0.0),
                 "total",
                 extra={
                     "cost": func.coalesce(PrintArchive.cost, 0.0),
                     "energy_cost": func.coalesce(PrintArchive.energy_cost, 0.0),
+                    "wear_cost": func.coalesce(PrintArchive.wear_cost, 0.0),
                 },
             ),
             "success_streak": await _success_streak(db, filters),

@@ -208,7 +208,7 @@ def _record(value, date_parser):
         if type(p["final"]) is not bool:
             return INVALID
         output["final"] = p["final"]
-    strings = {"reason", "source_kind", "source_id", "start", "end", "unavailable_reason"}
+    strings = {"reason", "source_kind", "source_id", "start", "end", "unavailable_reason", "tariff_method"}
     integers = {"plug_id", "incident_id", "samples"}
     numbers = {
         "counter_delta_kwh",

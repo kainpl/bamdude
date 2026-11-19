@@ -435,6 +435,8 @@ class ProjectFiguresOut(BaseModel):
     # (outside it) -- spec plug-meter-watchdog W11.
     energy_estimated: int = 0
     energy_unavailable: int = 0
+    # Wear charged to the order's prints; inside ``total_cost`` (and so inside ``margin``).
+    total_wear_cost: float = 0.0
     total_cost: float
     defective: int
     margin: float | None

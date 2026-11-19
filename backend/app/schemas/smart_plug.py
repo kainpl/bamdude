@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, computed_field, model_validator
+from pydantic import BaseModel, Field, ValidationError, computed_field, model_validator
 
 from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
 
@@ -16,6 +16,50 @@ SMART_PLUG_SECRET_FIELDS = (
     "rest_on_body",
     "rest_off_body",
 )
+
+PLUG_TYPES = ("tasmota", "homeassistant", "mqtt", "rest", "zigbee")
+
+# What a plug of each type cannot work without, as machine codes with the sentence a refused write
+# carries. ONE rule with two callers: a write refuses the first problem (``validate_plug_type_fields``,
+# which the PATCH resolver also calls on the merged row), a read reports them all on the row
+# (``SmartPlugResponse.problems``) instead of failing the whole answer.
+_PLUG_TYPE_PROBLEMS = {
+    "unknown_plug_type": "Unknown smart plug type",
+    "ip_address_required": "ip_address is required for Tasmota plugs",
+    "ha_entity_required": "ha_entity_id is required for Home Assistant plugs",
+    "mqtt_topic_required": "At least one MQTT topic must be configured for power, energy, or state monitoring",
+    "rest_url_required": "At least one of ON URL or OFF URL is required for REST plugs",
+    "zigbee_address_required": "A Zigbee plug needs the IEEE address of a paired device",
+}
+
+
+def plug_type_problems(plug) -> list[str]:
+    """The cross-field problems of a plug, read by attribute: a schema object, an ORM row or a stand-in."""
+
+    def field(name):
+        return getattr(plug, name, None)
+
+    kind = field("plug_type")
+    if kind not in PLUG_TYPES:
+        return ["unknown_plug_type"]
+    problems = []
+    if kind == "tasmota" and not field("ip_address"):
+        problems.append("ip_address_required")
+    if kind == "homeassistant" and not field("ha_entity_id"):
+        problems.append("ha_entity_required")
+    # MQTT: the new power topic takes priority over the legacy one, and a path is optional (without
+    # one the raw payload is the value), so one topic of any kind is a data source.
+    if kind == "mqtt" and not any(
+        field(name) for name in ("mqtt_power_topic", "mqtt_topic", "mqtt_energy_topic", "mqtt_state_topic")
+    ):
+        problems.append("mqtt_topic_required")
+    if kind == "rest" and field("enabled") and not field("rest_on_url") and not field("rest_off_url"):
+        problems.append("rest_url_required")
+    if kind == "zigbee" and not field("zigbee_ieee"):
+        # Only the shape is checked here. Whether the address is actually on the mesh is a question
+        # for the route, which can see the coordinator; a schema cannot.
+        problems.append("zigbee_address_required")
+    return problems
 
 
 class SmartPlugBase(BaseModel):
@@ -48,12 +92,12 @@ class SmartPlugBase(BaseModel):
     # Power monitoring
     mqtt_power_topic: str | None = Field(default=None, max_length=200)  # Topic for power data
     mqtt_power_path: str | None = Field(default=None, max_length=100)  # e.g., "power_l1" or "data.power"
-    mqtt_power_multiplier: float = Field(default=1.0, ge=0.0001, le=10000)  # Unit conversion for power
+    mqtt_power_multiplier: float = Field(default=1.0, gt=0, le=10000)  # Unit conversion for power
 
     # Energy monitoring
     mqtt_energy_topic: str | None = Field(default=None, max_length=200)  # Topic for energy data
     mqtt_energy_path: str | None = Field(default=None, max_length=100)  # e.g., "energy_l1"
-    mqtt_energy_multiplier: float = Field(default=1.0, ge=0.0001, le=10000)  # Unit conversion for energy
+    mqtt_energy_multiplier: float = Field(default=1.0, gt=0, le=10000)  # Unit conversion for energy
 
     # State monitoring
     mqtt_state_topic: str | None = Field(default=None, max_length=200)  # Topic for state data
@@ -67,7 +111,7 @@ class SmartPlugBase(BaseModel):
     # than a flag on mqtt_energy_path.
     mqtt_energy_total_topic: str | None = Field(default=None, max_length=200)
     mqtt_energy_total_path: str | None = Field(default=None, max_length=100)  # e.g., "energy"
-    mqtt_energy_total_multiplier: float = Field(default=1.0, ge=0.0001, le=10000)
+    mqtt_energy_total_multiplier: float = Field(default=1.0, gt=0, le=10000)
 
     # Control - absent means monitor-only, which is valid configuration
     mqtt_command_topic: str | None = Field(default=None, max_length=200)
@@ -75,7 +119,7 @@ class SmartPlugBase(BaseModel):
     mqtt_command_off: str | None = Field(default=None)
 
     # Legacy multiplier - kept for backward compatibility
-    mqtt_multiplier: float = Field(default=1.0, ge=0.0001, le=10000)  # Deprecated, use mqtt_power_multiplier
+    mqtt_multiplier: float = Field(default=1.0, gt=0, le=10000)  # Deprecated, use mqtt_power_multiplier
 
     # REST/Webhook fields (required when plug_type="rest")
     rest_on_url: str | None = Field(default=None, max_length=500)
@@ -89,15 +133,15 @@ class SmartPlugBase(BaseModel):
     rest_status_on_value: str | None = Field(default=None, max_length=50)
     rest_power_url: str | None = Field(default=None, max_length=500)
     rest_power_path: str | None = Field(default=None, max_length=200)
-    rest_power_multiplier: float = Field(default=1.0, ge=0.0001, le=10000)
+    rest_power_multiplier: float = Field(default=1.0, gt=0, le=10000)
     rest_energy_url: str | None = Field(default=None, max_length=500)
     rest_energy_path: str | None = Field(default=None, max_length=200)
-    rest_energy_multiplier: float = Field(default=1.0, ge=0.0001, le=10000)
+    rest_energy_multiplier: float = Field(default=1.0, gt=0, le=10000)
     # Lifetime (cumulative) counter — separate from the "today" path above because a
     # given endpoint may expose either, both, or neither. Feeds the hourly energy
     # snapshots and per-print energy, both of which need a monotonic total.
     rest_energy_total_path: str | None = Field(default=None, max_length=200)
-    rest_energy_total_multiplier: float = Field(default=1.0, ge=0.0001, le=10000)
+    rest_energy_total_multiplier: float = Field(default=1.0, gt=0, le=10000)
 
     printer_id: int | None = None
     # False for accessory plugs (filter / light / dryer) sharing a printer, so
@@ -135,29 +179,9 @@ class SmartPlugBase(BaseModel):
 
     @model_validator(mode="after")
     def validate_plug_type_fields(self) -> "SmartPlugBase":
-        if self.plug_type == "tasmota" and not self.ip_address:
-            raise ValueError("ip_address is required for Tasmota plugs")
-        if self.plug_type == "homeassistant" and not self.ha_entity_id:
-            raise ValueError("ha_entity_id is required for Home Assistant plugs")
-        if self.plug_type == "mqtt":
-            # Determine the effective power topic (new field takes priority, fall back to legacy)
-            power_topic = self.mqtt_power_topic or self.mqtt_topic
-            # Path is optional - if not set, raw MQTT payload value will be used
-            has_power = bool(power_topic)
-            has_energy = bool(self.mqtt_energy_topic)
-            has_state = bool(self.mqtt_state_topic)
-
-            # At least one data source must be configured (path is optional)
-            if not has_power and not has_energy and not has_state:
-                raise ValueError("At least one MQTT topic must be configured for power, energy, or state monitoring")
-        if self.plug_type == "rest":
-            if self.enabled and not self.rest_on_url and not self.rest_off_url:
-                raise ValueError("At least one of ON URL or OFF URL is required for REST plugs")
-        if self.plug_type == "zigbee" and not self.zigbee_ieee:
-            # Only the shape is checked here. Whether the address is actually on
-            # the mesh is a question for the route, which can see the
-            # coordinator; a schema cannot.
-            raise ValueError("A Zigbee plug needs the IEEE address of a paired device")
+        problems = plug_type_problems(self)
+        if problems:
+            raise ValueError(_PLUG_TYPE_PROBLEMS[problems[0]])
         return self
 
 
@@ -180,15 +204,15 @@ class SmartPlugUpdate(IgnoresNullForRequiredColumns):
     ha_energy_total_entity: str | None = None
     # MQTT fields (legacy)
     mqtt_topic: str | None = None
-    mqtt_multiplier: float | None = Field(default=None, ge=0.0001, le=10000)
+    mqtt_multiplier: float | None = Field(default=None, gt=0, le=10000)
     # MQTT power fields
     mqtt_power_topic: str | None = None
     mqtt_power_path: str | None = None
-    mqtt_power_multiplier: float | None = Field(default=None, ge=0.0001, le=10000)
+    mqtt_power_multiplier: float | None = Field(default=None, gt=0, le=10000)
     # MQTT energy fields
     mqtt_energy_topic: str | None = None
     mqtt_energy_path: str | None = None
-    mqtt_energy_multiplier: float | None = Field(default=None, ge=0.0001, le=10000)
+    mqtt_energy_multiplier: float | None = Field(default=None, gt=0, le=10000)
     # MQTT state fields
     mqtt_state_topic: str | None = None
     mqtt_state_path: str | None = None
@@ -196,7 +220,7 @@ class SmartPlugUpdate(IgnoresNullForRequiredColumns):
     # MQTT lifetime energy fields
     mqtt_energy_total_topic: str | None = None
     mqtt_energy_total_path: str | None = None
-    mqtt_energy_total_multiplier: float | None = Field(default=None, ge=0.0001, le=10000)
+    mqtt_energy_total_multiplier: float | None = Field(default=None, gt=0, le=10000)
     # MQTT control fields
     mqtt_command_topic: str | None = None
     mqtt_command_on: str | None = None
@@ -213,12 +237,12 @@ class SmartPlugUpdate(IgnoresNullForRequiredColumns):
     rest_status_on_value: str | None = None
     rest_power_url: str | None = None
     rest_power_path: str | None = None
-    rest_power_multiplier: float | None = Field(default=None, ge=0.0001, le=10000)
+    rest_power_multiplier: float | None = Field(default=None, gt=0, le=10000)
     rest_energy_url: str | None = None
     rest_energy_path: str | None = None
-    rest_energy_multiplier: float | None = Field(default=None, ge=0.0001, le=10000)
+    rest_energy_multiplier: float | None = Field(default=None, gt=0, le=10000)
     rest_energy_total_path: str | None = None
-    rest_energy_total_multiplier: float | None = Field(default=None, ge=0.0001, le=10000)
+    rest_energy_total_multiplier: float | None = Field(default=None, gt=0, le=10000)
     printer_id: int | None = None
     controls_printer_power: bool | None = None
     enabled: bool | None = None
@@ -289,6 +313,37 @@ class SmartPlugResponse(SmartPlugBase):
     @property
     def configured_secrets(self) -> dict[str, bool]:
         return {field: bool(getattr(self, field)) for field in SMART_PLUG_SECRET_FIELDS}
+
+    # A stored row a write would refuse today is SHOWN and marked, never a failed answer (owner,
+    # 2026-11-18): one such row used to fail the whole list and the printer cards' batch with a 500,
+    # which also took away the only screen it could be corrected on. ``problems`` holds the codes of
+    # ``plug_type_problems`` — the rule the write path refuses by — plus ``invalid_value`` for a row
+    # whose stored field no longer fits its type (see ``of``).
+    problems: list[str] = []
+
+    @computed_field
+    @property
+    def needs_attention(self) -> bool:
+        return bool(self.problems)
+
+    @model_validator(mode="after")
+    def validate_plug_type_fields(self) -> "SmartPlugResponse":
+        """Overrides the write-time validator by name: a read reports the problems, it never raises."""
+        found = plug_type_problems(self)
+        self.problems = found + [code for code in self.problems if code not in found]
+        return self
+
+    @classmethod
+    def of(cls, plug) -> "SmartPlugResponse":
+        """The answer for one stored row, whatever state it was saved in."""
+        try:
+            return cls.model_validate(plug, from_attributes=True)
+        except ValidationError:
+            # A field no longer fits its declared range or type. The row is still shown as stored,
+            # unvalidated, so it can be found and corrected.
+            values = {name: getattr(plug, name) for name in cls.model_fields if hasattr(plug, name)}
+            values["problems"] = [*plug_type_problems(plug), "invalid_value"]
+            return cls.model_construct(**values)
 
     id: int
     # ⚠️ Whether this is the plug the printer card treats as the machine's power
@@ -369,6 +424,9 @@ class HATestConnectionResponse(BaseModel):
 
     success: bool
     message: str | None = None
+    # On failure: why, as a code of ``homeassistant.HA_TEST_FAILURES`` — what the interface reacts
+    # to and translates — and that code's English sentence.
+    reason: str | None = None
     error: str | None = None
 
 

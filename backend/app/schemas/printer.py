@@ -99,6 +99,8 @@ class PrinterBase(BaseModel):
 
     auto_archive: bool = True
     cleanup_after_print: bool = True
+    # Wear cost per printing hour; empty or 0 = off. Applies to prints that end after it was set.
+    wear_cost_per_hour: float | None = Field(default=None, ge=0, le=100000)
     mqtt_connection_timeout: int = 0  # seconds; 0 = disabled — see models/printer.py for why that is the default
     external_camera_url: str | None = None
     external_camera_type: str | None = None  # "mjpeg", "rtsp", "snapshot", "usb"
@@ -160,6 +162,8 @@ class PrinterUpdate(IgnoresNullForRequiredColumns):
     cleanup_after_print: bool | None = None
     mqtt_connection_timeout: int | None = None
     print_hours_offset: float | None = None
+    # A nullable column: an explicit null clears the rate (wear off for this printer).
+    wear_cost_per_hour: float | None = Field(default=None, ge=0, le=100000)
     external_camera_url: str | None = None
     external_camera_type: str | None = None
     external_camera_enabled: bool | None = None

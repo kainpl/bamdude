@@ -59,7 +59,7 @@ from backend.app.models.settings import Settings
 from backend.app.models.spool import Spool
 from backend.app.models.spool_usage_history import SpoolUsageHistory
 from backend.app.schemas.git_backup import RestoreCategory
-from backend.app.services import meter_watch, swap_compatibility
+from backend.app.services import meter_watch, swap_compatibility, wear_cost
 from backend.app.services.git_providers.factory import get_provider_backend
 from backend.app.services.git_restore_fields import (
     INVALID,
@@ -367,6 +367,8 @@ _RESTORABLE_SETTING_KEYS = frozenset(
         "default_filament_cost",
         "currency",
         "energy_cost_per_kwh",
+        "energy_price_source",
+        "energy_price_ha_entity",
         "document_supplier_name",
         "document_supplier_address",
         "document_supplier_phone",
@@ -1720,6 +1722,14 @@ class GitRestoreService:
                         )
                 elif any(key in entry for key in ("energy_kwh", "energy_cost", "energy_record")):
                     energy_kept += 1
+                # Wear is a fact of the run: the backup's pair as recorded, for the same row and
+                # under the same identity checks as its energy -- never recomputed, never over a
+                # local figure, and never for an execution whose outcome the backup does not prove.
+                if not (insert and record.unknown):
+                    wear_pair = (entry.get("wear_cost"), entry.get("wear_rate"))
+                    carried = wear_cost.carry_restored(row, *wear_pair)
+                    if insert and not carried and any(value is not None for value in wear_pair):
+                        corrected.add("wear_cost")
                 write, declared = swap_compatibility.restored_declaration(entry, None if insert else row)
                 if insert or write:
                     swap_compatibility.write_archive_fact(row, declared)
@@ -2292,6 +2302,7 @@ class GitRestoreService:
         # pre-restore local state, and so the preview and this run classify the
         # payload identically.
         from backend.app.core.credential_config import lock_credential_config
+        from backend.app.services import energy_price
 
         await lock_credential_config(db)
         plan = await self._plan_settings(db, values, overwrite=overwrite)
@@ -2307,6 +2318,9 @@ class GitRestoreService:
             if existing is not None and not overwrite:
                 tally.skipped += 1
                 continue
+            if key == energy_price.SETTING_KEY:
+                # The one setting with a history (m245): the change is recorded before the row moves.
+                await energy_price.note_setting_write(db, value, "restore")
             if existing is not None:
                 existing.value = value
             else:

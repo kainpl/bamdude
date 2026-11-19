@@ -994,6 +994,8 @@ export interface Printer {
   auto_archive: boolean;
   cleanup_after_print: boolean;
   mqtt_connection_timeout: number;
+  /** Wear cost per printing hour; null or 0 = off. Older servers omit it. */
+  wear_cost_per_hour?: number | null;
   external_camera_url?: string | null; // Write-only in current servers.
   external_camera_url_configured?: boolean;
   external_camera_snapshot_url_configured?: boolean;
@@ -1653,6 +1655,8 @@ export interface PrinterCreate {
   is_active?: boolean;
   cleanup_after_print?: boolean;
   mqtt_connection_timeout?: number;
+  /** Wear cost per printing hour; null clears it (off). */
+  wear_cost_per_hour?: number | null;
   secret_actions?: Partial<Record<'external_camera_url' | 'external_camera_snapshot_url', 'keep' | 'clear' | 'replace'>>;
   external_camera_url?: string | null;
   external_camera_type?: string | null;
@@ -1939,6 +1943,10 @@ export interface Archive {
   defective_count: number;
   energy_kwh: number | null;
   energy_cost: number | null;
+  /** Wear charged to this run and the rate per printing hour that was applied; null = no figure
+   *  (no rate on the printer, or a start or end nobody measured), never a zero. Older servers omit both. */
+  wear_cost?: number | null;
+  wear_rate?: number | null;
   /** What `energy_kwh` is — never read off the number alone (spec plug-meter-watchdog W11):
    *  `estimated` from the power history over a stalled counter, `unavailable` with no usable
    *  figure (not a zero), `approximate` a counter difference over a recovered window, `measured`
@@ -2045,7 +2053,15 @@ export interface AggregateTotals {
 export interface AggregateRecords {
   longest: { archive_id: number; print_name: string | null; seconds: number } | null;
   heaviest: { archive_id: number; print_name: string | null; grams: number } | null;
-  costliest: { archive_id: number; print_name: string | null; total: number; cost: number; energy_cost: number } | null;
+  costliest: {
+    archive_id: number;
+    print_name: string | null;
+    total: number;
+    cost: number;
+    energy_cost: number;
+    /** Wear inside `total`; older servers omit it. */
+    wear_cost?: number;
+  } | null;
   success_streak: number;
 }
 
@@ -2127,6 +2143,8 @@ export interface ArchiveStats {
   /** Completed prints in the period: what came off each printer's plates and
    *  how much went in the bin. Optional — an older backend says nothing. */
   defects_by_printer?: Record<string, DefectsByPrinter>;
+  /** Wear charged to the prints in the period (the figures stamped on them, summed). Older servers omit it. */
+  total_wear_cost?: number;
   // Two pairs, deliberately. `print_*` is measured between the start and end of
   // each print and honours the date filter; `total_*` is what the plugs
   // themselves counted, idle included, and all-time comes from their lifetime
@@ -2555,6 +2573,8 @@ export interface ProjectFigures {
   /** Prints whose energy is estimated (inside `total_energy_cost`) / has no usable figure. */
   energy_estimated?: number;
   energy_unavailable?: number;
+  /** Wear portion of `total_cost` (printing hours × each printer's rate); older servers omit it. */
+  total_wear_cost?: number;
   total_cost: number;
   defective: number;
   /** null when the order carries no price — not zero, which would read as
@@ -5056,6 +5076,10 @@ export interface AppSettings {
   document_supplier_code: string;
   document_supplier_iban: string;
   energy_cost_per_kwh: number;
+  // Where the price comes from. With 'homeassistant' the server reads the sensor hourly and
+  // energy_cost_per_kwh is the last price read — never sent back by the settings page.
+  energy_price_source?: 'fixed' | 'homeassistant';
+  energy_price_ha_entity?: string;
   // Zigbee coordinator. Declared here as well as on the backend schema because
   // the settings PATCH is typed by this interface — an undeclared key would be
   // dropped on the way out, exactly as Pydantic drops one on the way in.
@@ -6444,6 +6468,11 @@ export interface CloudDevice {
 // Smart Plug types
 export interface SmartPlug {
   configured_secrets?: Record<string, boolean>;
+  /** The saved row is one a write would refuse today (a type without the field it needs, a value
+   * out of range). It is still listed, so it can be corrected; the server switches nothing on it. */
+  needs_attention?: boolean;
+  /** Why, as machine codes — see `smartPlugs.needsAttention.problems` in the locales. */
+  problems?: string[];
   /** Whether this is the plug the printer card treats as that machine's power.
    * Decided by the backend so every surface that switches a printer agrees;
    * never re-derive it here. False for plugs with no printer. */
@@ -6934,6 +6963,8 @@ export interface HASensorEntity {
 export interface HATestConnectionResult {
   success: boolean;
   message: string | null;
+  /** Why the test failed, as a machine code — see `settings.haTestReasons` in the locales. */
+  reason?: string | null;
   error: string | null;
 }
 

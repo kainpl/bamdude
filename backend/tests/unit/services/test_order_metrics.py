@@ -353,6 +353,38 @@ def test_project_cost_keeps_filament_and_energy_components():
     assert (total.total_filament_cost, total.total_energy_cost, total.total_cost) == (2.0, 0.35, 2.35)
 
 
+def test_wear_is_part_of_the_order_cost_and_lowers_the_margin():
+    parts = [_part(1, 10, "a", 1)]
+    lines = [_line(100, 10, 2)]
+    archives = [
+        _archive(1, file_id=5, plate=0, cost=1.25, energy_cost=0.35),
+        _archive(2, file_id=5, plate=0, cost=0.75, energy_cost=None),
+    ]
+    # Tests build rows by hand; in the app only services/wear_cost.py writes these columns.
+    archives[0].wear_cost = 0.417
+    archives[1].wear_cost = None  # a print with no figure adds nothing, and is no zero
+    ctx = _ctx(lines, parts, archives, {1: [_ap(1, "a", 1)], 2: [_ap(2, "a", 1)]}, {(5, 0): 10})
+
+    figures, other = attribute(ctx)
+    total = project_figures(ctx, figures, other)
+
+    assert total.total_wear_cost == 0.42
+    assert total.total_cost == 2.77  # filament 2.00 + electricity 0.35 + wear 0.42
+    assert total.margin == 97.23  # the order's price is 100
+
+
+def test_an_order_without_wear_keeps_its_cost_and_margin():
+    parts = [_part(1, 10, "a", 1)]
+    lines = [_line(100, 10, 2)]
+    archives = [_archive(1, file_id=5, plate=0, cost=1.25, energy_cost=0.35)]
+    ctx = _ctx(lines, parts, archives, {1: [_ap(1, "a", 1)]}, {(5, 0): 10})
+
+    figures, other = attribute(ctx)
+    total = project_figures(ctx, figures, other)
+
+    assert (total.total_wear_cost, total.total_cost, total.margin) == (0.0, 1.6, 98.4)
+
+
 def test_project_figures_say_which_energy_is_estimated_or_unknown():
     """Spec plug-meter-watchdog W11: an estimate is inside the energy cost and counted; an unknown is
     outside it and counted, never read as a zero."""

@@ -240,6 +240,9 @@ class ProjectFigures:
     #: prints with no usable figure (outside it, never a zero) -- spec plug-meter-watchdog W11.
     energy_estimated: int = 0
     energy_unavailable: int = 0
+    #: Wear charged to the order's prints (``print_archives.wear_cost``, stamped at each print's
+    #: measured end). Inside ``total_cost``; a print with no figure adds nothing.
+    total_wear_cost: float = 0.0
     total_cost: float = 0.0
     defective: int = 0
     margin: float | None = None
@@ -1053,11 +1056,13 @@ def project_figures(
         energy_status = meter_watch.energy_wire_fields(a.extra_data, a.energy_kwh)["energy_status"]
         pf.energy_estimated += energy_status == "estimated"
         pf.energy_unavailable += energy_status == "unavailable"
+        pf.total_wear_cost += float(a.wear_cost or 0)
         pf.defective += int(a.defective_count or 0)
     pf.total_filament_grams = round(pf.total_filament_grams, 2)
     pf.total_filament_cost = round(pf.total_filament_cost, 2)
     pf.total_energy_cost = round(pf.total_energy_cost, 2)
-    pf.total_cost = round(pf.total_filament_cost + pf.total_energy_cost, 2)
+    pf.total_wear_cost = round(pf.total_wear_cost, 2)
+    pf.total_cost = round(pf.total_filament_cost + pf.total_energy_cost + pf.total_wear_cost, 2)
     pf.margin = round(ctx.project.price - pf.total_cost, 2) if ctx.project.price is not None else None
     pf.prints_in_progress = sum(1 for a in ctx.archives if a.status == _RUNNING)
     pf.prints_queued = sum(ctx.queued_by_line.values()) + ctx.queued_unfiled

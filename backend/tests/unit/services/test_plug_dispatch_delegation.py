@@ -19,6 +19,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from backend.app.services import energy_price
+
 
 def _plug(plug_type: str, plug_id: int = 1):
     # No measurement source: a plug from before m211, whose end is read as it always was.
@@ -164,7 +166,11 @@ class TestTheEndOfAPrintAsksThePlugItself:
             patch.object(main, "_energy_plug_for_printer", AsyncMock(return_value=_plug("zigbee"))),
             patch.object(main, "_get_plug_energy", fake_energy),
             patch.object(main.smart_plug_manager, "record_energy_snapshot", AsyncMock()),
-            patch("backend.app.api.routes.settings.get_setting", AsyncMock(return_value="0.20")),
+            # The price comes from the price history (m245); the fake session holds none.
+            patch(
+                "backend.app.services.energy_price.load_history",
+                AsyncMock(return_value=[energy_price.PricePoint(energy_price.BASELINE_AT, 0.20)]),
+            ),
             # The figure is written under the archive's own write scope, from a fresh read
             # (swap-source-lifecycle spec r4 §7): the fake session stands in for both.
             patch("backend.app.services.archive_write_scope.archive_write_scope", _no_scope),
@@ -218,7 +224,11 @@ class TestTheEndOfAPrintAsksThePlugItself:
             patch.object(main, "_energy_plug_for_printer", AsyncMock(return_value=_plug("zigbee"))),
             patch.object(main, "_get_plug_energy", fake_energy),
             patch.object(main.smart_plug_manager, "record_energy_snapshot", AsyncMock()),
-            patch("backend.app.api.routes.settings.get_setting", AsyncMock(return_value="0.20")),
+            # The price comes from the price history (m245); the fake session holds none.
+            patch(
+                "backend.app.services.energy_price.load_history",
+                AsyncMock(return_value=[energy_price.PricePoint(energy_price.BASELINE_AT, 0.20)]),
+            ),
             # The figure is written under the archive's own write scope, from a fresh read
             # (swap-source-lifecycle spec r4 §7): the fake session stands in for both.
             patch("backend.app.services.archive_write_scope.archive_write_scope", _no_scope),
@@ -267,7 +277,11 @@ class TestTheEndOfAPrintAsksThePlugItself:
             patch.object(main, "_energy_plug_for_printer", AsyncMock(return_value=_plug("zigbee"))),
             patch.object(main, "_get_plug_energy", fake_energy),
             patch.object(main.smart_plug_manager, "record_energy_snapshot", AsyncMock()),
-            patch("backend.app.api.routes.settings.get_setting", AsyncMock(return_value="0.20")),
+            # The price comes from the price history (m245); the fake session holds none.
+            patch(
+                "backend.app.services.energy_price.load_history",
+                AsyncMock(return_value=[energy_price.PricePoint(energy_price.BASELINE_AT, 0.20)]),
+            ),
             # The figure is written under the archive's own write scope, from a fresh read
             # (swap-source-lifecycle spec r4 §7): the fake session stands in for both.
             patch("backend.app.services.archive_write_scope.archive_write_scope", _no_scope),

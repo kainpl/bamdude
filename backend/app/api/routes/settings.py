@@ -40,6 +40,7 @@ from backend.app.schemas.settings import (
     AppSettingsUpdate,
     opaque_service_url,
 )
+from backend.app.services import energy_price
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,9 @@ ADMIN_SETTING_FIELDS = frozenset(
         "ha_enabled",
         "ha_url",
         "ha_token",
+        # Choosing the sensor makes the server ask Home Assistant with the stored token.
+        "energy_price_source",
+        "energy_price_ha_entity",
         "prometheus_enabled",
         "prometheus_token",
         "local_backup_enabled",
@@ -160,11 +164,116 @@ async def get_external_login_url(db: AsyncSession) -> str:
     return external_url + "/login"
 
 
-async def set_setting(db: AsyncSession, key: str, value: str) -> None:
-    """Set a single setting value (dialect-aware upsert)."""
+async def set_setting(db: AsyncSession, key: str, value: str, *, price_source: str = "manual") -> None:
+    """Set a single setting value (dialect-aware upsert).
+
+    The electricity price is the one row with a history (m245): its change is recorded here, in the
+    same transaction and before the row is written, so no door that saves it can forget to.
+    ``price_source`` says who changed it and matters for that key alone.
+    """
     from backend.app.core.db_dialect import upsert_setting
 
+    if key == energy_price.SETTING_KEY:
+        await energy_price.note_setting_write(db, value, price_source)
     await upsert_setting(db, Settings, key, value)
+
+
+def _effective_ha_connection(merged: dict) -> dict:
+    """The Home Assistant connection a save would leave in effect (environment first, as everywhere)."""
+    url_env, token_env = os.environ.get("HA_URL"), os.environ.get("HA_TOKEN")
+    return {
+        "ha_enabled": True if url_env and token_env else bool(merged.get("ha_enabled")),
+        "ha_url": url_env or merged.get("ha_url") or "",
+        "ha_token": token_env or merged.get("ha_token") or "",
+    }
+
+
+def _energy_price_refusal(reason: str) -> HTTPException:
+    """Why the price could not be read from Home Assistant, as the administrator is told it."""
+    if reason == "not_configured":
+        return HTTPException(
+            400,
+            detail={
+                "error": "energy_price_read_failed",
+                "message": "Home Assistant is not connected. Set its address and token first, "
+                "then choose it as the electricity price source.",
+            },
+        )
+    if reason == "no_entity":
+        return HTTPException(
+            422,
+            detail={
+                "error": "energy_price_read_failed",
+                "message": "Choose the Home Assistant sensor that reports the electricity price.",
+            },
+        )
+    if reason == "no_such_entity":
+        return HTTPException(
+            422,
+            detail={
+                "error": "energy_price_read_failed",
+                "message": "Home Assistant has no such sensor for the electricity price.",
+            },
+        )
+    if reason == "unusable":
+        return HTTPException(
+            422,
+            detail={
+                "error": "energy_price_read_failed",
+                "message": "The Home Assistant sensor gives no usable electricity price right now.",
+            },
+        )
+    if reason == "timeout":
+        return HTTPException(
+            504,
+            detail={
+                "error": "energy_price_read_failed",
+                "message": "Home Assistant did not answer in time; the electricity price source was not changed.",
+            },
+        )
+    return HTTPException(
+        502,
+        detail={
+            "error": "energy_price_read_failed",
+            "message": "Home Assistant could not be reached; the electricity price source was not changed.",
+        },
+    )
+
+
+async def _energy_price_plan(db: AsyncSession, update_data: dict, merged: dict):
+    """What a save means for the electricity price; the caller holds the credential anchor.
+
+    Returns the Home Assistant destination to read BEFORE the save is written -- when the save makes
+    the sensor the source, or names another sensor -- or None. While the sensor is the source the
+    price is its last reading: a different price typed into the save is refused, an equal one (a
+    full form sent back) is dropped.
+    """
+    if merged.get(energy_price.SOURCE_SETTING_KEY) != energy_price.PRICE_SOURCE_HOMEASSISTANT:
+        return None
+    if energy_price.SETTING_KEY in update_data:
+        sent = update_data[energy_price.SETTING_KEY]
+        if sent is None or energy_price.clean_price(sent) != await energy_price.stored_price(db):
+            raise HTTPException(
+                409,
+                detail={
+                    "error": "energy_price_from_homeassistant",
+                    "message": "The electricity price is read from Home Assistant and cannot be set by hand. "
+                    "Switch the price source to a fixed price to enter it.",
+                },
+            )
+        update_data.pop(energy_price.SETTING_KEY)
+    stored = {
+        key: await get_setting(db, key) for key in (energy_price.SOURCE_SETTING_KEY, energy_price.ENTITY_SETTING_KEY)
+    }
+    entity = merged.get(energy_price.ENTITY_SETTING_KEY) or ""
+    if stored[energy_price.SOURCE_SETTING_KEY] == energy_price.PRICE_SOURCE_HOMEASSISTANT and entity == (
+        stored[energy_price.ENTITY_SETTING_KEY] or ""
+    ):
+        return None  # nothing about the source changes: the hourly read keeps the price
+    try:
+        return energy_price.target_from(_effective_ha_connection(merged), entity)
+    except energy_price.PriceReadFailed as exc:
+        raise _energy_price_refusal(exc.reason) from None
 
 
 async def _lock_mcp_http_policy(db: AsyncSession) -> None:
@@ -570,6 +679,23 @@ async def update_settings(
         raise HTTPException(403, "Requires admin role for protected settings")
     await _enforce_admin_settings(db, update_data, current_user)
     merged = await resolve_settings_credentials(db, update_data, actions)
+    # The electricity price from Home Assistant (m245). The read is network I/O, so it happens with
+    # no transaction open: the destination is frozen under the anchor, the anchor is released, the
+    # sensor is asked, and the save starts again from the top -- on a destination that must still
+    # be the one that was asked. A read that fails refuses the save: nothing was written.
+    ha_price = None
+    price_target = await _energy_price_plan(db, update_data, merged)
+    if price_target is not None:
+        await db.rollback()
+        try:
+            ha_price = await energy_price.fetch_price(price_target)
+        except energy_price.PriceReadFailed as exc:
+            raise _energy_price_refusal(exc.reason) from None
+        await lock_credential_config(db)
+        await _enforce_admin_settings(db, update_data, current_user)
+        merged = await resolve_settings_credentials(db, update_data, actions)
+        if await _energy_price_plan(db, update_data, merged) != price_target:
+            raise HTTPException(409, "Settings changed while the electricity price was being read. Try again.")
     for key in (SETTINGS_SECRETS | SERVICE_CREDENTIAL_URL_FIELDS) & (update_data.keys() | (actions or {}).keys()):
         update_data[key] = merged[key]
     risk_ack = update_data.pop("mcp_http_risk_acknowledged", False)
@@ -662,6 +788,9 @@ async def update_settings(
         else:
             str_value = str(value)
         await set_setting(db, key, str_value)
+    if ha_price is not None:
+        # The reading that proved the source works is its first price, in the save's own transaction.
+        await energy_price.set_price(db, ha_price, "homeassistant")
 
     await db.commit()
     # Expire all objects to ensure fresh reads after commit
@@ -772,7 +901,9 @@ async def update_electricity_price(
     See ``wiki/features/energy.md`` and upstream Bambuddy #1356 for the
     full rationale.
     """
-    await set_setting(db, "energy_cost_per_kwh", str(payload.energy_cost_per_kwh))
+    # An external push stays allowed while the source is Home Assistant: it is the same price
+    # arriving another way, and its change is recorded as the API's.
+    await set_setting(db, "energy_cost_per_kwh", str(payload.energy_cost_per_kwh), price_source="api")
     await db.commit()
     db.expire_all()
     # Return the full settings response so the HA integration can confirm
@@ -796,6 +927,9 @@ async def reset_settings(
     result = await db.execute(select(Settings).where(Settings.key != CONFIG_GUARD_KEY).order_by(Settings.key))
     from backend.app.core.schema_repair_state import private_setting
 
+    # The price goes back to its default with its row: a change like any other, recorded before
+    # the row is deleted (the history is not a setting and survives the reset).
+    await energy_price.note_setting_write(db, None, "manual")
     for setting in result.scalars().all():
         if not private_setting(setting.key):
             await db.delete(setting)
