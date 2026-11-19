@@ -58,9 +58,19 @@ class ArchiveBase(BaseModel):
     external_url: str | None = None
 
 
-#: What a print's status may be set to by hand — the words the backend itself writes
-#: (WS-13 E13 O09). The legacy ``archived`` is no longer produced anywhere.
+#: The statuses the backend itself writes (WS-13 E13 O09). The legacy ``archived`` is no longer
+#: produced anywhere. An update body may NAME any of them — a client that sends a print back as it
+#: read it changes nothing — but the route lets a hand edit CHANGE the status only between the
+#: terminal ones: ``printing`` belongs to the live print, both as a target and as a start.
 ArchiveStatus = Literal["printing", "completed", "failed", "aborted", "cancelled", "stopped"]
+
+#: What a hand edit may set (``HAND_SET_STATUSES`` in the route's refusal, the dialog's options).
+HAND_SET_STATUSES = frozenset({"completed", "failed", "aborted", "cancelled", "stopped"})
+
+#: The ceiling on a typed cost. It feeds order totals and statistics, so it is bounded like the grams
+#: beside it: never negative, never NaN / Infinity (which no response could carry afterwards), and
+#: far past what one print can cost in any currency we show.
+MAX_ARCHIVE_COST = 1_000_000
 
 
 class ArchiveUpdate(IgnoresNullForRequiredColumns, ArchiveBase):
@@ -71,6 +81,10 @@ class ArchiveUpdate(IgnoresNullForRequiredColumns, ArchiveBase):
     # order totals, and a negative would subtract from them (upstream 30e530a8).
     # 0 is legal; a ruined plate is still recorded as defects here.
     quantity: int | None = Field(None, ge=0, le=10_000)
+    cost: float | None = Field(None, ge=0, le=MAX_ARCHIVE_COST, allow_inf_nan=False)
+    # NOT editable: the printer is a fact of the run, not operator metadata. Still named here so
+    # the route can tell a client that sends the print back as it read it (accepted, nothing
+    # written) from one that asks for another printer (422).
     printer_id: int | None = None
     project_id: int | None = None
     # The order line this print is for; validated against ``project_id``.
@@ -195,12 +209,25 @@ class ArchiveResponse(BaseModel):
     # True while the print still runs: ``cost`` is then the placeholder written at its start (grams at the
     # default filament rate), which completion replaces with what the spools that fed it cost.
     cost_is_estimate: bool = False
+    # True for a print that did not finish and whose filament was never measured (no usage row in
+    # either ledger): ``cost`` and the grams are then the WHOLE plate's, not what this run used.
+    # Filled by the list and the detail reads only — the other routes that answer an archive do
+    # not ask the ledgers and leave it False.
+    cost_is_full_print: bool = False
+    # Only in the answer to an edit: the status was changed by hand, but the free-stock shelf
+    # could not follow on some part (those parts were already used) and needs a manual correction.
+    stock_not_followed: bool = False
     photos: list | None
     failure_reason: str | None
     quantity: int = 1  # Number of items printed
     # Scrap out of that plate. Shown beside ``object_count`` in the archive card
     # and list; never subtracted from any total (see models/archive.py).
     defective_count: int = 0
+    # When somebody looked at what came off the plate (a defects write, or the explicit
+    # «no defects» mark) — not a verdict; and whether this completed print still waits
+    # for that look (``archive_outcome.is_unchecked``).
+    outcome_checked_at: datetime | None = None
+    outcome_unchecked: bool = False
     # Per-part rows (m158). DETAIL responses only — list_archives never loads
     # them, to avoid an N+1 per page of archives.
     parts: list[ArchivePartRow] = []

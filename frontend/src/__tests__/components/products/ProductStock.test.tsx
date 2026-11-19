@@ -378,6 +378,7 @@ describe('ProductStock', () => {
       'defects_recorded',
       'assembled',
       'order_completed',
+      'status_edited',
     ]);
     expect([...STOCK_REASONS]).toEqual([
       'surplus_banked',

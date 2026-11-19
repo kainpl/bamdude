@@ -63,7 +63,6 @@ const MOCK_SPOOL = {
 };
 
 const MOCK_SETTINGS = {
-  auto_archive: false,
   save_thumbnails: false,
   capture_finish_photo: false,
   default_filament_cost: 25.0,

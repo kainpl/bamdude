@@ -48,7 +48,7 @@ class TestExtractFilamentDataFromMqtt:
             },
         }
         result = _extract_filament_data_from_mqtt(data)
-        assert result == {"filament_type": "PLA, PETG, ABS", "filament_color": "FF0000,00FF00,0000FF"}
+        assert result == {"filament_type": "PLA, PETG, ABS", "filament_color": "#FF0000,#00FF00,#0000FF"}
 
     def test_ams_mapping_narrows_to_used_slots(self):
         data = {
@@ -67,7 +67,7 @@ class TestExtractFilamentDataFromMqtt:
             },
         }
         result = _extract_filament_data_from_mqtt(data, ams_mapping=[3, 0, 1])
-        assert result == {"filament_type": "TPU, PLA, PETG", "filament_color": "FFFF00,FF0000,00FF00"}
+        assert result == {"filament_type": "TPU, PLA, PETG", "filament_color": "#FFFF00,#FF0000,#00FF00"}
 
     def test_ams_mapping_with_vt_tray_sentinels_filtered_out(self):
         data = {
@@ -84,7 +84,7 @@ class TestExtractFilamentDataFromMqtt:
             },
         }
         result = _extract_filament_data_from_mqtt(data, ams_mapping=[-1, 0, 1])
-        assert result == {"filament_type": "PLA, PETG", "filament_color": "FF0000,00FF00"}
+        assert result == {"filament_type": "PLA, PETG", "filament_color": "#FF0000,#00FF00"}
 
     def test_dual_ams_global_ids_use_unit4_offset(self):
         data = {
@@ -96,12 +96,12 @@ class TestExtractFilamentDataFromMqtt:
             },
         }
         result = _extract_filament_data_from_mqtt(data, ams_mapping=[4, 0])
-        assert result == {"filament_type": "PETG-CF, PLA", "filament_color": "112233,FF0000"}
+        assert result == {"filament_type": "PETG-CF, PLA", "filament_color": "#112233,#FF0000"}
 
     def test_mapping_pointing_at_unknown_slot_falls_through_to_known_only(self):
         data = {"ams": {"ams": [_ams_unit(0, [_tray(0, "PLA", "FF0000")])]}}
         result = _extract_filament_data_from_mqtt(data, ams_mapping=[7, 0])
-        assert result == {"filament_type": "PLA", "filament_color": "FF0000"}
+        assert result == {"filament_type": "PLA", "filament_color": "#FF0000"}
 
     def test_mapping_entirely_unknown_returns_empty(self):
         data = {"ams": {"ams": [_ams_unit(0, [_tray(0, "PLA", "FF0000")])]}}
@@ -145,13 +145,13 @@ class TestCallbackWrapperShape:
             "ams_mapping": [0],
         }
         result = _extract_filament_data_from_mqtt(wrapper, ams_mapping=[0])
-        assert result == {"filament_type": "PETG", "filament_color": "FFFFFFFF"}
+        assert result == {"filament_type": "PETG", "filament_color": "#FFFFFF"}
 
     def test_wrapper_with_no_ams_mapping_falls_back_to_all_loaded(self):
         inner = {"ams": {"ams": [_ams_unit(0, [_tray(0, "PLA", "FF0000"), _tray(1, "PETG", "00FF00")])]}}
         wrapper = {"raw_data": inner}
         result = _extract_filament_data_from_mqtt(wrapper)
-        assert result == {"filament_type": "PLA, PETG", "filament_color": "FF0000,00FF00"}
+        assert result == {"filament_type": "PLA, PETG", "filament_color": "#FF0000,#00FF00"}
 
 
 class TestTypesAreJoinedLikeEveryOtherWriter:
@@ -161,9 +161,48 @@ class TestTypesAreJoinedLikeEveryOtherWriter:
     def test_two_slots_of_one_material_name_it_once(self):
         data = {"ams": {"ams": [_ams_unit(0, [_tray(0, "PLA", "FF0000"), _tray(1, "PLA", "00FF00")])]}}
         result = _extract_filament_data_from_mqtt(data)
-        assert result == {"filament_type": "PLA", "filament_color": "FF0000,00FF00"}
+        assert result == {"filament_type": "PLA", "filament_color": "#FF0000,#00FF00"}
 
     def test_order_of_first_appearance_is_kept(self):
         trays = [_tray(0, "PETG", "111111"), _tray(1, "PLA", "222222"), _tray(2, "PETG", "333333")]
         data = {"ams": {"ams": [_ams_unit(0, trays)]}}
         assert _extract_filament_data_from_mqtt(data)["filament_type"] == "PETG, PLA"
+
+
+class TestStoredAsTheArchiveStoresColours:
+    """Upstream 879acdbf1: a no-3MF archive stored the printer's ``RRGGBBAA`` and its
+    colour chips were empty; an AMS-HT's filament was looked up as a 4-slot unit's."""
+
+    def test_the_alpha_channel_is_dropped_and_the_hash_added(self):
+        data = {"ams": {"ams": [_ams_unit(0, [_tray(0, "PLA", "ff8800FF"), _tray(1, "PETG", "00FF0080")])]}}
+        assert _extract_filament_data_from_mqtt(data)["filament_color"] == "#FF8800,#00FF00"
+
+    def test_a_value_that_is_no_colour_is_no_colour(self):
+        data = {"ams": {"ams": [_ams_unit(0, [_tray(0, "PLA", "n/a"), _tray(1, "PETG", "00FF00FF")])]}}
+        assert _extract_filament_data_from_mqtt(data) == {"filament_type": "PLA, PETG", "filament_color": "#00FF00"}
+
+    def test_the_column_never_ends_in_half_a_colour(self):
+        trays = [_tray(i, "PLA", f"{i:06X}FF") for i in range(4)]
+        data = {"ams": {"ams": [_ams_unit(u, trays) for u in range(4)]}}
+        colors = _extract_filament_data_from_mqtt(data)["filament_color"].split(",")
+        assert len(colors) == 6
+        assert all(len(c) == 7 and c.startswith("#") for c in colors)
+
+    def test_an_ams_ht_is_its_own_global_id(self):
+        data = {
+            "ams": {
+                "ams": [
+                    _ams_unit(0, [_tray(0, "PLA", "FF0000FF")]),
+                    _ams_unit(128, [_tray(0, "PA-CF", "101010FF")]),
+                    _ams_unit(129, [_tray(0, "PETG", "00FF00FF")]),
+                ],
+            },
+        }
+        assert _extract_filament_data_from_mqtt(data, ams_mapping=[128]) == {
+            "filament_type": "PA-CF",
+            "filament_color": "#101010",
+        }
+        assert _extract_filament_data_from_mqtt(data, ams_mapping=[129, 0]) == {
+            "filament_type": "PETG, PLA",
+            "filament_color": "#00FF00,#FF0000",
+        }

@@ -495,14 +495,43 @@ class TestPrintersAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_update_printer_auto_archive(self, async_client: AsyncClient, printer_factory, db_session):
-        """Verify auto_archive setting can be updated."""
+    async def test_archiving_cannot_be_switched_off(self, async_client: AsyncClient, printer_factory, db_session):
+        """The archive is the print log: there is no per-printer "auto-archive" switch.
+
+        ``auto_archive`` is an upstream leftover column; the API neither accepts nor
+        reports it, so a client that still sends it changes nothing.
+        """
         printer = await printer_factory(auto_archive=True)
 
         response = await async_client.patch(f"/api/v1/printers/{printer.id}", json={"auto_archive": False})
 
         assert response.status_code == 200
-        assert response.json()["auto_archive"] is False
+        assert "auto_archive" not in response.json()
+        await db_session.refresh(printer)
+        assert printer.auto_archive is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_new_printer_cannot_be_created_without_archiving(self, async_client: AsyncClient, db_session):
+        from sqlalchemy import select
+
+        from backend.app.models.printer import Printer
+
+        response = await async_client.post(
+            "/api/v1/printers/",
+            json={
+                "name": "No Archive",
+                "serial_number": "00M09A777777777",
+                "ip_address": "192.168.1.177",
+                "access_code": "12345678",
+                "auto_archive": False,
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        assert "auto_archive" not in response.json()
+        row = (await db_session.execute(select(Printer).where(Printer.id == response.json()["id"]))).scalar_one()
+        assert row.auto_archive is True
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -598,7 +627,6 @@ class TestPrinterDataIntegrity:
             ip_address="192.168.1.150",
             model="P1S",
             is_active=True,
-            auto_archive=False,
         )
 
         response = await async_client.get(f"/api/v1/printers/{printer.id}")
@@ -610,7 +638,7 @@ class TestPrinterDataIntegrity:
         assert result["ip_address"] == "192.168.1.150"
         assert result["model"] == "P1S"
         assert result["is_active"] is True
-        assert result["auto_archive"] is False
+        assert "auto_archive" not in result
 
     @pytest.mark.asyncio
     @pytest.mark.integration

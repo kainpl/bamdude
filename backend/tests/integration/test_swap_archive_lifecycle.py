@@ -267,13 +267,14 @@ def _printer_for_download():
         ("lamp.swap", "/data/Metadata/plate_1.gcode", {"/plate_1.gcode.3mf"}, [], "plate_1.gcode.3mf"),
         # The reverse: a plain first candidate is missing, the marked one downloaded.
         ("lamp", "/sdcard/lamp.swap.gcode.3mf", {"/cache/lamp.swap.gcode.3mf"}, [], "lamp.swap.gcode.3mf"),
-        # Fuzzy: the first listed match does not download, the second does.
+        # Directory search: the first listed file of the print's own name (in the printer's spelling) does not
+        # download, the second does. A file that merely contains the name is never a match.
         (
             "lamp",
             None,
-            {"/cache/lamp_v2.swap.3mf"},
-            [{"name": "lamp_v1.3mf"}, {"name": "lamp_v2.swap.3mf"}],
-            "lamp_v2.swap.3mf",
+            {"/cache/Lamp.gcode.3mf", "/cache/lamp_v2.swap.3mf"},
+            [{"name": "lamp_v2.swap.3mf"}, {"name": "LAMP.3mf"}, {"name": "Lamp.gcode.3mf"}],
+            "Lamp.gcode.3mf",
         ),
     ],
     ids=["direct-marked-missing", "direct-plain-missing", "fuzzy-second"],

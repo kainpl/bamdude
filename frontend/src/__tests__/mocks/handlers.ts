@@ -82,7 +82,6 @@ const mockPrinters = [
     is_active: true,
     model: 'X1C',
     nozzle_count: 1,
-    auto_archive: true,
     location: null,
     created_at: '2024-01-01T00:00:00Z',
     updated_at: '2024-01-01T00:00:00Z',

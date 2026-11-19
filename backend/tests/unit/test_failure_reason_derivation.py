@@ -42,6 +42,15 @@ class TestFailedWithKnownCodes:
     def test_clogged_nozzle(self):
         assert derive_failure_reason("failed", [_hms("0300_4006")]) == "cloggedNozzle"
 
+    def test_the_printers_ai_monitor_halt(self):
+        # Upstream a6ce26205: the print the printer's own AI stopped was "other".
+        assert derive_failure_reason("failed", [_hms("0300_8003")]) == "spaghettiDetached"
+        assert derive_failure_reason("failed", [_hms("0C00_8042")]) == "spaghettiDetached"
+
+    def test_ai_warnings_that_are_no_halt_stay_unnamed(self):
+        assert derive_failure_reason("failed", [_hms("0C00_C004")]) is None
+        assert derive_failure_reason("failed", [_hms("0300_800A")]) is None
+
     def test_first_match_wins(self):
         # Two known codes — return whichever the map yields for the first hit.
         result = derive_failure_reason("failed", [_hms("0300_4057"), _hms("0701_8011")])

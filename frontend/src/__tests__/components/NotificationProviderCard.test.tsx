@@ -67,6 +67,7 @@ const createMockProvider = (
   on_bed_cooled: false,
   on_first_layer_complete: false,
   on_pause_coming_up: false,
+  on_print_outcome_unchecked: false,
   on_queue_job_added: false,
   on_queue_job_started: false,
   on_queue_job_waiting: true,

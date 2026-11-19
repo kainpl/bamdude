@@ -282,10 +282,10 @@ class TestArchiveOwnershipPermissions(TestOwnershipPermissionsSetup):
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_operator_cannot_reprint_others_archive(
+    async def test_operator_may_reprint_others_archive(
         self, async_client: AsyncClient, auth_setup, archive_factory, printer_factory, db_session
     ):
-        """Operator cannot reprint another user's archive."""
+        """The default Operators group holds ``archives:reprint_all`` (m249): the gate lets it through."""
         printer = await printer_factory()
         archive = await archive_factory(
             printer.id,
@@ -297,7 +297,7 @@ class TestArchiveOwnershipPermissions(TestOwnershipPermissionsSetup):
             headers={"Authorization": f"Bearer {auth_setup['operator_token']}"},
         )
 
-        assert response.status_code == 403
+        assert response.status_code != 403, response.text
 
 
 class TestQueueOwnershipPermissions(TestOwnershipPermissionsSetup):
@@ -1294,7 +1294,9 @@ class TestSliceOwnershipPermissions(TestOwnershipPermissionsSetup):
             headers=admin_headers,
             json={
                 "name": "readown_slicers",
-                "permissions": ["library:upload", "library:read_own", "archives:read_own"],
+                # ``archives:reprint_own``: re-slicing an archive makes new print work from it,
+                # so it asks the reprint right beside the read (upstream 72dfa7b1).
+                "permissions": ["library:upload", "library:read_own", "archives:read_own", "archives:reprint_own"],
             },
         )
         assert group_resp.status_code == 201, group_resp.text

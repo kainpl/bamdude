@@ -15,7 +15,7 @@ import { server } from '../mocks/server';
 const printer = {
   id: 1, name: 'Pauser', ip_address: '192.168.1.100', serial_number: '01P00A000000001', access_code: '12345678',
   model: 'P1S', enabled: true, is_active: true, nozzle_diameter: 0.4,
-  nozzle_type: 'stainless_steel', location: 'Workshop', auto_archive: true,
+  nozzle_type: 'stainless_steel', location: 'Workshop',
   created_at: '2024-01-01T00:00:00Z', updated_at: '2024-01-01T00:00:00Z',
 };
 

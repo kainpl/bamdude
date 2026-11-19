@@ -866,12 +866,28 @@ class NotificationService:
                     md2_message += escape_md(part) if i % 2 == 0 else f"*{escape_md(part)}*"
 
                 # Build inline keyboard for actionable notifications
+                extra_data = await self._with_archive_identity(event_type, extra_data)
                 reply_markup = await self._build_telegram_actions(
                     event_type,
                     printer_id,
                     int(chat_id),
                     extra_data,
                 )
+                # A completion or reminder message is remembered by the id Telegram
+                # gives it, so a reaction on it finds its print (``telegram_outcome_messages``).
+                sent_kwargs = {}
+                outcome_identity = (extra_data or {}).get("archive_identity")
+                if event_type in ("print_complete", "print_outcome_unchecked") and outcome_identity:
+                    from backend.app.services import telegram_outcome_messages
+
+                    outcome_archive_id = int(extra_data["archive_id"])
+
+                    def _remember(bot, sent, _chat=int(chat_id)) -> None:
+                        telegram_outcome_messages.remember(
+                            bot.id, _chat, sent.message_id, outcome_archive_id, outcome_identity
+                        )
+
+                    sent_kwargs["on_sent"] = _remember
 
                 # Keyboard construction awaited DB work: a restart may have
                 # swapped the registry meanwhile. Check immediately before the
@@ -881,10 +897,10 @@ class NotificationService:
                     ok = False
                 elif image_data:
                     ok = await send_photo(
-                        provider_id, chat_id, image_data, caption=md2_message, reply_markup=reply_markup
+                        provider_id, chat_id, image_data, caption=md2_message, reply_markup=reply_markup, **sent_kwargs
                     )
                 else:
-                    ok = await send_message(provider_id, chat_id, md2_message, reply_markup=reply_markup)
+                    ok = await send_message(provider_id, chat_id, md2_message, reply_markup=reply_markup, **sent_kwargs)
                 if ok:
                     return True, "Message sent successfully"
                 # The helpers swallow their own exception and answer ``False``
@@ -1551,7 +1567,7 @@ class NotificationService:
         extra_data: dict | None = None,
     ):
         """Build inline keyboard for Telegram notifications based on event and permissions."""
-        if not printer_id:
+        if not printer_id and event_type != "print_outcome_unchecked":
             return None
 
         from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -1639,14 +1655,13 @@ class NotificationService:
                         # a failed print: there is nothing good on the plate to grade.
                         graded_archive_id = (extra_data or {}).get("archive_id")
                         if event_type == "print_complete" and graded_archive_id:
-                            buttons.append(
-                                [
-                                    InlineKeyboardButton(
-                                        text=f"\U0001f9ee {t(lang, NS, 'defects.btn_defects')}",
-                                        callback_data=f"action:defects:{int(graded_archive_id)}",
-                                    )
-                                ]
-                            )
+                            buttons.append(self._outcome_buttons(lang, extra_data))
+
+                # «Result not checked» reminder → the same pair, for the print it names.
+                # Asked of the chat exactly as the completion message's pair is.
+                if event_type == "print_outcome_unchecked" and (extra_data or {}).get("archive_id"):
+                    if tg_chat.has_permission("printers:clear_plate"):
+                        buttons.append(self._outcome_buttons(lang, extra_data))
 
                 # Print progress → pause/stop buttons
                 if event_type == "print_progress":
@@ -1688,6 +1703,57 @@ class NotificationService:
             return None
 
         return InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+
+    @staticmethod
+    def _outcome_buttons(lang: str, extra_data: dict | None) -> list:
+        """«Брак…» and «Без браку» for the one print a message is about.
+
+        «Брак…» opens the defects prompt; «Без браку» only marks the result as
+        checked (``telegram_handlers/defects``) — neither is a verdict of its own.
+        The second carries the start of the print's immutable identity when the
+        sender knows it: SQLite gives a deleted print's id to the next one.
+        """
+        from aiogram.types import InlineKeyboardButton
+
+        from backend.app.i18n import t
+
+        archive_id = int((extra_data or {})["archive_id"])
+        identity = str((extra_data or {}).get("archive_identity") or "")[:8]
+        return [
+            InlineKeyboardButton(
+                text=f"\U0001f9ee {t(lang, 'telegram_ui', 'defects.btn_defects')}",
+                callback_data=f"action:defects:{archive_id}",
+            ),
+            InlineKeyboardButton(
+                text=f"\u2705 {t(lang, 'telegram_ui', 'defects.btn_no_defects')}",
+                callback_data=f"defok:{archive_id}:{identity}",
+            ),
+        ]
+
+    @staticmethod
+    async def _with_archive_identity(event_type: str, extra_data: dict | None) -> dict | None:
+        """``extra_data`` with the identity of the print a completion / reminder message is about.
+
+        The reminder brings it; the completion message brings only the id, so it is
+        read here once per send. A missing print or a failed read leaves the data
+        as it was — the buttons then carry the id alone and no reaction is mapped.
+        """
+        if event_type not in ("print_complete", "print_outcome_unchecked"):
+            return extra_data
+        archive_id = (extra_data or {}).get("archive_id")
+        if not archive_id or (extra_data or {}).get("archive_identity"):
+            return extra_data
+        try:
+            from backend.app.core.database import async_session
+            from backend.app.models.archive import PrintArchive
+
+            async with async_session() as session:
+                identity = await session.scalar(
+                    select(PrintArchive.recovery_identity).where(PrintArchive.id == int(archive_id))
+                )
+        except Exception:  # noqa: BLE001 — the message goes out without it
+            return extra_data
+        return {**extra_data, "archive_identity": identity} if identity else extra_data
 
     async def _update_provider_status(
         self, db: AsyncSession, provider_id: int, success: bool, error: str | None = None
@@ -3122,6 +3188,51 @@ class NotificationService:
             providers, title, message, db, "pause_coming_up", printer_id, printer_name, variables=variables
         )
 
+    async def on_print_outcome_unchecked(self, reminder, db: AsyncSession):
+        """A completed print's result has not been checked (``archive_outcome.remind_due``).
+
+        Sent once per print, after the sweep has stamped and committed it. The link
+        opens the list of unchecked prints; opening it records nothing. In Telegram
+        the message carries «Брак…» and «Без браку» for that print.
+        """
+        providers = await self._get_providers_for_event(db, "on_print_outcome_unchecked", reminder.printer_id)
+        if not providers:
+            return
+
+        from backend.app.api.routes.settings import get_setting
+        from backend.app.core.timezones import server_timezone
+        from backend.app.models.printer import Printer
+
+        printer_name = ""
+        if reminder.printer_id is not None:
+            printer_name = await db.scalar(select(Printer.name).where(Printer.id == reminder.printer_id)) or ""
+        finished_at = ""
+        if reminder.completed_at is not None:
+            finished = reminder.completed_at
+            if finished.tzinfo is None:
+                finished = finished.replace(tzinfo=timezone.utc)
+            finished_at = finished.astimezone(server_timezone()).strftime("%Y-%m-%d %H:%M")
+        external_url = (await get_setting(db, "external_url") or "").strip().rstrip("/")
+        variables = {
+            "printer": printer_name or "-",
+            "filename": self._clean_filename(reminder.print_name or "Unknown"),
+            "finished_at": finished_at,
+            "archive_url": f"{external_url}/archives?outcome=unchecked" if external_url else "",
+        }
+
+        title, message = await self._build_message_from_template(db, "print_outcome_unchecked", variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message.rstrip(),
+            db,
+            "print_outcome_unchecked",
+            reminder.printer_id,
+            printer_name or None,
+            extra_data={"archive_id": reminder.archive_id, "archive_identity": reminder.identity},
+            variables=variables,
+        )
+
     def clear_template_cache(self):
         """Clear the template cache. Call this when templates are updated."""
         self._template_cache.clear()
@@ -3757,6 +3868,14 @@ class NotificationService:
                 await self.check_and_send_digests()
             except Exception as e:
                 logger.error("Error in digest scheduler: %s", e)
+            # The «result not checked» reminder rides this loop: one indexed
+            # query a minute, and nothing else when no print is due.
+            try:
+                from backend.app.services import archive_outcome
+
+                await archive_outcome.remind_due()
+            except Exception as e:
+                logger.error("Error in the unchecked-print reminder sweep: %s", e)
 
             # Wait until the next minute
             await asyncio.sleep(60)

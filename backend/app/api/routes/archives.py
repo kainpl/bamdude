@@ -28,6 +28,7 @@ from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.db_dialect import is_postgres
 from backend.app.core.permissions import Permission
+from backend.app.core.timezones import client_timezone, day_bounds
 from backend.app.core.websocket import ws_manager
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
@@ -35,6 +36,7 @@ from backend.app.models.product import ProductPart
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
 from backend.app.schemas.archive import (
+    HAND_SET_STATUSES,
     AppliedPatch,
     ArchiveFilterOptions,
     ArchiveResponse,
@@ -46,7 +48,7 @@ from backend.app.schemas.archive import (
 from backend.app.schemas.plate_objects import PlateObjectsResponse
 from backend.app.schemas.project import StockMovedOut
 from backend.app.schemas.swap_declaration import SwapDeclarationRequest, SwapRefreshRequest
-from backend.app.services import meter_watch, part_stock, swap_compatibility
+from backend.app.services import archive_outcome, meter_watch, part_stock, swap_compatibility
 from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.archive_defects import DefectsWrite, record_defects
 from backend.app.services.archive_write_scope import archive_write_scope, locked_print
@@ -175,9 +177,13 @@ def archive_to_response(
     duplicate_sequence: int = 0,
     original_archive_id: int | None = None,
     part_rows: list[PrintArchivePart] | None = None,
+    cost_is_full_print: bool = False,
+    stock_not_followed: bool = False,
 ) -> dict:
     """Convert archive model to response dict with computed fields."""
     data = {
+        "cost_is_full_print": cost_is_full_print,
+        "stock_not_followed": stock_not_followed,
         "id": archive.id,
         "printer_id": archive.printer_id,
         "project_id": archive.project_id,
@@ -258,6 +264,8 @@ def archive_to_response(
         "energy_kwh": archive.energy_kwh,
         "energy_cost": archive.energy_cost,
         **meter_watch.energy_wire_fields(archive.extra_data, archive.energy_kwh),
+        "outcome_checked_at": archive.outcome_checked_at,
+        "outcome_unchecked": archive_outcome.is_unchecked(archive),
         "wear_cost": archive.wear_cost,
         "wear_rate": archive.wear_rate,
         # The declaration through its reader: a legacy False and a malformed
@@ -280,6 +288,38 @@ def archive_to_response(
     data["time_accuracy"] = archive.time_accuracy
 
     return data
+
+
+#: A print in one of these states has no "what it used" yet (running) or used all of it (done).
+_FULL_FIGURE_NEVER = frozenset({"completed", "printing"})
+
+
+async def _unmeasured_unfinished(db: AsyncSession, archives: list[PrintArchive]) -> set[int]:
+    """The archives whose cost is the whole plate's, not this run's.
+
+    A print that failed or was cancelled is re-priced at completion from what
+    its spools actually gave (``usage_tracker``) — when that was measured. With
+    no usage row in either ledger (no inventory spool on the slots, a start that
+    never reached the printer) the row keeps the figure written at its start:
+    one full print of the plate. The card says so instead of showing it as what
+    the run cost. Two queries per page, none when the page holds no candidate.
+    """
+    candidates = [a.id for a in archives if a.status not in _FULL_FIGURE_NEVER and a.cost is not None]
+    if not candidates:
+        return set()
+    from backend.app.models.spool_usage_history import SpoolUsageHistory
+    from backend.app.services import spoolman_usage_history
+
+    measured: set[int] = set(
+        (
+            await db.execute(
+                select(SpoolUsageHistory.archive_id).where(SpoolUsageHistory.archive_id.in_(candidates)).distinct()
+            )
+        ).scalars()
+    )
+    # The Spoolman ledger is asked through its own module (its readers are a closed list).
+    measured |= await spoolman_usage_history.archives_with_usage(db, candidates)
+    return set(candidates) - measured
 
 
 @router.get("/last-by-printer")
@@ -344,6 +384,7 @@ async def last_print_by_printer(
 
 @router.get("/", response_model=PaginatedArchiveResponse)
 async def list_archives(
+    request: Request,
     printer_id: int | None = None,
     project_id: int | None = None,
     library_file_id: int | None = Query(None, description="Only prints dispatched from this library file"),
@@ -359,6 +400,7 @@ async def list_archives(
     hide_duplicates: bool = Query(False),
     tag: str | None = Query(None),
     kind: str | None = Query(None, description="'calibration' or 'regular' — filters by PrintArchive.is_calibration"),
+    outcome: str | None = Query(None, description="'unchecked' — completed prints whose result nobody has checked yet"),
     sort_by: str = Query(
         "date-desc",
         description=(
@@ -408,6 +450,8 @@ async def list_archives(
         limit=None if all else per_page,
         offset=offset,
         visible_to_user_id=visible_to_user_id,
+        tz=client_timezone(request),
+        outcome=outcome,
     )
 
     # Get sets of duplicate hashes and duplicate (name, hash) pairs (efficient single queries).
@@ -491,6 +535,8 @@ async def list_archives(
 
     # Build response with duplicate sequence and original archive ID pre-computed
     data = []
+    full_figures = await _unmeasured_unfinished(db, archives)
+
     for a in archives:
         a_eff = _eff(a)
         has_hash_dup = a_eff in duplicate_hashes if a_eff else False
@@ -511,6 +557,7 @@ async def list_archives(
                 duplicate_count=duplicate_count,
                 duplicate_sequence=duplicate_sequence,
                 original_archive_id=original_archive_id,
+                cost_is_full_print=a.id in full_figures,
             )
         )
 
@@ -842,8 +889,33 @@ async def compare_archives(
         raise HTTPException(400, str(e))
 
 
+def _export_bound(raw: str, tz, *, end: bool, name: str) -> datetime:
+    """One end of the export's range as naive UTC — what ``created_at`` holds.
+
+    A bare date is a CALENDAR DAY in the caller's zone, and as ``date_to`` it
+    means the whole of that day: read as midnight it excluded the very day that
+    was asked for. The service compares the end with ``<=``, so the day's end is
+    the last microsecond before the next one starts. A full timestamp is an
+    instant: with an offset it is converted to UTC, without one it is taken as
+    UTC, as it always was.
+    """
+    text = raw.strip()
+    try:
+        if len(text) == 10:
+            start, next_start = day_bounds(date.fromisoformat(text), tz)
+            moment = next_start - timedelta(microseconds=1) if end else start
+        else:
+            moment = datetime.fromisoformat(text)
+        if moment.tzinfo is not None:
+            moment = moment.astimezone(timezone.utc).replace(tzinfo=None)
+    except (ValueError, OverflowError):
+        raise HTTPException(400, f"Invalid {name} format") from None
+    return moment
+
+
 @router.get("/export")
 async def export_archives(
+    request: Request,
     format: str = Query("csv", description="Export format: csv or xlsx"),
     fields: str | None = Query(None, description="Comma-separated field names"),
     printer_id: int | None = None,
@@ -864,8 +936,6 @@ async def export_archives(
 
     Returns a downloadable file with archive data.
     """
-    from datetime import datetime
-
     from fastapi.responses import StreamingResponse
 
     from backend.app.services.export import ExportService
@@ -881,19 +951,10 @@ async def export_archives(
     if fields:
         field_list = [f.strip() for f in fields.split(",")]
 
-    # Parse dates
-    date_from_dt = None
-    date_to_dt = None
-    if date_from:
-        try:
-            date_from_dt = datetime.fromisoformat(date_from)
-        except ValueError:
-            raise HTTPException(400, "Invalid date_from format")
-    if date_to:
-        try:
-            date_to_dt = datetime.fromisoformat(date_to)
-        except ValueError:
-            raise HTTPException(400, "Invalid date_to format")
+    # Parse dates: calendar days in the caller's zone, the end day included.
+    tz = client_timezone(request)
+    date_from_dt = _export_bound(date_from, tz, end=False, name="date_from") if date_from else None
+    date_to_dt = _export_bound(date_to, tz, end=True, name="date_to") if date_to else None
 
     service = ExportService(db)
     try:
@@ -1123,7 +1184,12 @@ async def get_archive(
         .all()
     )
 
-    return archive_to_response(archive, duplicates, part_rows=part_rows)
+    return archive_to_response(
+        archive,
+        duplicates,
+        part_rows=part_rows,
+        cost_is_full_print=bool(await _unmeasured_unfinished(db, [archive])),
+    )
 
 
 @router.get("/{archive_id}/similar")
@@ -1403,6 +1469,19 @@ async def _update_archive_locked(
     # closed order is a new link too. Taking the print out of an order is C1's, below.
     # Everything here is asked before the first write: a mixed request is atomic.
     fields = update_data.model_fields_set
+    # The printer is a fact of the run (one archive = one physical print): a body may repeat
+    # it, never change it.
+    if "printer_id" in fields and update_data.printer_id != archive.printer_id:
+        raise HTTPException(422, "The printer of a print cannot be changed")
+    # A status is changed by hand only between the terminal ones. ``printing`` belongs to the
+    # live print: set by hand it is closed again as a missed print at the next reconnect, and
+    # a running print closed by hand is refused its own real end.
+    status_before = archive.status
+    if "status" in fields and update_data.status != status_before:
+        if status_before == "printing":
+            raise HTTPException(409, "This print is still running — its status follows the printer")
+        if update_data.status not in HAND_SET_STATUSES:
+            raise HTTPException(422, "A print cannot be set to printing by hand")
     if ("project_id" in fields and update_data.project_id != archive.project_id) or (
         "project_line_id" in fields and update_data.project_line_id != archive.project_line_id
     ):
@@ -1491,7 +1570,7 @@ async def _update_archive_locked(
     # (services/archive_defects), not columns to setattr — the writer clamps,
     # sums the rows and tells the shelf.
     for field, value in update_data.model_dump(
-        exclude_unset=True, exclude={"parts_defective", "defective_count"}
+        exclude_unset=True, exclude={"parts_defective", "defective_count", "printer_id"}
     ).items():
         setattr(archive, field, value)
 
@@ -1534,6 +1613,26 @@ async def _update_archive_locked(
             actor_id=user.id if user else None,
         )
 
+    # The shelf follows a status set by hand: an order-less print's free-stock credit belongs
+    # to ``completed`` alone. After the defects above, so a print that becomes ``completed``
+    # is credited as ``printed − defective``; a refusal (the stock was already spent) never
+    # refuses the edit — the archive is the print history — as with late defects.
+    stock_not_followed = False
+    if archive.status != status_before:
+        followed = await part_stock.follow_status_change(
+            db, archive, status_before=status_before, created_by=user.id if user else None
+        )
+        if followed.refused:
+            stock_not_followed = True
+            logger.warning(
+                "archive %s: status %s -> %s, but the shelf could not follow on part(s) %s — already spent; "
+                "correct by hand from the product page",
+                archive.id,
+                status_before,
+                archive.status,
+                ", ".join(str(p) for p in followed.refused),
+            )
+
     if filed_under_order:
         try:
             # A token, not a sentence naming the order (Ruling 17): the note is
@@ -1574,11 +1673,90 @@ async def _update_archive_locked(
     )
     archive = result.scalar_one_or_none()
 
-    return archive_to_response(archive)
+    return archive_to_response(archive, stock_not_followed=stock_not_followed)
 
 
 _archives_read_all = require_permission(Permission.ARCHIVES_READ_ALL)
 _archives_read_own = require_permission(Permission.ARCHIVES_READ_OWN)
+_archives_reprint_all = require_permission(Permission.ARCHIVES_REPRINT_ALL)
+_archives_reprint_own = require_permission(Permission.ARCHIVES_REPRINT_OWN)
+
+
+async def ensure_may_print_from_archive(
+    creds: RequestCredentials, archive: PrintArchive | None, user: User | None
+) -> PrintArchive:
+    """New print work made FROM an archive asks what Reprint asks, at every door.
+
+    Queueing an archive and re-slicing one produce work that prints as the
+    caller's, so reading the archive is not enough: the caller must see it
+    (``archives:read_all``, or their own — otherwise the same 404 as a missing
+    or trashed one) AND hold the reprint right for it (``archives:reprint_all``,
+    or ``archives:reprint_own`` on their own print — 403). Both are asked of the
+    request's own credentials, so an API key answers for its scope and its
+    owner; a key has no print of "its own" and needs the ALL right, as the
+    ownership gate of ``POST /archives/{id}/reprint`` asks of it.
+    """
+    reads_all = await creds.allows(_archives_read_all)
+    if not reads_all and not await creds.allows(_archives_read_own):
+        raise HTTPException(404, "Archive not found")
+    archive = _ensure_archive_visible(archive, user, reads_all)
+    if await creds.allows(_archives_reprint_all):
+        return archive
+    owns = user is not None and archive.created_by_id is not None and archive.created_by_id == user.id
+    if owns and await creds.allows(_archives_reprint_own):
+        return archive
+    raise HTTPException(403, "You do not have permission to print from this archive")
+
+
+@router.post("/{archive_id}/outcome-checked", response_model=ArchiveResponse)
+async def mark_archive_outcome_checked(
+    archive_id: int,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.ARCHIVES_UPDATE_ALL,
+            Permission.ARCHIVES_UPDATE_OWN,
+        )
+    ),
+):
+    """«Checked, no defects»: somebody looked at what this print produced.
+
+    Not a verdict and not a defects write — the defect count stays what it is; this
+    only takes the print out of «not checked yet». Asks what recording defects
+    through ``PATCH /archives/{id}`` asks (the archive's update right, own or all).
+    A print in the trash or a missing one is 404; one that is not ``completed`` has
+    no result to check (409). Marking twice is not an error: the first mark stands.
+    """
+    from sqlalchemy.orm import selectinload
+
+    user, can_modify_all = auth_result
+    async with archive_write_scope(db, archive_id):
+        archive = await locked_print(
+            db,
+            archive_id,
+            select(PrintArchive)
+            .options(selectinload(PrintArchive.project), selectinload(PrintArchive.created_by))
+            .where(PrintArchive.id == archive_id)
+            .with_for_update()
+            .execution_options(populate_existing=True),
+        )
+        if not archive or archive.deleted_at is not None:
+            raise HTTPException(404, "Archive not found")
+        if not can_modify_all and (user is None or archive.created_by_id != user.id):
+            raise HTTPException(403, "You can only update your own archives")
+        try:
+            await archive_outcome.mark_checked_explicitly(db, archive, by=user.id if user else None)
+        except archive_outcome.NotCheckable:
+            raise HTTPException(409, "Only a completed print can be marked as checked") from None
+        await db.commit()
+        archive = (
+            await db.execute(
+                select(PrintArchive)
+                .options(selectinload(PrintArchive.project), selectinload(PrintArchive.created_by))
+                .where(PrintArchive.id == archive_id)
+            )
+        ).scalar_one()
+        return archive_to_response(archive)
 
 
 @router.post("/{archive_id}/count-into-stock", response_model=list[StockMovedOut])
@@ -3504,6 +3682,16 @@ async def get_archive_plates(
     }
 
 
+def _file_has_plate_gcode(file_path: Path, plate_index: int) -> bool:
+    """Whether the 3MF holds sliced G-code for that plate — a reprint defaults to the
+    archive's own plate only when its file can print it. Anything unreadable is "no"."""
+    try:
+        with zipfile.ZipFile(file_path) as zf:
+            return any(_plate_index_from_gcode_name(name) == plate_index for name in zf.namelist())
+    except (OSError, zipfile.BadZipFile):
+        return False
+
+
 def _archive_has_gcode(file_path: Path) -> bool:
     """Quick boolean check — does the 3MF actually contain sliced gcode?
 
@@ -3900,6 +4088,12 @@ async def reprint_archive(
     refusal = await archive_source_refusal(archive.filename, file_path)
     if refusal is not None:
         raise HTTPException(400, refusal)
+
+    # No plate named: the plate this archive PRINTED, not the first one of its file. An
+    # archive is one print of one plate, and a library "all plates" file holds several.
+    if body.plate_id is None and archive.plate_index is not None:
+        if await asyncio.to_thread(_file_has_plate_gcode, file_path, archive.plate_index):
+            body = body.model_copy(update={"plate_id": archive.plate_index})
 
     plate_name = body.plate_name
     if not plate_name and body.plate_id is not None:
@@ -4551,13 +4745,13 @@ async def slice_archive(
 
     ingest_authority = await creds.capture()
     archive = await db.get(PrintArchive, archive_id)
-    # Per-row ownership gate (IDOR fix): LIBRARY_UPLOAD alone let a READ_OWN
-    # caller slice another user's archive by raw id even though GET on that id
-    # returned 404 — the sliced output was then attributed to and downloadable
-    # by the requester. API-key / auth-disabled callers (current_user is None)
-    # keep can_read_all=True — no per-row identity.
-    can_read_all = current_user is None or current_user.has_permission(Permission.ARCHIVES_READ_ALL.value)
-    archive = _ensure_archive_visible(archive, current_user, can_read_all)
+    # Per-row gate (IDOR fix): LIBRARY_UPLOAD alone let a READ_OWN caller slice
+    # another user's archive by raw id even though GET on that id returned 404 —
+    # the sliced output was then attributed to and printable by the requester.
+    # So the caller must see the archive AND hold the reprint right for it, both
+    # asked of the request's own credentials: an API key answers for its scope
+    # and its owner, never for more.
+    archive = await ensure_may_print_from_archive(creds, archive, current_user)
 
     src_relative = archive.source_3mf_path or archive.file_path
     if not src_relative:

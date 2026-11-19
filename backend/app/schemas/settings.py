@@ -263,6 +263,15 @@ class AppSettings(BaseModel):
         description="Minutes before a slicer pause at which the pause-coming-up event fires; 0 = never",
     )
 
+    # How long a completed print may stay unchecked before its one reminder (the
+    # ``print_outcome_unchecked`` event). 5 minutes to a week.
+    outcome_reminder_after_minutes: int = Field(
+        default=60,
+        ge=5,
+        le=10080,
+        description="Minutes a completed print may stay unchecked before the result-not-checked reminder is sent",
+    )
+
     # AMS threshold settings for humidity and temperature coloring
     ams_humidity_good: int = Field(default=40, description="Humidity threshold for good (green): <= this value")
     ams_humidity_fair: int = Field(
@@ -950,6 +959,7 @@ class AppSettingsUpdate(BaseModel):
     language: str | None = None
     bed_cooled_threshold: float | None = None
     pause_warning_minutes: int | None = Field(default=None, ge=0, le=120)
+    outcome_reminder_after_minutes: int | None = Field(default=None, ge=5, le=10080)
     ams_humidity_good: int | None = None
     ams_humidity_fair: int | None = None
     ams_temp_good: float | None = None

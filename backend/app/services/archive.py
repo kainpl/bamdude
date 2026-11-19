@@ -9,7 +9,7 @@ import shutil
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from itertools import count
 from pathlib import Path
 from uuid import uuid4
@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.core.config import settings
 from backend.app.core.tasks import spawn_background_task
+from backend.app.core.timezones import day_bounds, server_timezone
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
 from backend.app.services import swap_compatibility
@@ -45,6 +46,12 @@ from backend.app.utils.ffmpeg_output import NO_FFMPEG_OUTPUT, summarize_ffmpeg_s
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 
 logger = logging.getLogger(__name__)
+
+# What the list's «Failed» collection shows and «Hide failed» hides: every print
+# that ended without succeeding — the set the frontend's ``isFailureStatus``
+# (utils/archiveStatus.ts) paints red. A LIST filter only: the statistics keep
+# their own classes (``services/statistics/outcomes``) and are not widened here.
+LIST_FAILURE_STATUSES = ("failed", "aborted", "cancelled", "stopped")
 
 
 @dataclass
@@ -2008,6 +2015,11 @@ class ArchiveService:
                 )
             if failure_reason:
                 archive.failure_reason = failure_reason
+            elif status in ("completed", "printing"):
+                # Not a failure status: the reason of an earlier end of this row
+                # (a dispatch the watchdog failed before the printer ran it) is
+                # not this outcome's.
+                archive.failure_reason = None
             elif status == "failed" and not archive.failure_reason:
                 from backend.app.utils.failure_reasons import OTHER
 
@@ -2038,10 +2050,20 @@ class ArchiveService:
         limit: int | None = 50,
         offset: int = 0,
         visible_to_user_id: int | None = None,
+        tz: tzinfo | None = None,
+        outcome: str | None = None,
     ) -> tuple[list[PrintArchive], int]:
         """List archives with server-side filtering, sorting and pagination.
 
         Returns (items, total_count).
+
+        ``date_from`` / ``date_to`` are calendar days in ``tz`` (the caller's
+        zone; the server's when not given), the end day inclusive — the same
+        bounds the statistics and the export cut, so a day picked in the list
+        holds the prints the Stats page counts for it.
+
+        ``outcome="unchecked"`` keeps the completed prints nobody has looked at
+        yet (:func:`archive_outcome.unchecked_clause`).
 
         ``visible_to_user_id`` scopes the listing to a single owner — passed by
         the route when the caller holds ``archives:read_own`` but not
@@ -2070,12 +2092,17 @@ class ArchiveService:
             filters.append(PrintArchive.library_file_id == library_file_id)
 
         # Date range
+        day_tz = tz if tz is not None else server_timezone()
         if date_from:
-            dt_from = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
-            filters.append(PrintArchive.created_at >= dt_from)
+            filters.append(PrintArchive.created_at >= day_bounds(date_from, day_tz)[0])
         if date_to:
-            dt_to = datetime.combine(date_to, time.max, tzinfo=timezone.utc)
-            filters.append(PrintArchive.created_at <= dt_to)
+            # Exclusive start of the following day: the whole end day is in.
+            filters.append(PrintArchive.created_at < day_bounds(date_to, day_tz)[1])
+
+        if outcome == "unchecked":
+            from backend.app.services import archive_outcome
+
+            filters.append(archive_outcome.unchecked_clause())
 
         # Search (LIKE on print_name and filename)
         if search and search.strip():
@@ -2105,7 +2132,7 @@ class ArchiveService:
                 # failure subset.
                 filters.append(PrintArchive.status.in_(["completed", "failed", "aborted", "cancelled", "stopped"]))
             elif collection == "failed":
-                filters.append(PrintArchive.status.in_(["failed", "aborted", "cancelled"]))
+                filters.append(PrintArchive.status.in_(LIST_FAILURE_STATUSES))
             elif collection == "duplicates":
                 # Source files that appear more than once, keyed on the same
                 # effective_hash = COALESCE(source_content_hash, content_hash) —
@@ -2141,7 +2168,7 @@ class ArchiveService:
 
         # Hide failed (inverse of the Failed collection — keep the status sets in sync)
         if hide_failed:
-            filters.append(PrintArchive.status.notin_(["failed", "aborted", "cancelled"]))
+            filters.append(PrintArchive.status.notin_(LIST_FAILURE_STATUSES))
 
         # Tag filter (comma-separated field)
         if tag:

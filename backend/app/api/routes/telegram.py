@@ -145,6 +145,7 @@ EVENT_CATEGORIES = {
             "bed_cooled",
             "first_layer_complete",
             "pause_coming_up",
+            "print_outcome_unchecked",
         ],
     },
     "inventory": {
@@ -201,6 +202,7 @@ EVENT_LABELS = {
     "bed_cooled": "Bed cooled",
     "first_layer_complete": "First layer complete",
     "pause_coming_up": "Pause coming up",
+    "print_outcome_unchecked": "Print result not checked",
     "stock_break_alert": "Stock break risk",
     "stock_reorder_alert": "Stock reorder point",
     "queue_job_added": "Queue job added",

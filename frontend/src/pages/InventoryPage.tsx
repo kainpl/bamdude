@@ -1410,7 +1410,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
       showToast(t('inventory.spoolArchived'), 'success');
     },
     onError: (error: Error) => {
-      if (error instanceof ApiError && error.status === 404) {
+      if (error instanceof ApiError && error.status === 409) {
+        // The spool feeds a running print: the server's own sentence says so.
+        showToast(error.message || t('inventory.archiveFailed'), 'warning');
+      } else if (error instanceof ApiError && error.status === 404) {
         showToast(t('inventory.archiveSpoolNotFound'), 'error');
       } else if (error instanceof ApiError && error.status === 503) {
         showToast(t('inventory.spoolmanUnreachable'), 'error');
@@ -1496,7 +1499,11 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
             ? await api.bulkRestoreSpoolmanInventorySpools(ids)
             : await api.bulkDeleteSpoolmanInventorySpools(ids);
       const ok = res.archived ?? res.restored ?? res.deleted ?? 0;
-      return { ok, failed: res.errors?.length ?? 0, refused: 0 };
+      // An archive Spoolman never saw: the spool's slot feeds a running print (409).
+      // A refusal with a reason, not a failure — counted apart, as the built-in route reports it.
+      const refused =
+        kind === 'archive' ? (res.errors ?? []).filter((e) => e.status === 409).length : 0;
+      return { ok, failed: (res.errors?.length ?? 0) - refused, refused };
     }
     const res =
       kind === 'archive'
@@ -1517,9 +1524,16 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
       refreshSpoolQueries();
       const label = t(`inventory.bulk.action.${kind}`);
       if (refused > 0) {
-        // Used / in-use spools are never deleted: say how many stayed and why,
-        // and KEEP the selection so they can be archived in the next click.
-        showToast(t('inventory.bulk.deleteRefused', { ok, count: refused }), 'warning');
+        // Used / in-use spools are never deleted, and a spool feeding a running
+        // print is never archived: say how many stayed and why, and KEEP the
+        // selection so the rest can be handled in the next click.
+        showToast(
+          t(kind === 'archive' ? 'inventory.bulk.archiveRefused' : 'inventory.bulk.deleteRefused', {
+            ok,
+            count: refused,
+          }),
+          'warning',
+        );
         return;
       }
       if (ok > 0 && failed === 0) {

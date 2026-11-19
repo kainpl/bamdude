@@ -112,6 +112,30 @@ def build_filename_candidates(subtask_name: str | None, filename: str | None) ->
     return [x for x in names if not (x in seen or seen.add(x))]
 
 
+def _comparable(name: str) -> str:
+    """A card name as the printer may spell it: case and space/underscore folded."""
+    return name.strip().lower().replace(" ", "_")
+
+
+def _comparable_names(candidates: list[str]) -> frozenset[str]:
+    """The 3MF names a print's own file can have, ready for comparison."""
+    return frozenset(_comparable(c) for c in candidates if c.lower().endswith(".3mf"))
+
+
+def is_named_for_print(listed_name: str, wanted_names: frozenset[str]) -> bool:
+    """Whether a file of a printer's directory listing is THIS print's 3MF.
+
+    Only a whole-name match on one of the print's own name variants
+    (``X.3mf`` / ``X.gcode.3mf``, in the printer's case and with its underscores
+    for spaces) counts. A file that only contains the name belongs to another
+    print, and "the one file that contains it" is still a guess about bytes
+    that become this archive's thumbnail, weights and usage figures.
+    """
+    if not listed_name.lower().endswith(".3mf"):
+        return False
+    return _comparable(listed_name) in wanted_names
+
+
 async def try_download_3mf(
     printer: Printer,
     subtask_name: str | None,
@@ -146,8 +170,9 @@ async def _download_3mf(
     2. One single ``download_file_try_paths_async`` call — opens ONE FTP
        session, tries every remote path on that session, returns on first
        success.  No outer asyncio timeout kills the transfer mid-flight.
-    3. If that fails, dir-list + fuzzy-match fallback (for filenames the
-       printer renamed internally).
+    3. If that fails, dir-list + a whole-name match on the same candidates
+       in the printer's own spelling (case, underscores for spaces) — never
+       a substring of the name.
 
     Returns ``(temp_path, downloaded_filename)`` on success.  Caller
     cleans up the temp file.
@@ -220,11 +245,14 @@ async def _download_3mf(
     except Exception as e:
         logger.debug("download_first_path failed: %s", e)
 
-    # Stage 2: dir-list + fuzzy match.  Fires only if direct probes all
-    # missed — common case: printer renamed the file internally or it
-    # lives in an unexpected subdir.
-    search_term = (subtask_name or filename or "").lower().replace(".gcode", "").replace(".3mf", "")
-    if not search_term:
+    # Stage 2: dir-list + a match on the print's OWN name. Fires only if the
+    # direct probes all missed — the printer keeps the name in another case or
+    # with its own space/underscore spelling. Never a substring: a file that
+    # merely contains the name is another print's ("Cube_large.3mf" is not
+    # "Cube"'s file), and its bytes would be attached to this print's archive
+    # (upstream bb0bf03f6).
+    wanted_names = _comparable_names(candidates)
+    if not wanted_names:
         return await _try_internal_storage(printer, candidates, original_temp_dir)
     # ...but only when the printer answered. Stage 1 could not even connect —
     # refused, rejected, silent — so five directory listings, each a connect of
@@ -234,7 +262,6 @@ async def _download_3mf(
         return await _try_internal_storage(printer, candidates, original_temp_dir)
 
     search_dirs = ["/", "/cache", "/model", "/data", "/data/Metadata"]
-    search_normalized = search_term.replace(" ", "_")
     fallback_paths: list[tuple[str, str]] = []  # (full_remote, filename)
 
     for search_dir in search_dirs:
@@ -250,10 +277,7 @@ async def _download_3mf(
             if f.get("is_directory"):
                 continue
             fname = f.get("name", "")
-            if not fname.endswith(".3mf"):
-                continue
-            fname_normalized = fname.lower().replace(" ", "_")
-            if search_normalized not in fname_normalized:
+            if not is_named_for_print(fname, wanted_names):
                 continue
             full_remote = f"{search_dir}/{fname}" if search_dir != "/" else f"/{fname}"
             if full_remote in tried:

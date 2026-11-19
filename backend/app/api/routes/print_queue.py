@@ -664,6 +664,18 @@ async def list_queue(
     return enriched
 
 
+async def _ensure_may_queue_archives(
+    db: AsyncSession, creds: RequestCredentials, current_user: User | None, archive_ids: list[int | None]
+) -> None:
+    """A queue item made from an archive is a reprint of it: beside ``queue:create`` it asks
+    what ``POST /archives/{id}/reprint`` asks — the archive visible and not in the trash (404)
+    and the reprint right for it (403). A copy of a queue row reads no archive and asks nothing."""
+    from backend.app.api.routes.archives import ensure_may_print_from_archive
+
+    for archive_id in sorted({i for i in archive_ids if i is not None}):
+        await ensure_may_print_from_archive(creds, await db.get(PrintArchive, archive_id), current_user)
+
+
 @router.post("/", response_model=PrintQueueItemResponse)
 async def add_to_queue(
     data: PrintQueueItemCreate,
@@ -675,6 +687,7 @@ async def add_to_queue(
     too (``Fф``, WS-13 E13 O10); the order's own checks are the writer's."""
     if data.project_id is not None or data.project_line_id is not None:
         await ensure_may_file_future(creds)
+    await _ensure_may_queue_archives(db, creds, current_user, [data.archive_id])
     # Queue creation alone may append work, but moving it in front of someone
     # else's pending jobs is a reorder operation. API keys map both permissions
     # to their existing ``can_queue`` scope; a signed-in user is checked here.
@@ -738,6 +751,7 @@ async def add_next_block_to_queue(
         raise HTTPException(403, "Missing permission: queue:reorder")
     if any(item.project_id is not None or item.project_line_id is not None for item in data.items):
         await ensure_may_file_future(creds)
+    await _ensure_may_queue_archives(db, creds, current_user, [item.archive_id for item in data.items])
     items, _queue = await add_next_block_to_printer_queue(db, data.items, current_user, authority=await creds.capture())
     result = await db.execute(
         select(PrintQueueItem)
@@ -1488,8 +1502,9 @@ async def stop_queue_item(
     # Send the stop and mark the printer as user-stopped BEFORE the first
     # await, so that if the MQTT on_print_complete callback fires during the
     # db.commit() yield the "failed" status is read as "cancelled" (no spurious
-    # "print failed" notification). The row is cancelled whether or not the
-    # printer could be reached, so the mark stands either way.
+    # "print failed" notification). With no bound run the row is cancelled whether
+    # or not the printer could be reached, so the mark stands either way; a bound
+    # run is marked only when the stop really went out (see below).
     from backend.app.services.print_control import stop_print_by_user
     from backend.app.services.print_run_binding import current_print_run
 
@@ -1502,11 +1517,40 @@ async def stop_queue_item(
         and run.queue_item_id in (None, item.id)
     )
 
-    stop_sent = stop_print_by_user(printer_id, mark_when_unsent=True, unless_idle=False)
+    stop_sent = stop_print_by_user(printer_id, mark_when_unsent=not is_the_bound_run, unless_idle=False)
     if not stop_sent:
         logger.warning("stop_print returned False for printer %s - printer may not be connected", printer_id)
 
-    if stop_sent and is_the_bound_run:
+    if is_the_bound_run and not stop_sent:
+        # ⚠️ Nothing was stopped, so nothing is closed and nothing is marked. The print may well be running
+        # on a printer we merely cannot reach: closing the row and the archive here left its real finish
+        # refused (no ``printing`` row to accept), its filament unbooked, the archive "cancelled by user"
+        # for a print that completed, and the run bound until the operator cleared it. Without the mark a
+        # later real failure stays a failure and a real finish is a completed print. The print is closed by
+        # the printer's own report, or by reconciliation after a reconnect or restart. Only the operator's
+        # pause is taken (``is_paused`` -- never ``status``, which still says the printer is printing), so
+        # nothing is dispatched behind this print.
+        queue = await db.get(PrinterQueue, item.queue_id, populate_existing=True)
+        if queue is not None:
+            queue.is_paused = True
+        await db.commit()
+        logger.warning(
+            "Stop for printing queue item %s (archive %s) could not be sent; the print stays running, queue paused",
+            item_id,
+            item.archive_id,
+        )
+        raise HTTPException(
+            503,
+            detail={
+                "error": "stop_not_sent",
+                "message": (
+                    "The stop was not sent: the printer is not reachable. The print is still considered running "
+                    "and will be closed by the printer's own report or after it reconnects. The queue is paused."
+                ),
+            },
+        )
+
+    if is_the_bound_run:
         # ⚠️ The printer's own report ends this print, not this route. The completion handler accepts a bound
         # run's terminal only while its queue row is still ``printing`` -- it closes the row, the archive and
         # the queue in one transaction and books the filament. Cancelling the row here, a few seconds ahead
@@ -1529,8 +1573,8 @@ async def stop_queue_item(
                 logger.warning("Auto-off: Failed to schedule power-off for printer %s: %s", printer_id, e)
         return {"message": "Print stopped"}
 
-    # No bound run to report it (the job was still being sent or heated, or the printer could not be
-    # reached): the row is closed here.
+    # No bound run to report it (the job was still being sent or heated -- nothing on the printer owns
+    # it): the row is closed here, whether or not the stop could be sent.
     item.status = "cancelled"
     item.completed_at = datetime.now(timezone.utc)
     item.error_message = "Stopped by user" if stop_sent else "Stopped by user (printer was offline)"

@@ -34,6 +34,10 @@ print-complete paths share one answer.
 INTERNAL_JOB_NAMES = frozenset(
     {
         "auto_cali_for_user",
+        # A1, A1 mini, P1 and A2L report their built-in calibration under this
+        # bare name, as ``auto_cali_for_user_param.gcode`` with no ``/usr/`` path
+        # (upstream c9c13b644).
+        "auto_cali_for_user_param",
         "auto_pa_line_calib_mode",
         "pa_line_calib_mode",
         "pa_pattern_calib_mode",

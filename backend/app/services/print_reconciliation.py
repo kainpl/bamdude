@@ -364,6 +364,26 @@ def _archive_file_path(file_path: str) -> Path | None:
     return resolved
 
 
+def _live_failure_reason(printer_id: int | None) -> str | None:
+    """The failure-reason key the printer's present fault stack names, if any.
+
+    Asked only for a run the sweep closes as ``failed``: its file is still the
+    printer's loaded job and its state is FAILED, so the stack is that run's.
+    A read of memory — never a reason to fail the close.
+    """
+    if printer_id is None:
+        return None
+    try:
+        from backend.app.main import derive_failure_reason
+        from backend.app.services.printer_manager import printer_manager
+
+        state = printer_manager.get_status(printer_id)
+        errors = [{"attr": error.attr, "code": error.code} for error in (getattr(state, "hms_errors", None) or [])]
+        return derive_failure_reason("failed", errors)
+    except Exception:  # noqa: BLE001 — an unreadable stack is "no recognised fault"
+        return None
+
+
 async def _reconcile_complete_archive(
     db: AsyncSession,
     archive: PrintArchive,
@@ -476,13 +496,13 @@ async def _reconcile_complete_archive(
         # A key, not a sentence (upstream #2974): both cases observed the same
         # thing — no end-of-print status ever arrived — and ``status`` already
         # says whether it was reconciled as failed or as an uncertain cancel.
-        if (
-            status == "failed"
-            and not archive.failure_reason
-            or status == "cancelled"
-            and uncertain
-            and not archive.failure_reason
-        ):
+        if status == "failed" and not archive.failure_reason:
+            # The printer still shows this job FAILED, with the faults that ended
+            # it: name the failure as the live handler would have (upstream
+            # 1e30e3266). Only without a recognised fault is "no status update"
+            # all there is to say.
+            archive.failure_reason = _live_failure_reason(archive.printer_id) or NO_STATUS_UPDATE
+        elif status == "cancelled" and uncertain and not archive.failure_reason:
             archive.failure_reason = NO_STATUS_UPDATE
 
         estimates = analysis.slicer_estimates if analysis is not None else {}

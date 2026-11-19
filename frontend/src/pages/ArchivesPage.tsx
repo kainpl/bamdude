@@ -55,6 +55,8 @@ import {
   ChevronRight,
   Settings,
   User,
+  Eye,
+  CheckCircle2,
   Play,
   ArrowUpNarrowWide,
   ArrowDownWideNarrow,
@@ -73,6 +75,8 @@ import { api } from '../api/client';
 import { openInSlicer, type SlicerType } from '../utils/slicer';
 import { printerLabel, comparePrinterLike } from '../utils/printerLabel';
 import { getArchiveStatusBadge } from '../utils/archiveStatus';
+import { ArchiveOutcomeBadge } from '../components/ArchiveOutcomeBadge';
+import { useMarkOutcomeChecked } from '../hooks/useMarkOutcomeChecked';
 import { failureText } from '../utils/failureText';
 import { formatDateTime, formatDateOnly, type TimeFormat, type DateFormat, formatDuration } from '../utils/date';
 import { getCurrencySymbol } from '../utils/currency';
@@ -101,6 +105,7 @@ import { SwapDeclarationModal } from '../components/SwapDeclarationModal';
 import { BatchTagModal } from '../components/BatchTagModal';
 import { BatchAssignOrderModal } from '../components/projects/BatchAssignOrderModal';
 import { CalendarView } from '../components/CalendarView';
+import { computeDateRange, localToday } from '../utils/statsDateRange';
 import { ListViewToggle } from '../components/ListViewToggle';
 import { usePersistedState, parseArchivesView, type ArchivesView } from '../hooks/usePersistedState';
 import { QRCodeModal } from '../components/QRCodeModal';
@@ -426,6 +431,8 @@ function ArchiveCard({
     enabled: showDeleteConfirm,
   });
 
+  const outcomeCheckedMutation = useMarkOutcomeChecked(archive.id);
+
   const favoriteMutation = useMutation({
     mutationFn: () => api.toggleFavorite(archive.id),
     onSuccess: (data) => {
@@ -466,8 +473,8 @@ function ArchiveCard({
         label: t('archives.menu.schedule'),
         icon: <Calendar className="w-4 h-4" />,
         onClick: () => setShowSchedule(true),
-        disabled: !archive.file_path || !hasPermission('queue:create'),
-        title: !archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('queue:create') ? t('archives.permission.noAddToQueue') : undefined,
+        disabled: !archive.file_path || !hasPermission('queue:create') || !canModify('archives', 'reprint', archive.created_by_id),
+        title: !archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('queue:create') ? t('archives.permission.noAddToQueue') : !canModify('archives', 'reprint', archive.created_by_id) ? t('archives.permission.noReprint') : undefined,
       },
       {
         label: t('archives.menu.openInBambuStudio'),
@@ -517,8 +524,8 @@ function ArchiveCard({
         label: t('slice.actionServerSide', { defaultValue: 'Slice (server-side)' }),
         icon: <Cog className="w-4 h-4" />,
         onClick: () => setShowSlice(true),
-        disabled: !archive.file_path || !hasPermission('library:upload'),
-        title: !archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('library:upload') ? t('fileManager.noPermissionSlice', { defaultValue: 'You do not have permission to slice' }) : undefined,
+        disabled: !archive.file_path || !hasPermission('library:upload') || !canModify('archives', 'reprint', archive.created_by_id),
+        title: !archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('library:upload') ? t('fileManager.noPermissionSlice', { defaultValue: 'You do not have permission to slice' }) : !canModify('archives', 'reprint', archive.created_by_id) ? t('archives.permission.noReprint') : undefined,
       }] : []),
     ]),
     {
@@ -687,6 +694,14 @@ function ArchiveCard({
       disabled: !canModify('archives', 'update', archive.created_by_id),
       title: !canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : undefined,
     },
+    // «No defects» — only while the result waits for a look; defects themselves are in Edit.
+    ...(archive.outcome_unchecked ? [{
+      label: t('archives.outcome.noDefects'),
+      icon: <CheckCircle2 className="w-4 h-4" />,
+      onClick: () => outcomeCheckedMutation.mutate(),
+      disabled: !canModify('archives', 'update', archive.created_by_id) || outcomeCheckedMutation.isPending,
+      title: !canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : undefined,
+    }] : []),
     // The order's own page, not the list. It opened the list only because
     // there was no detail page worth landing on.
     ...(archive.project_id && archive.project_name && hasPermission('orders:read') ? [{
@@ -890,6 +905,7 @@ function ArchiveCard({
             </div>
           );
         })()}
+        <ArchiveOutcomeBadge unchecked={archive.outcome_unchecked} variant="card" />
         {/* Duplicate badge */}
         {archive.duplicate_count > 0 && duplicateSequence > 0 && originalArchiveId && (
           <button
@@ -1251,8 +1267,8 @@ function ArchiveCard({
                 size="sm"
                 className="flex-1 min-w-0 overflow-hidden"
                 onClick={() => setShowSchedule(true)}
-                disabled={!archive.file_path || !hasPermission('queue:create')}
-                title={!archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('queue:create') ? t('archives.permission.noAddToQueue') : t('archives.card.schedulePrint')}
+                disabled={!archive.file_path || !hasPermission('queue:create') || !canModify('archives', 'reprint', archive.created_by_id)}
+                title={!archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('queue:create') ? t('archives.permission.noAddToQueue') : !canModify('archives', 'reprint', archive.created_by_id) ? t('archives.permission.noReprint') : t('archives.card.schedulePrint')}
               >
                 <Calendar className="w-3 h-3 flex-shrink-0" />
                 <span className="hidden xl:inline truncate">{t('archives.card.schedule')}</span>
@@ -1377,6 +1393,7 @@ function ArchiveCard({
           mode="reprint"
           archiveId={archive.id}
           archiveName={archive.print_name || archive.filename}
+          preselectedPlateId={archive.plate_index}
           onClose={() => setShowReprint(false)}
         />
       )}
@@ -1606,6 +1623,7 @@ function ArchiveCard({
           mode="add-to-queue"
           archiveId={archive.id}
           archiveName={archive.print_name || archive.filename}
+          preselectedPlateId={archive.plate_index}
           onClose={() => setShowSchedule(false)}
         />
       )}
@@ -1673,6 +1691,8 @@ function ArchiveCostFigure({ archive, currency }: { archive: Archive; currency: 
   const { t } = useTranslation();
   if (archive.cost == null) return null;
   const amount = `${currency}${archive.cost.toFixed(2)}`;
+  // A print that did not finish and was never measured keeps one full print's figure.
+  if (archive.cost_is_full_print) return <span title={t('archives.costFullPrint')}>{amount}</span>;
   if (!archive.cost_is_estimate) return <span>{amount}</span>;
   return <span title={t('archives.costEstimate')}>~{amount}</span>;
 }
@@ -1902,6 +1922,8 @@ function ArchiveListRow({
     enabled: showDeleteConfirm,
   });
 
+  const outcomeCheckedMutation = useMarkOutcomeChecked(archive.id);
+
   const favoriteMutation = useMutation({
     mutationFn: () => api.toggleFavorite(archive.id),
     onSuccess: (data) => {
@@ -1930,8 +1952,8 @@ function ArchiveListRow({
         label: t('archives.menu.schedule'),
         icon: <Calendar className="w-4 h-4" />,
         onClick: () => setShowSchedule(true),
-        disabled: !archive.file_path || !hasPermission('queue:create'),
-        title: !archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('queue:create') ? t('archives.permission.noAddToQueue') : undefined,
+        disabled: !archive.file_path || !hasPermission('queue:create') || !canModify('archives', 'reprint', archive.created_by_id),
+        title: !archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('queue:create') ? t('archives.permission.noAddToQueue') : !canModify('archives', 'reprint', archive.created_by_id) ? t('archives.permission.noReprint') : undefined,
       },
       {
         label: t('archives.menu.openInBambuStudio'),
@@ -1981,8 +2003,8 @@ function ArchiveListRow({
         label: t('slice.actionServerSide', { defaultValue: 'Slice (server-side)' }),
         icon: <Cog className="w-4 h-4" />,
         onClick: () => setShowSlice(true),
-        disabled: !archive.file_path || !hasPermission('library:upload'),
-        title: !archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('library:upload') ? t('fileManager.noPermissionSlice', { defaultValue: 'You do not have permission to slice' }) : undefined,
+        disabled: !archive.file_path || !hasPermission('library:upload') || !canModify('archives', 'reprint', archive.created_by_id),
+        title: !archive.file_path ? t('archives.card.noFileForReprint') : !hasPermission('library:upload') ? t('fileManager.noPermissionSlice', { defaultValue: 'You do not have permission to slice' }) : !canModify('archives', 'reprint', archive.created_by_id) ? t('archives.permission.noReprint') : undefined,
       }] : []),
     ]),
     {
@@ -2151,6 +2173,14 @@ function ArchiveListRow({
       disabled: !canModify('archives', 'update', archive.created_by_id),
       title: !canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : undefined,
     },
+    // «No defects» — only while the result waits for a look; defects themselves are in Edit.
+    ...(archive.outcome_unchecked ? [{
+      label: t('archives.outcome.noDefects'),
+      icon: <CheckCircle2 className="w-4 h-4" />,
+      onClick: () => outcomeCheckedMutation.mutate(),
+      disabled: !canModify('archives', 'update', archive.created_by_id) || outcomeCheckedMutation.isPending,
+      title: !canModify('archives', 'update', archive.created_by_id) ? t('archives.permission.noUpdateArchives') : undefined,
+    }] : []),
     ...(archive.project_id && archive.project_name && hasPermission('orders:read') ? [{
       label: t('archives.menu.goToOrder', { name: archive.project_name }),
       icon: <FolderKanban className="w-4 h-4 text-bambu-green" />,
@@ -2272,6 +2302,7 @@ function ArchiveListRow({
                 </span>
               );
             })()}
+            <ArchiveOutcomeBadge unchecked={archive.outcome_unchecked} variant="row" />
             {archive.duplicate_count > 0 && duplicateSequence > 0 && originalArchiveId && (
               <button
                 onClick={(e) => {
@@ -2599,6 +2630,7 @@ function ArchiveListRow({
           mode="reprint"
           archiveId={archive.id}
           archiveName={archive.print_name || archive.filename}
+          preselectedPlateId={archive.plate_index}
           onClose={() => setShowReprint(false)}
         />
       )}
@@ -2816,6 +2848,7 @@ function ArchiveListRow({
           mode="add-to-queue"
           archiveId={archive.id}
           archiveName={archive.print_name || archive.filename}
+          preselectedPlateId={archive.plate_index}
           onClose={() => setShowSchedule(false)}
         />
       )}
@@ -2948,6 +2981,19 @@ export function ArchivesPage() {
   const [hideFailed, setHideFailed] = useState(() =>
     localStorage.getItem('archiveHideFailed') === 'true'
   );
+  // «Unchecked»: completed prints whose result nobody has looked at. The server
+  // filters; the state lives in the URL (`?outcome=unchecked`) and nowhere else,
+  // so the reminder's link opens exactly this list and a plain visit does not.
+  const filterUnchecked = searchParams.get('outcome') === 'unchecked';
+  const setFilterUnchecked = (on: boolean) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (on) next.set('outcome', 'unchecked');
+      else next.delete('outcome');
+      return next;
+    }, { replace: true });
+    setPage(1);
+  };
   const [hideDuplicates, setHideDuplicates] = useState(() =>
     localStorage.getItem('archiveHideDuplicates') === 'true'
   );
@@ -3097,6 +3143,7 @@ export function ArchivesPage() {
     hide_duplicates: hideDuplicates || undefined,
     tag: filterTag || undefined,
     kind: filterKind !== 'all' ? filterKind : undefined,
+    outcome: filterUnchecked ? 'unchecked' : undefined,
     sort_by: sortBy,
   };
 
@@ -3146,13 +3193,11 @@ export function ArchivesPage() {
     staleTime: 60_000,
   });
 
-  // Calendar: fetch last 30 days (separate lightweight query)
-  const calendarDateFrom = useMemo(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 29);
-    return d.toISOString().split('T')[0];
-  }, []);
-  const calendarDateTo = useMemo(() => new Date().toISOString().split('T')[0], []);
+  // Calendar: fetch last 30 days (separate lightweight query). LOCAL days — the
+  // server cuts them in this browser's zone, so a UTC date left today's cell
+  // empty for the first hours after midnight east of UTC.
+  const calendarDateFrom = useMemo(() => computeDateRange('last-30').dateFrom, []);
+  const calendarDateTo = useMemo(() => localToday(), []);
 
   const { data: calendarAggregate } = useQuery({
     queryKey: ['archives-calendar', calendarDateFrom, calendarDateTo],
@@ -3299,6 +3344,10 @@ export function ArchivesPage() {
   const canFileSelection = Array.from(selectedIds).every((id) =>
     canFileArchive(hasPermission, canModify, archives?.find((a) => a.id === id)?.created_by_id ?? null),
   );
+  // The selected prints on this page that still wait for somebody to check the result.
+  const uncheckedSelection = (archives ?? [])
+    .filter((a) => selectedIds.has(a.id) && a.outcome_unchecked && canModify('archives', 'update', a.created_by_id))
+    .map((a) => a.id);
   const fileSelectionTitle = canFileSelection
     ? undefined
     : !hasPermission('orders:update')
@@ -3371,10 +3420,11 @@ export function ArchivesPage() {
     setFilterTag(null);
     setFilterKind('all');
     clearLibraryFileFilter();
+    setFilterUnchecked(false);
     setPage(1);
   };
 
-  const hasTopFilters = search || filterPrinter || filterLibraryFile || filterMaterial || filterFavorites || hideFailed || hideDuplicates || filterTag || filterKind !== 'all';
+  const hasTopFilters = search || filterPrinter || filterLibraryFile || filterMaterial || filterFavorites || hideFailed || hideDuplicates || filterUnchecked || filterTag || filterKind !== 'all';
 
   // Keyboard shortcuts. Archive uploads were removed in 0.4.2 (Audit-1):
   // archives are now strictly the print history of record — drag-drop +
@@ -3473,6 +3523,30 @@ export function ArchivesPage() {
           >
             <Star className="w-4 h-4" />
             {t('archives.page.favorite')}
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={uncheckedSelection.length === 0 || !hasAnyPermission('archives:update_own', 'archives:update_all')}
+            title={
+              !hasAnyPermission('archives:update_own', 'archives:update_all')
+                ? t('archives.permission.noUpdateArchives')
+                : uncheckedSelection.length === 0
+                  ? t('archives.outcome.noneUncheckedSelected')
+                  : undefined
+            }
+            onClick={() => {
+              // Only the selected prints that still wait for a look; the rest have nothing to mark.
+              Promise.allSettled(uncheckedSelection.map((id) => api.markArchiveOutcomeChecked(id))).then((results) => {
+                const done = results.filter((r) => r.status === 'fulfilled').length;
+                queryClient.invalidateQueries({ queryKey: ['archives'] });
+                if (done > 0) showToast(t('archives.outcome.markedCount', { count: done }));
+                if (done < results.length) showToast(t('archives.outcome.markFailed'), 'error');
+              });
+            }}
+          >
+            <CheckCircle2 className="w-4 h-4" />
+            {t('archives.outcome.noDefects')}
           </Button>
           <Button
             size="sm"
@@ -3724,6 +3798,19 @@ export function ArchivesPage() {
                 <span className="text-sm hidden md:inline">{t('archives.page.hideFailed')}</span>
               </button>
             )}
+            <button
+              onClick={() => setFilterUnchecked(!filterUnchecked)}
+              aria-pressed={filterUnchecked}
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-colors flex-shrink-0 ${
+                filterUnchecked
+                  ? 'bg-amber-100 dark:bg-amber-500/20 border-amber-500 text-amber-700 dark:text-amber-400'
+                  : 'bg-bambu-dark border-bambu-dark-tertiary text-bambu-gray hover:text-white'
+              }`}
+              title={filterUnchecked ? t('archives.outcome.filterShowAll') : t('archives.outcome.filterShow')}
+            >
+              <Eye className="w-4 h-4" />
+              <span className="text-sm hidden md:inline">{t('archives.outcome.filter')}</span>
+            </button>
             {collection !== 'duplicates' && (
               <button
                 onClick={() => { setHideDuplicates(!hideDuplicates); setPage(1); }}

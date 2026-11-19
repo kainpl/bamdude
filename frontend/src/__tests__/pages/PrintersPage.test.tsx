@@ -41,7 +41,6 @@ const mockPrinters = [
       { id: 1, name: 'Phase 1', color: '#f59e0b' },
       { id: 2, name: 'Phase 2', color: null },
     ],
-    auto_archive: true,
     created_at: '2024-01-01T00:00:00Z',
     updated_at: '2024-01-01T00:00:00Z',
   },
@@ -57,7 +56,6 @@ const mockPrinters = [
     nozzle_type: 'stainless_steel',
     location: null,
     tags: [],
-    auto_archive: true,
     created_at: '2024-01-02T00:00:00Z',
     updated_at: '2024-01-02T00:00:00Z',
   },
@@ -76,7 +74,6 @@ const mockPrinters = [
     nozzle_type: 'stainless_steel',
     location: null,
     tags: [{ id: 1, name: 'Phase 1', color: '#f59e0b' }],
-    auto_archive: true,
     created_at: '2024-01-03T00:00:00Z',
     updated_at: '2024-01-03T00:00:00Z',
   },
@@ -1228,7 +1225,6 @@ describe('PrintersPage', () => {
         http.get('/api/v1/settings/', () => {
           return HttpResponse.json({
             check_printer_firmware: true,
-            auto_archive: true,
             save_thumbnails: true,
           });
         })
@@ -1253,7 +1249,6 @@ describe('PrintersPage', () => {
         http.get('/api/v1/settings/', () => {
           return HttpResponse.json({
             check_printer_firmware: true,
-            auto_archive: true,
             save_thumbnails: true,
           });
         })
@@ -1275,7 +1270,6 @@ describe('PrintersPage', () => {
         http.get('/api/v1/settings/', () => {
           return HttpResponse.json({
             check_printer_firmware: false,
-            auto_archive: true,
             save_thumbnails: true,
           });
         })
@@ -1309,7 +1303,6 @@ describe('PrintersPage', () => {
         http.get('/api/v1/settings/', () => {
           return HttpResponse.json({
             check_printer_firmware: true,
-            auto_archive: true,
             save_thumbnails: true,
           });
         })

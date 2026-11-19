@@ -187,6 +187,14 @@ DEFAULT_TEMPLATES = [
         "body_template": "{printer}: {filename}\nPause at layer {layer}/{total_layers}, {time_to_pause}",
     },
     {
+        "event_type": "print_outcome_unchecked",
+        "name": "Print Result Not Checked",
+        "title_template": "Print Result Not Checked",
+        "body_template": (
+            "{printer}: {filename}\nFinished {finished_at}. Nobody has checked the result yet.\n{archive_url}"
+        ),
+    },
+    {
         "event_type": "test",
         "name": "Test Notification",
         "title_template": "BamDude Test",

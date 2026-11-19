@@ -16,7 +16,10 @@ Telegram prompt), so the rules live here once:
   next morning would otherwise leave the shelf holding parts that are in the
   bin — see :func:`part_stock.adjust_unfiled_print`. A refusal there (the parts
   were already spent) never refuses the defects: the archive is the print
-  history and must say what came out bad; the shelf is corrected by hand.
+  history and must say what came out bad; the shelf is corrected by hand;
+* **the result counts as checked**: whoever records defects — an explicit zero
+  too — has looked at the plate, so every door marks the print through
+  ``archive_outcome.mark_checked`` (first mark wins).
 
 Flushes; the caller commits, by its router's convention.
 """
@@ -30,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
-from backend.app.services import part_stock
+from backend.app.services import archive_outcome, part_stock
 from backend.app.services.archive_parts import load_rows
 
 logger = logging.getLogger(__name__)
@@ -71,6 +74,7 @@ async def record_defects(
     elif write.flat is not None:
         archive.defective_count = max(0, min(int(write.flat), int(archive.quantity or 0)))
     await db.flush()
+    await archive_outcome.mark_checked(db, archive, by=actor_id)
 
     # The order journal (spec workshop-order-stage, rule 17) — from here, the one
     # writer of defects, so every door that records them is journaled alike.

@@ -25,7 +25,6 @@ const mockPrinters = [
     nozzle_diameter: 0.4,
     nozzle_type: 'hardened_steel',
     location: 'Workshop',
-    auto_archive: true,
     created_at: '2024-01-01T00:00:00Z',
     updated_at: '2024-01-01T00:00:00Z',
   },

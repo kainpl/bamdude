@@ -450,12 +450,14 @@ async def recalculate_all_costs(
 
     # Pre-fetch all usage costs and tracked weight by archive_id. Tracked
     # weight tops up the cost at the default rate for any filament grams not
-    # covered by an inventory spool (#1344).
+    # covered by an inventory spool (#1344). Only PRICED rows are "tracked": a
+    # row booked with no spool price and no farm rate has a NULL cost, and its
+    # grams counted as covered were charged nothing at all (upstream 95ea683b).
     usage_costs_result = await db.execute(
         select(
             SpoolUsageHistory.archive_id,
             func.sum(SpoolUsageHistory.cost),
-            func.sum(SpoolUsageHistory.weight_used),
+            func.sum(case((SpoolUsageHistory.cost.is_not(None), SpoolUsageHistory.weight_used), else_=0)),
         )
         .where(SpoolUsageHistory.print_contribution_filter())
         .group_by(SpoolUsageHistory.archive_id)

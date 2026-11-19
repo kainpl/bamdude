@@ -44,9 +44,10 @@ def stop_print_by_user(printer_id: int, *, mark_when_unsent: bool = False, unles
 
     ``unless_idle`` (default) leaves no mark on a printer that reports no print
     loaded -- that stop stops nothing, and its mark would wait for some later
-    print's failure. ``mark_when_unsent`` is the queue's Stop: its row is
-    cancelled whether or not the printer could be reached, so the mark stands
-    either way.
+    print's failure. ``mark_when_unsent`` is the queue's Stop of a job no run
+    is bound for (still being sent or heated): its row is cancelled whether or
+    not the printer could be reached, so the mark stands either way. A bound
+    run whose stop could not be sent is not stopped and gets no mark.
     """
     try:
         sent = bool(printer_manager.stop_print(printer_id))

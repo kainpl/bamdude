@@ -204,7 +204,12 @@
     "context": "🖨 {printer}\nPrint: {print_name}\nRun #{archive_id}",
     "reply_placeholder": "Reply with a number",
     "reply_to_prompt": "Reply directly to the number request so the result reaches the right print.",
-    "stale_prompt": "That defect prompt is no longer active."
+    "stale_prompt": "That defect prompt is no longer active.",
+    "btn_no_defects": "No defects",
+    "checked_by": "✅ Checked, no defects — {who}",
+    "checked": "Marked as checked, no defects",
+    "checked_already": "This print's result was already checked",
+    "not_completed": "Only a completed print can be marked as checked"
   },
   "queue_add": {
     "title": "Add to Queue",

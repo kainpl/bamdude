@@ -28,7 +28,6 @@ const printer = {
   is_active: true,
   archived: false,
   archived_at: null,
-  auto_archive: true,
   cleanup_after_print: false,
   mqtt_connection_timeout: 0,
   external_camera_url: null,
