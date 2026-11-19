@@ -14,7 +14,13 @@ An edit is now a JOB:
   (``archive_media.primary_token``) and the edit's numbers are captured when the
   job is made. One edit at a time per video version — a second one is refused
   (409), it does not become a second writer.
-* **One encoder at a time**, in admission order; the rest wait, up to
+* **It encodes the file it was admitted for.** The video is pinned into the
+  job's own directory when the place is taken — a hard link where the volume
+  allows it, a copy otherwise — and checked against what the archive showed at
+  that moment (:func:`_pin_source`). ffmpeg reads the pin, so another video put
+  under the same name, size and time later cannot become this edit's result.
+* **One encoder at a time** for the whole process, shared with the layer
+  stitch (``encoder_slot``), first come first served; the rest wait, up to
   :data:`MAX_JOBS`. Each ffmpeg is a child ``media_child`` owns: bounded, killed
   and reaped on cancel, on the time limits, on lost authority and on a restore.
 * **Watched** while it runs (``live_authority``): a revoked session or key, a
@@ -28,6 +34,11 @@ An edit is now a JOB:
 * **100 % means published.** Progress follows ffmpeg's own ``-progress`` output
   and stops short of the end; the job reads ``done`` only after the process was
   reaped, its output probed and the publication committed.
+* **A cancel is either honoured or refused, never both.** It is accepted up
+  to the last moment the publication can still be stopped — the seam asks the
+  job once more under its own locks, immediately before the bytes take their
+  name (``may_run``) — and an accepted cancel leaves the archive as it was. From
+  that moment (:attr:`EditJob.no_return`) a cancel is answered "too late".
 * **Cancelled only when it has stopped**: the job reads ``cancelled`` after the
   child was reaped and its files removed. A child whose end was not seen leaves
   the job ``failed`` / ``process_unreaped`` with its output untouched, and a
@@ -62,6 +73,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from backend.app.services import media_child
+from backend.app.services.encoder_slot import encoder_slot
 from backend.app.services.live_authority import live_authority
 from backend.app.services.media_downloads import JobScope, same_credential, same_user
 from backend.app.services.timelapse_processor import (
@@ -187,6 +199,13 @@ class EditJob:
     duration: float
     request: EditRequest
     output_name: str
+    #: ``(st_dev, st_ino, st_size, st_mtime_ns)`` of the video when the archive was read at admission.
+    source_identity: tuple | None = None
+    #: The admitted video, pinned in the job's directory: what the encoder reads.
+    pinned: Path | None = None
+    #: The publication can no longer be stopped: a cancel from here is "too late".
+    no_return: bool = False
+    slot: Any = field(default=None, repr=False)
     directory: Path | None = None
     audio: Path | None = None
     phase: str = PHASE_QUEUED
@@ -327,6 +346,47 @@ def _staging_place(job: EditJob) -> Path:
     return job.directory / "output.mp4" if same_volume else job.source.with_name(staged_name(job.job_id))
 
 
+def _identity(info: os.stat_result) -> tuple:
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+
+def _pin_source(job: EditJob) -> Path:
+    """Pin the admitted video into the job's directory and prove it is the admitted one. Worker thread.
+
+    A hard link names the very file the archive showed: whatever is put under
+    the video's name afterwards is another file, and the link still reads the
+    admitted bytes. Where a link cannot be made (another volume, a file system
+    without them) the video is copied, and the name is looked at again after
+    the copy. Either way the pin's identity must be the one captured when the
+    archive was read; anything else is a video that changed before the edit
+    began — refused, nothing encoded.
+    """
+    pinned = job.directory / f"input{job.source.suffix.lower() or '.mp4'}"
+
+    def refuse() -> None:
+        raise EditRefused(409, "source_changed", "The archive's video changed while the edit was being started")
+
+    try:
+        os.link(job.source, pinned)
+        linked = True
+    except OSError:
+        linked = False
+    try:
+        if linked:
+            if job.source_identity is not None and _identity(os.stat(pinned)) != job.source_identity:
+                refuse()
+        else:
+            if job.source_identity is not None and _identity(os.stat(job.source)) != job.source_identity:
+                refuse()
+            shutil.copyfile(job.source, pinned)
+            # The name is read again: a file swapped in during the copy is not what was admitted.
+            if job.source_identity is not None and _identity(os.stat(job.source)) != job.source_identity:
+                refuse()
+    except FileNotFoundError:
+        refuse()
+    return pinned
+
+
 def _sha256(path: Path) -> tuple[str, int]:
     digest = hashlib.sha256()
     size = 0
@@ -381,6 +441,7 @@ class TimelapseEditRuntime:
         info: dict,
         request: EditRequest,
         output_name: str,
+        source_identity: tuple | None = None,
     ) -> EditJob:
         """Take a place for one edit — synchronously, before the caller's first await after its checks.
 
@@ -411,12 +472,15 @@ class TimelapseEditRuntime:
             duration=float(info.get("duration") or 0.0),
             request=request,
             output_name=output_name,
+            source_identity=source_identity,
         )
         self.jobs[job.job_id] = job
         return job
 
     async def prepare_directory(self, job: EditJob) -> Path:
+        """The job's own directory, with the admitted video pinned in it. Raises :class:`EditRefused`."""
         job.directory = await asyncio.to_thread(_make_directory, self.scratch_root(), job.job_id)
+        job.pinned = await asyncio.to_thread(_pin_source, job)
         return job.directory
 
     async def abandon(self, job: EditJob) -> None:
@@ -453,25 +517,25 @@ class TimelapseEditRuntime:
             if job.archive_id == archive_id and job.task is not None and same_credential(job.capture, capture)
         ]
 
-    def request_cancel(self, job: EditJob, reason: str | None = None) -> None:
-        """Ask a job to stop. It reads ``cancelled`` (or its failure) only once it really has."""
-        if job.done.is_set() or job.stop.is_set():
-            return
+    def request_cancel(self, job: EditJob, reason: str | None = None) -> bool:
+        """Ask a job to stop. False = too late: its publication can no longer be stopped.
+
+        An accepted cancel is honoured: the job reads ``cancelled`` (or its
+        failure) once it really has stopped, and nothing of it is published.
+        """
+        if job.done.is_set():
+            return job.phase != PHASE_DONE
+        if job.stop.is_set():
+            return True
+        if job.no_return:
+            return False
         job.cancel_reason = reason
-        if job.phase in (PHASE_QUEUED, PHASE_ENCODING):
+        if job.phase in (PHASE_QUEUED, PHASE_ENCODING, PHASE_PUBLISHING):
             job.phase = PHASE_CANCELLING
         job.stop.set()
+        return True
 
     # -- the worker --------------------------------------------------------------------
-
-    def _its_turn(self, job: EditJob) -> bool:
-        """One encoder at a time, in admission order — the registry's order."""
-        for other in self.jobs.values():
-            if other is job:
-                return True
-            if other.task is not None and not other.done.is_set():
-                return False
-        return True
 
     async def _run(self, job: EditJob) -> None:
         outcome: str | None = None
@@ -486,6 +550,9 @@ class TimelapseEditRuntime:
                 logger.exception("[EDITS] job %s failed", job.job_id[:8])
                 outcome = ERROR_PUBLISH if job.phase == PHASE_PUBLISHING else ERROR_ENCODE
         finally:
+            # The encoder goes back first: the next edit, or a stitch, does not wait for our cleanup.
+            encoder_slot.release(job.slot)
+            job.slot = None
             cleaned = await self._settle(job)
             if outcome is None:
                 job.phase = PHASE_DONE
@@ -513,9 +580,9 @@ class TimelapseEditRuntime:
             raise _Ended(job.cancel_reason)
 
     async def _work(self, job: EditJob) -> None:
-        while not self._its_turn(job):
-            self._stopped(job)
-            await asyncio.sleep(_POLL)
+        # One encoder for the process, taken in one step (``encoder_slot``): two edits whose
+        # preparation took different times can never both find it free.
+        job.slot = await encoder_slot.acquire(job.stop)
         self._stopped(job)
         try:
             handle = live_authority.register(job.scope.descriptor)
@@ -545,7 +612,8 @@ class TimelapseEditRuntime:
             relative = os.path.relpath(staged, settings.base_dir)
             await asyncio.to_thread((job.directory / OUTPUT_NOTE).write_text, relative, "utf-8")
         job.staged = staged
-        processor = TimelapseProcessor(job.source)
+        # The pinned input: the bytes this edit was admitted for, whatever the video's name holds now.
+        processor = TimelapseProcessor(job.pinned or job.source)
         command = processor.edit_command(
             staged,
             trim_start=job.request.trim_start,
@@ -600,9 +668,24 @@ class TimelapseEditRuntime:
 
         job.phase = PHASE_PUBLISHING
         digest, size = await asyncio.to_thread(_sha256, job.staged)
+        # A cancel accepted while the file was being hashed is honoured here, before any lock is asked for.
+        self._stopped(job)
         publish = (
             archive_media.publish_primary if job.request.save_mode == SAVE_REPLACE else archive_media.publish_variant
         )
+
+        def still_wanted() -> bool:
+            """Asked by the seam under its own locks, last immediately before the bytes take their name.
+
+            Synchronous, so there is no moment between "not cancelled" and "no
+            return": a cancel either arrived before this and stops the
+            publication, or arrives after it and is told it is too late.
+            """
+            if job.stop.is_set():
+                return False
+            job.no_return = True
+            return True
+
         try:
             async with database.async_session() as db:
                 outcome = await publish(
@@ -620,11 +703,15 @@ class TimelapseEditRuntime:
                     size_bytes=size,
                     authority=job.capture,
                     permissions=(Permission.ARCHIVES_UPDATE_ALL.value,),
+                    may_run=still_wanted,
                 )
         except HTTPException as exc:
             # The seam's own guard: the account, the session or the right is gone.
             raise _Ended(ERROR_AUTHORITY if exc.status_code in (401, 403) else ERROR_PUBLISH) from exc
         if not outcome.ok:
+            if outcome.refusal == archive_media.REFUSED_RUN_CHANGED:
+                # ``still_wanted`` said no: the cancel was accepted, and nothing was published.
+                raise _Ended(job.cancel_reason)
             raise _Ended(ERROR_INTERRUPTED if outcome.refusal == archive_media.REFUSED_RESTORING else outcome.refusal)
         job.result = {"asset_uuid": outcome.asset_uuid, "save_mode": job.request.save_mode}
         try:

@@ -26,6 +26,8 @@ export function isEditActive(job: TimelapseEditJob | null): boolean {
 export function useTimelapseEditJob(archiveId: number) {
   const [job, setJob] = useState<TimelapseEditJob | null>(null);
   const [lost, setLost] = useState(false);
+  /** The server refused a cancel: the result is already being saved. */
+  const [cancelTooLate, setCancelTooLate] = useState(false);
 
   useEffect(() => {
     let ignore = false;
@@ -79,6 +81,7 @@ export function useTimelapseEditJob(archiveId: number) {
 
   const adopt = useCallback((next: TimelapseEditJob | null) => {
     setLost(false);
+    setCancelTooLate(false);
     setJob(next);
   }, []);
 
@@ -88,8 +91,10 @@ export function useTimelapseEditJob(archiveId: number) {
       setJob(await api.cancelTimelapseEditJob(archiveId, jobId));
     } catch (error) {
       if (isGone(error)) setLost(true);
+      // Not an error to retry: the server says the edit can no longer be stopped. It goes on being followed.
+      else if (error instanceof ApiError && error.code === 'cancel_too_late') setCancelTooLate(true);
     }
   }, [archiveId, jobId]);
 
-  return { job, lost, active: active && !lost, adopt, cancel };
+  return { job, lost, active: active && !lost, cancelTooLate, adopt, cancel };
 }
