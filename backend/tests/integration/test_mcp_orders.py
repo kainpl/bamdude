@@ -281,6 +281,18 @@ async def test_real_key_owner_permissions_hide_order_tools_and_revocation_is_imm
         assert error(await rpc(http, url, raw, "bamdude_search_orders")) == "forbidden"
 
 
+async def test_unchecked_history_does_not_invent_a_completion_gate_for_received_goods(db_session, shop):
+    s = shop
+    await archive(db_session, s, status="completed", quantities=(30, 10))
+    line = await db_session.get(ProjectLine, s["line"])
+    line.received = 10
+    await db_session.commit()
+    result = await progress(db_session, s, include_parts=True)
+    assert result.data["summary"]["can_complete_by_workshop_rules"] is True
+    assert result.data["blockers"] == []
+    assert result.data["quality"]["warnings"] == ["unchecked_print_outcomes"]
+
+
 async def test_transport_visibility_permissions_and_existing_diagnostics(async_client, runtime):  # noqa: F811
     created = await key(async_client)
     async with live_app() as url, httpx.AsyncClient() as http:
