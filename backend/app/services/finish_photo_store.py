@@ -26,6 +26,12 @@ And when the commit that attaches a photo fails, nobody knows whether it took:
 :func:`settle_uncertain` reads the archive afresh and removes the file only
 when the archive does not list it.
 
+⚠️ **A cancel does not cut that work in half** (:func:`to_the_end`): a write
+still in its thread ends before its file is removed, and the reading that
+settles a commit interrupted by a cancel runs to its end — the file kept with
+the archive that lists it, or removed with its record — before the cancel is
+passed on to the caller.
+
 No camera is touched here and no printer command is sent: what triggers a
 capture, and from which source, is unchanged (owner decision 2026-09-14: no
 motion for the sake of a photo).
@@ -44,6 +50,33 @@ logger = logging.getLogger(__name__)
 
 #: Files this process wrote and has not settled yet: name -> where exactly it is.
 _own: dict[str, Path] = {}
+
+
+async def to_the_end(awaitable):
+    """Run ``awaitable`` to its end even when the caller is cancelled meanwhile, then re-raise the cancel.
+
+    The photo's disk and database work is not abandoned half way by a cancel
+    (Codex G2-R): a write still running in its thread, or a reading of the
+    archive that decides whether a file stays, finishes first — and the caller
+    still learns it was cancelled.
+    """
+    task = asyncio.ensure_future(awaitable)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.wait({task})
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        if not task.cancelled():
+            task.exception()  # read: the cancel is what the caller is told
+        raise asyncio.CancelledError
+    return task.result()
+
+
+async def _drop(name: str, path: Path) -> None:
+    _own.pop(name, None)
+    await asyncio.to_thread(path.unlink, missing_ok=True)
 
 
 def new_name() -> str:
@@ -86,10 +119,11 @@ async def save_frame(
     path = folder / name  # SEC-PATH-OK: ``name`` is generated above
     _own[name] = path
     try:
-        await asyncio.to_thread(path.write_bytes, data)
+        # A cancel arriving while the thread writes waits for that write: removing the file before the
+        # thread has created it would leave the JPG behind once the thread ends (Codex G2-R).
+        await to_the_end(asyncio.to_thread(path.write_bytes, data))
     except BaseException:
-        _own.pop(name, None)
-        await asyncio.shield(asyncio.to_thread(path.unlink, missing_ok=True))
+        await to_the_end(_drop(name, path))
         raise
     return name
 

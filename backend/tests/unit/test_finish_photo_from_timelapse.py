@@ -14,6 +14,7 @@ DB access is patched at the session-maker boundary so these tests run in
 ~50ms each without standing up a real engine.
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -262,3 +263,43 @@ async def test_the_photo_goes_to_the_folder_the_archive_has_at_the_write(tmp_pat
         result = await _capture_finish_photo_from_timelapse(archive_id=42)
     assert result is not None
     assert (tmp_path / "archive" / "1" / "moved" / "photos" / result).is_file()
+
+
+async def test_a_cancel_during_the_extraction_leaves_no_file(tmp_path: Path, patched_session, monkeypatch):
+    """Codex G2-R, the timelapse source: ffmpeg's half-written still went nowhere and stayed."""
+    from backend.app.services import finish_photo_store
+
+    photos = _landed(tmp_path, monkeypatch, patched_session)
+    before = dict(finish_photo_store._own)  # other tests of this file leave their extracted stills recorded
+    started = asyncio.Event()
+
+    async def slow_extract(_src, dst):
+        dst.write_bytes(b"\xff\xd8 half a frame")
+        started.set()
+        await asyncio.sleep(10)
+        return True
+
+    with patch("backend.app.services.camera.extract_video_last_frame", new=slow_extract):
+        task = asyncio.create_task(_capture_finish_photo_from_timelapse(archive_id=42))
+        await asyncio.wait_for(started.wait(), 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert list(photos.glob("finish_*.jpg")) == []
+    assert finish_photo_store._own == before
+
+
+async def test_a_failed_extraction_removes_what_it_left(tmp_path: Path, patched_session, monkeypatch):
+    from backend.app.services import finish_photo_store
+
+    photos = _landed(tmp_path, monkeypatch, patched_session)
+    before = dict(finish_photo_store._own)
+
+    async def broken_extract(_src, dst):
+        dst.write_bytes(b"\xff\xd8 not a whole frame")
+        return False
+
+    with patch("backend.app.services.camera.extract_video_last_frame", new=broken_extract):
+        assert await _capture_finish_photo_from_timelapse(archive_id=42) is None
+    assert list(photos.glob("finish_*.jpg")) == []
+    assert finish_photo_store._own == before

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -269,3 +271,46 @@ def test_no_finish_photo_code_sends_a_printer_command():
     sources["finish_photo_store"] = inspect.getsource(store)
     offenders = [(name, word) for name, text in sources.items() for word in _COMMAND_WORDS if word in text]
     assert offenders == []
+
+
+class TestACancelDoesNotCutTheWorkInHalf:
+    """Codex G2-R: a cancel during the write removed the file before the thread had created it."""
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_during_the_write_waits_for_it_and_leaves_nothing(self, box, monkeypatch):
+        entered, release = threading.Event(), threading.Event()
+        real = Path.write_bytes
+
+        def slow(path, data):
+            entered.set()
+            assert release.wait(10)
+            return real(path, data)
+
+        monkeypatch.setattr(Path, "write_bytes", slow)
+        saving = asyncio.create_task(store.save_frame(7, "run-a", b"jpeg", session=box.session))
+        assert await asyncio.to_thread(entered.wait, 3)
+        saving.cancel()
+        await asyncio.sleep(0.1)
+        assert not saving.done()  # it waits for the thread before it removes anything
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await saving
+        photos = box.root / "archive" / "3" / "print-a" / "photos"
+        assert list(photos.iterdir()) == [] and store._own == {}
+
+    @pytest.mark.asyncio
+    async def test_the_work_ends_first_and_the_cancel_is_passed_on(self):
+        finished = asyncio.Event()
+
+        async def work():
+            await asyncio.sleep(0.1)
+            finished.set()
+            return "result"
+
+        caller = asyncio.create_task(store.to_the_end(work()))
+        await asyncio.sleep(0.02)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert finished.is_set()
+        assert await store.to_the_end(work()) == "result"  # uncancelled: just the result

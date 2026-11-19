@@ -8,7 +8,10 @@ database and real files. Only the camera is a canned frame.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
+from pathlib import Path
 from types import CodeType, FunctionType, SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -185,3 +188,60 @@ async def test_the_built_in_camera_writes_where_the_archive_is_after_the_capture
     assert [path.name for path in written] == [name]
     assert written[0].parent == terminal.root / "archive" / "9" / "arrived" / "photos"
     assert await _listed(db_session, terminal) == [name]
+
+
+async def test_a_cancel_during_the_photos_write_leaves_no_file(terminal, monkeypatch, db_session):
+    """Codex G2-R: the cleanup ran before the write's thread created the JPG, which then stayed."""
+    _bank(monkeypatch, terminal, b"\xff\xd8a frame being written")
+    entered, release = threading.Event(), threading.Event()
+    real = Path.write_bytes
+
+    def slow(path, data):
+        if not path.name.startswith("finish_"):
+            return real(path, data)
+        entered.set()
+        assert release.wait(10)
+        return real(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", slow)
+    task = asyncio.create_task(terminal.run())
+    try:
+        assert await asyncio.to_thread(entered.wait, 4)
+        task.cancel()
+        await asyncio.sleep(0.15)
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await _listed(db_session, terminal) == []
+    assert _photos(terminal) == []
+    assert finish_photo_store._own == {}
+
+
+@pytest.mark.parametrize("committed", [False, True], ids=["rolled-back", "committed"])
+async def test_a_cancel_inside_the_commit_settles_the_photo_and_is_passed_on(
+    terminal, monkeypatch, db_session, committed
+):
+    """Codex G2-R: a cancel inside the commit left the file, or the store's record of it, unsettled."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    _bank(monkeypatch, terminal)
+    real = AsyncSession.commit
+
+    async def commit(session):
+        if any(isinstance(row, PrintArchive) and row.photos for row in session.dirty):
+            if committed:
+                await real(session)
+            else:
+                await session.rollback()
+            raise asyncio.CancelledError()
+        return await real(session)
+
+    monkeypatch.setattr(AsyncSession, "commit", commit)
+    with pytest.raises(asyncio.CancelledError):
+        await terminal.run()
+    monkeypatch.setattr(AsyncSession, "commit", real)
+    listed = await _listed(db_session, terminal)
+    assert bool(listed) is committed
+    assert [path.name for path in _photos(terminal)] == listed  # committed: kept with the archive; else gone
+    assert finish_photo_store._own == {}
