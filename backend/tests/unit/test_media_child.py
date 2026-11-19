@@ -138,6 +138,34 @@ async def test_a_child_whose_end_is_not_seen_is_reported_unreaped_and_stays_owne
     spared[0].kill()  # the test's own cleanup; the autouse fixture waits for the watcher
 
 
+async def test_an_unreaped_child_is_announced_also_to_a_cancelled_caller(monkeypatch):
+    """Codex E2-R2 / F3-R2: on the cancel path the caller got the cancel and never learned the child lived."""
+    monkeypatch.setattr(media_child, "TERMINATE_GRACE", 0.2)
+    monkeypatch.setattr(media_child, "REAP_WAIT", 0.3)
+    spared: list = []
+    monkeypatch.setattr(media_child._Watcher, "_signal", staticmethod(lambda process, *, kill: spared.append(process)))
+    announced: list = []
+    task = asyncio.create_task(media_child.run(_python(SLEEP), name="t", hard_seconds=60, on_unreaped=announced.append))
+    await asyncio.sleep(0.6)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(announced) == 1 and not announced[0].is_set()  # the child still lives, and its end is the event
+    spared[0].kill()
+    assert await asyncio.to_thread(announced[0].wait, 10)  # set when the child really went
+
+
+async def test_a_reaped_child_is_never_announced_as_unreaped():
+    announced: list = []
+    task = asyncio.create_task(media_child.run(_python(SLEEP), name="t", hard_seconds=60, on_unreaped=announced.append))
+    await asyncio.sleep(0.6)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    result = await media_child.run(_python("print(1)"), name="t", hard_seconds=30, on_unreaped=announced.append)
+    assert result.ok and announced == []
+
+
 async def test_the_parent_log_has_a_start_and_one_outcome_and_no_command_line(caplog):
     secret = "SECRET-PATH-12345"
     with caplog.at_level(logging.INFO, logger="backend.app.services.media_child"):

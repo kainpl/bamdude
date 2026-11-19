@@ -220,6 +220,7 @@ async def run(
     stdout_limit: int = 0,
     on_line: Callable[[str], None] | None = None,
     cwd=None,
+    on_unreaped: Callable[[threading.Event], None] | None = None,
 ) -> ChildResult:
     """Run one child to its end and say how it ended. Never raises for the child's own failure.
 
@@ -228,6 +229,13 @@ async def run(
     bytes of stdout are returned. ``cwd`` is the child's working directory (the
     stitch names its frames relatively). The caller's cancellation ends the child and
     is re-raised only after the child has been reaped (or declared unreaped).
+
+    ``on_unreaped`` is called on the event loop, synchronously, the moment a
+    child is declared unreaped, with the event its watcher sets when it really
+    ends — ALSO when the caller was cancelled and is about to receive the
+    cancel instead of a result (Codex E2-R2 / F3-R2). A caller that holds a
+    resource for the child (the encoder slot, the files it writes) learns here
+    that it must keep it.
     """
     run_id = uuid.uuid4().hex[:8]
     started = time.monotonic()
@@ -270,6 +278,11 @@ async def run(
     if cause is not None:
         reaped = await _end(watcher)
         result = finish(cause if reaped else UNREAPED, None if reaped else f"not reaped after {cause}")
+        if not reaped and on_unreaped is not None:
+            try:
+                on_unreaped(watcher.ended)
+            except Exception:  # noqa: BLE001 — the caller's bookkeeping never hides the outcome
+                logger.exception("[MEDIA-CHILD] %s %s: on_unreaped failed", name, run_id)
         if cancelled:
             raise asyncio.CancelledError
         return result
