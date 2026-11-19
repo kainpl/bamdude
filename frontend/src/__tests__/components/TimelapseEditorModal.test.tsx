@@ -152,6 +152,27 @@ describe('TimelapseEditorModal', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it('a cancel the server refuses as too late is said, and the edit is still followed to its end', async () => {
+    polled = job({ phase: 'publishing', progress: 0.97 });
+    server.use(
+      http.delete('/api/v1/archives/5/timelapse/edit-jobs/edit-1', () =>
+        HttpResponse.json(
+          { detail: { error: 'cancel_too_late', message: 'The edited video is already being saved and cannot be cancelled' } },
+          { status: 409 },
+        ),
+      ),
+    );
+    open();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.getByText('Saving the result…')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel the edit' }));
+    await waitFor(() => expect(screen.getByTestId('timelapse-cancel-too-late')).toBeInTheDocument());
+    expect(onClose).not.toHaveBeenCalled();
+    polled = job({ phase: 'done', progress: 1 });
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1), { timeout: 5000 });
+  });
+
   it('a result refused because the video changed is explained, and nothing is reported as saved', async () => {
     polled = job({ phase: 'failed', error: 'source_changed' });
     open();

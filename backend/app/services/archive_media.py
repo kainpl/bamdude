@@ -919,8 +919,13 @@ async def _publish_variant(
     size_bytes: int | None = None,
     authority=None,
     permissions: tuple = (),
+    may_run: Callable[[], bool] | None = None,
 ) -> Publication:
     """The variant's row and its file's name in one transaction; the pointer is not touched.
+
+    ``may_run`` is the caller's own last word (an edit that may still be
+    cancelled): asked under the locks and again immediately before the bytes
+    take their name, as :func:`_publish_primary` asks it.
 
     ``expected_token`` is the video the edit was made FROM: a variant cut from a
     video the archive no longer shows is refused ``source_changed`` like any
@@ -944,6 +949,9 @@ async def _publish_variant(
             if await primary_token(db, current) != expected_token:
                 await db.rollback()
                 return Publication(False, REFUSED_SOURCE_CHANGED)
+            if may_run is not None and not may_run():
+                await db.rollback()
+                return Publication(False, REFUSED_RUN_CHANGED)
             revision = await _next_revision(db, current)
             shown = await asyncio.to_thread(contained, base_dir, (current.timelapse_path or "").strip())
             target = await asyncio.to_thread(_free_name, directory, filename, shown)
@@ -963,6 +971,9 @@ async def _publish_variant(
             db.add(row)
             await db.flush()
             asset_uuid = row.asset_uuid
+            if may_run is not None and not may_run():
+                await db.rollback()
+                return Publication(False, REFUSED_RUN_CHANGED)
             await asyncio.to_thread(os.replace, staged, target)
             final = target
             await db.commit()
