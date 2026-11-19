@@ -6668,8 +6668,9 @@ async def _capture_finish_photo_from_timelapse(
 
                 in_extractor = True
                 try:
-                    # A cancel inside the extraction is settled by the extractor: it kills ffmpeg and
-                    # removes the still only once ffmpeg can no longer write it (Codex G2-R2).
+                    # Every outcome of the extraction but success is settled by the extractor — a cancel,
+                    # an error, a False before or after ffmpeg started: it stops ffmpeg and removes the
+                    # still only once ffmpeg can no longer write it (Codex G2-R2, G2-R3).
                     extracted = await extract_video_last_frame(video_path, output_path, on_abandon=remove_still)
                     in_extractor = False
                     wanted = False
@@ -6697,9 +6698,12 @@ async def _capture_finish_photo_from_timelapse(
                         archive_id,
                     )
                     return filename
-                # Not extracted, or extracted and no longer wanted: this helper's own file, removed by it.
-                await finish_photo_store.discard(archive_id, filename, session=async_session)
-                if not extracted:
+                if extracted:
+                    # Extracted, and no longer wanted: ffmpeg has ended, the still is this helper's to remove.
+                    await finish_photo_store.discard(archive_id, filename, session=async_session)
+                else:
+                    # Not extracted: the extractor settles the still (perhaps through an owner that waits for
+                    # ffmpeg's exit) — it is not taken from that owner here; the fallback capture may go on.
                     logger.warning(
                         "[PHOTO-BG] Timelapse %s landed but last-frame extraction failed for archive %s; falling back",
                         video_path.name,

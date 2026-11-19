@@ -123,7 +123,9 @@ async def test_returns_none_when_extraction_fails(tmp_path: Path, patched_sessio
     video_abspath.parent.mkdir(parents=True, exist_ok=True)
     video_abspath.write_bytes(b"x" * 100)
 
-    async def fake_extract_fails(src, dst, **_kwargs):
+    async def fake_extract_fails(src, dst, *, on_abandon=None):
+        if on_abandon is not None:
+            await on_abandon()  # the real extractor's contract on every outcome but success
         return False
 
     patched_session.timelapse_path = str(video_relpath)
@@ -300,8 +302,10 @@ async def test_a_failed_extraction_removes_what_it_left(tmp_path: Path, patched_
     photos = _landed(tmp_path, monkeypatch, patched_session)
     before = dict(finish_photo_store._own)
 
-    async def broken_extract(_src, dst, **_kwargs):
+    async def broken_extract(_src, dst, *, on_abandon=None):
         dst.write_bytes(b"\xff\xd8 not a whole frame")
+        if on_abandon is not None:
+            await on_abandon()
         return False
 
     with patch("backend.app.services.camera.extract_video_last_frame", new=broken_extract):
