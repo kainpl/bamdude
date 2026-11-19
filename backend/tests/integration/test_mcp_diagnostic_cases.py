@@ -377,7 +377,8 @@ def test_skill_manifest_supports_implemented_diagnostics():
     archive, _ = skill_archive()
     with zipfile.ZipFile(io.BytesIO(archive)) as z:
         manifest = json.loads(z.read("bamdude-diagnostics/manifest.json"))
-    assert manifest["supported_modules"] == ["base", "diagnostics"]
+    assert manifest["supported_modules"] == ["base", "diagnostics", "orders"]
+    assert manifest["orders_contract"] == 1
     assert manifest["skill_contract"] == manifest["diagnostic_contract"] == 1
 
 

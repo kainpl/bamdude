@@ -88,7 +88,8 @@ def skill_archive(root: Path = SKILL_ROOT) -> tuple[bytes, str]:
         "package_version": APP_VERSION,
         "skill_contract": 1,
         "diagnostic_contract": 1,
-        "supported_modules": ["base", "diagnostics"],
+        "supported_modules": ["base", "diagnostics", "orders"],
+        "orders_contract": 1,
         "sha256": {name: hashlib.sha256(content).hexdigest() for name, content in contents.items()},
     }
     contents["manifest.json"] = json.dumps(manifest, sort_keys=True).encode()

@@ -731,8 +731,26 @@ def _award(pf: PartFigures, status: str, quantity: int) -> None:
         pf.in_progress += quantity
 
 
+@dataclass(frozen=True)
+class PartAttribution:
+    """Optional read evidence from the canonical allocation, before recounts.
+
+    These are not durable stock allocations or QC receipts. Retaining the
+    actual award avoids a second pass that redistributes only checked prints
+    differently between lines and then reports invented quality totals.
+    """
+
+    archive_id: int
+    line_id: int
+    part_id: int
+    quantity: int
+
+
 def attribute(
-    ctx: OrderContext, *, redistributable_to: set[int] | None = None
+    ctx: OrderContext,
+    *,
+    redistributable_to: set[int] | None = None,
+    part_attributions: list[PartAttribution] | None = None,
 ) -> tuple[dict[int, LineFigures], list[PrintArchive]]:
     """Spec §Line resolution for an archive: the unit is the archive's PART ROW.
 
@@ -761,6 +779,11 @@ def attribute(
     indexes = {pid: part_index(parts) for pid, parts in ctx.parts_by_product.items()}
     by_part_id = {line_id: {pf.part_id: pf for pf in figs.parts} for line_id, figs in figures.items()}
     line_by_id = {line.id: line for line in ctx.lines}
+
+    def award(archive: PrintArchive, line: ProjectLine, pf: PartFigures, quantity: int) -> None:
+        _award(pf, archive.status, quantity)
+        if part_attributions is not None and quantity and archive.status == _DONE:
+            part_attributions.append(PartAttribution(archive.id, line.id, pf.part_id, quantity))
 
     def counted(line: ProjectLine, name_key: str) -> PartFigures | None:
         """This line's figures for that object, or None when its product does not
@@ -841,7 +864,7 @@ def attribute(
                     pf = spare(ln, row.name_key)
                     if pf is not None:
                         if quantity:
-                            _award(pf, archive.status, quantity)
+                            award(archive, ln, pf, quantity)
                             fed.add(ln.id)
                             if pooled and archive.status == _DONE and redistributable_to is not None:
                                 redistributable_to.add(ln.id)
@@ -854,13 +877,13 @@ def attribute(
                 give = min(quantity, _room(pf, archive.status))
                 if not give:
                     continue
-                _award(pf, archive.status, give)
+                award(archive, line, pf, give)
                 quantity -= give
                 fed.add(line.id)
                 if not quantity:
                     break
             if quantity:
-                _award(takers[0][1], archive.status, quantity)
+                award(archive, takers[0][0], takers[0][1], quantity)
                 fed.add(takers[0][0].id)
         return fed
 
