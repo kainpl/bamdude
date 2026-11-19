@@ -981,6 +981,44 @@ class TestTheEncoderOutlivesItsCaller:
         encoder_slot.release(ticket)
         assert not encoder_slot.busy
 
+    async def test_a_cancel_of_the_jobs_own_task_keeps_the_encoder_while_the_child_lives(
+        self, async_client, edit, monkeypatch
+    ):
+        """Codex E2-R2: the task itself cancelled (not the Cancel button) gave the slot back beside a live child."""
+        _hang(monkeypatch)
+        monkeypatch.setattr(media_child, "TERMINATE_GRACE", 0.12)
+        monkeypatch.setattr(media_child, "REAP_WAIT", 0.2)
+        spared: list = []
+        monkeypatch.setattr(
+            media_child._Watcher, "_signal", staticmethod(lambda process, *, kill: spared.append(process))
+        )
+        job = await _start(async_client, edit, save_mode="new")
+        own = timelapse_edit_runtime.jobs[job["job_id"]]
+        try:
+            for _ in range(300):  # the encoder itself, not the probe before it
+                if media_child.live() and own.staged is not None:
+                    break
+                await asyncio.sleep(0.02)
+            own.task.cancel()
+            await asyncio.wait_for(own.done.wait(), 8)
+            assert (own.phase, own.error) == ("failed", timelapse_editor.ERROR_UNREAPED)
+            assert spared and any(process.poll() is None for process in spared)
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(encoder_slot.acquire(), 0.3)
+            # Its scratch directory is still there: nothing of a possibly-live writer was touched.
+            assert (edit.root / "timelapse-edits" / own.job_id / timelapse_editor.MARKER).is_file()
+        finally:
+            for process in spared:
+                if process.poll() is None:
+                    process.kill()
+        deadline = asyncio.get_running_loop().time() + 15
+        while media_child.live():
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.05)
+        ticket = await asyncio.wait_for(encoder_slot.acquire(), 2)
+        assert ticket is not None
+        encoder_slot.release(ticket)
+
     async def test_an_ordinary_end_gives_the_encoder_back(self, async_client, edit):
         done = await _finish(async_client, edit, save_mode="new")
         assert done["phase"] == "done", done

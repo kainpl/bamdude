@@ -623,6 +623,10 @@ class TimelapseEditRuntime:
             except Exception:  # noqa: BLE001 — reported as the job's failure
                 logger.exception("[EDITS] job %s failed", job.job_id[:8])
                 outcome = ERROR_PUBLISH if job.phase == PHASE_PUBLISHING else ERROR_ENCODE
+            if job.keep_staged:
+                # The encoder was not seen to end — also when the job's own task was cancelled
+                # under it (Codex E2-R2): that is what the job reports, whatever stopped it.
+                outcome = ERROR_UNREAPED
         finally:
             # The encoder goes back first: the next edit, or a stitch, does not wait for our cleanup —
             # unless its child was not seen to end: then the place stays taken until that child has
@@ -711,6 +715,12 @@ class TimelapseEditRuntime:
                 # Monotonic: ffmpeg's clock can step back at a filter boundary.
                 job.progress = max(job.progress, min(seconds / expected, 1.0) * _ENCODE_CEILING)
 
+        def unreaped(ended) -> None:
+            # Called by ``media_child`` the moment the child is declared unreaped — before a cancel of
+            # this task reaches us, too: the slot and the staged output stay the child's (Codex E2-R2).
+            job.keep_staged = True  # it may still be writing; nothing of it is touched
+            job.child_ended = ended
+
         result = await media_child.run(
             command,
             name="timelapse-edit",
@@ -718,10 +728,9 @@ class TimelapseEditRuntime:
             idle_seconds=IDLE_SECONDS,
             stop=job.stop,
             on_line=on_line,
+            on_unreaped=unreaped,
         )
         if result.status == media_child.UNREAPED:
-            job.keep_staged = True  # it may still be writing; nothing of it is touched
-            job.child_ended = result.ended
             raise _Ended(ERROR_UNREAPED)
         if result.status == media_child.CANCELLED:
             raise _Ended(job.cancel_reason)
