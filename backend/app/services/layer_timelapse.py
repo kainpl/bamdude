@@ -36,9 +36,11 @@ What this unit changed, and why:
   over all retained sessions, oldest first. EVERY step into ``retained``
   applies the bounds at once (:meth:`TimelapseSession.retain`), and a running
   server applies them again every :data:`RETENTION_INTERVAL_SECONDS`
-  (:func:`start_janitor`), so frames past their time go without a restart. The unfinished output is removed
-  by the stitch that made it. Frames go only after the video was published
-  (the caller says so) or the print itself failed.
+  (:func:`start_janitor`), so frames past their time go without a restart.
+  Every such round is disk work counted until its thread ends, and none starts
+  while a restore holds recording closed. The unfinished output is removed by
+  the stitch that made it. Frames go only after the video was published (the
+  caller says so) or the print itself failed.
 * **Capture is bounded too.** When the frames of the sessions being recorded
   reach :data:`ACTIVE_BYTES`, or the volume is down to its reserve, capture
   stops for that session with one warning; the print is not affected.
@@ -49,7 +51,9 @@ What this unit changed, and why:
   else under the tree — a foreign file, a directory without a manifest, a link
   — is left alone and never entered.
 * **A restore waits for it.** :func:`quiesce` closes capture, stops every
-  stitch (its frames stay retained) and proves writers and encoders ended.
+  stitch (its frames stay retained) and proves writers and encoders ended. A
+  frame the camera answers after that is dropped, never written: closing is
+  asked again in the same step that registers the write.
 
 The camera side is untouched: frames still come from the live view's buffer or
 the capture runtime (G09), and no recorder ever stops the shared producer.
@@ -57,6 +61,7 @@ the capture runtime (G09), and no recorder ever stops the shared producer.
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -99,6 +104,8 @@ STITCH_MAX_SECONDS = 3600.0
 STITCH_IDLE_SECONDS = 60.0
 #: How often a running server applies the retention bounds again.
 RETENTION_INTERVAL_SECONDS = 3600.0
+#: How long shutdown waits for a retention round already in its worker thread.
+JANITOR_STOP_SECONDS = 30.0
 ENCODER_THREADS = 2
 ENCODER_LOOKAHEAD = 10
 
@@ -116,6 +123,8 @@ _pinned_sessions: dict[str, "TimelapseSession"] = {}
 _io: set = set()
 _closed = False
 _janitor: asyncio.Task | None = None
+# The periodic round whose thread may still run after its loop was cancelled.
+_janitor_round: asyncio.Future | None = None
 
 
 def get_ffmpeg_path() -> str | None:
@@ -180,24 +189,48 @@ def _directory_bytes(directory: Path) -> int:
     return total
 
 
-def _owned_io(session: "TimelapseSession", function, *args) -> asyncio.Future:
-    """Run one disk write in a worker thread, owned until the THREAD ends.
+def _owned_thread(function, *args) -> asyncio.Future:
+    """Run one piece of disk work of this module in a worker thread, counted in :data:`_io` until the THREAD ends.
 
-    The session is held and the write is counted in :data:`_io` from here to the
-    thread's own end — by a callback on the future, not by the caller's
-    ``finally``. A caller that is cancelled stops waiting; the write does not
-    stop being a write, and the directory is not removed under it.
+    Counted by a callback on the future, not by the caller's ``finally``: a
+    caller that is cancelled stops waiting, the work does not, and a drain
+    still sees it.
     """
-    session._hold()
     future = asyncio.get_running_loop().run_in_executor(None, function, *args)
     _io.add(future)
 
-    def ended(_done) -> None:
-        _io.discard(future)
-        session._release()
+    def ended(done: asyncio.Future) -> None:
+        _io.discard(done)
+        if not done.cancelled():
+            done.exception()  # read here: a caller that was cancelled never reads it
 
     future.add_done_callback(ended)
     return future
+
+
+def _owned_io(session: "TimelapseSession", function, *args) -> asyncio.Future:
+    """Run one disk write of a session in a worker thread, owned until the THREAD ends.
+
+    The session is held and the write is counted in :data:`_io` from here to the
+    thread's own end. A caller that is cancelled stops waiting; the write does
+    not stop being a write, and the directory is not removed under it.
+    """
+    session._hold()
+    future = _owned_thread(function, *args)
+    future.add_done_callback(lambda _done: session._release())
+    return future
+
+
+def _retention_round() -> asyncio.Future | None:
+    """Start one application of the retention bounds — or none while recording is closed for a restore.
+
+    The check and the registration in :data:`_io` are one synchronous step: a
+    drain that has answered "drained" has closed recording, and no round starts
+    after it (Codex F4-R).
+    """
+    if _closed:
+        return None
+    return _owned_thread(apply_retention)
 
 
 @dataclass(eq=False)
@@ -299,8 +332,9 @@ class TimelapseSession:
             self.frame_count,
             reason,
         )
-        with contextlib.suppress(Exception):
-            apply_retention()
+        if not _closed:  # a restore holds recording closed: nothing under the frames tree is removed now
+            with contextlib.suppress(Exception):
+                apply_retention()
 
     # -- capture -----------------------------------------------------------------------
 
@@ -385,8 +419,11 @@ class TimelapseSession:
                 # loop — PIL is synchronous and this runs once per layer.
                 if self.rotation:
                     frame_data = await asyncio.to_thread(apply_camera_rotation, frame_data, self.rotation, logger)
-                if self._discard or self.state != STATE_ACTIVE:
-                    return False  # cancelled or detached while the camera answered: nothing is written
+                # Asked again after the last await, in the same synchronous step as the write's registration
+                # in ``_io``: a frame the camera answered after a drain closed recording is dropped, never
+                # written behind its "drained" (Codex F1-R).
+                if _closed or self._discard or self.state != STATE_ACTIVE:
+                    return False  # closed, cancelled or detached while the camera answered: nothing is written
                 frame_path = self.frames_dir / f"layer_{layer_num:05d}.jpg"
                 # Shielded: this caller may be cancelled, the write is owned to its thread's end.
                 await asyncio.shield(_owned_io(self, frame_path.write_bytes, frame_data))
@@ -486,6 +523,7 @@ class TimelapseSession:
             if ticket is None:
                 self.failure = media_child.CANCELLED
                 return False
+            result = None
             try:
                 result = await media_child.run(
                     cmd,
@@ -497,7 +535,11 @@ class TimelapseSession:
                     cwd=self.frames_dir,  # the concat list names the frames relatively
                 )
             finally:
-                encoder_slot.release(ticket)
+                if result is not None and result.status == media_child.UNREAPED:
+                    # The encoder may still run: no other one starts until it has really ended (Codex F3-R).
+                    encoder_slot.keep_until_reaped(ticket, result.ended)
+                else:
+                    encoder_slot.release(ticket)
             if result.status == media_child.UNREAPED:
                 # It may still be reading the frames and writing the output: neither is touched again,
                 # by anybody — the pin is registered for every cleanup path and for the drain.
@@ -640,9 +682,9 @@ async def finish_session(session: TimelapseSession | None, *, keep_frames: bool 
                 session.cleanup()
             return output_path
         logger.error("Timelapse stitch for printer %s did not give a video (%s)", session.printer_id, session.failure)
-        # Disk work (the manifest): off the loop. The bounds are applied below, once this session
-        # is no longer counted as being finalised.
-        await asyncio.to_thread(session.retain, f"stitch_{session.failure}")
+        # Disk work (the manifest): off the loop and owned to its thread's end. The bounds are applied
+        # below, once this session is no longer counted as being finalised.
+        await retain_session(session, f"stitch_{session.failure}")
         return None
     except asyncio.CancelledError:
         session.retain("stitch_cancelled")
@@ -653,13 +695,27 @@ async def finish_session(session: TimelapseSession | None, *, keep_frames: bool 
         return None
     finally:
         _finalizing.pop(session.session_id, None)
+        # Both counted in ``_io`` from the step that registered them: the session has just left
+        # ``_finalizing``, and a drain must still see the disk work it does on its way out.
         if not ok and not session._pinned:
             # The unfinished output is this stitch's own, and its encoder has ended.
             with contextlib.suppress(OSError):
-                await asyncio.to_thread(output_path.unlink, missing_ok=True)
+                await asyncio.shield(_owned_thread(functools.partial(output_path.unlink, missing_ok=True)))
         if not ok:
-            with contextlib.suppress(Exception):
-                await asyncio.to_thread(apply_retention)
+            retention = _retention_round()
+            if retention is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(retention)
+
+
+async def retain_session(session: TimelapseSession, reason: str) -> None:
+    """:meth:`TimelapseSession.retain` off the event loop, owned until its thread ends (Codex F4-R).
+
+    The manifest write and the retention bounds it applies are disk work a
+    restore's drain must see; a caller that is cancelled stops waiting, the work
+    is still counted.
+    """
+    await asyncio.shield(_owned_io(session, session.retain, reason))
 
 
 def cancel_session(printer_id: int):
@@ -723,12 +779,20 @@ async def quiesce(seconds: float = 30.0) -> bool:
 
 
 async def _retention_loop(interval: float) -> None:
+    global _janitor_round
     while True:
         await asyncio.sleep(interval)
+        # A round starts only while recording is admitted, and its thread is counted in ``_io``.
+        current = _retention_round()
+        if current is None:
+            continue  # a restore holds recording closed
+        _janitor_round = current
         try:
-            removed = await asyncio.to_thread(apply_retention)
+            removed = await asyncio.shield(current)
             if removed:
                 logger.info("Removed %s retained timelapse frame director%s", removed, "y" if removed == 1 else "ies")
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:  # noqa: BLE001 — the next round tries again
             logger.debug("Timelapse retention round failed: %s", type(exc).__name__)
 
@@ -741,14 +805,28 @@ def start_janitor(interval: float | None = None) -> asyncio.Task:
     return _janitor
 
 
-async def stop_janitor() -> None:
-    """Lifespan shutdown: the periodic round is cancelled and waited for."""
-    global _janitor
+async def stop_janitor(seconds: float = JANITOR_STOP_SECONDS) -> bool:
+    """Lifespan shutdown: the periodic loop is cancelled, and a round already in its thread is waited for.
+
+    Cancelling the loop does not stop a round that is removing directories in
+    a worker thread (Codex F4-R): shutdown waits for that thread, up to
+    ``seconds``. False = it had not ended; it stays counted in ``_io``, so a
+    restore's drain still refuses while it runs.
+    """
+    global _janitor, _janitor_round
     task, _janitor = _janitor, None
     if task is not None and not task.done():
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
+    current, _janitor_round = _janitor_round, None
+    if current is None or current.done():
+        return True
+    done, _pending = await asyncio.wait({current}, timeout=seconds)
+    if not done:
+        logger.warning("Layer timelapse: a retention round was still running %.0fs after shutdown asked", seconds)
+        return False
+    return True
 
 
 # -- the janitor -------------------------------------------------------------------------

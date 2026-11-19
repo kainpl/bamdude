@@ -45,7 +45,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from backend.app.utils.ffmpeg_output import summarize_ffmpeg_stderr
 
@@ -88,6 +88,8 @@ class ChildResult:
     #: A sanitised, bounded description of a failure — safe for a log line.
     reason: str | None = None
     elapsed: float = 0.0
+    #: Set when the watcher's thread has ended — for ``unreaped``, the moment the child really went.
+    ended: threading.Event | None = field(default=None, compare=False, repr=False)
 
     @property
     def ok(self) -> bool:
@@ -242,7 +244,7 @@ async def run(
 
     def finish(status: str, reason: str | None = None) -> ChildResult:
         elapsed = time.monotonic() - started
-        result = ChildResult(status, watcher.returncode, bytes(watcher.stdout), reason, elapsed)
+        result = ChildResult(status, watcher.returncode, bytes(watcher.stdout), reason, elapsed, watcher.ended)
         log = logger.info if status in (COMPLETED, CANCELLED) else logger.warning
         log("[MEDIA-CHILD] %s %s %s after %.1fs%s", name, run_id, status, elapsed, f": {reason}" if reason else "")
         return result
