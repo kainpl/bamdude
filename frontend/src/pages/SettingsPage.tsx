@@ -98,6 +98,9 @@ type UsersSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc' | 'security';
  *  has when they are looking for it. */
 type FilamentSubTab = 'general' | 'marking';
 
+// The server's rule for a price sensor (schemas/settings.py ENERGY_PRICE_ENTITY_PATTERN, never empty here).
+const PRICE_ENTITY_PATTERN = /^(sensor|input_number|number)\.[a-z0-9_]+$/;
+
 /** The cards of the Camera tab that an address can name (`#card-…`). */
 const CAMERA_CARD_IDS = ['card-camera', 'card-camera-tokens', 'card-stream-overlay'];
 
@@ -422,7 +425,7 @@ export function SettingsPage() {
   const [deleteGroupId, setDeleteGroupId] = useState<number | null>(null);
 
   // Home Assistant test connection state
-  const [haTestResult, setHaTestResult] = useState<{ success: boolean; message: string | null; error: string | null } | null>(null);
+  const [haTestResult, setHaTestResult] = useState<{ success: boolean; message: string | null; reason?: string | null; error: string | null } | null>(null);
   const [haTestLoading, setHaTestLoading] = useState(false);
 
   // External camera test state
@@ -1247,6 +1250,21 @@ export function SettingsPage() {
     },
     onError: (error: Error) => {
       showToast(`Failed to save: ${error.message}`, 'error');
+      // Choosing a price sensor makes the server ask Home Assistant before it saves. A save that
+      // failed leaves the page's copy different from the server's, and the debounced effect
+      // would send it again — and ask Home Assistant again — for as long as it fails. Put the
+      // source back to what the server holds; the draft stays in its fields for another try.
+      const baseline = serverBaselineRef.current;
+      if (baseline) {
+        setLocalSettings(prev => prev && (
+          (prev.energy_price_source ?? 'fixed') !== (baseline.energy_price_source ?? 'fixed') ||
+          (prev.energy_price_ha_entity ?? '') !== (baseline.energy_price_ha_entity ?? '')
+        ) ? {
+          ...prev,
+          energy_price_source: baseline.energy_price_source ?? 'fixed',
+          energy_price_ha_entity: baseline.energy_price_ha_entity ?? '',
+        } : prev);
+      }
     },
     onSettled: () => {
       // Reset saving flag when mutation completes (success or error)
@@ -1322,6 +1340,8 @@ export function SettingsPage() {
       (baseline.document_supplier_code ?? '') !== (localSettings.document_supplier_code ?? '') ||
       (baseline.document_supplier_iban ?? '') !== (localSettings.document_supplier_iban ?? '') ||
       baseline.energy_cost_per_kwh !== localSettings.energy_cost_per_kwh ||
+      (baseline.energy_price_source ?? 'fixed') !== (localSettings.energy_price_source ?? 'fixed') ||
+      (baseline.energy_price_ha_entity ?? '') !== (localSettings.energy_price_ha_entity ?? '') ||
       baseline.check_updates !== localSettings.check_updates ||
       (baseline.check_printer_firmware ?? true) !== (localSettings.check_printer_firmware ?? true) ||
       (baseline.include_beta_updates ?? false) !== (localSettings.include_beta_updates ?? false) ||
@@ -1447,6 +1467,8 @@ export function SettingsPage() {
         document_supplier_code: localSettings.document_supplier_code,
         document_supplier_iban: localSettings.document_supplier_iban,
         energy_cost_per_kwh: localSettings.energy_cost_per_kwh,
+        energy_price_source: localSettings.energy_price_source ?? 'fixed',
+        energy_price_ha_entity: localSettings.energy_price_ha_entity ?? '',
         check_updates: localSettings.check_updates,
         check_printer_firmware: localSettings.check_printer_firmware,
         include_beta_updates: localSettings.include_beta_updates,
@@ -1540,6 +1562,9 @@ export function SettingsPage() {
       // Blank inputs keep by omission; explicit clear/replace carry actions.
       delete settingsToSave.ha_url;
       delete settingsToSave.ha_token;
+      // With a Home Assistant sensor as its source the price is the server's last reading:
+      // sending the page's copy back would be a manual price, which the server refuses.
+      if (settingsToSave.energy_price_source === 'homeassistant') delete settingsToSave.energy_cost_per_kwh;
       updateMutation.mutate(settingsToSave);
     }, 500);
 
@@ -1562,6 +1587,50 @@ export function SettingsPage() {
     }
     setLocalSettings(prev => prev ? { ...prev, [key]: value } : null);
   }, [hasPermission, isAdmin, showToast, t]);
+
+  // The electricity price source. Choosing a sensor is committed by its button, not by typing:
+  // the save makes the server read the sensor at once, so a half-typed entity must never reach
+  // the debounced save. The draft lives here until the server holds it.
+  const [priceSourceDraft, setPriceSourceDraft] = useState<{ source: 'fixed' | 'homeassistant'; entity: string } | null>(null);
+  const savedPriceSource = localSettings?.energy_price_source ?? 'fixed';
+  const savedPriceEntity = localSettings?.energy_price_ha_entity ?? '';
+  const shownPriceSource = priceSourceDraft?.source ?? savedPriceSource;
+  const shownPriceEntity = priceSourceDraft?.entity ?? savedPriceEntity;
+  const canEditPriceSource = isAdmin && hasPermission('settings:update');
+  const priceEntityValid = PRICE_ENTITY_PATTERN.test(shownPriceEntity.trim());
+  const priceSourcePending = !!priceSourceDraft && priceSourceDraft.source === 'homeassistant' &&
+    (savedPriceSource !== 'homeassistant' || savedPriceEntity !== priceSourceDraft.entity.trim());
+  useEffect(() => {
+    // The server holds what was drafted: the draft has done its work.
+    if (priceSourceDraft && settings && (settings.energy_price_source ?? 'fixed') === priceSourceDraft.source &&
+      (priceSourceDraft.source === 'fixed' || (settings.energy_price_ha_entity ?? '') === priceSourceDraft.entity.trim())) {
+      setPriceSourceDraft(null);
+    }
+  }, [settings, priceSourceDraft]);
+  const choosePriceSource = (source: 'fixed' | 'homeassistant') => {
+    if (source === 'homeassistant') {
+      setPriceSourceDraft({ source, entity: shownPriceEntity });
+      return;
+    }
+    setPriceSourceDraft(null);
+    if (savedPriceSource !== 'fixed') updateSetting('energy_price_source', 'fixed');
+  };
+  const applyPriceSensor = () => {
+    if (!priceSourceDraft || !priceEntityValid) return;
+    if (!canEditPriceSource) {
+      showToast(t('settings.toast.noPermissionUpdate'), 'error');
+      return;
+    }
+    const entity = priceSourceDraft.entity.trim();
+    setLocalSettings(prev => prev ? { ...prev, energy_price_source: 'homeassistant', energy_price_ha_entity: entity } : prev);
+  };
+  const { data: priceSensorEntities } = useQuery({
+    queryKey: ['ha-bindable-entities', 'energy-price'],
+    queryFn: () => api.getBindableHAEntities(),
+    enabled: shownPriceSource === 'homeassistant' && canEditPriceSource && !!localSettings?.ha_enabled,
+    staleTime: 60_000,
+    retry: false,
+  });
 
   const haConnectionDraft = (): AppSettingsUpdate => {
     if (!localSettings) return {};
@@ -3386,8 +3455,64 @@ export function SettingsPage() {
                 </div>
               </div>
               <div>
+                <label htmlFor="energy-price-source" className="block text-sm text-bambu-gray mb-1">
+                  {t('settings.electricityPriceSource')}
+                </label>
+                <Select
+                  id="energy-price-source"
+                  className="w-full"
+                  value={shownPriceSource}
+                  onChange={(e) => choosePriceSource(e.target.value as 'fixed' | 'homeassistant')}
+                  disabled={!canEditPriceSource}
+                >
+                  <option value="fixed">{t('settings.electricityPriceSourceFixed')}</option>
+                  <option value="homeassistant">{t('settings.electricityPriceSourceHA')}</option>
+                </Select>
+              </div>
+              {shownPriceSource === 'homeassistant' && (
+                <div>
+                  <label htmlFor="energy-price-entity" className="block text-sm text-bambu-gray mb-1">
+                    {t('settings.electricityPriceEntity')}
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    <input
+                      id="energy-price-entity"
+                      type="text"
+                      list="energy-price-entities"
+                      value={shownPriceEntity}
+                      onChange={(e) => setPriceSourceDraft({ source: 'homeassistant', entity: e.target.value })}
+                      onKeyDown={(e) => { if (e.key === 'Enter') applyPriceSensor(); }}
+                      placeholder="sensor.electricity_price"
+                      disabled={!canEditPriceSource}
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="flex-1 min-w-[12rem] px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none disabled:opacity-60"
+                    />
+                    <datalist id="energy-price-entities">
+                      {(priceSensorEntities ?? []).filter((entity) => entity.domain === 'sensor').map((entity) => (
+                        <option key={entity.entity_id} value={entity.entity_id}>
+                          {`${entity.friendly_name}${entity.state !== null ? ` — ${entity.state}` : ''}${entity.unit_of_measurement ? ` ${entity.unit_of_measurement}` : ''}`}
+                        </option>
+                      ))}
+                    </datalist>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={applyPriceSensor}
+                      disabled={!canEditPriceSource || !priceSourcePending || !priceEntityValid || updateMutation.isPending}
+                    >
+                      {updateMutation.isPending && priceSourcePending && <Loader2 className="w-4 h-4 animate-spin" />}
+                      {updateMutation.isPending && priceSourcePending ? t('settings.electricityPriceReading') : t('settings.electricityPriceApply')}
+                    </Button>
+                  </div>
+                  <p className="text-xs text-bambu-gray mt-1">
+                    {localSettings.ha_enabled ? t('settings.electricityPriceEntityHelp') : t('settings.electricityPriceNeedsHA')}
+                  </p>
+                </div>
+              )}
+              <div>
                 <label className="block text-sm text-bambu-gray mb-1">
-                  {t('settings.electricityCost')}
+                  {savedPriceSource === 'homeassistant' ? t('settings.electricityCostLastRead') : t('settings.electricityCost')}
                 </label>
                 <div className="relative">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-bambu-gray text-sm pointer-events-none">
@@ -3399,10 +3524,14 @@ export function SettingsPage() {
                     value={localSettings.energy_cost_per_kwh}
                     onChange={(v) => updateSetting('energy_cost_per_kwh', v)}
                     fallback={0}
+                    disabled={savedPriceSource === 'homeassistant'}
                     style={{ paddingLeft: `${Math.max(2, getCurrencySymbol(localSettings.currency).length * 0.6 + 1)}rem` }}
-                    className="w-full pr-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    className="w-full pr-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none disabled:opacity-70"
                   />
                 </div>
+                {savedPriceSource === 'homeassistant' && (
+                  <p className="text-xs text-bambu-gray mt-1">{t('settings.electricityCostFromHAHelp')}</p>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -4633,7 +4762,9 @@ export function SettingsPage() {
             <p className="text-bambu-gray mb-4">
               {haTestResult.success
                 ? haTestResult.message || t('settings.haConnectionSuccess')
-                : haTestResult.error || t('settings.haConnectionFailed')}
+                : haTestResult.reason
+                  ? t(`settings.haTestReasons.${haTestResult.reason}`, { defaultValue: haTestResult.error || t('settings.haConnectionFailed') })
+                  : haTestResult.error || t('settings.haConnectionFailed')}
             </p>
             <div className="flex justify-end">
               <Button
@@ -4787,11 +4918,9 @@ export function SettingsPage() {
                         {plugEnergySummary.totalLifetime.toFixed(3)}
                         <span className="text-sm font-normal text-bambu-gray ml-1">kWh</span>
                       </div>
-                      {(localSettings?.energy_cost_per_kwh ?? 0) > 0 && (
-                        <div className="text-xs text-bambu-gray mt-1">
-                          ~{(plugEnergySummary.totalLifetime * (localSettings?.energy_cost_per_kwh ?? 0)).toFixed(2)} {getCurrencySymbol(localSettings?.currency || 'USD')}
-                        </div>
-                      )}
+                      {/* No money here: a lifetime total spans every price there ever was, and
+                          today's price times all of it is nobody's bill. The Statistics page costs
+                          the plugs' energy at the price of its own time. */}
                     </div>
                   </div>
                 ) : !energyLoading ? (

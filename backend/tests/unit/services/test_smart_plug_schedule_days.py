@@ -18,7 +18,10 @@ def schedule(monkeypatch):
     from backend.app.services import smart_plug_manager as module
 
     manager = SmartPlugManager()
-    plug = SmartPlug(id=1, name="Schedule test", plug_type="tasmota", enabled=True, schedule_enabled=True)
+    # A complete row: the control route refuses a Tasmota plug saved without its address.
+    plug = SmartPlug(
+        id=1, name="Schedule test", plug_type="tasmota", ip_address="192.168.1.50", enabled=True, schedule_enabled=True
+    )
     plug.schedule_on_time = None
     plug.schedule_off_time = None
     plug.last_state = "OFF"

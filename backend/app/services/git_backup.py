@@ -932,6 +932,9 @@ class GitBackupService:
                     # What that figure is -- an estimate must not come back as a measurement
                     # (spec plug-meter-watchdog W11). Only these keys of extra_data.
                     "energy_record": meter_watch.energy_record(a.extra_data),
+                    # Wear: the figure charged to this run and the rate applied -- facts of the run.
+                    "wear_cost": a.wear_cost,
+                    "wear_rate": a.wear_rate,
                     "quantity": a.quantity,
                     "created_at": a.created_at.isoformat() if a.created_at else None,
                     # ⚠️ Soft-deleted archives are collected too — the row is kept

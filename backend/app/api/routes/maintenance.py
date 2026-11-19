@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -323,6 +324,46 @@ async def restore_default_maintenance_types(
 # ============== Printer Maintenance ==============
 
 
+async def _find_maintenance_item(db: AsyncSession, printer_id: int, type_id: int) -> PrinterMaintenance | None:
+    return await db.scalar(
+        select(PrinterMaintenance)
+        .where(
+            PrinterMaintenance.printer_id == printer_id,
+            PrinterMaintenance.maintenance_type_id == type_id,
+        )
+        .options(selectinload(PrinterMaintenance.maintenance_type))
+        .execution_options(populate_existing=True)
+    )
+
+
+async def _get_or_create_maintenance_item(
+    db: AsyncSession, printer_id: int, type_id: int
+) -> tuple[PrinterMaintenance, bool]:
+    """The printer's row for this type and whether this call created it.
+
+    The insert runs in a savepoint: two reads of a new printer (two tabs, or the page and the check after a
+    finished print) each used to create the row. The unique index refuses the second insert; only the
+    savepoint is rolled back and the row the other reader created is taken instead.
+    """
+    item = PrinterMaintenance(
+        printer_id=printer_id,
+        maintenance_type_id=type_id,
+        enabled=True,
+        last_performed_hours=0.0,
+    )
+    try:
+        async with db.begin_nested():
+            db.add(item)
+            await db.flush()
+    except IntegrityError:
+        existing = await _find_maintenance_item(db, printer_id, type_id)
+        if existing is None:
+            # Not the pair's uniqueness (a printer or type deleted meanwhile): the caller's error.
+            raise
+        return existing, False
+    return item, True
+
+
 async def _get_printer_maintenance_internal(
     printer_id: int,
     db: AsyncSession,
@@ -354,17 +395,24 @@ async def _get_printer_maintenance_internal(
     now = datetime.now(timezone.utc)
     overview = _maintenance_overview(printer, total_hours, all_types, existing_items, now)
     # Only the existing detail workflow materializes missing system items.
+    created_ids: dict[int, int] = {}
+    taken = False
     for status in overview.maintenance_items:
         if status.id == 0:
-            item = PrinterMaintenance(
-                printer_id=printer_id,
-                maintenance_type_id=status.maintenance_type_id,
-                enabled=True,
-                last_performed_hours=0.0,
-            )
-            db.add(item)
-            await db.flush()
+            item, created = await _get_or_create_maintenance_item(db, printer_id, status.maintenance_type_id)
             status.id = item.id
+            if created:
+                created_ids[status.maintenance_type_id] = item.id
+            else:
+                existing_items[status.maintenance_type_id] = item
+                taken = True
+    if taken:
+        # A concurrent reader created some of the rows first, and they may already carry settings or a
+        # performance: the answer is computed again from the rows as they are, never from the defaults.
+        overview = _maintenance_overview(printer, total_hours, all_types, existing_items, now)
+        for status in overview.maintenance_items:
+            if status.id == 0:
+                status.id = created_ids[status.maintenance_type_id]
     if commit:
         await db.commit()
     return overview
@@ -592,18 +640,15 @@ async def assign_maintenance_type(
             PrinterMaintenance.maintenance_type_id == type_id,
         )
     )
-    existing = result.scalar_one_or_none()
+    existing = result.scalars().first()
     if existing:
         raise HTTPException(status_code=400, detail="Maintenance type already assigned to this printer")
 
-    # Create the assignment
-    item = PrinterMaintenance(
-        printer_id=printer_id,
-        maintenance_type_id=type_id,
-        enabled=True,
-        last_performed_hours=0.0,
-    )
-    db.add(item)
+    # Create the assignment. A concurrent assign (a double click) passed the check above too; the unique
+    # index refuses this one, and it gets the same answer as a late one.
+    item, created = await _get_or_create_maintenance_item(db, printer_id, type_id)
+    if not created:
+        raise HTTPException(status_code=400, detail="Maintenance type already assigned to this printer")
     await db.commit()
 
     # Re-fetch with relationship loaded for response serialization
@@ -698,7 +743,8 @@ async def perform_maintenance(
 
     # Calculate status
     interval = item.custom_interval_hours or item.maintenance_type.default_interval_hours
-    interval_type = getattr(item.maintenance_type, "interval_type", "hours") or "hours"
+    # The item's own interval type first, as the status list reads it.
+    interval_type = item.custom_interval_type or getattr(item.maintenance_type, "interval_type", "hours") or "hours"
     hours_since = current_hours - item.last_performed_hours
     hours_until = interval - hours_since
 

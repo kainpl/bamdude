@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import delete, or_, select, text
+from sqlalchemy import delete, or_, select, text, update
 
 from backend.app.api.routes import (
     ams_history,
@@ -1100,10 +1100,22 @@ async def _record_print_energy(
                 await db.commit()
                 return
 
-            from backend.app.api.routes.settings import get_setting
+            # The price of its own time (m245), from the database alone -- no network on this path.
+            # ``cost_per_kwh`` is the average price the figure is costed at: along the counter of
+            # this print's own source, each step at the price in effect when the step started.
+            from backend.app.services import energy_price
 
-            energy_cost_per_kwh = await get_setting(db, "energy_cost_per_kwh")
-            cost_per_kwh = float(energy_cost_per_kwh) if energy_cost_per_kwh else 0.15
+            price_history = await energy_price.load_history(db)
+            cost_per_kwh, tariff_method = await energy_price.print_price(
+                db,
+                plug.id,
+                price_history,
+                start_at=start_at,
+                start_kwh=starting_kwh,
+                end_at=read_at,
+                end_kwh=energy["total"],
+                source_since=source[1] if source is not None else None,
+            )
 
             # Every figure this writer settles is final, a measured one too (W9, review r1 MW-R4):
             # a later callback reads a later counter -- idle draw or the next job, never this print.
@@ -1115,6 +1127,7 @@ async def _record_print_energy(
                 "source_id": token_before,
                 "counter_delta_kwh": round(energy_used, 6),
                 "tariff": cost_per_kwh,
+                "tariff_method": tariff_method,
                 "final": True,
             }
             if start_source is not None and start_at is not None:
@@ -1150,6 +1163,7 @@ async def _record_print_energy(
                         counter_delta=energy_used,
                         tariff=cost_per_kwh,
                     )
+                    record["tariff_method"] = tariff_method
                     record["final"] = True
                     if started.get("energy_start_partial"):
                         record["start_partial"] = True
@@ -1165,6 +1179,11 @@ async def _record_print_energy(
                             logger.warning("[ENERGY-BG] Archive %s: stall episode not recorded: %s", archive_id, exc)
                     kind = assessment.kind
                     kwh = round(assessment.kwh, 4) if assessment.kwh is not None else None
+                    if kind == "estimated":
+                        # The counter stood still, so there are no steps to follow: an estimate is
+                        # costed at the time-weighted price of the window it was integrated over.
+                        cost_per_kwh = energy_price.average_price(price_history, start_at, window_end)
+                        tariff_method = energy_price.METHOD_WINDOW_AVERAGE
                     record = watch.provenance(
                         assessment,
                         plug,
@@ -1173,6 +1192,8 @@ async def _record_print_energy(
                         counter_delta=energy_used,
                         tariff=cost_per_kwh,
                     )
+                    if kind == "estimated":
+                        record["tariff_method"] = tariff_method
                     record["final"] = True
                     if started.get("energy_start_partial"):
                         record["start_partial"] = True
@@ -9690,6 +9711,18 @@ async def _on_print_complete_impl(
                     terminal_at = queue_item.completed_at
                     bound_archive.status = queue_status
                     bound_archive.completed_at = terminal_at
+                    # Wear: this end is measured (the printer's own report), and this is the
+                    # transition out of ``printing`` -- the later status update finds the row
+                    # terminal and stamps nothing.
+                    from backend.app.services import wear_cost as _wear_cost
+
+                    await _wear_cost.stamp_measured_end(
+                        db,
+                        bound_archive,
+                        printer_id=printer_id,
+                        ended_at=terminal_at,
+                        record_holds=lambda: printer_manager.life_holds(printer_id, data.get("_bamdude_printer_life")),
+                    )
                     if queue_status == "failed" and not bound_archive.failure_reason:
                         bound_archive.failure_reason = (
                             derive_failure_reason(
@@ -10280,6 +10313,8 @@ async def _on_print_complete_impl(
                 expected_identity=terminal_archive_identity,
                 expected_epoch=completion_epoch,
                 created_by_id=_print_user_id,
+                wear_printer_id=printer_id,
+                wear_record_holds=lambda: printer_manager.life_holds(printer_id, data.get("_bamdude_printer_life")),
             )
             if not updated:
                 return
@@ -11782,6 +11817,15 @@ def stop_printer_sensor_history_recording():
 _runtime_tracking_task: asyncio.Task | None = None
 RUNTIME_TRACKING_INTERVAL = 30  # Update every 30 seconds
 
+# Printers the runtime tracker has seen connected since this process started. One of them going offline clears
+# its stored timestamp, so the time it was away is not added when it comes back printing. A printer not seen
+# yet -- still connecting after a restart -- keeps the timestamp for a grace period: a print that ran on through
+# a restart of BamDude is counted from the stored timestamp, as before.
+_runtime_seen_connected: set[int] = set()
+# A printer never seen connected this long after the tracker started is offline, not still connecting: its
+# stored timestamp is from before a gap too.
+RUNTIME_STARTUP_GRACE_SECONDS = 120
+
 
 async def track_printer_runtime():
     """Background task to track printer active runtime (RUNNING state only).
@@ -11790,11 +11834,19 @@ async def track_printer_runtime():
     maintenance intervals (rod lubrication, belt checks, nozzle cleaning)
     which track mechanical wear. Pause time has no motion and no wear, so
     counting it inflates maintenance warnings (#1521).
+
+    Only the stretch between two consecutive RUNNING ticks of a connected
+    printer is added. A tick that finds the printer in any other state, not
+    connected or without a state clears ``last_runtime_update``, so the next
+    RUNNING tick starts a fresh interval instead of adding the whole gap
+    (upstream 175758d25): a printer that dropped off mid-print and came back
+    hours later with another print used to be credited with every hour between.
     """
     logger = logging.getLogger(__name__)
 
     # Wait for MQTT connections to establish on startup
     await asyncio.sleep(15)
+    started = time.monotonic()
 
     while True:
         try:
@@ -11811,16 +11863,40 @@ async def track_printer_runtime():
                 updated_count = 0
 
                 needs_commit = False
+                # A printer in maintenance mode or retired is outside the loop below, so its stamp would
+                # stand for as long as it is parked and the first RUNNING tick after its return would add
+                # the whole stretch. Parked is not printing.
+                parked = await db.execute(
+                    update(Printer)
+                    .where(Printer.last_runtime_update.is_not(None))
+                    .where(or_(Printer.is_active.is_(False), Printer.archived.is_(True)))
+                    .values(last_runtime_update=None)
+                )
+                if parked.rowcount:
+                    needs_commit = True
+                # Forgotten only once the cleared timestamps are saved: a commit that failed leaves the
+                # printer marked, and the next offline tick clears it again.
+                gone_offline: set[int] = set()
 
                 for printer in printers:
                     # Get current state from printer manager
                     state = printer_manager.get_status(printer.id)
-                    if not state:
-                        logger.debug("[%s] Runtime tracking: no state available", printer.name)
+                    if not state or not state.connected:
+                        logger.debug(
+                            "[%s] Runtime tracking: %s",
+                            printer.name,
+                            "not connected" if state else "no state available",
+                        )
+                        offline = printer.id in _runtime_seen_connected or (
+                            time.monotonic() - started > RUNTIME_STARTUP_GRACE_SECONDS
+                        )
+                        if offline:
+                            if printer.last_runtime_update is not None:
+                                printer.last_runtime_update = None
+                                needs_commit = True
+                            gone_offline.add(printer.id)
                         continue
-                    if not state.connected:
-                        logger.debug("[%s] Runtime tracking: not connected", printer.name)
-                        continue
+                    _runtime_seen_connected.add(printer.id)
 
                     # Only RUNNING accrues runtime — PAUSE is excluded so paused
                     # prints don't inflate hours-based maintenance wear (#1521).
@@ -11859,6 +11935,7 @@ async def track_printer_runtime():
                     await db.commit()
                     if updated_count > 0:
                         logger.debug("Updated runtime for %s printer(s)", updated_count)
+                _runtime_seen_connected.difference_update(gone_offline)
 
         except asyncio.CancelledError:
             logger.info("Runtime tracking cancelled")

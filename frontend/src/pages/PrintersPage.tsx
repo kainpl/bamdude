@@ -8023,6 +8023,7 @@ export function AddPrinterModal({
     // 0 = disabled, matching the backend default. Recycling a live MQTT link
     // on a timer is what broke swap-macro waits and blanked skip-objects state.
     mqtt_connection_timeout: 0,
+    wear_cost_per_hour: null as number | null,
     stagger_interval_minutes: 0,
     swap_mode_enabled: false,
     swap_profile: null,
@@ -8494,6 +8495,21 @@ export function AddPrinterModal({
                 </div>
               </div>
               <div>
+                <label className="block text-sm font-medium text-bambu-gray mb-1">
+                  {t('printers.modal.wearCostPerHourLabel')}
+                </label>
+                <NumberInput
+                  allowEmpty
+                  min={0}
+                  max={100000}
+                  step="any"
+                  value={form.wear_cost_per_hour}
+                  onChange={(v) => setForm({ ...form, wear_cost_per_hour: v })}
+                  className="w-32 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:ring-1 focus:ring-bambu-green"
+                />
+                <p className="text-xs text-bambu-gray mt-1">{t('printers.modal.wearCostPerHourHint')}</p>
+              </div>
+              <div>
                 <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.staggerInterval')}</label>
                 <div className="flex items-center gap-2">
                   <NumberInput
@@ -8948,6 +8964,7 @@ export function EditPrinterModal({
     is_active: printer.is_active,
     cleanup_after_print: printer.cleanup_after_print ?? false,
     mqtt_connection_timeout: printer.mqtt_connection_timeout ?? 0,
+    wear_cost_per_hour: (printer.wear_cost_per_hour ?? null) as number | null,
     stagger_interval_minutes: printer.stagger_interval_minutes ?? 0,
     swap_mode_enabled: printer.swap_mode_enabled ?? false,
     swap_profile: (printer.swap_profile ?? null) as string | null,
@@ -8992,6 +9009,8 @@ export function EditPrinterModal({
       is_active: form.is_active,
       cleanup_after_print: form.cleanup_after_print,
       mqtt_connection_timeout: form.mqtt_connection_timeout,
+      // An emptied field is sent as null: it clears the rate.
+      wear_cost_per_hour: form.wear_cost_per_hour,
       stagger_interval_minutes: form.stagger_interval_minutes,
       swap_mode_enabled: form.swap_mode_enabled,
       swap_profile: form.swap_mode_enabled ? form.swap_profile : null,
@@ -9192,6 +9211,21 @@ export function EditPrinterModal({
                   />
                   <span className="text-xs text-bambu-gray">{t('printers.modal.mqttConnectionTimeoutHint')}</span>
                 </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-bambu-gray mb-1">
+                  {t('printers.modal.wearCostPerHourLabel')}
+                </label>
+                <NumberInput
+                  allowEmpty
+                  min={0}
+                  max={100000}
+                  step="any"
+                  value={form.wear_cost_per_hour}
+                  onChange={(v) => setForm({ ...form, wear_cost_per_hour: v })}
+                  className="w-32 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:ring-1 focus:ring-bambu-green"
+                />
+                <p className="text-xs text-bambu-gray mt-1">{t('printers.modal.wearCostPerHourHint')}</p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-bambu-gray mb-1">{t('printers.modal.staggerInterval')}</label>

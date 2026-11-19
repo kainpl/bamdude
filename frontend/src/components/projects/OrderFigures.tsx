@@ -203,6 +203,9 @@ function StatsLine({ figures, money }: { figures: ProjectFigures; money: (value:
         : t('orders.figures.stats.costEnergy', { amount: money(energy) }),
     );
   }
+  // Wear is inside `total_cost` (the server adds it); shown as its own component.
+  const wear = figures.total_wear_cost ?? 0;
+  if (wear > 0) components.push(t('orders.figures.stats.costWear', { amount: money(wear) }));
   if (figures.procurement_partial) {
     components.push(
       figures.procurement_known_cost > 0

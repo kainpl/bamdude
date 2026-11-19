@@ -2,9 +2,10 @@
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +42,106 @@ async def _switched(plug_id: int, on: bool) -> None:
     from backend.app.services.mqtt_relay import mqtt_relay
 
     await mqtt_relay.on_smart_plug_switched(plug_id, on)
+
+
+def is_script_plug(plug) -> bool:
+    """A Home Assistant script entity: it can be run, not switched."""
+    entity = getattr(plug, "ha_entity_id", None)
+    return bool(getattr(plug, "plug_type", None) == "homeassistant" and entity and entity.startswith("script."))
+
+
+async def run_linked_scripts(printer_id: int, plug_state: str, db: AsyncSession) -> int:
+    """Run the Home Assistant scripts linked to a printer after its plug switched; how many ran.
+
+    ON runs the scripts with ``auto_on``, OFF those with ``auto_off``. ``enabled`` is the script's
+    automation switch here exactly as it is at print start (``on_print_start``): a disabled script
+    is run by nothing but its own button. Never raises — a script that fails must not undo, or be
+    reported as, the switch that triggered it; the outcome is logged by the script's name only.
+    """
+    from backend.app.models.smart_plug import SmartPlug
+
+    wanted = "auto_on" if plug_state == "ON" else "auto_off"
+    ran = 0
+    try:
+        rows = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id).order_by(SmartPlug.id))
+        scripts = [p for p in rows.scalars().all() if is_script_plug(p) and p.enabled and getattr(p, wanted)]
+        for script in scripts:
+            name = script.name
+            try:
+                service = await smart_plug_manager.get_service_for_plug(script, db)
+                if await service.turn_on(script):  # a script is run by calling turn_on
+                    ran += 1
+                    logger.info("Ran script '%s' after printer %s power %s", name, printer_id, plug_state)
+                else:
+                    logger.warning("Script '%s' did not run after printer %s power %s", name, printer_id, plug_state)
+            except Exception as e:
+                logger.error("Failed to run script '%s' (%s)", name, type(e).__name__)
+    except Exception as e:
+        logger.warning("Could not run the scripts linked to printer %s (%s)", printer_id, type(e).__name__)
+    return ran
+
+
+# (printer id, state) -> when its scripts last ran after an AUTOMATIC switch. Two plugs feeding one
+# printer both switch off after a print; the printer turned off once. Keyed by the printer, so it is
+# listed in ``printer_deletion._ID_KEYED``: the next printer given this id starts without it.
+_recent_automatic_script_runs: dict[tuple[int, str], float] = {}
+_AUTOMATIC_SCRIPT_RUN_WINDOW_S = 120.0
+
+
+async def plug_switched(
+    plug,
+    on: bool,
+    *,
+    scripts: Literal["automatic", "manual", "none"],
+    db: AsyncSession | None = None,
+    may_run: Callable[[], bool] | None = None,
+) -> None:
+    """THE call every place makes after a plug accepted a switch: the relay announce and the linked scripts.
+
+    One seam, so a new switch site cannot announce the switch and forget the scripts — and it must
+    say which rule applies (``scripts`` has no default; ``test_mqtt_relay_events.py`` fails a switch
+    that does not come through here). ``plug`` needs ``id``, and for scripts ``printer_id``,
+    ``plug_type``, ``ha_entity_id`` and ``controls_printer_power`` — a row or a stand-in.
+
+    - ``"manual"`` — the operator's explicit on / off: the scripts of the plug's printer run for any
+      plug that is not itself a script, on ``db``.
+    - ``"automatic"`` — BamDude switched it (schedule, auto-off, failure detection). Only a plug that
+      FEEDS the printer counts (``controls_printer_power`` — the flag that also decides "the printer
+      went offline"): an accessory switching is not the printer turning on or off. Once per printer
+      and direction within the window, however many plugs feed it. ``may_run`` is the caller's proof
+      that its print / printer is still the one it acted for; an automatic ON also stays behind the
+      crash-start pause, like the automatic ON of a plug itself.
+    - ``"none"`` — the announce alone: print start, whose "on" scripts are linked plugs in its own
+      loop; the queue waking a printer, whose print start follows; a toggle.
+    """
+    await _switched(plug.id, on)
+    printer_id = getattr(plug, "printer_id", None)
+    if scripts == "none" or not printer_id or is_script_plug(plug):
+        return
+    state = "ON" if on else "OFF"
+    if scripts == "manual":
+        await run_linked_scripts(printer_id, state, db)
+        return
+    if not getattr(plug, "controls_printer_power", True):
+        return
+    if may_run is not None and not may_run():
+        return
+    if on and not farm_startup_guard.allowed():
+        return
+    now = time.monotonic()
+    last = _recent_automatic_script_runs.get((printer_id, state))
+    if last is not None and now - last < _AUTOMATIC_SCRIPT_RUN_WINDOW_S:
+        return
+    _recent_automatic_script_runs[(printer_id, state)] = now
+    try:
+        # Its own short read: the caller's session may hold unflushed switch bookkeeping, and a
+        # script's HTTP call must not sit inside that transaction.
+        from backend.app.core.database import async_session
+
+        async with async_session() as session:
+            await run_linked_scripts(printer_id, state, session)
+    except Exception as e:
+        logger.warning("Could not run the scripts linked to printer %s (%s)", printer_id, type(e).__name__)
 
 
 class UnknownPlugTypeError(ValueError):
@@ -234,6 +335,16 @@ class SmartPlugManager:
         # an initial snapshot well before the first hour mark.
         await asyncio.sleep(30)
         while True:
+            # The price first (m245): with a Home Assistant sensor as its source it is read once per
+            # tick, BEFORE this tick's snapshots, so the steps that start at them are costed at the
+            # price of their hour. Its own transactions, no session open around the network read;
+            # a failed read keeps the last price and never costs the tick its snapshots.
+            try:
+                from backend.app.services import energy_price
+
+                await energy_price.refresh_from_homeassistant()
+            except Exception as e:
+                logger.warning("Electricity price refresh failed: %s", type(e).__name__)
             try:
                 await self._capture_energy_snapshots()
             except Exception as e:
@@ -396,7 +507,7 @@ class SmartPlugManager:
                             plug.last_state = "ON"
                             plug.last_checked = datetime.now(timezone.utc)
                             self._last_schedule_check[(plug.id, "on")] = scheduled_minute
-                            await _switched(plug.id, True)
+                            await plug_switched(plug, True, scripts="automatic")
 
                 # Check if we should turn off
                 if plug.schedule_off_time == current_time:
@@ -408,11 +519,11 @@ class SmartPlugManager:
                             plug.last_state = "OFF"
                             plug.last_checked = datetime.now(timezone.utc)
                             self._last_schedule_check[(plug.id, "off")] = scheduled_minute
-                            await _switched(plug.id, False)
                             # Mark printer offline if linked — but only for the plug
                             # that feeds its mains, not an accessory (#2629).
                             if plug.printer_id and plug.controls_printer_power:
                                 printer_manager.mark_printer_offline(plug.printer_id)
+                            await plug_switched(plug, False, scripts="automatic")
 
             await db.commit()
 
@@ -468,7 +579,9 @@ class SmartPlugManager:
                     plug.last_checked = datetime.now(timezone.utc)
                     plug.auto_off_executed = False
                     await db.commit()
-                    await _switched(plug.id, True)
+                    # No linked scripts from here: the "on" scripts are linked plugs with
+                    # auto_on, run by this very loop.
+                    await plug_switched(plug, True, scripts="none")
             except Exception:
                 # A failed service or DB transaction must not suppress the
                 # other plugs linked to this printer. Rollback clears a failed
@@ -705,6 +818,10 @@ class SmartPlugManager:
                     self.rest_off_body = rest_off_body
                     self.rest_method = rest_method
                     self.rest_headers = rest_headers
+                    # What plug_switched reads
+                    self.id = plug_id
+                    self.printer_id = printer_id
+                    self.controls_printer_power = controls_printer_power
 
             plug_info = PlugInfo()
             service = await self.get_service_for_plug(plug_info)
@@ -715,7 +832,6 @@ class SmartPlugManager:
 
             # Mark auto_off_executed in database and update printer status
             if success:
-                await _switched(plug_id, False)
                 if may_run is None:
                     await self._mark_auto_off_executed(plug_id)
                 else:
@@ -723,6 +839,7 @@ class SmartPlugManager:
                 # Mark the printer as offline immediately — mains plug only (#2629)
                 if controls_printer_power and (may_run is None or may_run()):
                     printer_manager.mark_printer_offline(printer_id)
+                await plug_switched(plug_info, False, scripts="automatic", may_run=may_run)
 
         except asyncio.CancelledError:
             logger.debug("Delayed turn-off cancelled for plug %s", plug_id)
@@ -848,6 +965,10 @@ class SmartPlugManager:
                                 self.rest_off_body = rest_off_body
                                 self.rest_method = rest_method
                                 self.rest_headers = rest_headers
+                                # What plug_switched reads
+                                self.id = plug_id
+                                self.printer_id = printer_id
+                                self.controls_printer_power = controls_printer_power
 
                         plug_info = PlugInfo()
                         service = await self.get_service_for_plug(plug_info)
@@ -861,7 +982,6 @@ class SmartPlugManager:
 
                         # Mark auto_off_executed in database and update printer status
                         if success:
-                            await _switched(plug_id, False)
                             if may_run is None:
                                 await self._mark_auto_off_executed(plug_id)
                             else:
@@ -869,6 +989,7 @@ class SmartPlugManager:
                             # Mark the printer as offline immediately — mains plug only (#2629)
                             if controls_printer_power and (may_run is None or may_run()):
                                 printer_manager.mark_printer_offline(printer_id)
+                            await plug_switched(plug_info, False, scripts="automatic", may_run=may_run)
 
                         break
 
@@ -1023,10 +1144,10 @@ class SmartPlugManager:
                         service = await self.get_service_for_plug(plug, db)
                         success = await service.turn_off(plug)
                         if success:
-                            await _switched(plug.id, False)
                             await self._mark_auto_off_executed(plug.id)
                             if plug.controls_printer_power:
                                 printer_manager.mark_printer_offline(plug.printer_id)
+                            await plug_switched(plug, False, scripts="automatic")
 
                 if pending_plugs:
                     logger.info("Resumed %s pending auto-off(s)", len(pending_plugs))

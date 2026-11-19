@@ -258,6 +258,8 @@ def archive_to_response(
         "energy_kwh": archive.energy_kwh,
         "energy_cost": archive.energy_cost,
         **meter_watch.energy_wire_fields(archive.extra_data, archive.energy_kwh),
+        "wear_cost": archive.wear_cost,
+        "wear_rate": archive.wear_rate,
         # The declaration through its reader: a legacy False and a malformed
         # record are unknown, never the column's False (spec r4 §9).
         **swap_compatibility.wire_fields(swap_compatibility.archive_fact(archive).value),

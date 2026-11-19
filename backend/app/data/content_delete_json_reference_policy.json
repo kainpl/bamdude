@@ -333,5 +333,10 @@
     "table": "zigbee_devices",
     "column": "reporting",
     "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "auto_queue_items.slicer_options": {
+    "table": "auto_queue_items",
+    "column": "slicer_options",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
   }
 }

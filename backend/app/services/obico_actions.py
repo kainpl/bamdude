@@ -50,24 +50,29 @@ def _pause_print(printer_id: int) -> None:
 
 
 async def _turn_off_linked_plugs(printer_id: int) -> None:
-    from backend.app.services.smart_plug_manager import smart_plug_manager
+    from backend.app.services.smart_plug_manager import is_script_plug, plug_switched, smart_plug_manager
 
     async with async_session() as db:
         plugs = await smart_plug_manager._get_plugs_for_printer(printer_id, db)
+        switched_off = []
         for plug in plugs:
-            if not plug.enabled:
+            # A script can only be run, never turned off: ``script/turn_off`` STOPS a script that is
+            # running. The printer's "off" scripts run through plug_switched below.
+            if not plug.enabled or is_script_plug(plug):
                 continue
             try:
                 service = await smart_plug_manager.get_service_for_plug(plug, db)
                 if await service.turn_off(plug):
-                    from backend.app.services.mqtt_relay import mqtt_relay
-
-                    await mqtt_relay.on_smart_plug_switched(plug.id, False)
+                    switched_off.append(plug)
                     logger.info("Obico action: turned off plug %s for printer %s", plug.name, printer_id)
                 else:
                     logger.warning("Obico action: plug %s for printer %s did not switch off", plug.name, printer_id)
             except Exception as e:
                 logger.error("Obico action: failed to turn off plug %s: %s", plug.name, e)
+        # After every plug is off: the announce, and the "off" scripts for the plug that feeds the
+        # printer — once, however many plugs feed it.
+        for plug in switched_off:
+            await plug_switched(plug, False, scripts="automatic")
 
 
 async def _notify(

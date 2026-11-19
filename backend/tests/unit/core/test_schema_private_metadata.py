@@ -12,11 +12,14 @@ from backend.app.core.schema_repair_state import AUDIT, DEBT, RESIDUALS
 
 @pytest.fixture
 async def session(tmp_path):
+    from backend.app.models.energy_price_history import EnergyPriceHistory
     from backend.app.models.settings import Settings
 
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'settings.db'}")
     async with engine.begin() as conn:
         await conn.run_sync(Settings.__table__.create)
+        # A reset puts the electricity price back to its default, which is a price change on record.
+        await conn.run_sync(EnergyPriceHistory.__table__.create)
     async with async_sessionmaker(engine, expire_on_commit=False)() as result:
         yield result
     await engine.dispose()

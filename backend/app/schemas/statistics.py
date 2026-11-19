@@ -112,6 +112,7 @@ class CostliestRecord(BaseModel):
     total: float = 0.0
     cost: float = 0.0
     energy_cost: float = 0.0
+    wear_cost: float = 0.0
 
 
 class Records(BaseModel):
@@ -167,6 +168,9 @@ class ArchiveStats(BaseModel):
     total_print_time_hours: float
     total_filament_grams: float
     total_cost: float
+    # Wear charged to the prints in the period: the figures stamped on them, summed. A print
+    # without one adds nothing. Not inside ``total_cost`` (filament), as energy is not.
+    total_wear_cost: float = 0.0
     prints_by_filament_type: dict
     prints_by_printer: dict
     # Time accuracy stats

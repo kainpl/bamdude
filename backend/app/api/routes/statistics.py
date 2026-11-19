@@ -39,7 +39,7 @@ from backend.app.schemas.statistics import (
 from backend.app.services import usage_reprice
 from backend.app.services.filament_cost import default_rate_per_kg
 from backend.app.services.statistics import aggregate as archive_aggregate
-from backend.app.services.statistics.energy import sum_live_plug_totals, sum_snapshot_deltas
+from backend.app.services.statistics.energy import live_totals_and_cost, range_energy_and_cost
 from backend.app.utils.http import build_content_disposition
 
 router = APIRouter(prefix="/statistics", tags=["statistics"])
@@ -232,12 +232,10 @@ async def get_archive_stats(
         for printer_key, accs in printer_accuracies.items():
             accuracy_by_printer[printer_key] = round(sum(accs) / len(accs), 1)
 
+    # Wear: the figures stamped on the prints themselves, summed; a print without one adds nothing.
+    total_wear_cost = (await db.execute(select(func.sum(PrintArchive.wear_cost)).where(*base_conditions))).scalar() or 0
+
     # Energy, both ways — see ArchiveStats for why there are two of each.
-    from backend.app.api.routes.settings import get_setting
-
-    energy_cost_per_kwh_str = await get_setting(db, "energy_cost_per_kwh")
-    energy_cost_per_kwh = float(energy_cost_per_kwh_str) if energy_cost_per_kwh_str else 0.15
-
     total_energy_kwh: float = 0.0
     total_energy_cost: float = 0.0
     energy_data_warming_up = False
@@ -264,9 +262,9 @@ async def get_archive_stats(
 
     # ── What the plugs measured, full stop ───────────────────────────────
     if not date_from and not date_to:
-        # All-time: the live lifetime counters.
-        total_energy_kwh = await sum_live_plug_totals(db)
-        total_energy_cost = total_energy_kwh * energy_cost_per_kwh
+        # All-time: the live lifetime counters, costed at the price of their own time (m245) —
+        # never at today's price, which re-costed the whole past at every tariff change.
+        total_energy_kwh, total_energy_cost = await live_totals_and_cost(db)
     else:
         # Total consumption mode with a date filter (#941): use hourly snapshots
         # to compute per-plug (endpoint - baseline) deltas.
@@ -282,8 +280,9 @@ async def get_archive_stats(
         # 999 microseconds of the range.
         dt_to = day_bounds(date_to, tz)[1] if date_to else None
 
-        total_energy_kwh, energy_data_warming_up = await sum_snapshot_deltas(db, dt_from=dt_from, dt_to=dt_to)
-        total_energy_cost = total_energy_kwh * energy_cost_per_kwh
+        total_energy_kwh, total_energy_cost, energy_data_warming_up = await range_energy_and_cost(
+            db, dt_from=dt_from, dt_to=dt_to
+        )
 
     return ArchiveStats(
         total_prints=total_prints,
@@ -294,6 +293,7 @@ async def get_archive_stats(
         total_print_time_hours=round(total_time, 1),
         total_filament_grams=round(total_filament, 1),
         total_cost=round(total_cost, 2),
+        total_wear_cost=round(total_wear_cost, 2),
         prints_by_filament_type=prints_by_filament,
         prints_by_printer=prints_by_printer,
         defects_by_printer=defects_by_printer,

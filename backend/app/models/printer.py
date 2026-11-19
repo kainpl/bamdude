@@ -136,6 +136,9 @@ class Printer(Base):
     # m120 zeroes the column on existing installations for the same reason.
     mqtt_connection_timeout: Mapped[int] = mapped_column(default=0)
     print_hours_offset: Mapped[float] = mapped_column(Float, default=0.0)  # Baseline hours to add
+    # Wear cost per printing hour (m246). NULL or 0 = off. Applies to prints that end after it
+    # was set; a stamped print keeps the rate it was charged at (``print_archives.wear_rate``).
+    wear_cost_per_hour: Mapped[float | None] = mapped_column(Float, nullable=True)
     runtime_seconds: Mapped[int] = mapped_column(default=0)  # Accumulated active runtime (RUNNING state only; #1521)
     last_runtime_update: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True

@@ -1079,25 +1079,27 @@ async def test_a_racing_episode_is_adopted_not_doubled(db_session, factory, monk
 async def test_a_rotation_after_the_end_read_is_unknown_not_a_measured_zero(
     db_session, printer_factory, factory, monkeypatch
 ):
-    from backend.app.api.routes import settings as settings_routes
+    from backend.app.services import energy_price
 
     printer, plug, start, end = await _print(db_session, printer_factory)
     await _power(db_session, plug.id, start - timedelta(minutes=1), end + timedelta(minutes=1), 200.0)
     await _snapshot(db_session, plug.id, start, 10.0)
     await _snapshot(db_session, plug.id, start + timedelta(minutes=30), 10.0)
     archive = await _archive(db_session, printer.id, plug, start, end, 10.0)
-    real_get_setting = settings_routes.get_setting
+    real_load_history = energy_price.load_history
 
-    async def rotate_then_read(db, key):
+    async def rotate_then_read(db):
         # An operator saves a new topic between the end read's check and the assessment.
         await db.execute(
             text("UPDATE smart_plugs SET measurement_source_id = :t, measurement_source_since = :s WHERE id = :p"),
             {"t": "d" * 32, "s": _naive(datetime.now(timezone.utc)), "p": plug.id},
         )
         await db.commit()
-        return await real_get_setting(db, key)
+        return await real_load_history(db)
 
-    monkeypatch.setattr(settings_routes, "get_setting", rotate_then_read)
+    # The price read is the last thing between the end read's check and the assessment (m245: the
+    # price history, where the setting used to be read).
+    monkeypatch.setattr(energy_price, "load_history", rotate_then_read)
     with _end_reading(10.0):
         await main._record_print_energy(archive.id, printer.id)
 
@@ -1247,7 +1249,7 @@ async def test_a_rotation_just_before_the_write_of_a_pre_watch_archive_is_unknow
     db_session, printer_factory, real_sessions, monkeypatch
 ):
     """A legacy baseline knows no source; the end read's token is what the write must still find."""
-    from backend.app.api.routes import settings as settings_routes
+    from backend.app.services import energy_price
 
     printer, plug, start, end = await _print(db_session, printer_factory)
     archive = PrintArchive(
@@ -1262,13 +1264,15 @@ async def test_a_rotation_just_before_the_write_of_a_pre_watch_archive_is_unknow
     )
     db_session.add(archive)
     await db_session.commit()
-    real_get_setting = settings_routes.get_setting
+    real_load_history = energy_price.load_history
 
-    async def rotate_then_read(db, key):
+    async def rotate_then_read(db):
         await _rotate(real_sessions, plug.id)
-        return await real_get_setting(db, key)
+        return await real_load_history(db)
 
-    monkeypatch.setattr(settings_routes, "get_setting", rotate_then_read)
+    # The price read is the last thing between the end read's check and the assessment (m245: the
+    # price history, where the setting used to be read).
+    monkeypatch.setattr(energy_price, "load_history", rotate_then_read)
     with _end_reading(10.3):
         await main._record_print_energy(archive.id, printer.id)
 

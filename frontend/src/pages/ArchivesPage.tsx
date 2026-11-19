@@ -1,5 +1,7 @@
 import { AutoEjectBadge } from '../components/AutoEjectBadge';
 import { ArchiveEnergyFact } from '../components/ArchiveEnergy';
+import { ArchiveWearFact } from '../components/ArchiveWear';
+import { hasWearFact } from '../utils/archiveWear';
 import { hasEnergyFact } from '../utils/archiveEnergy';
 import { RecoveryEndTime } from '../components/RecoveryEndTime';
 import { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
@@ -1104,7 +1106,7 @@ function ArchiveCard({
               {archive.filament_used_grams.toFixed(1)}g
             </div>
           )}
-          {(archive.cost != null || hasEnergyFact(archive)) && (
+          {(archive.cost != null || hasEnergyFact(archive) || hasWearFact(archive)) && (
             <div className="flex items-center gap-3 text-bambu-gray">
               {archive.cost != null && (
                 <div className="flex items-center gap-1.5">
@@ -1113,6 +1115,7 @@ function ArchiveCard({
                 </div>
               )}
               <ArchiveEnergyFact archive={archive} currency={currency} className="flex items-center gap-1.5" iconClassName="w-3 h-3" />
+              <ArchiveWearFact archive={archive} currency={currency} className="flex items-center gap-1.5" iconClassName="w-3 h-3" />
             </div>
           )}
           {(archive.layer_height || archive.total_layers) && (
@@ -2355,6 +2358,17 @@ function ArchiveListRow({
               facts.push(
                 <ArchiveEnergyFact
                   key="energy"
+                  archive={archive}
+                  currency={rowCurrency}
+                  className="flex items-center gap-1"
+                  iconClassName="w-2.5 h-2.5"
+                />,
+              );
+            }
+            if (hasWearFact(archive)) {
+              facts.push(
+                <ArchiveWearFact
+                  key="wear"
                   archive={archive}
                   currency={rowCurrency}
                   className="flex items-center gap-1"

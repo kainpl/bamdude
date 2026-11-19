@@ -35,6 +35,9 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
     queryKey: ['smart-plug-status', plug.id],
     queryFn: () => api.getSmartPlugStatus(plug.id),
     refetchInterval: 30000, // Refresh every 30 seconds
+    // A row the server marked as needing correction is not switched or read there; asking would
+    // only answer "unreachable" every time.
+    enabled: !plug.needs_attention,
   });
 
   // Fetch printers for linking
@@ -274,6 +277,25 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
             <div className="mb-3 px-2 py-1.5 bg-bambu-dark rounded-lg">
               <span className="text-xs text-bambu-gray">{t('smartPlugs.linkedTo')} </span>
               <span className="text-sm text-white">{linkedPrinter.name}</span>
+            </div>
+          )}
+
+          {plug.needs_attention && (
+            <div
+              role="status"
+              data-testid="plug-needs-attention"
+              className="mb-3 p-2 rounded-lg bg-yellow-100 dark:bg-yellow-500/20 text-xs text-yellow-800 dark:text-yellow-300 space-y-1"
+            >
+              <p className="flex items-center gap-1.5 font-medium">
+                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+                {t('smartPlugs.needsAttention.title')}
+              </p>
+              {(plug.problems ?? []).map((problem) => (
+                <p key={problem}>
+                  {t(`smartPlugs.needsAttention.problems.${problem}`, { defaultValue: t('smartPlugs.needsAttention.problems.invalid_value') })}
+                </p>
+              ))}
+              <p>{t('smartPlugs.needsAttention.advice')}</p>
             </div>
           )}
 

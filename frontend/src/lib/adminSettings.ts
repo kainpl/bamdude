@@ -2,6 +2,8 @@
 export const ADMIN_SETTING_FIELDS = new Set<string>([
   'bambu_studio_api_url',
   'docker_compose_dir',
+  'energy_price_ha_entity',
+  'energy_price_source',
   'external_url',
   'ha_enabled',
   'ha_token',

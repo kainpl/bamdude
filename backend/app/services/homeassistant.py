@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import math
+import ssl
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -12,6 +13,55 @@ if TYPE_CHECKING:
     from backend.app.models.smart_plug import SmartPlug
 
 logger = logging.getLogger(__name__)
+
+# Why a connection test failed: a closed set of codes, each with its fixed English sentence. The
+# settings page shows the reason by its CODE, in the interface language; the sentence is for an API
+# caller. Nothing here ever repeats the address, the token or an exception's own text.
+HA_TEST_FAILURES = {
+    "invalid_url": "The Home Assistant address is not accepted. Use an http or https address of the server.",
+    "unauthorized": "Home Assistant refused the access token.",
+    "unreachable": "Nothing answered at this address. Check the host, the port and the network.",
+    "timeout": "Home Assistant did not answer in time.",
+    "certificate_untrusted": "Home Assistant's certificate is not issued by an authority this server trusts.",
+    "certificate_mismatch": "Home Assistant's certificate was issued for another host name.",
+    "certificate_expired": "Home Assistant's certificate has expired.",
+    "not_https": "The secure connection failed. This address and port may be serving plain http.",
+    "redirect": "The server answered with a redirect. Enter the address Home Assistant itself answers at.",
+    "unexpected_answer": "The server answered, but not as Home Assistant's API does.",
+}
+
+
+def tls_failure(exc: BaseException) -> str | None:
+    """The reason code of a TLS failure anywhere in an exception's chain, or None when it is not TLS.
+
+    httpx raises an untrusted certificate as ``ConnectError`` — the same as an address nothing
+    answers on — so the cause chain is what tells them apart (upstream Bambuddy #3300).
+    """
+    seen: set[int] = set()
+    cause: BaseException | None = exc
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        if isinstance(cause, ssl.SSLCertVerificationError):
+            said = str(cause.verify_message or cause.reason or "").lower()
+            if "mismatch" in said:
+                return "certificate_mismatch"
+            if "expired" in said:
+                return "certificate_expired"
+            return "certificate_untrusted"
+        if isinstance(cause, ssl.SSLError):
+            return "not_https"
+        cause = cause.__cause__ or cause.__context__
+    return None
+
+
+def _log_destination(url: str) -> str:
+    """Scheme, host and port of an address for a log line: no user info, path or query."""
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or "?"
+        return f"{parsed.scheme}://{host}" + (f":{parsed.port}" if parsed.port else "")
+    except ValueError:
+        return "?"
 
 
 class HomeAssistantService:
@@ -228,40 +278,78 @@ class HomeAssistantService:
         host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
         return f"{parsed.scheme.lower()}://{host}" + (f":{parsed.port}" if parsed.port else "") + (parsed.path or "")
 
+    async def read_state(self, url: str, token: str, entity_id: str, *, timeout: float | None = None) -> dict:
+        """One entity's state object, for an explicit (already frozen) connection.
+
+        Raises instead of answering None: the caller tells a timeout from a missing entity from an
+        unreachable server. Nothing is logged here -- a transport error's text names the URL.
+        """
+        safe_url = self._validate_url(url)
+        if not safe_url:
+            raise ValueError("Invalid Home Assistant URL")
+        async with httpx.AsyncClient(timeout=self.timeout if timeout is None else timeout) as client:
+            response = await client.get(
+                f"{safe_url.rstrip('/')}/api/states/{entity_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            response.raise_for_status()
+            return response.json()
+
     async def test_connection(self, url: str, token: str) -> dict:
         """Test connection to Home Assistant.
 
         Returns dict with:
             - success: bool
             - message: str or None (HA message on success)
-            - error: str or None (error message on failure)
+            - reason: a code of ``HA_TEST_FAILURES`` on failure, else None
+            - error: that code's sentence on failure, else None
+
+        TLS is verified and no redirect is followed, exactly as for every other call of this
+        service; a failure only gets its name. The reason is logged with the destination's host
+        alone — never the token, the address's user info or path, or an exception's text.
         """
+
+        def failed(reason: str) -> dict:
+            logger.warning(
+                "Home Assistant connection test failed: reason=%s destination=%s", reason, _log_destination(url)
+            )
+            return {"success": False, "message": None, "reason": reason, "error": HA_TEST_FAILURES[reason]}
+
         safe_url = self._validate_url(url)
         if not safe_url:
-            return {"success": False, "message": None, "error": "Invalid Home Assistant URL"}
+            return failed("invalid_url")
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(
                     f"{safe_url.rstrip('/')}/api/",
                     headers={"Authorization": f"Bearer {token}"},
                 )
-                response.raise_for_status()
-                data = response.json()
-                return {
-                    "success": True,
-                    "message": data.get("message", "Connected"),
-                    "error": None,
-                }
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401:
-                return {"success": False, "message": None, "error": "Invalid access token"}
-            return {"success": False, "message": None, "error": f"HTTP {e.response.status_code}"}
         except httpx.TimeoutException:
-            return {"success": False, "message": None, "error": "Connection timeout"}
-        except httpx.ConnectError:
-            return {"success": False, "message": None, "error": "Could not connect to Home Assistant"}
+            return failed("timeout")
+        except httpx.InvalidURL:
+            return failed("invalid_url")
         except Exception as e:
-            return {"success": False, "message": None, "error": str(e)}
+            reason = tls_failure(e)
+            if reason is None:
+                # Refused, unresolved, reset, a protocol the server does not speak: nothing usable answered.
+                reason = "unreachable" if isinstance(e, httpx.TransportError) else "unexpected_answer"
+            return failed(reason)
+        status = response.status_code
+        if status in (401, 403):
+            return failed("unauthorized")
+        if 300 <= status < 400:
+            return failed("redirect")
+        if not 200 <= status < 300:
+            return failed("unexpected_answer")
+        try:
+            data = response.json()
+        except ValueError:
+            data = None
+        # Home Assistant's API root answers {"message": "API running."}; any other 2xx is some
+        # other web server at this address.
+        if not isinstance(data, dict) or not isinstance(data.get("message"), str):
+            return failed("unexpected_answer")
+        return {"success": True, "message": data["message"], "reason": None, "error": None}
 
     async def list_entities(self, url: str, token: str, search: str | None = None) -> list[dict]:
         """List available entities from HA.

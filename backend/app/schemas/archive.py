@@ -208,6 +208,9 @@ class ArchiveResponse(BaseModel):
     # Energy tracking
     energy_kwh: float | None = None
     energy_cost: float | None = None
+    # Wear charged to this run and the printer's rate per hour applied; None = no figure, never 0.
+    wear_cost: float | None = None
+    wear_rate: float | None = None
     # What that figure is (spec plug-meter-watchdog W11, ``meter_watch.energy_wire_fields``):
     # measured / approximate / estimated / unavailable, or None when there is no energy at all.
     energy_status: str | None = None

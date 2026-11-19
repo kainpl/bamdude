@@ -31,9 +31,11 @@ DRIVERS = {
 }
 # A function that calls a driver's turn_on for something that is not a plug.
 NOT_A_SWITCH = {
-    ("api/routes/smart_plugs.py", "trigger_associated_scripts"): "runs Home Assistant scripts, which are not plugs",
+    ("services/smart_plug_manager.py", "run_linked_scripts"): "runs Home Assistant scripts, which are not plugs",
 }
-ANNOUNCERS = {"on_smart_plug_switched", "_switched"}
+# The one seam: it announces the switch AND runs the printer's linked scripts by the rule its caller
+# names. A switch site that called the relay itself would announce and forget the scripts.
+ANNOUNCERS = {"plug_switched"}
 
 
 def _functions(tree):

@@ -670,9 +670,10 @@ class PrintScheduler:
                                 try:
                                     service = await smart_plug_manager.get_service_for_plug(extra_plug, db)
                                     if farm_startup_guard.allowed() and await service.turn_on(extra_plug):
-                                        from backend.app.services.mqtt_relay import mqtt_relay
+                                        from backend.app.services.smart_plug_manager import plug_switched
 
-                                        await mqtt_relay.on_smart_plug_switched(extra_plug.id, True)
+                                        # The print start that follows runs the "on" scripts.
+                                        await plug_switched(extra_plug, True, scripts="none")
                                         logger.info(
                                             "Also powered on plug '%s' for printer %s", extra_plug.name, printer_id
                                         )
@@ -2624,9 +2625,10 @@ class PrintScheduler:
             if not success:
                 logger.warning("Failed to turn on smart plug '%s'", plug.name)
                 return False
-            from backend.app.services.mqtt_relay import mqtt_relay
+            from backend.app.services.smart_plug_manager import plug_switched
 
-            await mqtt_relay.on_smart_plug_switched(plug.id, True)
+            # The print start that follows runs the "on" scripts.
+            await plug_switched(plug, True, scripts="none")
             logger.info("Powered on smart plug '%s' for printer %s", plug.name, printer_id)
 
         # Get printer from database for connection

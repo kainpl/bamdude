@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from itertools import count
@@ -1954,12 +1955,20 @@ class ArchiveService:
         expected_identity: str | None = None,
         expected_epoch: int | None = None,
         created_by_id: int | None = None,
+        wear_printer_id: int | None = None,
+        wear_record_holds: Callable[[], bool] | None = None,
     ) -> bool:
         """Update the status of an archive.
 
         ``failure_reason`` is the short cause code (VARCHAR(100), e.g.
         "Filament runout"); ``error_message`` is the verbose diagnostic text
         (TEXT) carried over from the queue item on failure.
+
+        ``wear_printer_id`` + ``wear_record_holds`` are the live completion's alone: its
+        ``completed_at`` is a measured end, so the transition out of ``printing`` is
+        where the wear figure is stamped (``services/wear_cost.py``). A row that is
+        already terminal -- the bound path finalised it with its queue item -- is not
+        stamped again.
         """
         from backend.app.services import queue_sources
         from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
@@ -1977,9 +1986,26 @@ class ArchiveService:
                 return False
             if created_by_id is not None and archive.created_by_id is None:
                 archive.created_by_id = created_by_id
+            leaves_printing = archive.status == "printing"
             archive.status = status
             if completed_at:
                 archive.completed_at = completed_at
+            if (
+                leaves_printing
+                and completed_at
+                and status in ("completed", "failed", "aborted", "cancelled")
+                and wear_printer_id is not None
+                and wear_record_holds is not None
+            ):
+                from backend.app.services import wear_cost
+
+                await wear_cost.stamp_measured_end(
+                    self.db,
+                    archive,
+                    printer_id=wear_printer_id,
+                    ended_at=completed_at,
+                    record_holds=wear_record_holds,
+                )
             if failure_reason:
                 archive.failure_reason = failure_reason
             elif status == "failed" and not archive.failure_reason:
