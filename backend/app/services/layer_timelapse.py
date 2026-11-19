@@ -15,9 +15,17 @@ What this unit changed, and why:
   video.
 * **Nothing is removed under a writer or a reader.** A frame being written and
   an ffmpeg reading the frames both hold the session (:attr:`TimelapseSession._busy`);
-  ``cleanup`` asked meanwhile is carried out when the last of them has ended. A
-  stitch whose ffmpeg could not be reaped pins the directory for the life of
-  the process.
+  ``cleanup`` asked meanwhile is carried out when the last of them has ended.
+* **A disk write is owned until its THREAD ends** (:func:`_owned_io`), not until
+  the coroutine that asked for it does: a capture that is cancelled, or whose
+  session is detached or cancelled meanwhile, leaves its write counted in
+  :data:`_io`, and a restore's drain is refused while one is still running.
+* **A stitch whose ffmpeg could not be reaped pins the session**
+  (:data:`_pinned_sessions`) for the life of the process: no cleanup, no
+  retention bound, no startup-style sweep and no drain treats its frames or its
+  output as free.
+* **One encoder for the process**, shared with the editor (``encoder_slot``):
+  two stitches, or a stitch and an edit, never encode together.
 * **The stitch is an owned, bounded child** (``media_child``): two encoder
   threads and a short lookahead, a time limit that grows with the number of
   frames (:func:`stitch_limit`), an idle limit on ffmpeg's own progress output,
@@ -25,7 +33,10 @@ What this unit changed, and why:
 * **A failed stitch keeps its frames.** Failure, a cancelled stitch, a
   publication that was refused and a restart leave the frames ``retained`` for
   a manual recovery — bounded: :data:`RETAIN_SECONDS` and :data:`RETAIN_BYTES`
-  over all retained sessions, oldest first. The unfinished output is removed
+  over all retained sessions, oldest first. EVERY step into ``retained``
+  applies the bounds at once (:meth:`TimelapseSession.retain`), and a running
+  server applies them again every :data:`RETENTION_INTERVAL_SECONDS`
+  (:func:`start_janitor`), so frames past their time go without a restart. The unfinished output is removed
   by the stitch that made it. Frames go only after the video was published
   (the caller says so) or the print itself failed.
 * **Capture is bounded too.** When the frames of the sessions being recorded
@@ -61,6 +72,7 @@ from backend.app.core.config import settings
 from backend.app.services import media_child
 from backend.app.services.camera import apply_camera_rotation
 from backend.app.services.camera_runtime import CameraCaptureRequest, capture
+from backend.app.services.encoder_slot import encoder_slot
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +97,8 @@ STITCH_MIN_SECONDS = 300.0
 STITCH_SECONDS_PER_FRAME = 0.5
 STITCH_MAX_SECONDS = 3600.0
 STITCH_IDLE_SECONDS = 60.0
+#: How often a running server applies the retention bounds again.
+RETENTION_INTERVAL_SECONDS = 3600.0
 ENCODER_THREADS = 2
 ENCODER_LOOKAHEAD = 10
 
@@ -96,7 +110,12 @@ _OUTPUT_NAME = re.compile(r"timelapse_([0-9a-f]{32})\.mp4")
 _active_sessions: dict[int, "TimelapseSession"] = {}
 # Sessions detached from their printer and being stitched: {session_id: TimelapseSession}
 _finalizing: dict[str, "TimelapseSession"] = {}
+# Sessions whose encoder was not reaped: it may still read the frames and write the output.
+_pinned_sessions: dict[str, "TimelapseSession"] = {}
+# Disk writes of this module still running in a worker thread, whoever asked for them has gone or not.
+_io: set = set()
 _closed = False
+_janitor: asyncio.Task | None = None
 
 
 def get_ffmpeg_path() -> str | None:
@@ -159,6 +178,26 @@ def _directory_bytes(directory: Path) -> int:
     except OSError:
         return total
     return total
+
+
+def _owned_io(session: "TimelapseSession", function, *args) -> asyncio.Future:
+    """Run one disk write in a worker thread, owned until the THREAD ends.
+
+    The session is held and the write is counted in :data:`_io` from here to the
+    thread's own end — by a callback on the future, not by the caller's
+    ``finally``. A caller that is cancelled stops waiting; the write does not
+    stop being a write, and the directory is not removed under it.
+    """
+    session._hold()
+    future = asyncio.get_running_loop().run_in_executor(None, function, *args)
+    _io.add(future)
+
+    def ended(_done) -> None:
+        _io.discard(future)
+        session._release()
+
+    future.add_done_callback(ended)
+    return future
 
 
 @dataclass(eq=False)
@@ -242,7 +281,13 @@ class TimelapseSession:
             self._remove()
 
     def retain(self, reason: str) -> None:
-        """Keep the frames for a manual recovery, within the retention bounds. Never undoes a ``cleanup``."""
+        """Keep the frames for a manual recovery, within the retention bounds. Never undoes a ``cleanup``.
+
+        The bounds are applied here, at every step into ``retained`` — also when
+        the stitch succeeded and the archive then refused the video: what is
+        kept is counted the moment it starts being kept. Blocking disk work; a
+        caller on the event loop hands it to a thread.
+        """
         if self._discard:
             return
         self.state = STATE_RETAINED
@@ -254,6 +299,8 @@ class TimelapseSession:
             self.frame_count,
             reason,
         )
+        with contextlib.suppress(Exception):
+            apply_retention()
 
     # -- capture -----------------------------------------------------------------------
 
@@ -341,7 +388,8 @@ class TimelapseSession:
                 if self._discard or self.state != STATE_ACTIVE:
                     return False  # cancelled or detached while the camera answered: nothing is written
                 frame_path = self.frames_dir / f"layer_{layer_num:05d}.jpg"
-                await asyncio.to_thread(frame_path.write_bytes, frame_data)
+                # Shielded: this caller may be cancelled, the write is owned to its thread's end.
+                await asyncio.shield(_owned_io(self, frame_path.write_bytes, frame_data))
                 self.frame_count += 1
                 self.bytes_written += len(frame_data)
                 logger.debug(
@@ -391,7 +439,7 @@ class TimelapseSession:
         self._hold()  # the encoder reads the frames: nothing removes them until it has ended
         try:
             try:
-                frames = await asyncio.to_thread(self._write_concat, fps)
+                frames = await asyncio.shield(_owned_io(self, self._write_concat, fps))
             except OSError as e:
                 logger.error("Failed to create concat file: %s", e)
                 self.failure = "concat_failed"
@@ -433,18 +481,28 @@ class TimelapseSession:
                 "mp4",
                 str(output_path),
             ]
-            result = await media_child.run(
-                cmd,
-                name="timelapse-stitch",
-                hard_seconds=stitch_limit(frames),
-                idle_seconds=STITCH_IDLE_SECONDS,
-                stop=self.stop,
-                on_line=lambda _line: None,  # progress lines keep the idle limit away
-                cwd=self.frames_dir,  # the concat list names the frames relatively
-            )
+            # One encoder for the process, shared with the editor: taken in one step, first come first served.
+            ticket = await encoder_slot.acquire(self.stop)
+            if ticket is None:
+                self.failure = media_child.CANCELLED
+                return False
+            try:
+                result = await media_child.run(
+                    cmd,
+                    name="timelapse-stitch",
+                    hard_seconds=stitch_limit(frames),
+                    idle_seconds=STITCH_IDLE_SECONDS,
+                    stop=self.stop,
+                    on_line=lambda _line: None,  # progress lines keep the idle limit away
+                    cwd=self.frames_dir,  # the concat list names the frames relatively
+                )
+            finally:
+                encoder_slot.release(ticket)
             if result.status == media_child.UNREAPED:
-                # It may still be reading the frames and writing the output: neither is touched again.
+                # It may still be reading the frames and writing the output: neither is touched again,
+                # by anybody — the pin is registered for every cleanup path and for the drain.
                 self._pinned = True
+                _pinned_sessions[self.session_id] = self
                 self.failure = result.status
                 return False
             if not result.ok:
@@ -582,7 +640,9 @@ async def finish_session(session: TimelapseSession | None, *, keep_frames: bool 
                 session.cleanup()
             return output_path
         logger.error("Timelapse stitch for printer %s did not give a video (%s)", session.printer_id, session.failure)
-        session.retain(f"stitch_{session.failure}")
+        # Disk work (the manifest): off the loop. The bounds are applied below, once this session
+        # is no longer counted as being finalised.
+        await asyncio.to_thread(session.retain, f"stitch_{session.failure}")
         return None
     except asyncio.CancelledError:
         session.retain("stitch_cancelled")
@@ -643,24 +703,63 @@ async def quiesce(seconds: float = 30.0) -> bool:
     for session in list(_finalizing.values()):
         session.stop.set()
     deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        if not _finalizing and not any(session.busy for session in _active_sessions.values()):
+    while True:
+        # Physical writes are counted by their own threads (``_io``), whatever became of the request
+        # or of the session's place in the registries; an unreaped encoder is never "ended".
+        if not _finalizing and not _io and not _pinned_sessions:
             return True
-        await asyncio.sleep(0.2)
+        if time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(min(0.2, max(deadline - time.monotonic(), 0.01)))
     logger.warning(
-        "Layer timelapse not drained after %.0fs: %s stitch(es), %s capture write(s) still running",
+        "Layer timelapse not drained after %.2fs: %s stitch(es), %s disk write(s) still running, "
+        "%s encoder(s) whose end was not seen",
         seconds,
         len(_finalizing),
-        sum(1 for session in _active_sessions.values() if session.busy),
+        len(_io),
+        len(_pinned_sessions),
     )
     return False
+
+
+async def _retention_loop(interval: float) -> None:
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            removed = await asyncio.to_thread(apply_retention)
+            if removed:
+                logger.info("Removed %s retained timelapse frame director%s", removed, "y" if removed == 1 else "ies")
+        except Exception as exc:  # noqa: BLE001 — the next round tries again
+            logger.debug("Timelapse retention round failed: %s", type(exc).__name__)
+
+
+def start_janitor(interval: float | None = None) -> asyncio.Task:
+    """Lifespan startup: apply the retention bounds again every ``interval`` while the server runs."""
+    global _janitor
+    if _janitor is None or _janitor.done():
+        _janitor = asyncio.ensure_future(_retention_loop(RETENTION_INTERVAL_SECONDS if interval is None else interval))
+    return _janitor
+
+
+async def stop_janitor() -> None:
+    """Lifespan shutdown: the periodic round is cancelled and waited for."""
+    global _janitor
+    task, _janitor = _janitor, None
+    if task is not None and not task.done():
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
 
 
 # -- the janitor -------------------------------------------------------------------------
 
 
 def _live_ids() -> set[str]:
-    return {session.session_id for session in (*_active_sessions.values(), *_finalizing.values())}
+    """Sessions no janitor may touch: recorded, being stitched, or pinned by an encoder whose end was not seen."""
+    return {
+        session.session_id
+        for session in (*_active_sessions.values(), *_finalizing.values(), *_pinned_sessions.values())
+    }
 
 
 def _adopt_legacy(directory: Path) -> dict | None:

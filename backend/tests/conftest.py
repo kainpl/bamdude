@@ -504,9 +504,13 @@ def _media_work_admission_bootstrap():
     stays closed.
     """
     from backend.app.services import layer_timelapse
+    from backend.app.services.encoder_slot import encoder_slot
     from backend.app.services.timelapse_editor import timelapse_edit_runtime
 
     layer_timelapse.reopen()
+    # A test models a fresh process: no encoder is running and none is waiting to be reaped.
+    layer_timelapse._pinned_sessions.clear()
+    encoder_slot.reset()
     if timelapse_edit_runtime.closed:
         try:
             timelapse_edit_runtime.reopen()

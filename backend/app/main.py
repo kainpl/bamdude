@@ -10938,7 +10938,10 @@ async def _on_print_complete_impl(
                             # Open Archives pages learn of it, as they do for a printer's recording.
                             await ws_manager.send_archive_updated({"id": archive_id, "timelapse_attached": True})
                         else:
-                            layer_session.retain(f"not_published_{service.media_refusal or 'unknown'}")
+                            # Counted against the retention bounds at once; disk work, so off the loop.
+                            await asyncio.to_thread(
+                                layer_session.retain, f"not_published_{service.media_refusal or 'unknown'}"
+                            )
                             logger.info(
                                 "[LAYER-TL] Layer timelapse was not attached to archive %s (%s); its frames are kept",
                                 archive_id,
@@ -12293,6 +12296,8 @@ async def _application_lifespan(app: FastAPI):
 
         _layer_timelapse.reopen()
         await asyncio.to_thread(sweep_orphaned_frames)
+        # And again every hour while the server runs: frames past their time go without a restart.
+        _layer_timelapse.start_janitor()
     except Exception as _tl_sweep_exc:
         logging.getLogger(__name__).debug("Timelapse frame sweep skipped: %s", _tl_sweep_exc)
 
@@ -13308,6 +13313,7 @@ async def _application_lifespan(app: FastAPI):
     # stay retained) before the seam is drained (G10 F).
     from backend.app.services import layer_timelapse as _layer_timelapse_stop
 
+    await _layer_timelapse_stop.stop_janitor()
     if not await _layer_timelapse_stop.quiesce(15):
         logging.getLogger(__name__).warning("Layer timelapse work did not end before shutdown; recording stays closed")
     # Edit jobs stop their encoders before the seam they publish through is drained (G10 E).

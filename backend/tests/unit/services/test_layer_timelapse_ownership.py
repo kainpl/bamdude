@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from backend.app.services import layer_timelapse as lt, media_child, timelapse_processor
+from backend.app.services.encoder_slot import encoder_slot
 
 FFMPEG = shutil.which("ffmpeg")
 FFPROBE = shutil.which("ffprobe")
@@ -31,10 +32,14 @@ def frames(tmp_path, monkeypatch):
     monkeypatch.setattr(timelapse_processor, "get_ffmpeg_path", lambda: FFMPEG)
     lt._active_sessions.clear()
     lt._finalizing.clear()
+    lt._pinned_sessions.clear()
+    encoder_slot.reset()
     lt.reopen()
     yield tmp_path / lt.FRAMES_DIRNAME
     lt._active_sessions.clear()
     lt._finalizing.clear()
+    lt._pinned_sessions.clear()
+    encoder_slot.reset()
     lt.reopen()
     deadline = time.monotonic() + 15
     while media_child.live() and time.monotonic() < deadline:
@@ -417,3 +422,245 @@ class TestJanitor:
     def test_a_missing_tree_is_not_an_error(self, frames):
         assert not frames.exists()
         assert lt.sweep_orphaned_frames() == 0
+
+
+class TestAWriteIsOwnedUntilItsThreadEnds:
+    """Codex F1: a restore was told the recorder had drained while a thread was still writing a JPEG."""
+
+    @staticmethod
+    def _blocked_writes(monkeypatch):
+        import threading
+
+        entered, release = threading.Event(), threading.Event()
+        real = Path.write_bytes
+
+        def write(path, data):
+            if path.suffix == ".jpg":
+                entered.set()
+                assert release.wait(20)
+            return real(path, data)
+
+        monkeypatch.setattr(Path, "write_bytes", write)
+        return entered, release
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("how", ["cancel the capture", "cancel the session", "detach the session"])
+    async def test_the_drain_is_refused_until_the_thread_has_written(self, monkeypatch, how):
+        monkeypatch.setattr("backend.app.api.routes.camera.live_frame_for_capture", lambda _pid: (True, b"frame"))
+        session = _session()
+        entered, release = self._blocked_writes(monkeypatch)
+        capturing = asyncio.create_task(session.capture_layer(1))
+        try:
+            assert await asyncio.to_thread(entered.wait, 10)
+            if how == "cancel the capture":
+                capturing.cancel()
+                await asyncio.sleep(0.05)
+            elif how == "cancel the session":
+                lt.cancel_session(1)  # leaves the registry the drain used to read
+            else:
+                assert lt.take_session(1, session) is session
+            assert await lt.quiesce(0.2) is False  # the thread is still inside the write
+            assert session.frames_dir.is_dir()  # and nothing was removed under it
+        finally:
+            release.set()
+            await asyncio.gather(capturing, return_exceptions=True)
+        assert await lt.quiesce(5) is True  # the thread ended: now it is drained
+        if how == "cancel the session":
+            assert not session.frames_dir.exists()  # the cleanup asked meanwhile ran after the write
+
+    @pytest.mark.asyncio
+    async def test_the_concat_list_is_an_owned_write_too(self, monkeypatch):
+        import threading
+
+        monkeypatch.setattr(lt, "get_ffmpeg_path", lambda: sys.executable)
+        entered, release = threading.Event(), threading.Event()
+        session = lt.take_session(1, _session())
+        _fill(session, 2)
+        real = session._write_concat
+
+        def slow(fps):
+            entered.set()
+            assert release.wait(20)
+            return real(fps)
+
+        monkeypatch.setattr(session, "_write_concat", slow)
+
+        async def ended(_argv, **_kwargs):
+            return media_child.ChildResult(media_child.CANCELLED)
+
+        monkeypatch.setattr(lt.media_child, "run", ended)
+        finishing = asyncio.create_task(lt.finish_session(session, keep_frames=True))
+        try:
+            assert await asyncio.to_thread(entered.wait, 10)
+            finishing.cancel()
+            await asyncio.sleep(0.05)
+            assert len(lt._io) == 1 and await lt.quiesce(0.2) is False
+        finally:
+            release.set()
+            await asyncio.gather(finishing, return_exceptions=True)
+        assert await lt.quiesce(5) is True
+
+
+class TestAnUnreapedEncoderPinsEverywhere:
+    """Codex F2: the stitch that set the pin then ran the retention bound, which removed the frames."""
+
+    @staticmethod
+    async def _unreaped(monkeypatch, session):
+        monkeypatch.setattr(lt, "get_ffmpeg_path", lambda: sys.executable)
+
+        async def unreaped(_argv, **_kwargs):
+            return media_child.ChildResult(media_child.UNREAPED, reason="not reaped after timeout")
+
+        monkeypatch.setattr(lt.media_child, "run", unreaped)
+        output = session.frames_dir.parent / f"timelapse_{session.session_id}.mp4"
+        output.write_bytes(b"half a video")
+        assert await lt.finish_session(session) is None
+        return output
+
+    @pytest.mark.asyncio
+    async def test_under_the_byte_bound_the_pinned_frames_and_output_stay(self, monkeypatch):
+        monkeypatch.setattr(lt, "RETAIN_BYTES", 1)
+        session = lt.take_session(1, _session())
+        _fill(session, 2)
+        output = await self._unreaped(monkeypatch, session)
+        assert session._pinned and session.session_id in lt._pinned_sessions
+        assert len(list(session.frames_dir.glob("layer_*.jpg"))) == 2 and output.is_file()
+
+    @pytest.mark.asyncio
+    async def test_past_the_time_bound_and_through_a_sweep_they_stay(self, monkeypatch):
+        session = lt.take_session(1, _session())
+        _fill(session, 2)
+        output = await self._unreaped(monkeypatch, session)
+        far_future = time.time() + 10 * lt.RETAIN_SECONDS
+        assert lt.apply_retention(far_future) == 0
+        assert lt.sweep_orphaned_frames() == 0
+        session.cleanup()
+        assert session.frames_dir.is_dir() and output.is_file()
+        assert lt._read_manifest(session.frames_dir)["state"] == lt.STATE_RETAINED
+
+    @pytest.mark.asyncio
+    async def test_the_drain_is_refused_while_an_encoders_end_is_unknown(self, monkeypatch):
+        session = lt.take_session(1, _session())
+        _fill(session, 2)
+        await self._unreaped(monkeypatch, session)
+        assert await lt.quiesce(0.2) is False
+
+    @pytest.mark.asyncio
+    async def test_other_retained_sessions_are_still_bounded(self, frames, monkeypatch):
+        """The pin protects its own session, not the tree."""
+        monkeypatch.setattr(lt, "RETAIN_BYTES", 1)
+        other = _retained(frames, 5, "a" * 32, age_hours=1, size=500)
+        session = lt.take_session(1, _session())
+        _fill(session, 2)
+        await self._unreaped(monkeypatch, session)
+        assert not other.exists() and session.frames_dir.is_dir()
+
+
+class TestOneEncoderForTheProcess:
+    """Codex F3: two finalisers started two encoders."""
+
+    @pytest.mark.asyncio
+    async def test_two_stitches_never_encode_together(self, monkeypatch):
+        monkeypatch.setattr(lt, "get_ffmpeg_path", lambda: sys.executable)
+        release = asyncio.Event()
+        active = peak = 0
+
+        async def encoder(_argv, **_kwargs):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            try:
+                await release.wait()
+            finally:
+                active -= 1
+            return media_child.ChildResult(media_child.CANCELLED)
+
+        monkeypatch.setattr(lt.media_child, "run", encoder)
+        sessions = [lt.take_session(printer, _session(printer)) for printer in (17, 18)]
+        for session in sessions:
+            _fill(session, 2)
+        tasks = [asyncio.create_task(lt.finish_session(session)) for session in sessions]
+        try:
+            for _ in range(40):
+                if active:
+                    break
+                await asyncio.sleep(0.05)
+            await asyncio.sleep(0.5)  # the second has had every chance to start
+            assert (active, peak) == (1, 1)
+        finally:
+            release.set()
+            await asyncio.gather(*tasks)
+        assert peak == 1 and not encoder_slot.busy
+
+    @pytest.mark.asyncio
+    async def test_a_stitch_waits_for_an_edit_and_a_stopped_waiter_frees_its_place(self, monkeypatch):
+        """The slot is the editor's too: held here as an edit would hold it."""
+        monkeypatch.setattr(lt, "get_ffmpeg_path", lambda: sys.executable)
+        started = []
+
+        async def encoder(_argv, **_kwargs):
+            started.append(1)
+            return media_child.ChildResult(media_child.CANCELLED)
+
+        monkeypatch.setattr(lt.media_child, "run", encoder)
+        edit_ticket = await encoder_slot.acquire()
+        session = lt.take_session(1, _session())
+        _fill(session, 2)
+        finishing = asyncio.create_task(lt.finish_session(session, keep_frames=True))
+        await asyncio.sleep(0.5)
+        assert started == [] and encoder_slot.waiting() == 1  # waiting behind the edit, not encoding beside it
+        session.stop.set()  # a restore stops the waiter
+        assert await finishing is None
+        assert started == [] and encoder_slot.waiting() == 0
+        assert lt._read_manifest(session.frames_dir)["reason"] == "stitch_cancelled"
+        encoder_slot.release(edit_ticket)
+        assert not encoder_slot.busy
+
+
+class TestWhatIsKeptIsCountedAtOnce:
+    """Codex F4: after a good stitch and a refused attach the frames were kept past the bound, and on a
+    server that is not restarted frames past their time were never removed."""
+
+    @needs_ffmpeg
+    @pytest.mark.asyncio
+    async def test_a_refused_publication_is_counted_against_the_bound(self, monkeypatch):
+        monkeypatch.setattr(lt, "RETAIN_BYTES", 1)
+        session = lt.take_session(7, _session(7))
+        _fill(session, 4)
+        video = await lt.finish_session(session, keep_frames=True)
+        assert video is not None and session.frames_dir.is_dir()
+        # What ``main._background_layer_timelapse`` does when the archive refuses the video.
+        await asyncio.to_thread(session.retain, "not_published_source_changed")
+        assert not session.frames_dir.exists()
+
+    @pytest.mark.asyncio
+    async def test_within_the_bound_a_refused_publication_keeps_its_frames(self):
+        session = lt.take_session(7, _session(7))
+        _fill(session, 3)
+        session.state = lt.STATE_FINALIZING
+        await asyncio.to_thread(session.retain, "not_published_source_changed")
+        assert len(list(session.frames_dir.glob("layer_*.jpg"))) == 3
+
+    @pytest.mark.asyncio
+    async def test_a_running_server_removes_frames_past_their_time(self, frames, monkeypatch):
+        """No restart and no failed stitch: only the clock moved."""
+        fresh = _retained(frames, 1, "b" * 32, age_hours=1)
+        expired = _retained(frames, 2, "c" * 32, age_hours=lt.RETAIN_SECONDS / 3600 + 1)
+        task = lt.start_janitor(interval=0.1)
+        try:
+            for _ in range(100):
+                if not expired.exists():
+                    break
+                await asyncio.sleep(0.05)
+        finally:
+            await lt.stop_janitor()
+        assert not expired.exists() and fresh.is_dir()
+        assert task.done() and lt._janitor is None
+
+    @pytest.mark.asyncio
+    async def test_the_janitor_is_one_task_and_stops_cleanly(self):
+        first = lt.start_janitor(interval=60)
+        assert lt.start_janitor(interval=60) is first
+        await lt.stop_janitor()
+        assert first.cancelled() or first.done()
+        await lt.stop_janitor()  # twice is quiet
