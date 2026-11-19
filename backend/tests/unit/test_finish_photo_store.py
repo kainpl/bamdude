@@ -32,9 +32,11 @@ def box(tmp_path, monkeypatch):
 
     monkeypatch.setattr(archive_paths.settings, "base_dir", tmp_path)
     monkeypatch.setattr(archive_paths.settings, "archive_dir", tmp_path / "archive")
-    row = SimpleNamespace(id=7, recovery_identity="run-a", file_path="archive/3/print-a/a.gcode.3mf")
+    row = SimpleNamespace(id=7, recovery_identity="run-a", file_path="archive/3/print-a/a.gcode.3mf", photos=None)
     archive = {"row": row}
-    return SimpleNamespace(root=tmp_path, archive=archive, row=row, session=_sessions(archive))
+    store._own.clear()
+    yield SimpleNamespace(root=tmp_path, archive=archive, row=row, session=_sessions(archive))
+    store._own.clear()
 
 
 @pytest.mark.asyncio
@@ -87,6 +89,141 @@ async def test_discarding_what_is_not_there_is_quiet(box):
     await store.discard(7, None, session=box.session)
     box.archive["row"] = None
     await store.discard(7, "finish_20260101_000000_deadbeef.jpg", session=box.session)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_photo_is_removed_where_it_was_written_even_after_the_id_was_reused(box):
+    """Codex G2: looked for through the NEW row of a reused id, the old print's own file was never found."""
+    folder = await store.photos_dir_at_write(7, "run-a", session=box.session)
+    name = await store.save_frame(7, "run-a", b"jpeg", session=box.session)
+    box.archive["row"] = SimpleNamespace(id=7, recovery_identity="run-b", file_path="archive/3/print-b/b.gcode.3mf")
+    await store.discard(7, name, session=box.session)
+    assert not (folder / name).exists()
+    assert name not in store._own
+
+
+@pytest.mark.asyncio
+async def test_a_confirmed_photo_is_no_longer_the_stores_to_remove(box):
+    name = await store.save_frame(7, "run-a", b"jpeg", session=box.session)
+    assert name in store._own
+    store.confirm(name)
+    assert name not in store._own
+    box.row.photos = [name]
+    await store.discard(7, name, session=box.session)  # a later mistake finds it only through the row
+    assert not (box.root / "archive" / "3" / "print-a" / "photos" / name).exists()
+
+
+@pytest.mark.asyncio
+async def test_a_frame_that_could_not_be_written_leaves_nothing(box, monkeypatch):
+    def full(self, _data):
+        self.touch()
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(Path, "write_bytes", full)
+    with pytest.raises(OSError):
+        await store.save_frame(7, "run-a", b"jpeg", session=box.session)
+    photos = box.root / "archive" / "3" / "print-a" / "photos"
+    assert list(photos.iterdir()) == [] and store._own == {}
+
+
+class TestAnUncertainCommit:
+    """Codex G2: a commit that failed after the frame was written left the JPG on disk."""
+
+    @pytest.mark.asyncio
+    async def test_a_photo_the_archive_does_not_list_is_removed(self, box):
+        box.row.photos = None
+        name = await store.save_frame(7, "run-a", b"jpeg", session=box.session)
+        path = store._own[name]
+        assert await store.settle_uncertain(7, "run-a", name, session=box.session) is False
+        assert not path.exists() and name not in store._own
+
+    @pytest.mark.asyncio
+    async def test_a_photo_the_archive_lists_after_all_is_kept(self, box):
+        """The commit took and its answer was lost: the file is the archive's now."""
+        name = await store.save_frame(7, "run-a", b"jpeg", session=box.session)
+        path = store._own[name]
+        box.row.photos = ["older.jpg", name]
+        assert await store.settle_uncertain(7, "run-a", name, session=box.session) is True
+        assert path.is_file() and name not in store._own
+
+    @pytest.mark.asyncio
+    async def test_an_archive_that_became_another_does_not_keep_it(self, box):
+        name = await store.save_frame(7, "run-a", b"jpeg", session=box.session)
+        path = store._own[name]
+        box.archive["row"] = SimpleNamespace(id=7, recovery_identity="run-b", file_path="", photos=[name])
+        assert await store.settle_uncertain(7, "run-a", name, session=box.session) is False
+        assert not path.exists()
+
+    @pytest.mark.asyncio
+    async def test_when_the_archive_cannot_be_read_nothing_is_removed_on_a_guess(self, box):
+        name = await store.save_frame(7, "run-a", b"jpeg", session=box.session)
+        path = store._own[name]
+
+        @asynccontextmanager
+        async def broken():
+            raise RuntimeError("the database went away")
+            yield  # pragma: no cover
+
+        assert await store.settle_uncertain(7, "run-a", name, session=broken) is None
+        assert path.is_file() and name in store._own
+        store.confirm(name)
+
+
+class TestTheBuiltInCamera:
+    """Codex G1: the folder was chosen before the capture; a 3MF attached during it moved the archive."""
+
+    @pytest.mark.asyncio
+    async def test_a_frame_is_captured_first_and_written_where_the_archive_is_then(self, box, monkeypatch):
+        from backend.app.services import camera, camera_runtime
+
+        box.row.file_path = ""  # no 3MF yet: the folder the id owns
+        requests = []
+
+        async def capture(request):
+            requests.append(request)
+            box.row.file_path = "archive/3/print-a/a.gcode.3mf"  # the 3MF arrives during the capture
+            return SimpleNamespace(frame=b"captured")
+
+        monkeypatch.setattr(camera_runtime, "capture", capture)
+        frame = await camera.capture_finish_frame(printer_id=1, ip_address="127.0.0.1", access_code="", model=None)
+        assert frame == b"captured" and len(requests) == 1
+        name = await store.save_frame(7, "run-a", frame, session=box.session)
+        assert (box.root / "archive" / "3" / "print-a" / "photos" / name).read_bytes() == b"captured"
+        old = box.root / "archive" / "no_source" / "7" / "photos"
+        assert not old.exists() or list(old.iterdir()) == []
+        store.confirm(name)
+
+    @pytest.mark.asyncio
+    async def test_a_camera_that_gives_nothing_or_fails_gives_no_frame(self, monkeypatch):
+        from backend.app.services import camera, camera_runtime
+
+        async def nothing(_request):
+            return SimpleNamespace(frame=None)
+
+        async def broken(_request):
+            raise RuntimeError("the camera worker is gone")
+
+        for capture in (nothing, broken):
+            monkeypatch.setattr(camera_runtime, "capture", capture)
+            assert await camera.capture_finish_frame(1, "127.0.0.1", "", None) is None
+
+    @pytest.mark.asyncio
+    async def test_the_frame_is_rotated_like_every_other_source(self, monkeypatch):
+        from backend.app.services import camera, camera_runtime
+
+        async def capture(_request):
+            return SimpleNamespace(frame=b"upright")
+
+        monkeypatch.setattr(camera_runtime, "capture", capture)
+        monkeypatch.setattr(camera, "apply_camera_rotation", lambda data, rotation, _logger: data + bytes([rotation]))
+        assert await camera.capture_finish_frame(1, "127.0.0.1", "", None, rotation=90) == b"upright" + bytes([90])
+
+    def test_the_built_in_capture_no_longer_takes_a_folder(self):
+        """There is no way left to hand it a folder chosen before the capture."""
+        from backend.app.services import camera
+
+        assert not hasattr(camera, "capture_finish_photo")
+        assert "archive_dir" not in inspect.signature(camera.capture_finish_frame).parameters
 
 
 def test_two_names_never_collide():

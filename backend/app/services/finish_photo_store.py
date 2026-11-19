@@ -17,6 +17,15 @@ So every writer asks here, immediately before it writes:
 when it is still the very archive the terminal was for (``recovery_identity``),
 and :func:`discard` removes a photo that was written and then not attached.
 
+⚠️ **The store keeps the exact address of every file it wrote until that file
+is settled** (:data:`_own`): attached (:func:`confirm`) or removed
+(:func:`discard`). A refused photo is removed where it WAS written — never
+looked for again through the archive row, which by then may be another archive
+with other folders (the id was reused), or the same one in a folder that moved.
+And when the commit that attaches a photo fails, nobody knows whether it took:
+:func:`settle_uncertain` reads the archive afresh and removes the file only
+when the archive does not list it.
+
 No camera is touched here and no printer command is sent: what triggers a
 capture, and from which source, is unchanged (owner decision 2026-09-14: no
 motion for the sake of a photo).
@@ -32,6 +41,9 @@ from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+#: Files this process wrote and has not settled yet: name -> where exactly it is.
+_own: dict[str, Path] = {}
 
 
 def new_name() -> str:
@@ -65,28 +77,84 @@ async def save_frame(
 
     ``may_run`` is the terminal's own proof that the printer has not gone on to
     another print; it is asked after the folder was read and before the write.
+    The file is this store's until :func:`confirm` or :func:`discard`.
     """
     folder = await photos_dir_at_write(archive_id, expected_identity, session=session)
     if folder is None or (may_run is not None and not may_run()):
         return None
     name = new_name()
-    await asyncio.to_thread((folder / name).write_bytes, data)  # SEC-PATH-OK: ``name`` is generated above
+    path = folder / name  # SEC-PATH-OK: ``name`` is generated above
+    _own[name] = path
+    try:
+        await asyncio.to_thread(path.write_bytes, data)
+    except BaseException:
+        _own.pop(name, None)
+        await asyncio.shield(asyncio.to_thread(path.unlink, missing_ok=True))
+        raise
     return name
 
 
+def note_written(name: str, path: Path) -> None:
+    """A writer that produced the file itself (ffmpeg extracting a frame) hands its address to the store."""
+    _own[name] = path
+
+
+def confirm(name: str | None) -> None:
+    """The photo is attached: the archive's list names it, and the store lets go."""
+    if name:
+        _own.pop(name, None)
+
+
 async def discard(archive_id: int, filename: str | None, *, session: Callable) -> None:
-    """Remove a finish photo that was written and then not attached. Best effort; never raises."""
+    """Remove a finish photo that was written and then not attached. Best effort; never raises.
+
+    Where it was written, by the store's own record. Only a file this process
+    did not write itself (no record) is looked for through the archive row.
+    """
     if not filename:
         return
     from backend.app.models.archive import PrintArchive
     from backend.app.utils.archive_paths import find_photo
 
     try:
-        async with session() as db:
-            archive = await db.get(PrintArchive, archive_id)
-            # A row that is gone took its folders with it (``ArchiveService.delete_archive``).
-            path = find_photo(archive, filename) if archive is not None else None
+        path = _own.pop(filename, None)
+        if path is None:
+            async with session() as db:
+                archive = await db.get(PrintArchive, archive_id)
+                # A row that is gone took its folders with it (``ArchiveService.delete_archive``).
+                path = find_photo(archive, filename) if archive is not None else None
         if path is not None:
             await asyncio.to_thread(path.unlink, missing_ok=True)
     except Exception as exc:  # noqa: BLE001 — a leftover photo is an orphan file, not a failed print
         logger.debug("A refused finish photo of archive %s could not be removed: %s", archive_id, type(exc).__name__)
+
+
+async def settle_uncertain(
+    archive_id: int, expected_identity: str | None, filename: str, *, session: Callable
+) -> bool | None:
+    """After a commit whose outcome is unknown: is the photo attached? Removes the file when it is not.
+
+    ``True`` — the archive lists it (the commit took): kept. ``False`` — that
+    very archive does not list it, or it is gone or another archive: the file is
+    removed. ``None`` — the archive could not be read: nothing is removed on a
+    guess, and the file stays the store's.
+    """
+    from backend.app.models.archive import PrintArchive
+
+    try:
+        async with session() as db:
+            archive = await db.get(PrintArchive, archive_id)
+            same = archive is not None and (expected_identity is None or archive.recovery_identity == expected_identity)
+            listed = same and filename in (archive.photos or [])
+    except Exception as exc:  # noqa: BLE001 — unreadable is not "not attached"
+        logger.warning(
+            "A finish photo of archive %s could not be confirmed after a failed commit (%s); it is kept",
+            archive_id,
+            type(exc).__name__,
+        )
+        return None
+    if listed:
+        confirm(filename)
+        return True
+    await discard(archive_id, filename, session=session)
+    return False

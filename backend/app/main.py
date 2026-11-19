@@ -6672,6 +6672,8 @@ async def _capture_finish_photo_from_timelapse(
                         # Extracted, and no longer wanted: this helper's own file, removed by it.
                         await asyncio.to_thread(output_path.unlink, missing_ok=True)
                         return None
+                    # Its exact address stays with the store until the caller attaches or refuses it.
+                    finish_photo_store.note_written(filename, output_path)
                     logger.info(
                         "[PHOTO-BG] Extracted finish photo from timelapse %s for archive %s",
                         video_path.name,
@@ -10604,47 +10606,57 @@ async def _on_print_complete_impl(
                             logger.info("[PHOTO-BG] Saved buffered frame: %s", photo_filename)
                     else:
                         # No active stream - capture new frame
-                        from backend.app.services.camera import capture_finish_photo
+                        from backend.app.services.camera import capture_finish_frame
 
-                        # The folder is read now, not from the row loaded before the waits above.
-                        photos_dir = await finish_photo_store.photos_dir_at_write(
-                            archive_id, terminal_archive_identity, session=async_session
+                        # The frame first, its folder after: the capture can take half a minute, and a
+                        # 3MF attached meanwhile moves the archive's folder (Codex G1). ``_save_photo``
+                        # reads the folder at the write and asks the print binding again.
+                        fresh_frame = await capture_finish_frame(
+                            printer_id=printer_id,
+                            ip_address=printer.ip_address,
+                            access_code=printer.access_code,
+                            model=printer.model,
+                            rotation=getattr(printer, "camera_rotation", 0) or 0,
                         )
-                        if photos_dir is not None:
-                            photo_filename = await capture_finish_photo(
-                                printer_id=printer_id,
-                                ip_address=printer.ip_address,
-                                access_code=printer.access_code,
-                                model=printer.model,
-                                archive_dir=photos_dir.parent,
-                                rotation=getattr(printer, "camera_rotation", 0) or 0,
-                            )
-                        if photo_filename and not _owns_printer_effect():
-                            await finish_photo_store.discard(archive_id, photo_filename, session=async_session)
-                            photo_filename = None
+                        if fresh_frame:
+                            photo_filename = await _save_photo(fresh_frame)
+                            if photo_filename:
+                                logger.info("[PHOTO-BG] Saved a fresh frame: %s", photo_filename)
 
             # Write phase: attach the photo in a fresh short-lived session (the read
             # session was released before the capture pipeline). Re-fetch the archive
             # by id — the one loaded above is detached after its session closed.
             if photo_filename:
-                async with async_session() as db:
-                    from backend.app.models.archive import PrintArchive
-                    from backend.app.services.archive_write_scope import (
-                        archive_write_scope,
-                        load_active_archive_for_write,
-                    )
+                attached_photo = False
+                try:
+                    async with async_session() as db:
+                        from backend.app.models.archive import PrintArchive
+                        from backend.app.services.archive_write_scope import (
+                            archive_write_scope,
+                            load_active_archive_for_write,
+                        )
 
-                    attached_photo = False
-                    async with archive_write_scope(db, archive_id):
-                        arch = await load_active_archive_for_write(db, archive_id)
-                        if (
-                            arch is not None
-                            and arch.recovery_identity == terminal_archive_identity
-                            and _owns_printer_effect()
-                        ):
-                            arch.photos = [*(arch.photos or []), photo_filename]
-                            await db.commit()
-                            attached_photo = True
+                        async with archive_write_scope(db, archive_id):
+                            arch = await load_active_archive_for_write(db, archive_id)
+                            if (
+                                arch is not None
+                                and arch.recovery_identity == terminal_archive_identity
+                                and _owns_printer_effect()
+                            ):
+                                arch.photos = [*(arch.photos or []), photo_filename]
+                                await db.commit()
+                                attached_photo = True
+                except Exception:
+                    # The attach failed, perhaps inside its commit: whether the archive lists the
+                    # photo is read afresh, and the file goes only when it does not (Codex G2).
+                    settled = await finish_photo_store.settle_uncertain(
+                        archive_id, terminal_archive_identity, photo_filename, session=async_session
+                    )
+                    if not settled:
+                        raise
+                    attached_photo = True
+                if attached_photo:
+                    finish_photo_store.confirm(photo_filename)
                 if not attached_photo:
                     # Written and then refused — the archive is another incarnation, or the printer
                     # went on to another print. The file is this task's own: it does not stay as an

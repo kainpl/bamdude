@@ -15,7 +15,6 @@ import subprocess
 import time
 import traceback
 import uuid
-from datetime import datetime
 from pathlib import Path
 
 from backend.app.services.camera_cleanup import CameraAttempt
@@ -748,37 +747,29 @@ async def _capture_camera_frame_bytes_uncoalesced(
             _active_capture_pids.discard(process.pid)
 
 
-async def capture_finish_photo(
+async def capture_finish_frame(
     printer_id: int,
     ip_address: str,
     access_code: str,
     model: str | None,
-    archive_dir: Path,
     rotation: int = 0,
-) -> str | None:
-    """Capture a finish photo and save it to the archive's photos folder.
+) -> bytes | None:
+    """Capture one frame of the built-in camera for a finish photo, rotated. ``None`` when the camera gave none.
+
+    A FRAME, not a file (G10 G): the capture can take half a minute, and the
+    archive's folder may change during it — a 3MF attached meanwhile moves it.
+    Where the frame is written is decided after it exists, by the caller, at the
+    moment of the write (``finish_photo_store.save_frame``). No command is sent
+    to the printer: the frame comes through the camera runtime, as before.
 
     Args:
         printer_id: ID of the printer
         ip_address: Printer IP address
         access_code: Printer access code
         model: Printer model
-        archive_dir: Directory of the archive (where the 3MF is stored)
-        rotation: The printer's ``camera_rotation``, applied to the saved file
-            so this source agrees with every other finish-photo source (#2708).
-
-    Returns:
-        Filename of the captured photo, or None if capture failed
+        rotation: The printer's ``camera_rotation``, applied to the frame so this
+            source agrees with every other finish-photo source (#2708).
     """
-    # Create photos subdirectory
-    photos_dir = archive_dir / "photos"
-    photos_dir.mkdir(parents=True, exist_ok=True)
-
-    # Generate filename with timestamp
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"finish_{timestamp}_{uuid.uuid4().hex[:8]}.jpg"
-    output_path = photos_dir / filename  # SEC-PATH-OK: filename is the server-generated finish_<timestamp>_<uuid8>.jpg
-
     from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
     try:
@@ -796,14 +787,12 @@ async def capture_finish_photo(
         logger.exception("Failed to capture finish photo for printer %s", printer_id)
         return None
 
-    if result.frame:
-        await asyncio.to_thread(output_path.write_bytes, result.frame)
-        await apply_camera_rotation_to_file(output_path, rotation, logger)
-        logger.info("Finish photo saved: %s", filename)
-        return filename
-    else:
+    if not result.frame:
         logger.warning("Failed to capture finish photo for printer %s", printer_id)
         return None
+    if rotation:
+        return await asyncio.to_thread(apply_camera_rotation, result.frame, rotation, logger)
+    return result.frame
 
 
 async def test_camera_connection(
