@@ -3,6 +3,7 @@
  * the section decides the presets, the slicer and the plate; the page keeps
  * the slot, the nozzle and everything K exactly as it was.
  */
+import { useLayoutEffect } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -11,6 +12,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import pageSource from '../../../components/calibration/CalibrationPresetPage.tsx?raw';
 import { api, type UnifiedPreset, type UnifiedPresetsResponse } from '../../../api/client';
 import { CalibrationPresetPage } from '../../../components/calibration/CalibrationPresetPage';
+import { usePresetCatalogue } from '../../../components/slicing-setup/usePresetCatalogue';
 import { __resetSharedMemoryForTests } from '../../../components/slicing-setup/memory';
 import { __resetPresetContextForTests, bumpPresetContext } from '../../../utils/presetContext';
 
@@ -140,5 +142,46 @@ describe('CalibrationPresetPage', () => {
     mount(undefined, mode);
     expect(await screen.findByText(heading)).toBeInTheDocument();
     if (mode !== 'pa_tower') expect(screen.queryByText('PA Tower parameters')).toBeNull();
+  });
+
+  it('the first commit without the new catalogue neither enables Start nor starts (review I-2)', async () => {
+    spies();
+    const onStart = vi.fn<(preset: unknown) => Promise<void>>(async () => {});
+    const commitsWithoutCatalogue: boolean[] = [];
+    let armed = false;
+    function ObserveCommit() {
+      const catalogue = usePresetCatalogue();
+      useLayoutEffect(() => {
+        if (!armed || catalogue.data !== undefined) return;
+        const button = startButton() as HTMLButtonElement;
+        commitsWithoutCatalogue.push(button.disabled);
+        if (commitsWithoutCatalogue.length === 1 && !button.disabled) button.click();
+      });
+      return (
+        <CalibrationPresetPage
+          printerId={1}
+          caliMode="pa_tower"
+          method="manual"
+          capabilities={{ nozzles: [{ diameter: 0.4 }], extruders: [{ id: 0, name: 'Main' }], dual_extruder: false } as never}
+          onBack={() => {}}
+          onStart={onStart}
+        />
+      );
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <ObserveCommit />
+      </QueryClientProvider>,
+    );
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: /AMS 1 · Slot 1 · PLA Matte/ }));
+    await waitFor(() => expect(startButton()).toBeEnabled());
+    vi.mocked(api.getSlicerPresets).mockImplementation(() => new Promise<UnifiedPresetsResponse>(() => {}));
+    armed = true;
+    act(() => bumpPresetContext());
+    await waitFor(() => expect(startButton()).toBeDisabled());
+    expect(commitsWithoutCatalogue).not.toHaveLength(0);
+    expect({ firstDisabled: commitsWithoutCatalogue[0], starts: onStart.mock.calls.length }).toEqual({ firstDisabled: true, starts: 0 });
   });
 });

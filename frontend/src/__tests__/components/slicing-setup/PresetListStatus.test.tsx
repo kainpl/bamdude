@@ -7,7 +7,14 @@ import type { PresetCatalogue } from '../../../components/slicing-setup/usePrese
 // R10: the cloud banners say only what they know; a status they do not know
 // (an older server sends none) shows nothing rather than breaking the form.
 const catalogue = (data: Partial<UnifiedPresetsResponse>): PresetCatalogue =>
-  ({ data: data as UnifiedPresetsResponse, isLoading: false, isError: false, refresh: vi.fn(), refreshing: false }) as PresetCatalogue;
+  ({
+    data: data as UnifiedPresetsResponse,
+    revision: 'g1@1',
+    isLoading: false,
+    isError: false,
+    refresh: vi.fn(),
+    refreshing: false,
+  }) as PresetCatalogue;
 
 describe('PresetListStatus', () => {
   it('a missing or unknown status shows no banner', () => {

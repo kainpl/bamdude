@@ -10,7 +10,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { tempDefaultsForFilament } from '../../utils/calibrationTemp';
 import { usePresetCatalogue } from '../slicing-setup/usePresetCatalogue';
 import { CalibrationSlicingSection, type CalibrationPresetChoice } from './CalibrationSlicingSection';
-import { EMPTY_CALIBRATION_CHOICE } from './calibrationChoice';
+import { EMPTY_CALIBRATION_CHOICE, choiceDecidedNow } from './calibrationChoice';
 
 interface Props {
   printerId: number;
@@ -37,7 +37,8 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   // The section owns the catalogue; the page reads the same listing for the
   // chosen filament's stored flow ratio and type.
   const { hasPermission } = useAuth();
-  const presets = usePresetCatalogue({ enabled: hasPermission('library:upload') }).data;
+  const catalogue = usePresetCatalogue({ enabled: hasPermission('library:upload') });
+  const presets = catalogue.data;
 
   // The slicer, the bed plate and the preset triplet, as the section decided them.
   const [slicing, setSlicing] = useState<CalibrationPresetChoice>(EMPTY_CALIBRATION_CHOICE);
@@ -283,16 +284,15 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
       ? baselineFlowRatio > 0 && baselineFlowRatio < 2
       : effectiveEnd > effectiveStart && effectiveStep > 0;
 
-  const canSubmit =
-    !isDownloading &&
-    specValid &&
-    slicing.startBlocked === false &&
-    !!printerRef && !!processRef && !!filamentRef;
+  // Decided on what the page reads NOW (review I-2), not on the section's
+  // last report alone.
+  const decidedNow = choiceDecidedNow(slicing, { catalogue: catalogue.revision, nozzle: nozzleDiameter, slot: null });
+  const canSubmit = !isDownloading && specValid && decidedNow && !!printerRef && !!processRef && !!filamentRef;
 
   const onSubmit = async () => {
     const spec = buildSpec();
     // Asked again at the click: the section's answer is the current catalogue's.
-    if (slicing.startBlocked !== false || !printerRef || !processRef || !filamentRef) return;
+    if (!decidedNow || !printerRef || !processRef || !filamentRef) return;
     const body: CalibSliceOnlyIn = {
       cali_mode: caliMode,
       spec,

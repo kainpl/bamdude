@@ -4,6 +4,7 @@
  * its own readiness and sends the slicer only once it is known (spec §7.2,
  * §8.2).
  */
+import { useLayoutEffect } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -12,6 +13,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import pageSource from '../../../components/calibration/CalibrationVerifyDownloadPage.tsx?raw';
 import { api, type CalibBakeOnlyIn, type UnifiedPreset, type UnifiedPresetsResponse } from '../../../api/client';
 import { CalibrationVerifyDownloadPage } from '../../../components/calibration/CalibrationVerifyDownloadPage';
+import { usePresetCatalogue } from '../../../components/slicing-setup/usePresetCatalogue';
 import { ToastProvider } from '../../../contexts/ToastContext';
 import { __resetSharedMemoryForTests } from '../../../components/slicing-setup/memory';
 import { __resetPresetContextForTests, bumpPresetContext } from '../../../utils/presetContext';
@@ -174,5 +176,42 @@ describe('CalibrationVerifyDownloadPage', () => {
     await waitFor(() => expect(sliceButton()).toBeDisabled());
     await userEvent.setup().click(sliceButton());
     expect(slice).not.toHaveBeenCalled();
+  });
+
+  // Review I-2 (second round): the section reports to the page one commit
+  // later. On the FIRST commit of a new context the page must already refuse,
+  // from the catalogue it reads itself — a click there sent the old refs.
+  it('the first commit without the new catalogue neither enables nor sends (review I-2)', async () => {
+    spies({ orca: true, bambu: true });
+    const slice = vi
+      .spyOn(api, 'sliceCalibrationForVerification')
+      .mockResolvedValue({ blob: new Blob(['x']), filename: 'probe.3mf' });
+    const commitsWithoutCatalogue: boolean[] = [];
+    let armed = false;
+    function ObserveCommit() {
+      const catalogue = usePresetCatalogue();
+      useLayoutEffect(() => {
+        if (!armed || catalogue.data !== undefined) return;
+        const button = sliceButton() as HTMLButtonElement;
+        commitsWithoutCatalogue.push(button.disabled);
+        if (commitsWithoutCatalogue.length === 1 && !button.disabled) button.click();
+      });
+      return <CalibrationVerifyDownloadPage printerId={1} caliMode="pa_tower" onBack={() => {}} onDone={() => {}} />;
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <ToastProvider>
+          <ObserveCommit />
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(sliceButton()).toBeEnabled());
+    vi.mocked(api.getSlicerPresets).mockImplementation(() => new Promise<UnifiedPresetsResponse>(() => {}));
+    armed = true;
+    act(() => bumpPresetContext());
+    await waitFor(() => expect(sliceButton()).toBeDisabled());
+    expect(commitsWithoutCatalogue).not.toHaveLength(0);
+    expect({ firstDisabled: commitsWithoutCatalogue[0], sends: slice.mock.calls.length }).toEqual({ firstDisabled: true, sends: 0 });
   });
 });

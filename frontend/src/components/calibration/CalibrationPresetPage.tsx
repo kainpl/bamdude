@@ -30,7 +30,9 @@ import {
   type CalibrationPresetChoice,
   type CalibrationSlot,
 } from './CalibrationSlicingSection';
-import { EMPTY_CALIBRATION_CHOICE } from './calibrationChoice';
+import { EMPTY_CALIBRATION_CHOICE, choiceDecidedNow } from './calibrationChoice';
+import { usePresetCatalogue } from '../slicing-setup/usePresetCatalogue';
+import { useAuth } from '../../contexts/AuthContext';
 import { tempDefaultsForFilament } from '../../utils/calibrationTemp';
 import { Select } from '../Select';
 
@@ -127,6 +129,10 @@ export function CalibrationPresetPage({
   // plate and the three presets; the page reads its answer and keeps the slot,
   // the nozzle and the K corridor to itself.
   const [slicing, setSlicing] = useState<CalibrationPresetChoice>(EMPTY_CALIBRATION_CHOICE);
+  // The same catalogue the section reads: Start is judged on the answer this
+  // render shows, not only on the section's last report (review I-2).
+  const { hasPermission } = useAuth();
+  const catalogue = usePresetCatalogue({ enabled: hasPermission('library:upload') });
   const printerRef = slicing.printer;
   const processRef = slicing.process;
   const filamentRef = slicing.filament;
@@ -574,7 +580,10 @@ export function CalibrationPresetPage({
 
   const presetShapeOk = (() => {
     if (!needsPresetPicker) return true;
-    return slicing.startBlocked === false && !!printerRef && !!processRef && !!filamentRef;
+    // Decided on the catalogue answer, nozzle and slot the page sees now: the
+    // printer's proof is the section's, made a commit late (review I-2).
+    const now = { catalogue: catalogue.revision, nozzle: nozzleDia, slot: calibrationSlot?.key ?? null };
+    return choiceDecidedNow(slicing, now) && !!printerRef && !!processRef && !!filamentRef;
   })();
 
   const canStart = (() => {

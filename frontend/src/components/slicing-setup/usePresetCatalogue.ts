@@ -10,6 +10,10 @@ import { usePresetAuthKey } from './authContext';
 
 export interface PresetCatalogue {
   data?: UnifiedPresetsResponse;
+  /** Which answer `data` is: the context key and the moment it was written.
+   *  It changes with a new context AND with a refresh written under the same
+   *  key, so a decision made on one answer can be told from the next. */
+  revision: string | null;
   isLoading: boolean;
   isError: boolean;
   refresh: () => Promise<void>;
@@ -68,8 +72,10 @@ export function usePresetCatalogue(opts?: { enabled?: boolean }): PresetCatalogu
     }
   }, [key, queryClient]);
 
+  const data = key === null ? undefined : query.data;
   return {
-    data: key === null ? undefined : query.data,
+    data,
+    revision: data === undefined ? null : `${key}@${query.dataUpdatedAt}`,
     isLoading: enabled && query.isLoading,
     isError: query.isError,
     refresh,

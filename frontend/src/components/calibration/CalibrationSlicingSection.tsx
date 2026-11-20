@@ -73,6 +73,10 @@ export interface CalibrationPresetChoice {
   startBlocked: false | 'notProven' | 'empty' | 'gone' | 'noCatalogue' | 'loading';
   /** Said beside the filament field, with the slot's label. */
   familyHint: 'pending' | 'unavailable' | 'absent' | null;
+  /** What `startBlocked` was decided on. The section reports in an effect, a
+   *  commit after its inputs moved; a page acts only when this basis equals
+   *  what it sees now (`choiceDecidedNow`) — review I-2. */
+  basis: { catalogue: string | null; nozzle: number; slot: string | null };
 }
 
 interface Props {
@@ -415,6 +419,7 @@ export function CalibrationSlicingSection({
     filament: filamentRef,
     startBlocked,
     familyHint,
+    basis: { catalogue: catalogue.revision, nozzle, slot: slot?.key ?? null },
   };
   const choiceKey = JSON.stringify(choice);
   useEffect(() => {
