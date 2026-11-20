@@ -304,25 +304,15 @@ async def cb_queue_move(callback: CallbackQuery, tg_chat: TelegramChat | None = 
         if await deny_out_of_scope(callback, tg_chat, item.queue_id):
             return
 
-        # Find adjacent item
-        if direction == "up":
-            adj = await db.execute(
-                select(PrintQueueItem)
-                .where(PrintQueueItem.status == "pending", PrintQueueItem.position < item.position)
-                .order_by(PrintQueueItem.position.desc())
-                .limit(1)
-            )
-        else:
-            adj = await db.execute(
-                select(PrintQueueItem)
-                .where(PrintQueueItem.status == "pending", PrintQueueItem.position > item.position)
-                .order_by(PrintQueueItem.position)
-                .limit(1)
-            )
+        # The web reorder's own door (G03 B, W10): the row's block moves one step within ITS queue, under that
+        # queue's lane — never a swap with the adjacent pending row of whatever queue sits next by position.
+        from backend.app.services.queue_counters import update_queue_counters
+        from backend.app.services.queue_ops import reorder_block, resolve_block_ids
 
-        adjacent = adj.scalar_one_or_none()
-        if adjacent:
-            item.position, adjacent.position = adjacent.position, item.position
+        queue_id, block_ids = await resolve_block_ids(db, item_id)
+        moved = await reorder_block(db, queue_id, block_ids, direction) if block_ids else 0
+        if moved:
+            await update_queue_counters(db, queue_id)
             await db.commit()
             await callback.answer(f"\u2705 {t(lang, NS, 'queue.move_ok')}")
         else:
@@ -374,7 +364,8 @@ async def _cancel_pending_item(item_id: int) -> bool:
                 await db.execute(
                     update(PrintQueueItem)
                     .where(PrintQueueItem.id == item_id, PrintQueueItem.status == "pending")
-                    .values(status="cancelled", completed_at=datetime.now(timezone.utc))
+                    # A Core status write voids the deferral proof itself (G03 B, A16): no ORM validator runs here.
+                    .values(status="cancelled", completed_at=datetime.now(timezone.utc), deferred_claim_token=None)
                     .returning(PrintQueueItem.queue_id)
                 )
             ).scalar_one_or_none()

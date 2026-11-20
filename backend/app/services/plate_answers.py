@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.print_completion_receipt import PrintCompletionReceipt
@@ -27,10 +27,14 @@ from backend.app.services.plate_hold import (
     StalePlateAnswer,
     answer_by_clearing,
     answer_by_repeating,
+    answered_archive_id,
+    printer_queue_ids,
     requeued_gate_owner,
     waiting_archive,
     waiting_row,
 )
+from backend.app.services.queue_ops import claim_lanes
+from backend.app.services.queue_source_link import LIBRARY_FILE, plan_link
 
 _printer_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
@@ -209,9 +213,6 @@ async def answer_plate_run(
             else:
                 await write_scopes.enter_async_context(scope)
 
-        async def guard_archive(archive_id):
-            await enter_guard(archive_write_scope(db, archive_id))
-
         # A Repeat may put its row back onto captured bytes, which needs the storage
         # guard. It is taken FIRST, before any archive guard: storage -> archive ->
         # lane is the order every writer of both keeps, operator recovery's apply
@@ -221,37 +222,54 @@ async def answer_plate_run(
         if action == "repeat":
             await enter_guard(queue_sources.storage_mutation())
 
-        # SQLite must become the writer before receipt/gate/row reads.  When an
-        # expected archive is present its archive scope does this; legacy calls
-        # have no archive identity to lock, so take the short DB-wide writer
-        # first.  PostgreSQL row/advisory guards below provide the equivalent.
-        archive_guarded = False
-        manual_gate_owner = None
+        # The footprint, read before any guard (G03 B, A21, r6 H6): the archive this answer is about -- the
+        # expected one, else the armed gate's own, else a legacy gate's waiting row's -- the printer's queues and,
+        # for a Repeat, the archive its routing intent names (R17). Then the printer's lanes after those archives
+        # (storage -> archive -> lane), and SQLite's writer, before the receipt, the gate and the rows are read.
+        # No path locks the printer row and then waits for an archive's guard.
+        fresh = not db.in_transaction()
+        gate_owner = None
         if expected_archive_id is not None:
-            await guard_archive(expected_archive_id)
-            archive_guarded = True
-        elif db.get_bind().dialect.name == "sqlite" and not db.in_transaction():
-            await db.execute(text("BEGIN IMMEDIATE"))
-
-        # A fresh manual Clear can answer a physical gate even if its print was
-        # trashed. It cannot grade or repeat the deleted print, and an addressed
-        # completion card must still be refused. Take the archive guard BEFORE
-        # the printer row, then verify that the same gate still owns the answer.
-        if (
-            action == "clear"
-            and not automatic
-            and expected_archive_id is None
-            and expected_gate_token is None
-            and defects is None
-        ):
-            manual_gate_owner = await db.scalar(
+            answered = expected_archive_id
+        else:
+            gate_owner = await db.scalar(
                 select(Printer.awaiting_plate_clear_archive_id).where(
                     Printer.id == printer_id, Printer.awaiting_plate_clear.is_(True)
                 )
             )
-            if manual_gate_owner is not None:
-                await guard_archive(manual_gate_owner)
-                archive_guarded = True
+            answered = gate_owner if gate_owner is not None else await answered_archive_id(db, printer_id)
+        queues = await printer_queue_ids(db, printer_id)
+        guarded = {answered} - {None}
+        if action == "repeat":
+            held = await waiting_row(db, printer_id)
+            plan = plan_link(held) if held is not None else None
+            if plan is not None and plan.needs_parent and plan.candidate.kind != LIBRARY_FILE:
+                guarded.add(plan.candidate.id)
+        if fresh:
+            await db.commit()  # the footprint read ends before the guards
+
+        async def printer_first(session):
+            # PostgreSQL: the printer row is an early row, before the database guards -- the order printer deletion
+            # (its printer row, then the lanes) and an archive's deletion (its gate printers, then the guards) keep.
+            # Taken under the lanes instead, it met a printer deletion holding the row and waiting for the lane:
+            # 40P01 (G03 B, found by TA26). NO KEY UPDATE: the answer writes only the gate's columns. SQLite: the
+            # writer that claim_lanes takes next serialises it.
+            if session.get_bind().dialect.name == "postgresql":
+                await session.execute(
+                    select(Printer.id).where(Printer.id == printer_id).with_for_update(key_share=True)
+                )
+
+        await enter_guard(claim_lanes(db, queues, archive_ids=sorted(guarded), before_db=printer_first))
+        if await printer_queue_ids(db, printer_id) != queues:
+            raise PlateAnswerBusy("This print is being changed; try clearing the plate again")
+        # A fresh manual Clear can answer a physical gate even if its print was
+        # trashed. It cannot grade or repeat the deleted print, and an addressed
+        # completion card must still be refused.
+        manual_gate_owner = (
+            gate_owner
+            if action == "clear" and not automatic and expected_gate_token is None and defects is None
+            else None
+        )
 
         # Receipt lookup happens only inside the same write transaction as the
         # gate mutation. A retry cannot observe half of a previous answer.
@@ -275,12 +293,14 @@ async def answer_plate_run(
         # PostgreSQL locks the durable gate as well as this process's normal
         # one-printer operation. SQLite already owns the writer at this point.
         printer = await db.scalar(
-            select(Printer).where(Printer.id == printer_id).with_for_update().execution_options(populate_existing=True)
+            select(Printer)
+            .where(Printer.id == printer_id)
+            .with_for_update(key_share=True)
+            .execution_options(populate_existing=True)
         )
-        if manual_gate_owner is not None and (
-            printer is None
-            or not printer.awaiting_plate_clear
-            or printer.awaiting_plate_clear_archive_id != manual_gate_owner
+        # The gate still names the archive the footprint read and the answer entered with (r6 H6).
+        if gate_owner is not None and (
+            printer is None or not printer.awaiting_plate_clear or printer.awaiting_plate_clear_archive_id != gate_owner
         ):
             raise StalePlateAnswer("This completion card no longer owns the printer's plate-clear gate")
         archive = await waiting_archive(db, printer_id, include_trashed=manual_gate_owner is not None)
@@ -298,8 +318,10 @@ async def answer_plate_run(
                 .with_for_update()
                 .execution_options(populate_existing=True),
             )
-        if archive is not None and not archive_guarded:
-            await guard_archive(archive.id)
+        if archive is not None and archive.id not in guarded:
+            # Another print than the footprint read: never its guard taken late, under the printer row.
+            raise StalePlateAnswer("This completion card is no longer current for this printer")
+        if archive is not None and expected_archive_id is None and archive.deleted_at is None:
             archive = await load_active_archive_for_write(db, archive.id)
         if (
             archive is None
@@ -352,6 +374,7 @@ async def answer_plate_run(
                     commit=False,
                     source_guards=source_guards,
                     storage_held=True,
+                    held_archives=guarded,
                 )
                 if row is None:
                     raise StalePlateAnswer("No finished print is waiting on this printer")

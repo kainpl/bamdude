@@ -48,11 +48,36 @@ def claim_token_matches(actual: datetime | None, expected: datetime | None) -> b
     return actual_utc == expected_utc
 
 
+async def queue_header_holds(db: AsyncSession, queue_id: int, recovery_identity: str | None) -> bool:
+    """A row enters queue Q only while Q's header is the one its validation read (G03 B, A25).
+
+    Read again under Q's lane, after the lane's guards and before the first insert or move, ``FOR NO KEY UPDATE``:
+    missing, or another incarnation -- SQLite gives a deleted printer's id, and its header's, to the next printer --
+    is the door's own answer for a missing queue. ``recovery_identity`` is what the validation read."""
+    row = (
+        await db.execute(
+            select(PrinterQueue.id, PrinterQueue.recovery_identity)
+            .where(PrinterQueue.id == queue_id)
+            .with_for_update(key_share=True)
+        )
+    ).first()
+    return row is not None and row.recovery_identity == recovery_identity
+
+
+async def queue_header_identity(queue_id: int) -> str | None:
+    """The incarnation of header Q, read in a short session of its own -- what a door that resolves its queue by id
+    validates against (A25)."""
+    from backend.app.core.database import async_session
+
+    async with async_session() as db:
+        return await db.scalar(select(PrinterQueue.recovery_identity).where(PrinterQueue.id == queue_id))
+
+
 async def read_queue_occupancy(db: AsyncSession, queue_id: int, *, for_update: bool = False) -> QueueOccupancy:
     """Read durable lane facts; caller already owns ``queue_claim_scope``."""
     statement = select(PrinterQueue).where(PrinterQueue.id == queue_id).execution_options(populate_existing=True)
     if for_update:
-        statement = statement.with_for_update()
+        statement = statement.with_for_update(key_share=True)
     queue = (await db.execute(statement)).scalar_one_or_none()
     if queue is None:
         raise PrinterOccupancyConflict("queue_missing", queue_id=queue_id)

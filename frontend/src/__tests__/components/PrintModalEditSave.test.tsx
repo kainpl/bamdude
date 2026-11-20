@@ -5,6 +5,9 @@
  * and the submit handler then did all three again: two "Queue item updated" toasts,
  * two closes, and on a refusal two error toasts. The submit handler is the only
  * caller of that mutation and now the only reporter.
+ *
+ * A save refused because the job changed or started meanwhile (`queue_item_changed`,
+ * G03 B1) reads the queue again, so the operator sees the job as it is now.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -16,10 +19,22 @@ import { server } from '../mocks/server';
 import type { PrintQueueItem } from '../../api/client';
 
 const mockShowToast = vi.fn();
+const mockInvalidateQueueViews = vi.fn();
 
 vi.mock('../../contexts/ToastContext', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../contexts/ToastContext')>();
   return { ...actual, useToast: () => ({ ...actual.useToast(), showToast: mockShowToast }) };
+});
+
+vi.mock('../../utils/queryInvalidation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../utils/queryInvalidation')>();
+  return {
+    ...actual,
+    invalidateQueueViews: (...args: Parameters<typeof actual.invalidateQueueViews>) => {
+      mockInvalidateQueueViews(...args);
+      return actual.invalidateQueueViews(...args);
+    },
+  };
 });
 
 import { PrintModal } from '../../components/PrintModal';
@@ -85,6 +100,7 @@ const toasts = () => mockShowToast.mock.calls;
 describe('PrintModal — saving an edited queue item', () => {
   beforeEach(() => {
     mockShowToast.mockReset();
+    mockInvalidateQueueViews.mockReset();
     server.use(
       http.get('/api/v1/printers/', () =>
         HttpResponse.json([{ id: 1, name: 'X1 Carbon', model: 'X1C', ip_address: '192.168.1.100', enabled: true, is_active: true }]),
@@ -127,5 +143,31 @@ describe('PrintModal — saving an edited queue item', () => {
     expect(toasts()[0][0]).toContain('Queue item is printing');
     expect(onClose).not.toHaveBeenCalled();
     expect(onSuccess).not.toHaveBeenCalled();
+    expect(mockInvalidateQueueViews).not.toHaveBeenCalled();
+  });
+
+  it('reads the queue again when the job changed or started meanwhile', async () => {
+    server.use(
+      http.patch('/api/v1/queue/:id', () =>
+        HttpResponse.json(
+          {
+            detail: {
+              error: 'queue_item_changed',
+              message: 'This job changed or started while it was being edited. Nothing was saved; refresh and try again.',
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    const { onClose } = renderModal();
+
+    await user.click(await screen.findByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(mockShowToast).toHaveBeenCalled());
+    expect(toasts()[0][1]).toBe('error');
+    expect(mockInvalidateQueueViews).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

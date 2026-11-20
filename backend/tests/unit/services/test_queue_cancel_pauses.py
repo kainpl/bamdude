@@ -20,9 +20,8 @@ Post-fix: cancelled flips the queue to ``paused`` so the scheduler's
 ``print_scheduler.py:227`` blocks the next dispatch. Operator resumes
 via the explicit UI control once the cause is cleared.
 
-Pinned via the ``set_queue_paused`` helper directly — exercises the
-same callsite invariant that ``main.py`` now uses, without spinning up
-the MQTT layer.
+Pinned via ``halt_lane`` directly — the one writer of a halt (G03 B, A9), the
+callsite ``main.py`` uses, without spinning up the MQTT layer.
 """
 
 from __future__ import annotations
@@ -36,10 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
-from backend.app.services.queue_counters import (
-    set_queue_idle,
-    set_queue_paused,
-)
+from backend.app.services.queue_counters import halt_lane, set_queue_idle
 
 
 @pytest.mark.asyncio
@@ -68,7 +64,7 @@ async def test_runtime_cancel_pauses_queue_not_idle(db_session):
     )
     await db_session.commit()
 
-    await set_queue_paused(db_session, 1, paused_item_id=10)
+    await halt_lane(db_session, 1, item_id=10, kind="paused")
     await db_session.commit()
 
     queue = (await db_session.execute(select(PrinterQueue).where(PrinterQueue.id == 1))).scalar_one()

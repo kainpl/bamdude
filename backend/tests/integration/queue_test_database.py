@@ -10,6 +10,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.orm import Session
 
 from backend.app.core.config import settings
 from backend.app.core.credential_config import initialize_credential_config_anchor
@@ -17,7 +18,7 @@ from backend.app.core.database import Base, _strip_tz_from_params, configure_sql
 
 
 @pytest.fixture
-async def test_engine(monkeypatch, tmp_path):
+async def test_engine(monkeypatch, tmp_path, request):
     url = os.environ.get("DISPATCH_TEST_POSTGRES_URL", f"sqlite+aiosqlite:///{tmp_path / 'dispatch.sqlite'}")
     schema = "dispatch_" + uuid4().hex if url.startswith("postgresql") else None
     if schema:
@@ -40,6 +41,18 @@ async def test_engine(monkeypatch, tmp_path):
         event.listen(engine.sync_engine, "connect", configure_sqlite_connection)
     else:
         event.listen(engine.sync_engine, "before_cursor_execute", _strip_tz_from_params, retval=True)
+
+        # A test that makes one session wait for another holds the first until a monitor has SEEN the wait; a server
+        # whose configured lock_timeout is short (the dev server's is 5 s) cancelled the waiter before a monitor on a
+        # fresh connection got there. Per transaction (SET LOCAL), so a pooler in transaction mode keeps it to this
+        # client; PgBouncer refuses it as a startup parameter. A deadlock is still the server's detector's, a hang the
+        # test's own timeout.
+        def patient(_session, _transaction, connection):
+            if connection.engine is engine.sync_engine:
+                connection.exec_driver_sql("SET LOCAL lock_timeout = '60s'")
+
+        event.listen(Session, "after_begin", patient)
+        request.addfinalizer(lambda: event.remove(Session, "after_begin", patient))
     import_all_models()
     async with engine.begin() as connection:
         if schema:

@@ -60,7 +60,9 @@ async def policy_for(db, project_id, *, lock=False, project_line_id=None):
         await take_write_lock(db, Project.__table__, project_id)
     stmt = select(Project).where(Project.id == project_id).execution_options(populate_existing=True)
     if lock:
-        stmt = stmt.with_for_update()
+        # NO KEY UPDATE (G03 B L6(b)): it conflicts with every other writer of the order as FOR UPDATE does, and
+        # lets a job row that merely names the order pass its foreign-key check.
+        stmt = stmt.with_for_update(key_share=True)
     project = await db.scalar(stmt)
     return project.printer_resources if project else None
 
@@ -255,6 +257,20 @@ def queue_basis(printer, auto):
     )
 
 
+async def _replan_auto_rows(db, printer_ids, auto_ids) -> set[int]:
+    """The router rows a replan writes: those it deletes, the companions of the printer rows it removes and the
+    router rows naming those printer rows (their back-references, nulled by the detach)."""
+    from backend.app.models.auto_queue import AutoQueueItem
+    from backend.app.services.queue_counters import companion_auto_ids
+
+    backrefs = (
+        await db.scalars(select(AutoQueueItem.id).where(AutoQueueItem.assigned_to_item_id.in_(printer_ids)))
+        if printer_ids
+        else []
+    )
+    return {*auto_ids, *(await companion_auto_ids(db, printer_ids) if printer_ids else []), *backrefs}
+
+
 async def replan(db, project_id, request, access):
     """Review/dequeue only never-started work; prepare the existing shared draft.
 
@@ -275,15 +291,21 @@ async def replan(db, project_id, request, access):
         plan_lines,
         queued_yield_by_line,
     )
-    from backend.app.services.queue_counters import detach_print_queue_refs, update_queue_counters
+    from backend.app.services.queue_counters import detach_print_queue_refs, lock_auto_rows, update_queue_counters
     from backend.app.services.queue_ops import claim_lanes
 
     preflight = await pending(db, project_id)
     lanes = {p.queue_id for p in preflight[2]}
+    auto_set: set[int] = set()
     async with AsyncExitStack() as stack:
         if request.apply:
             await stack.enter_async_context(claim_lanes(db, lanes))
             await policy_for(db, project_id, lock=True)
+            # Every router row the apply writes -- the ones it deletes, the companions of the printer rows it
+            # removes, the back-references its detach nulls -- locked ascending right after the order row, as one
+            # set (G03 B, A20); the re-read below must find no other.
+            auto_set = await _replan_auto_rows(db, [p.id for p in preflight[2]], [p.id for p in preflight[3]])
+            await lock_auto_rows(db, auto_set)
         user, scope, printers = await order_plan_access.fresh(db, access)
         if user is not None and not all(
             user.has_permission(p) for p in ("orders:update", "queue:delete_all", "queue:read_all")
@@ -311,6 +333,12 @@ async def replan(db, project_id, request, access):
             raise working.refusal("order_closed")
         printer, auto, remove_printer, remove_auto = await pending(db, project_id)
         if request.apply and not {p.queue_id for p in remove_printer} <= lanes:
+            raise refusal()
+        if (
+            request.apply
+            and not (await _replan_auto_rows(db, [p.id for p in remove_printer], [p.id for p in remove_auto]))
+            <= auto_set
+        ):
             raise refusal()
         inputs_token = draft.digest([data.token, queue_basis(printer, auto)])
         if request.apply and request.inputs_token != inputs_token:
@@ -399,9 +427,10 @@ async def replan(db, project_id, request, access):
         from backend.app.services.queue_counters import detach_auto_queue_refs
 
         await detach_auto_queue_refs(db, [p.id for p in remove_auto])
-        for item in [*remove_printer, *remove_auto]:
+        # Deletes ascending (A20): the printer rows, then the router rows, each in id order.
+        for item in [*sorted(remove_printer, key=lambda p: p.id), *sorted(remove_auto, key=lambda p: p.id)]:
             await db.delete(item)
-        await db.flush()
+            await db.flush()
         for lane in lanes:
             await update_queue_counters(db, lane)
         data = await draft.inputs(db, project_id)

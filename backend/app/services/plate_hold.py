@@ -204,6 +204,7 @@ async def answer_by_repeating(
     commit: bool = True,
     source_guards: AsyncExitStack | None = None,
     storage_held: bool = False,
+    held_archives: set[int] | None = None,
 ) -> PrintQueueItem | None:
     """The operator took the part off and wants another: re-arm the same row.
 
@@ -239,9 +240,29 @@ async def answer_by_repeating(
     if row is None:
         return None
 
+    from backend.app.services import queue_source_link
     from backend.app.services.print_execution import require_repeatable
 
     await require_repeatable(db, row)
+    # The source link the Repeat writes goes through the one rule (G03 B, A27): its parent is taken before the
+    # row is written, and an archive parent only under the guard the answer entered with it (A21, R17) -- a routing
+    # intent that names another one now than the footprint read is a refusal, nothing written.
+    link_plan = queue_source_link.plan_link(row)
+    if (
+        held_archives is not None
+        and link_plan.needs_parent
+        and link_plan.candidate.kind != queue_source_link.LIBRARY_FILE
+        and link_plan.candidate.id not in held_archives
+    ):
+        from backend.app.services.plate_answers import PlateAnswerBusy
+
+        raise PlateAnswerBusy("This print changed before it could be repeated. Refresh and answer again.")
+    await queue_source_link.lock_plans(db, [link_plan])
+    row = await db.get(PrintQueueItem, row.id, populate_existing=True, with_for_update={"key_share": True})
+    if row is None or row.status not in ("completed", "failed", "cancelled"):
+        from backend.app.services.plate_answers import PlateAnswerBusy
+
+        raise PlateAnswerBusy("This print changed before it could be repeated. Refresh and answer again.")
     if row.queue_source_id:
         # Asked under the guard and re-armed under it: a Repeat puts this row back
         # onto bytes the collector is entitled to release, and the state has to be
@@ -252,7 +273,7 @@ async def answer_by_repeating(
         try:
             if source_guards is None:
                 async with reusing_sources(db, [row.queue_source_id], storage_held=storage_held):
-                    await _rearm(db, row, commit=commit)
+                    await _rearm(db, row, link_plan, commit=commit)
             else:
                 # The outer plate answer commits defects, receipt, gate and
                 # re-arm together.  Holding the source guard until that commit
@@ -260,16 +281,58 @@ async def answer_by_repeating(
                 await source_guards.enter_async_context(
                     reusing_sources(db, [row.queue_source_id], storage_held=storage_held)
                 )
-                await _rearm(db, row, commit=commit)
+                await _rearm(db, row, link_plan, commit=commit)
         except QueueSourceError as exc:
             raise RepeatNotPossible(
                 "This print has no file to send again — the queue's saved copy of it is no longer readable."
             ) from exc
     else:
         await _refuse_a_legacy_row_with_no_file(db, row)
-        await _rearm(db, row, commit=commit)
+        await _rearm(db, row, link_plan, commit=commit)
     logger.info("Repeat requested on printer %s — re-armed queue row %s", printer_id, row.id)
     return row
+
+
+async def answered_archive_id(db: AsyncSession, printer_id: int) -> int | None:
+    """The archive a plate answer that names none is about, read before the guards (G03 B, A21, r6 H6): the armed
+    gate's own archive, else the legacy ownerless gate's waiting row's."""
+    owner = await db.scalar(
+        select(Printer.awaiting_plate_clear_archive_id).where(
+            Printer.id == printer_id, Printer.awaiting_plate_clear.is_(True)
+        )
+    )
+    if owner is not None:
+        return owner
+    row = await waiting_row(db, printer_id)
+    return row.archive_id if row is not None else None
+
+
+async def printer_queue_ids(db: AsyncSession, printer_id: int) -> list[int]:
+    return sorted(await db.scalars(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id)))
+
+
+async def clear_held_row(printer_id: int, session_factory=None) -> int:
+    """A print starting on the bed answers the held row's question: the row goes the way Clear plate sends it
+    (``answer_by_clearing``) -- in its own session, under the printer's lanes and the answered archive's guard, as
+    the plate answers (G03 B, A21). A row that changed between the footprint and the guards is left for the next
+    answer; nothing here ever blocks the print start."""
+    from backend.app.core.database import async_session
+    from backend.app.services.queue_ops import claim_lanes
+
+    async with (session_factory or async_session)() as db:
+        archive_id = await answered_archive_id(db, printer_id)
+        queues = await printer_queue_ids(db, printer_id)
+        await db.commit()  # the footprint read ends before the guards
+        async with claim_lanes(db, queues, archive_ids=[archive_id] if archive_id is not None else []):
+            row = await waiting_row(db, printer_id)
+            if await printer_queue_ids(db, printer_id) != queues or (
+                row is not None and (row.archive_id != archive_id or row.queue_id not in queues)
+            ):
+                logger.info(
+                    "Plate on printer %s: the held row changed under the guards; left for the next answer", printer_id
+                )
+                return 0
+            return await answer_by_clearing(db, printer_id, commit=True)
 
 
 async def _refuse_a_legacy_row_with_no_file(db: AsyncSession, row: PrintQueueItem) -> None:
@@ -306,7 +369,7 @@ async def _refuse_a_legacy_row_with_no_file(db: AsyncSession, row: PrintQueueIte
         )
 
 
-async def _rearm(db: AsyncSession, row: PrintQueueItem, *, commit: bool = True) -> None:
+async def _rearm(db: AsyncSession, row: PrintQueueItem, link_plan, *, commit: bool = True) -> None:
     """Put the waiting row back into its queue, at the front. Commits.
 
     Split out so the two answers to "does this row still have bytes?" —
@@ -314,11 +377,13 @@ async def _rearm(db: AsyncSession, row: PrintQueueItem, *, commit: bool = True) 
     for everything older — lead into the same re-arm rather than into two copies of
     it that could drift.
     """
+    from backend.app.services import queue_source_link
+    from backend.app.services.filament_policy import clear_routing_runtime
     from backend.app.services.queue_counters import update_queue_counters
     from backend.app.services.queue_ops import bump_block_to_top
 
-    row.status = "pending"
-    # The archive belongs to the print that finished; this run will get its own.
+    # The archive belongs to the print that finished; this run will get its own — the link is the one rule's
+    # (G03 B, A27): the original the job was captured from, proven, or nothing.
     #
     # ⚠️ **Unless it is the only thing the row has.** A print picked up from
     # BambuStudio or the printer's screen leaves a row with an ``archive_id`` and
@@ -326,12 +391,14 @@ async def _rearm(db: AsyncSession, row: PrintQueueItem, *, commit: bool = True) 
     # dispatcher fails a row with neither source outright ("No source file
     # specified"), and that failure errors the whole queue. Reported from a farm
     # doing exactly that. Keeping it is also the honest reading of "repeat":
-    # dispatch it from whatever it was dispatched from the first time.
-    if row.library_file_id is not None:
-        row.archive_id = None
-    from backend.app.services.filament_policy import restore_routing_source
+    # dispatch it from whatever it was dispatched from the first time — the rule's
+    # candidate for such a legacy row IS its live link, so it stays.
+    if not queue_source_link.apply_link(row, link_plan):
+        from backend.app.services.plate_answers import PlateAnswerBusy
 
-    restore_routing_source(row)
+        raise PlateAnswerBusy("This print changed before it could be repeated. Refresh and answer again.")
+    row.status = "pending"
+    clear_routing_runtime(row)
     row.completed_at = None
     row.started_at = None
     row.error_message = None

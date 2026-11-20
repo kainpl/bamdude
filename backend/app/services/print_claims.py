@@ -41,7 +41,7 @@ async def observe_claim(db, printer_id, item_id=None, *, archive_id=None, option
                 select(PrintQueueItem)
                 .where(PrintQueueItem.queue_id == queue.id, PrintQueueItem.status == "printing")
                 .execution_options(populate_existing=True)
-                .with_for_update()
+                .with_for_update(key_share=True)
             )
         ).all()
     )

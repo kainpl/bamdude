@@ -15,8 +15,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections import defaultdict
-from contextlib import asynccontextmanager
+from collections import Counter, defaultdict
+from contextlib import asynccontextmanager, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 
@@ -31,6 +31,33 @@ logger = logging.getLogger(__name__)
 
 _queue_claim_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
+_HELD_LANES = "g03_held_lanes"
+
+
+def held_lanes(db: AsyncSession) -> frozenset[int]:
+    """The printer lanes this session's writer holds now (G03 B, A20): entered by ``claim_lanes``,
+    ``queue_claim_scope`` or ``queue_scope_lock`` and left with them. A helper that would write a printer row of
+    another lane asks this and refuses -- the lanes are taken before the rows, never late."""
+    info = getattr(db, "info", None)
+    held = info.get(_HELD_LANES, {}) if isinstance(info, dict) else {}
+    return frozenset(lane for lane, count in held.items() if count > 0)
+
+
+@contextmanager
+def _holding(db: AsyncSession, lanes):
+    info = getattr(db, "info", None)
+    if not isinstance(info, dict):  # a stand-in session (lock-order probes, mocks) records nothing
+        yield
+        return
+    held = info.setdefault(_HELD_LANES, Counter())
+    held.update(lanes)
+    try:
+        yield
+    finally:
+        held.subtract(lanes)
+        for lane in [lane for lane, count in held.items() if count <= 0]:
+            del held[lane]
+
 
 @asynccontextmanager
 async def queue_scope_lock(db: AsyncSession, queue_id: int):
@@ -38,13 +65,26 @@ async def queue_scope_lock(db: AsyncSession, queue_id: int):
 
     PostgreSQL needs an explicit transaction-scoped lock because two writers
     otherwise both observe the same pending order. SQLite already serializes a
-    short write transaction, so it deliberately takes no process-local lock.
+    short write transaction, so it deliberately takes no process-local lock --
+    but it takes SQLite's writer HERE, before the body reads (G03 B, A15): pysqlite
+    opens a transaction only at the first write, so the positions, the header and
+    the head a body read before its first write were read beside a claim or a
+    verdict holding the lane, and the write then landed on what they had changed
+    (TA19: a reorder read its neighbours while a verdict skipped one of them). No
+    body under this scope waits for an in-process lock, so holding the writer
+    through it cannot meet a lane holder waiting for SQLite's writer.
     Callers must keep file I/O, MQTT and other long work outside this scope.
     """
     if db.get_bind().dialect.name == "postgresql":
         # 1625 is the existing namespace used for per-queue append locks.
         await db.execute(text("SELECT pg_advisory_xact_lock(1625, :queue_id)"), {"queue_id": queue_id})
-    yield
+    else:
+        from backend.app.core.database import take_write_lock
+        from backend.app.models.printer_queue import PrinterQueue
+
+        await take_write_lock(db, PrinterQueue.__table__, queue_id)
+    with _holding(db, [queue_id]):
+        yield
 
 
 @asynccontextmanager
@@ -65,7 +105,8 @@ async def queue_claim_scope(db: AsyncSession, queue_id: int, *, process_held: bo
             await _lane_db_guard(db, queue_id)
         elif dialect == "sqlite" and not db.in_transaction():
             await db.execute(text("BEGIN IMMEDIATE"))
-        yield
+        with _holding(db, [queue_id]):
+            yield
 
 
 def lane_held_in_process(db: AsyncSession, queue_id: int) -> bool:
@@ -130,7 +171,8 @@ async def claim_lanes(db: AsyncSession, queue_ids, *, archive_id: int | None = N
                 await archive_db_guard(db, each)
             for queue_id in lanes:
                 await _lane_db_guard(db, queue_id)
-        yield
+        with _holding(db, lanes):
+            yield
 
 
 async def place_pending_block(
@@ -472,9 +514,11 @@ def _copy_item_fields(src: PrintQueueItem, new_batch_id: str | None, new_positio
         created_by_id=src.created_by_id,
     )
 
-    from backend.app.services.filament_policy import restore_routing_source
+    from backend.app.services.filament_policy import clear_routing_runtime
 
-    restore_routing_source(item)
+    # The copy's source link is the one rule's (G03 B, A27): the async callers write it after locking the
+    # candidate's parent; here it carries the source row's link only until they do.
+    clear_routing_runtime(item)
     return item
 
 
@@ -518,7 +562,15 @@ async def clone_item(
     await require_repeatable(db, src, whole_batch=True)
     pin = (src.recovery_identity, src.queue_id, src.queue_source_id, src.batch_id)
     new_batch_id = src.batch_id if keep_batch else None
+    from backend.app.services import queue_source_link
     from backend.app.services.publication_authority import queue_item_access
+
+    # A clone is an insert: its key is always checked, so its parent is always taken (A27 rule 2, H3).
+    link_plan = queue_source_link.plan_link(src, insert=True)
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.printer_occupancy import queue_header_holds
+
+    queue_identity = await db.scalar(select(PrinterQueue.recovery_identity).where(PrinterQueue.id == src.queue_id))
 
     async with reusing_sources(
         db,
@@ -528,8 +580,11 @@ async def clone_item(
         printer_id=src.queue_id,
         source_access=queue_item_access([src]),
     ):
-        src = await db.get(PrintQueueItem, item_id, populate_existing=True, with_for_update=True)
+        await queue_source_link.lock_plans(db, [link_plan])
+        src = await db.get(PrintQueueItem, item_id, populate_existing=True, with_for_update={"key_share": True})
         if src is None or (src.recovery_identity, src.queue_id, src.queue_source_id, src.batch_id) != pin:
+            raise SourceUnreadable("clone source changed")
+        if not await queue_header_holds(db, src.queue_id, queue_identity):  # A25
             raise SourceUnreadable("clone source changed")
         await require_repeatable(db, src, whole_batch=True)
         if created_by_id != "source" and authority is not None:
@@ -546,6 +601,8 @@ async def clone_item(
             )
         ).scalar() or 0
         clone = _copy_item_fields(src, new_batch_id, max_pos + 1)
+        if not queue_source_link.apply_link(clone, link_plan, source=src):
+            raise SourceUnreadable("clone source changed")
         clone.source_snapshot = await snapshot_for_copy(db, src)
         _as_new_work(clone, created_by_id, keep_order)
         db.add(clone)
@@ -600,7 +657,14 @@ async def clone_batch(
 
     new_batch_id = str(uuid.uuid4())
     clones: list[PrintQueueItem] = []
+    from backend.app.services import queue_source_link
     from backend.app.services.publication_authority import queue_item_access
+
+    link_plans = {row.id: queue_source_link.plan_link(row, insert=True) for row in siblings}
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.printer_occupancy import queue_header_holds
+
+    queue_identity = await db.scalar(select(PrinterQueue.recovery_identity).where(PrinterQueue.id == queue_id))
 
     async with reusing_sources(
         db,
@@ -610,8 +674,13 @@ async def clone_batch(
         printer_id=queue_id,
         source_access=queue_item_access(siblings),
     ):
+        await queue_source_link.lock_plans(db, list(link_plans.values()))
         siblings = await get_batch_pending_items(db, batch_id, queue_id=queue_id)
         if tuple((row.id, row.recovery_identity, row.queue_source_id, row.queue_id) for row in siblings) != pins:
+            from backend.app.services.queue_sources import SourceUnreadable
+
+            raise SourceUnreadable("clone batch changed")
+        if not await queue_header_holds(db, queue_id, queue_identity):  # A25
             from backend.app.services.queue_sources import SourceUnreadable
 
             raise SourceUnreadable("clone batch changed")
@@ -631,6 +700,10 @@ async def clone_batch(
         ).scalar() or 0
         for i, src in enumerate(siblings):
             clone = _copy_item_fields(src, new_batch_id, max_pos + 1 + i)
+            if not queue_source_link.apply_link(clone, link_plans[src.id], source=src):
+                from backend.app.services.queue_sources import SourceUnreadable
+
+                raise SourceUnreadable("clone batch changed")
             clone.source_snapshot = await snapshot_for_copy(db, src)
             _as_new_work(clone, created_by_id, keep_order)
             db.add(clone)
@@ -643,8 +716,39 @@ async def clone_batch(
     return clones
 
 
+@asynccontextmanager
+async def lane_session(queue_ids):
+    """A fresh session under ``claim_lanes(sorted(queues))`` — the shape of every light writer (G03 B, A7, L1).
+
+    ``queue_ids`` are read off the named rows before the guards; a row found under them in another queue is the
+    writer's refusal, never a lock taken late.
+    """
+    from backend.app.core import database
+
+    async with database.async_session() as db, claim_lanes(db, sorted(set(queue_ids))):
+        yield db
+
+
+async def lock_named_rows(db: AsyncSession, item_ids) -> dict[int, PrintQueueItem]:
+    """The named rows ``FOR NO KEY UPDATE`` in ascending id, re-read — inside the writer's lanes."""
+    rows = await db.scalars(
+        select(PrintQueueItem)
+        .where(PrintQueueItem.id.in_(sorted(set(item_ids))))
+        .order_by(PrintQueueItem.id)
+        .with_for_update(key_share=True)
+        .execution_options(populate_existing=True)
+    )
+    return {row.id: row for row in rows}
+
+
 async def set_status(
-    db: AsyncSession, item_id: int, new_status: str, *, completed_at=None, commit: bool = True
+    db: AsyncSession,
+    item_id: int,
+    new_status: str,
+    *,
+    completed_at=None,
+    commit: bool = True,
+    queue_id: int | None = None,
 ) -> bool:
     """Move one PENDING item to ``new_status``.  Returns True if it changed.
 
@@ -655,16 +759,15 @@ async def set_status(
     """
     if new_status == "pending":
         return False
-    values: dict = {"status": new_status}
+    # Every write of ``status`` voids the deferral proof (G03 B, A16).
+    values: dict = {"status": new_status, "deferred_claim_token": None}
     if completed_at is not None:
         values["completed_at"] = completed_at
+    conditions = [PrintQueueItem.id == item_id, PrintQueueItem.status == "pending"]
+    if queue_id is not None:
+        conditions.append(PrintQueueItem.queue_id == queue_id)  # the lane the caller holds (A7)
     changed = (
-        await db.execute(
-            update(PrintQueueItem)
-            .where(PrintQueueItem.id == item_id, PrintQueueItem.status == "pending")
-            .values(**values)
-            .returning(PrintQueueItem.id)
-        )
+        await db.execute(update(PrintQueueItem).where(*conditions).values(**values).returning(PrintQueueItem.id))
     ).all()
     if changed and commit:
         await db.commit()
@@ -690,7 +793,7 @@ async def set_status_for_batch(
     queue_id = await batch_queue_id(db, batch_id, queue_id)
     if queue_id is None or new_status == "pending":
         return 0
-    values: dict = {"status": new_status}
+    values: dict = {"status": new_status, "deferred_claim_token": None}  # voids the deferral proof (A16)
     if completed_at is not None:
         values["completed_at"] = completed_at
     changed = (

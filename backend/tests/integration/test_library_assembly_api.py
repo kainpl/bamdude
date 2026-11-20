@@ -666,3 +666,55 @@ async def test_two_copies_of_one_plate_are_not_a_whole_set(async_client, db_sess
     again = {"parts": [{"quantity": 1}, {"quantity": 1}], "targets": [_row(farm)], "name": "jar"}
     response = await async_client.post(f"{API}/library/files/{one}/relayout", json=again)
     assert response.status_code == 409 and response.json()["detail"]["error"] == "assembly_set_incomplete"
+
+
+def _a_new_row_in_its_place(row: LibraryFile) -> None:
+    """What SQLite allows: the row deleted and the same file registered again in the same second — the same
+    id, path, hash and creation time, but another row (G03 B, A32; TA42)."""
+    from uuid import uuid4
+
+    row.recovery_identity = str(uuid4())
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_source_replaced_by_a_row_with_its_id_path_hash_and_time_publishes_nothing(
+    async_client, db_session, farm, monkeypatch
+):
+    real = assembly_job.run_assembly
+
+    async def packs_then_the_row_is_replaced(root, **kwargs):
+        result = await real(root, **kwargs)
+        _a_new_row_in_its_place(await db_session.get(LibraryFile, farm["files"]["lid"]))
+        await db_session.commit()
+        return result
+
+    monkeypatch.setattr(assembly_job, "run_assembly", packs_then_the_row_is_replaced)
+    job = await _finish(
+        async_client, await async_client.post(f"{API}/library/assemble", json=_body(farm, [("lid", {})]))
+    )
+    assert job["result"]["outcome"] == "failed" and job["result"]["reason"] == "source_changed"
+    assert not await _assembled_files(db_session)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_previous_file_replaced_after_publication_is_kept_and_its_replacement_untouched(
+    async_client, db_session, farm, monkeypatch
+):
+    """The re-layout's new file is published; then the previous file's row is replaced before the clean-up.
+    The row now under that id is not the one the caller chose: it is neither trashed nor removed."""
+    old_id = await _first(async_client, farm)
+    real = assembly_job._trash_previous
+
+    async def replaced_first(plan):
+        _a_new_row_in_its_place(await db_session.get(LibraryFile, old_id))
+        await db_session.commit()
+        return await real(plan)
+
+    monkeypatch.setattr(assembly_job, "_trash_previous", replaced_first)
+    result = await _relayout_with_trash(async_client, farm, old_id)
+    assert result["outcome"] == "ok"
+    assert result["trashed"] == [] and result["removed"] == [] and result["kept"] == [old_id]
+    current = await db_session.get(LibraryFile, old_id, populate_existing=True)
+    assert current is not None and current.deleted_at is None

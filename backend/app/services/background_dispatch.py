@@ -545,6 +545,24 @@ def dispatch_failure_code(exc: BaseException | None, *, stage: str | None = None
     return reasons.DISPATCH_INTERNAL_ERROR
 
 
+async def _original_identities(db, item) -> tuple[str | None, str | None]:
+    """The incarnation of the archive and the library row the claimed row names (one indexed read each)."""
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.library import LibraryFile
+
+    archive = (
+        await db.scalar(select(PrintArchive.recovery_identity).where(PrintArchive.id == item.archive_id))
+        if item.archive_id is not None
+        else None
+    )
+    library = (
+        await db.scalar(select(LibraryFile.recovery_identity).where(LibraryFile.id == item.library_file_id))
+        if item.library_file_id is not None
+        else None
+    )
+    return archive, library
+
+
 def _published(job) -> bool:
     """The start may have reached the printer."""
     return job.send_fact in (SEND_SENT, SEND_ACCEPTED)
@@ -1091,6 +1109,10 @@ class PrintDispatchJob:
     claim_started_at: Any = None
     original_archive_id: int | None = None
     original_library_file_id: int | None = None
+    # The incarnation of each original as the runner read it at its start (G03 B, A10/A27): a deferral
+    # restores the link only to this very row, never to the next row that took its id.
+    original_archive_identity: str | None = None
+    original_library_identity: str | None = None
     execution_archive_id: int | None = None
     # Generated once at the execution boundary and threaded unchanged to the
     # archive intent, run binding and Bambu ``project_file`` payload.
@@ -1396,7 +1418,7 @@ class BackgroundDispatchService:
         from datetime import datetime, timezone
 
         from backend.app.models.print_queue import PrintQueueItem
-        from backend.app.services.queue_counters import set_queue_error, set_queue_idle, update_queue_counters
+        from backend.app.services.queue_counters import set_queue_idle, update_queue_counters
         from backend.app.services.queue_ops import queue_claim_scope
 
         try:
@@ -1451,11 +1473,15 @@ class BackgroundDispatchService:
                         # published start the printer did not take still gates.
                         item.gate_acknowledged = not _published(job)
                         if queue_error:
-                            await set_queue_error(db, item.queue_id, failed_item_id=item.id)
+                            from backend.app.services.queue_counters import halt_lane
+
+                            # The one writer of a halt (G03 B, A9): the header names this claim (checked above).
+                            await halt_lane(db, item.queue_id, item_id=item.id, kind="error")
                         else:
-                            await set_queue_idle(db, item.queue_id)
+                            await set_queue_idle(db, item.queue_id, expected_item_id=item.id)
                     else:
-                        await set_queue_idle(db, item.queue_id)
+                        # The release names the claim it ends (A9): the header names this row (checked above).
+                        await set_queue_idle(db, item.queue_id, expected_item_id=item.id)
                     await update_queue_counters(db, item.queue_id)
                     await db.commit()
         except Exception:
@@ -2501,6 +2527,7 @@ class BackgroundDispatchService:
         job.options["auto_eject_settings"] = deepcopy(item.auto_eject_settings)
         job.claim_started_at = item.started_at
         job.original_archive_id, job.original_library_file_id = item.archive_id, item.library_file_id
+        job.original_archive_identity, job.original_library_identity = await _original_identities(db, item)
         job.source = await item_descriptor(db, item)
         if job.source is not None:
             from backend.app.services import queue_sources
@@ -2665,6 +2692,8 @@ class BackgroundDispatchService:
             "claim_detail": getattr(exc, "detail", None),
             "source_archive_id": job.original_archive_id,
             "source_library_file_id": job.original_library_file_id,
+            "source_archive_identity": job.original_archive_identity,
+            "source_library_identity": job.original_library_identity,
             # Read by ``defer_claim`` if the refusal ends the attempt (direct, failed, a swap start that ran).
             "failure_code": dispatch_failure_code(exc),
         }
@@ -2685,6 +2714,9 @@ class BackgroundDispatchService:
                     direct=True,
                     source_archive_id=job.original_archive_id,
                     source_library_file_id=job.original_library_file_id,
+                    source_archive_identity=job.original_archive_identity,
+                    source_library_identity=job.original_library_identity,
+                    queue_id=job.printer_id,
                     restore_source=True,
                     disposition=disposition,
                     execution_archive_id=job.execution_archive_id,
@@ -4527,7 +4559,7 @@ class BackgroundDispatchService:
                             queued = await db.scalar(
                                 select(PrintQueueItem)
                                 .where(PrintQueueItem.id == job.queue_item_id)
-                                .with_for_update()
+                                .with_for_update(key_share=True)
                                 .execution_options(populate_existing=True)
                             )
                             if _claim_change_detail(queued, job) is None:
@@ -5137,8 +5169,13 @@ async def enqueue_calibration_print(
     calibration-safe default (bed_levelling on, everything else off,
     swap macros disabled).
 
-    Returns the new ``PrintQueueItem.id``. Caller updates
-    ``calibration_session_id`` separately once the session row exists.
+    Returns the new ``PrintQueueItem.id``.
+
+    G03 B, A7/A15/A25: the insert puts a row ahead of every pending one (position 0), so it runs in a fresh
+    session under the printer queue's lane; the header is re-read under it and must be the one read before
+    (its ``recovery_identity`` — SQLite gives a deleted printer's id, and its header's, to the next printer).
+    The calibration session's link to the new job and the queue's counters are written in that same lane
+    transaction, while the job row is still invisible to any deleter (F5).
     """
     import json as _json
 
@@ -5150,11 +5187,26 @@ async def enqueue_calibration_print(
     swap_events = swap.get("events") or []
     execute_swap = bool(swap.get("execute") and swap_events)
 
-    async with async_session() as db:
-        queue = (
-            await db.execute(select(PrinterQueue).where(PrinterQueue.printer_id == printer_id))
-        ).scalar_one_or_none()
-        if queue is None:
+    from backend.app.models.calibration_session import CalibrationSession
+    from backend.app.services.queue_counters import update_queue_counters
+    from backend.app.services.queue_ops import queue_claim_scope
+
+    async with async_session() as read:
+        header = (
+            await read.execute(
+                select(PrinterQueue.id, PrinterQueue.recovery_identity).where(PrinterQueue.printer_id == printer_id)
+            )
+        ).first()
+    if header is None:
+        raise ValueError(f"No PrinterQueue for printer_id={printer_id}")
+    async with async_session() as db, queue_claim_scope(db, header.id):
+        queue = await db.scalar(
+            select(PrinterQueue)
+            .where(PrinterQueue.id == header.id)
+            .with_for_update(key_share=True)
+            .execution_options(populate_existing=True)
+        )
+        if queue is None or queue.recovery_identity != header.recovery_identity or queue.printer_id != printer_id:
             raise ValueError(f"No PrinterQueue for printer_id={printer_id}")
 
         item = PrintQueueItem(
@@ -5176,6 +5228,14 @@ async def enqueue_calibration_print(
             swap_macro_events=_json.dumps(swap_events) if execute_swap else None,
         )
         db.add(item)
+        await db.flush()
+        if calibration_session_id is not None:
+            await db.execute(
+                update(CalibrationSession)
+                .where(CalibrationSession.id == calibration_session_id)
+                .values(print_queue_item_id=item.id)
+                .execution_options(synchronize_session=False)
+            )
+        await update_queue_counters(db, queue.id)
         await db.commit()
-        await db.refresh(item)
         return item.id

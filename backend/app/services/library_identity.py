@@ -14,22 +14,36 @@ def _time(value: datetime | None) -> str | None:
 
 @dataclass(frozen=True)
 class LibraryIdentity:
+    """The one proof that a library row is still the row a caller read (G03 B, A32).
+
+    Captured when the row is read, asked under the lock where the caller decides. Every door that answers
+    ``source_changed`` (or ``superseded``) for a library source stores this — never a tuple of its own.
+    ``recovery_identity`` is the row's own identity (m250): id, path, hash and creation time alone can all
+    be the next row's on SQLite. A capture made before m250 has none and is compared by the other fields.
+    """
+
     id: int
     path: str
     sha256: str | None
     created: str | None
+    recovery_identity: str | None = None
 
     @classmethod
     def capture(cls, row):
-        return cls(row.id, row.file_path, row.file_hash, _time(row.created_at))
+        return cls(row.id, row.file_path, row.file_hash, _time(row.created_at), getattr(row, "recovery_identity", None))
 
     def matches(self, row) -> bool:
-        return row is not None and self == type(self).capture(row)
-
-    @classmethod
-    def from_proof(cls, value):
-        file_id, path, sha256, created = value
-        return cls(file_id, path, sha256, _time(created))
+        if row is None:
+            return False
+        current = type(self).capture(row)
+        if self.recovery_identity is None:
+            return (self.id, self.path, self.sha256, self.created) == (
+                current.id,
+                current.path,
+                current.sha256,
+                current.created,
+            )
+        return self == current
 
 
 @dataclass(frozen=True)

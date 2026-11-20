@@ -1,6 +1,7 @@
 """Library models for file manager functionality."""
 
 from datetime import datetime
+from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
@@ -98,6 +99,13 @@ class LibraryFile(Base):
     __tablename__ = "library_files"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # The row's own identity (m250), written once by this default when the row is inserted and never again.
+    # SQLite hands a deleted row's id (and, in the same second, its created_at) to the next row, so neither
+    # proves that a stored reference still names the same row; this does. A rename, a move on a share and a
+    # re-slice keep the row and so the identity; a file deleted and registered again is a new row.
+    recovery_identity: Mapped[str | None] = mapped_column(
+        String(36), default=lambda: str(uuid4()), unique=True, index=True
+    )
     folder_id: Mapped[int | None] = mapped_column(ForeignKey("library_folders.id", ondelete="CASCADE"), nullable=True)
     # Product links live in the ``product_files`` pivot — see the
     # ``products`` relationship below. A file is attached to a product,

@@ -132,6 +132,9 @@ class Source:
     # Set for an actor who may touch only their OWN files (``library:update_own``):
     # the picture attaches only while the row is still theirs.
     owner_id: int | None = None
+    # The row's own identity (m250, G03 B A32): id, path, hash and mtime alone can be the next row's on
+    # SQLite (a file on a share registered again in the same second), so the picture attaches only to this row.
+    recovery_identity: str | None = None
 
     @classmethod
     def capture(cls, row: LibraryFile, *, authority=None, permission="library:update_all", owner_id=None):
@@ -200,6 +203,11 @@ async def attach_result(db: AsyncSession, source: Source, png: Path, *, authoriz
                                 LibraryFile.file_hash == source.file_hash,
                                 LibraryFile.fs_modified_at == source.fs_modified_at,
                                 LibraryFile.thumbnail_path == source.thumbnail_path,
+                                *(
+                                    [LibraryFile.recovery_identity == source.recovery_identity]
+                                    if source.recovery_identity is not None
+                                    else []
+                                ),
                                 *(
                                     [LibraryFile.created_by_id == source.owner_id]
                                     if source.owner_id is not None

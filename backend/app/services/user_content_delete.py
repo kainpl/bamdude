@@ -33,10 +33,12 @@ from backend.app.services.library_delete_cleanup import finish
 from backend.app.services.library_delete_scope import footprint, library_delete_scope, product_ids_for_files
 from backend.app.services.library_identity import LibraryIdentity
 from backend.app.services.library_trash import library_trash_service
+from backend.app.services.product_gate import ProductBusy, lock_nowait
 from backend.app.services.queue_counters import (
     companion_auto_ids,
     detach_auto_queue_refs,
     detach_print_queue_refs,
+    lock_auto_rows,
     update_queue_counters,
 )
 
@@ -537,6 +539,14 @@ async def delete_content(db, target, admin, current_user, creds, check_target):
                 row = await db.get(LibraryFile, proof.id, populate_existing=True)
                 await library_trash_service.purge_rows(db, row)
             queue_ids = planned.ids("print_queue")
+            # Every router row this deletion writes -- its planned rows, the companions of the printer rows it
+            # deletes, the back-references its detach nulls -- locked ascending as one set (G03 B, A20).
+            backrefs = await db.scalars(
+                select(AutoQueueItem.id).where(AutoQueueItem.assigned_to_item_id.in_(queue_ids))
+            )
+            await lock_auto_rows(
+                db, [*planned.ids("auto_queue_items"), *await companion_auto_ids(db, queue_ids), *backrefs]
+            )
             await detach_print_queue_refs(db, queue_ids)
             await db.execute(delete(PrintQueueItem).where(PrintQueueItem.id.in_(queue_ids)))
             await detach_auto_queue_refs(db, planned.ids("auto_queue_items"))
@@ -545,6 +555,14 @@ async def delete_content(db, target, admin, current_user, creds, check_target):
                 await update_queue_counters(db, lane)
             await stage_end_sessions(db, target, "account_deleted")
             await detach_account_rows(db, target)
+            # The account guard no longer blocks a row that merely names the account (A30), so the deletion keeps
+            # its target from gaining referencing rows at its end: the row upgraded FOR UPDATE NOWAIT -- a granted
+            # key-share check of an in-flight insert is the deletion's refusal, nothing written; once upgraded, a
+            # later insert naming the account waits and then fails its own check.
+            try:
+                await lock_nowait(db, User.__table__, [target.user_id])
+            except ProductBusy as exc:
+                raise refused("user_content_delete_changed") from exc
             await db.execute(delete(User).where(User.account_identity == target.account_identity))
             await db.commit()
         # File-path process scopes above have ended; all planned archive

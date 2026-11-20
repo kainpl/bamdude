@@ -267,6 +267,8 @@ async def test_reconcile_complete_advances_queue_item(db_session):
     item = PrintQueueItem(queue_id=queue.id, archive_id=archive.id, status="printing")
     db_session.add(item)
     await db_session.flush()
+    queue.current_item_id = item.id  # the claim names its row (the release names it too, G03 B A18)
+    await db_session.flush()
 
     await _reconcile_complete_archive(db_session, archive, status="completed", uncertain=False)
 
@@ -284,6 +286,8 @@ async def test_reconcile_complete_failed_sets_queue_error(db_session):
     item = PrintQueueItem(queue_id=queue.id, archive_id=archive.id, status="printing")
     db_session.add(item)
     await db_session.flush()
+    queue.current_item_id = item.id  # the claim names its row (the release names it too, G03 B A18)
+    await db_session.flush()
 
     await _reconcile_complete_archive(db_session, archive, status="failed", uncertain=False)
 
@@ -299,6 +303,8 @@ async def test_reconcile_uncertain_cancels_and_pauses_queue(db_session):
     archive = await _make_archive(db_session)
     item = PrintQueueItem(queue_id=queue.id, archive_id=archive.id, status="printing")
     db_session.add(item)
+    await db_session.flush()
+    queue.current_item_id = item.id  # the claim names its row (the release names it too, G03 B A18)
     await db_session.flush()
 
     await _reconcile_complete_archive(db_session, archive, status="cancelled", uncertain=True)

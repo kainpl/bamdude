@@ -864,35 +864,54 @@ async def archive_printer(
     if printer_manager.is_print_active(printer_id):
         raise HTTPException(409, "Stop the active print before archiving this printer")
 
-    printer.archived = True
-    printer.archived_at = datetime.now(timezone.utc)
-
     # Cancel pending items on this printer's queue(s). Resolve the queue(s) via
-    # PrinterQueue.printer_id rather than assuming queue_id == printer_id.
-    queue_ids = (await db.execute(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))).scalars().all()
+    # PrinterQueue.printer_id rather than assuming queue_id == printer_id — read before the
+    # guards, read again under them (G03 B, A7): the cancel and the recount run under the
+    # lanes of exactly these queues, in a fresh session.
+    from backend.app.services.queue_ops import lane_session
+
+    queue_ids = sorted(
+        (await db.execute(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))).scalars().all()
+    )
+    archived_at = datetime.now(timezone.utc)
     cancelled = 0
-    if queue_ids:
-        # Dated (G03 E3a): the "previous print succeeded" gate orders finished rows by their end, and on
-        # PostgreSQL an undated cancel sorted first and hid every later failure of an unarchived printer.
-        cancel_result = await db.execute(
-            sql_update(PrintQueueItem)
-            .where(PrintQueueItem.queue_id.in_(queue_ids), PrintQueueItem.status == "pending")
-            .values(
-                status="cancelled",
-                completed_at=printer.archived_at,
-                waiting_reason=None,
-                waiting_reason_code=None,
-                waiting_reason_checked_at=None,
-            )
+    await db.rollback()  # the read ends before the lanes
+    async with lane_session(queue_ids) as wdb:
+        current = sorted(
+            (await wdb.execute(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))).scalars().all()
         )
-        cancelled = cancel_result.rowcount or 0
-        if cancelled:
-            from backend.app.services.queue_counters import update_queue_counters
+        if current != queue_ids:
+            raise HTTPException(
+                409, "The printer's queues changed while it was being archived. Nothing was changed; try again."
+            )
+        held = await wdb.get(Printer, printer_id, populate_existing=True)
+        if held is None:
+            raise HTTPException(404, "Printer not found")
+        held.archived = True
+        held.archived_at = archived_at
+        if queue_ids:
+            # Dated (G03 E3a): the "previous print succeeded" gate orders finished rows by their end, and on
+            # PostgreSQL an undated cancel sorted first and hid every later failure of an unarchived printer.
+            cancel_result = await wdb.execute(
+                sql_update(PrintQueueItem)
+                .where(PrintQueueItem.queue_id.in_(queue_ids), PrintQueueItem.status == "pending")
+                .values(
+                    status="cancelled",
+                    completed_at=archived_at,
+                    waiting_reason=None,
+                    waiting_reason_code=None,
+                    waiting_reason_checked_at=None,
+                    deferred_claim_token=None,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            cancelled = cancel_result.rowcount or 0
+            if cancelled:
+                from backend.app.services.queue_counters import update_queue_counters
 
-            for queue_id in sorted(queue_ids):
-                await update_queue_counters(db, queue_id)
-
-    await db.commit()
+                for queue_id in queue_ids:
+                    await update_queue_counters(wdb, queue_id)
+        await wdb.commit()
     # Its scheduled dryings go the way of its queue: what waits is cancelled, its
     # rules are paused — reversible, like the archive itself.
     await scheduled_drying.forget_printer(db, printer_id, archived=True)
@@ -1042,15 +1061,10 @@ async def _delete_printer(
 
 async def _delete_printer_rows(printer_id: int, printer: Printer, delete_archives: bool, db: AsyncSession) -> None:
     """Stop the printer's owners and delete its rows, up to and including the commit."""
-    from sqlalchemy import delete as sql_delete
 
-    from backend.app.models.maintenance import MaintenanceHistory, PrinterMaintenance
-    from backend.app.models.print_queue import PrintQueueItem
-    from backend.app.models.printer_queue import PrinterQueue
     from backend.app.services.archive import ArchiveService
     from backend.app.services.macro_trigger import stop_event_macro_tasks
     from backend.app.services.print_completion_tasks import stop_print_completion_tasks
-    from backend.app.services.queue_counters import detach_print_queue_refs
 
     await stop_print_completion_tasks(printer_id)
     await stop_event_macro_tasks(printer_id)
@@ -1092,6 +1106,7 @@ async def _delete_printer_rows(printer_id: int, printer: Printer, delete_archive
         archive_ids = (
             (await db.execute(select(PrintArchive.id).where(PrintArchive.printer_id == printer_id))).scalars().all()
         )
+        await db.commit()  # each archive's plan is entered in a clean session (A21 step 1)
         # Only this already-retired printer's own physical work is exempt.
         # Ordinary trash/user deletion can never obtain this shutdown context.
         db.info["retired_printer_cleanup"] = printer_id
@@ -1107,126 +1122,221 @@ async def _delete_printer_rows(printer_id: int, printer: Printer, delete_archive
         remaining = await db.scalar(select(PrintArchive.id).where(PrintArchive.printer_id == printer_id).limit(1))
         if remaining is not None:
             raise HTTPException(409, "Printer archives changed during deletion; retry the operation.")
-    else:
-        # Orphan the archives instead of deleting them
-        from sqlalchemy import update
+    # Step 2 is one transaction in a clean session (G03 B, A21, r5 R20 / F3): the request's own transaction ends
+    # first, so no writer of ours waits for itself.
+    await db.commit()
+    await _delete_printer_queue_rows(printer_id, delete_archives, db.bind)
 
-        await db.execute(update(PrintArchive).where(PrintArchive.printer_id == printer_id).values(printer_id=None))
 
-    # Delete maintenance history and items for this printer
-    # (SQLite doesn't enforce FK cascades, so do it explicitly)
-    maintenance_ids = (
-        (await db.execute(select(PrinterMaintenance.id).where(PrinterMaintenance.printer_id == printer_id)))
-        .scalars()
-        .all()
-    )
-    if maintenance_ids:
-        await db.execute(
-            sql_delete(MaintenanceHistory).where(MaintenanceHistory.printer_maintenance_id.in_(maintenance_ids))
-        )
-        await db.execute(sql_delete(PrinterMaintenance).where(PrinterMaintenance.printer_id == printer_id))
+async def _delete_printer_queue_rows(printer_id: int, delete_archives: bool, bind) -> None:
+    """The printer's queues, archive links, job rows and the printer itself -- one transaction, one commit.
 
-    # ⚠️ The queue's ITEMS, before the queue itself. ``Printer.queue`` cascades
-    # to the ``printer_queues`` row, but ``PrinterQueue.items`` does not cascade
-    # — so on commit the ORM tries to de-associate them by nulling
-    # ``print_queue.queue_id``, which is NOT NULL, and the whole delete answers
-    # 500. That made a printer undeletable for as long as it had ANY queue row,
-    # completed ones included (reported 2026-08-17: printer 6 failed while 3 and
-    # 7 succeeded, minutes apart on one install).
-    #
-    # A bulk statement rather than an ORM cascade on the relationship: the
-    # relationship is ``lazy="dynamic"``, so cascading would load every item a
-    # long-lived queue ever held just to delete it row by row.
-    queue_ids = (await db.execute(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))).scalars().all()
-    if queue_ids:
-        # A printer-side item may be the dispatched half of an auto-queue row.
-        # Bulk DELETE bypasses the ordinary queue endpoint, so do its explicit
-        # SQLite-safe cleanup first: otherwise the router row keeps the queue
-        # source alive for ever after its printer is gone.
-        item_ids = (
-            (await db.execute(select(PrintQueueItem.id).where(PrintQueueItem.queue_id.in_(queue_ids)))).scalars().all()
-        )
-        await detach_print_queue_refs(db, item_ids)
-        await db.execute(sql_delete(PrintQueueItem).where(PrintQueueItem.queue_id.in_(queue_ids)))
+    Under ``claim_lanes(<the printer's queues, read here before the guards>)``, the printer row taken first
+    (``lock_sensor_target``: SQLite's writer, PostgreSQL's row). Rows in this order: the headers ``FOR UPDATE`` --
+    the delete lock, before any job row, so an archive writer whose foreign-key check names a header waits for this
+    transaction, never the reverse -- and the queues read again (one not in the plan is a refusal); the archive
+    rows of the printer and of its queues, ascending, then their links nulled explicitly (the header's cascade
+    would otherwise null ``queue_id`` by an FK action after the job rows); maintenance; the AutoQueue companions;
+    every job row of the queues; the printer-owned rows, the VP detach, the API keys; the printer. A rollback
+    anywhere leaves every one of them as it was. A queue add, an insert, a clone, a claim or a placement that
+    reaches the lane after the commit finds the header gone (A25); one that published before it has its rows
+    deleted with the queue.
+    """
+    from sqlalchemy import delete as sql_delete, update
+    from sqlalchemy.ext.asyncio import async_sessionmaker
 
-    # Everything whose FK already says it dies with the printer.
-    #
-    # ⚠️ **On SQLite it says nothing.** Foreign keys are not enforced there — we
-    # never issue ``PRAGMA foreign_keys=ON`` — so every ``ondelete="CASCADE"``
-    # aimed at ``printers.id`` is decorative on the default database, and these
-    # rows were simply left behind pointing at a printer that no longer exists.
-    # Postgres does enforce it and would have cleaned them up; doing it here
-    # makes both behave the same, which is the point.
-    #
-    # Nullable FKs are deliberately absent: a smart plug, a notification
-    # provider or a usage-history row survives its printer with ``printer_id``
-    # nulled, which is what ``ondelete="SET NULL"`` asks for and what the ORM
-    # already does where it owns a relationship. VP targets have no such
-    # relationship and are explicitly detached below.
+    from backend.app.models.auto_queue import AutoQueueItem
+    from backend.app.models.maintenance import MaintenanceHistory, PrinterMaintenance
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.queue_counters import companion_auto_ids, detach_print_queue_refs, lock_auto_rows
+    from backend.app.services.queue_ops import claim_lanes
     from backend.app.services.sensor_target_lock import lock_sensor_target
 
-    if not await lock_sensor_target(db, "printers", printer_id):
-        raise HTTPException(404, "Printer not found")
-    from backend.app.models.ha_sensor_history import HASensorHistory
-    from backend.app.models.printer_ha_sensor import PrinterHASensor
+    factory = async_sessionmaker(bind, expire_on_commit=False)
+    async with factory() as preflight:
+        planned = sorted(
+            (await preflight.execute(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id)))
+            .scalars()
+            .all()
+        )
 
-    await db.execute(
-        sql_delete(HASensorHistory).where(
-            HASensorHistory.printer_sensor_id.in_(
-                select(PrinterHASensor.id).where(PrinterHASensor.printer_id == printer_id)
+    found = True
+
+    async def printer_first(session):
+        nonlocal found
+        found = await lock_sensor_target(session, "printers", printer_id)
+
+    async with factory() as db, claim_lanes(db, planned, before_db=printer_first):
+        if not found:
+            raise HTTPException(404, "Printer not found")
+        printer = await db.get(Printer, printer_id, populate_existing=True)
+        if printer is None:
+            raise HTTPException(404, "Printer not found")
+        # The headers it deletes, FOR UPDATE right after the guards (L6(c)), and the queues read again.
+        queue_ids = sorted(
+            (
+                await db.execute(
+                    select(PrinterQueue.id)
+                    .where(PrinterQueue.printer_id == printer_id)
+                    .order_by(PrinterQueue.id)
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if queue_ids != planned:
+            raise HTTPException(409, "Printer queues changed during deletion; retry the operation.")
+
+        # The archives of the printer and of its queues, ascending, their links nulled explicitly.
+        link = PrintArchive.printer_id == printer_id
+        if queue_ids:
+            link = link | PrintArchive.queue_id.in_(queue_ids)
+        archive_ids = list(
+            (
+                await db.execute(
+                    select(PrintArchive.id).where(link).order_by(PrintArchive.id).with_for_update(key_share=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if delete_archives and await db.scalar(
+            select(PrintArchive.id).where(PrintArchive.printer_id == printer_id).limit(1)
+        ):
+            raise HTTPException(409, "Printer archives changed during deletion; retry the operation.")
+        if archive_ids:
+            await db.execute(
+                update(PrintArchive)
+                .where(PrintArchive.id.in_(archive_ids), PrintArchive.printer_id == printer_id)
+                .values(printer_id=None)
+                .execution_options(synchronize_session=False)
+            )
+            if queue_ids:
+                await db.execute(
+                    update(PrintArchive)
+                    .where(PrintArchive.id.in_(archive_ids), PrintArchive.queue_id.in_(queue_ids))
+                    .values(queue_id=None)
+                    .execution_options(synchronize_session=False)
+                )
+
+        # Delete maintenance history and items for this printer
+        # (SQLite doesn't enforce FK cascades, so do it explicitly)
+        maintenance_ids = (
+            (await db.execute(select(PrinterMaintenance.id).where(PrinterMaintenance.printer_id == printer_id)))
+            .scalars()
+            .all()
+        )
+        if maintenance_ids:
+            await db.execute(
+                sql_delete(MaintenanceHistory).where(MaintenanceHistory.printer_maintenance_id.in_(maintenance_ids))
+            )
+            await db.execute(sql_delete(PrinterMaintenance).where(PrinterMaintenance.printer_id == printer_id))
+
+        # ⚠️ The queue's ITEMS, before the queue itself. ``Printer.queue`` cascades
+        # to the ``printer_queues`` row, but ``PrinterQueue.items`` does not cascade
+        # — so on commit the ORM tries to de-associate them by nulling
+        # ``print_queue.queue_id``, which is NOT NULL, and the whole delete answers
+        # 500. That made a printer undeletable for as long as it had ANY queue row,
+        # completed ones included (reported 2026-08-17: printer 6 failed while 3 and
+        # 7 succeeded, minutes apart on one install).
+        #
+        # A bulk statement rather than an ORM cascade on the relationship: the
+        # relationship is ``lazy="dynamic"``, so cascading would load every item a
+        # long-lived queue ever held just to delete it row by row. A printer-side
+        # item may be the dispatched half of an auto-queue row: its companion goes
+        # first, prelocked with the back-references as one set (A20).
+        if queue_ids:
+            item_ids = list(
+                (
+                    await db.execute(
+                        select(PrintQueueItem.id)
+                        .where(PrintQueueItem.queue_id.in_(queue_ids))
+                        .order_by(PrintQueueItem.id)
+                        .with_for_update(key_share=True)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            backrefs = await db.scalars(select(AutoQueueItem.id).where(AutoQueueItem.assigned_to_item_id.in_(item_ids)))
+            await lock_auto_rows(db, [*await companion_auto_ids(db, item_ids), *backrefs])
+            await detach_print_queue_refs(db, item_ids)
+            await db.execute(sql_delete(PrintQueueItem).where(PrintQueueItem.queue_id.in_(queue_ids)))
+
+        # Everything whose FK already says it dies with the printer.
+        #
+        # ⚠️ **On SQLite it says nothing.** Foreign keys are not enforced there — we
+        # never issue ``PRAGMA foreign_keys=ON`` — so every ``ondelete="CASCADE"``
+        # aimed at ``printers.id`` is decorative on the default database, and these
+        # rows were simply left behind pointing at a printer that no longer exists.
+        # Postgres does enforce it and would have cleaned them up; doing it here
+        # makes both behave the same, which is the point.
+        #
+        # Nullable FKs are deliberately absent: a smart plug, a notification
+        # provider or a usage-history row survives its printer with ``printer_id``
+        # nulled, which is what ``ondelete="SET NULL"`` asks for and what the ORM
+        # already does where it owns a relationship. VP targets have no such
+        # relationship and are explicitly detached below.
+        from backend.app.models.ha_sensor_history import HASensorHistory
+        from backend.app.models.printer_ha_sensor import PrinterHASensor
+
+        await db.execute(
+            sql_delete(HASensorHistory).where(
+                HASensorHistory.printer_sensor_id.in_(
+                    select(PrinterHASensor.id).where(PrinterHASensor.printer_id == printer_id)
+                )
             )
         )
-    )
-    for model in PRINTER_CASCADE_MODELS:
-        await db.execute(sql_delete(model).where(model.printer_id == printer_id))
+        for model in PRINTER_CASCADE_MODELS:
+            await db.execute(sql_delete(model).where(model.printer_id == printer_id))
 
-    # A Zigbee device can measure more than this printer. Only this target's
-    # binding and rule state go; the physical sensor and other targets survive.
-    from backend.app.models.smart_sensor_binding import SmartSensorBinding, SmartSensorBindingThreshold
+        # A Zigbee device can measure more than this printer. Only this target's
+        # binding and rule state go; the physical sensor and other targets survive.
+        from backend.app.models.smart_sensor_binding import SmartSensorBinding, SmartSensorBindingThreshold
 
-    binding_ids = select(SmartSensorBinding.id).where(SmartSensorBinding.printer_id == printer_id)
-    await db.execute(
-        sql_delete(SmartSensorBindingThreshold).where(SmartSensorBindingThreshold.binding_id.in_(binding_ids))
-    )
-    await db.execute(sql_delete(SmartSensorBinding).where(SmartSensorBinding.printer_id == printer_id))
+        binding_ids = select(SmartSensorBinding.id).where(SmartSensorBinding.printer_id == printer_id)
+        await db.execute(
+            sql_delete(SmartSensorBindingThreshold).where(SmartSensorBindingThreshold.binding_id.in_(binding_ids))
+        )
+        await db.execute(sql_delete(SmartSensorBinding).where(SmartSensorBinding.printer_id == printer_id))
 
-    # SQLite ignores ON DELETE CASCADE; the link rows go explicitly, like every
-    # other child row above.
-    await delete_links_for_printer(db, printer_id)
+        # SQLite ignores ON DELETE CASCADE; the link rows go explicitly, like every
+        # other child row above.
+        await delete_links_for_printer(db, printer_id)
 
-    # SQLite runs no FK actions: its drying rules and runs go in code.
-    await scheduled_drying.forget_printer(db, printer_id, archived=False, commit=False)
-    # SQLite does not run SET NULL and Printer has no VP relationship. Clear
-    # explicitly before the id can be reused by a different physical machine.
-    from sqlalchemy import update
+        # SQLite runs no FK actions: its drying rules and runs go in code.
+        await scheduled_drying.forget_printer(db, printer_id, archived=False, commit=False)
+        # SQLite does not run SET NULL and Printer has no VP relationship. Clear
+        # explicitly before the id can be reused by a different physical machine.
+        from backend.app.models.virtual_printer import VirtualPrinter
 
-    from backend.app.models.virtual_printer import VirtualPrinter
+        await db.execute(
+            update(VirtualPrinter).where(VirtualPrinter.target_printer_id == printer_id).values(target_printer_id=None)
+        )
+        # The Spoolman usage history the same way, through its one writer: the rows
+        # stay as the spools' record, without a printer.
+        from backend.app.services import spoolman_usage_history
 
-    await db.execute(
-        update(VirtualPrinter).where(VirtualPrinter.target_printer_id == printer_id).values(target_printer_id=None)
-    )
-    # The Spoolman usage history the same way, through its one writer: the rows
-    # stay as the spools' record, without a printer.
-    from backend.app.services import spoolman_usage_history
+        await spoolman_usage_history.detach_printer(db, printer_id)
+        # The list of printers failure detection watches names ids too, with no FK at all.
+        from backend.app.services.obico_detection import drop_printer_from_watch_list
 
-    await spoolman_usage_history.detach_printer(db, printer_id)
-    # The list of printers failure detection watches names ids too, with no FK at all.
-    from backend.app.services.obico_detection import drop_printer_from_watch_list
+        await drop_printer_from_watch_list(db, printer_id)
+        # JSON printer scopes have no FK action on either dialect. Remove this
+        # lifetime before its integer id can name another printer. An emptied
+        # list stays [] (no printers), never None (all printers).
+        from backend.app.models.api_key import APIKey
 
-    await drop_printer_from_watch_list(db, printer_id)
-    # JSON printer scopes have no FK action on either dialect. Remove this
-    # lifetime before its integer id can name another printer. An emptied
-    # list stays [] (no printers), never None (all printers).
-    from backend.app.models.api_key import APIKey
-
-    keys = (
-        await db.execute(select(APIKey).where(APIKey.printer_ids.isnot(None)).order_by(APIKey.id).with_for_update())
-    ).scalars()
-    for key in keys:
-        if key.printer_ids is not None and printer_id in key.printer_ids:
-            key.printer_ids = [pid for pid in key.printer_ids if pid != printer_id]
-    await db.delete(printer)
-    await db.commit()
+        keys = (
+            await db.execute(select(APIKey).where(APIKey.printer_ids.isnot(None)).order_by(APIKey.id).with_for_update())
+        ).scalars()
+        for key in keys:
+            if key.printer_ids is not None and printer_id in key.printer_ids:
+                key.printer_ids = [pid for pid in key.printer_ids if pid != printer_id]
+        await db.delete(printer)
+        await db.commit()
 
 
 def _printer_cascade_models() -> tuple[type, ...]:

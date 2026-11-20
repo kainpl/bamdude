@@ -56,8 +56,11 @@ def _suffix(filename: str | None) -> str:
     return Path(filename or "").suffix.lower().lstrip(".")
 
 
-def _proof(file: LibraryFile) -> tuple:
-    return (file.id, file.file_path, file.file_hash, file.created_at)
+def _proof(file: LibraryFile):
+    """The proof that a source is still the row the caller chose (A32): ``LibraryIdentity``, never a tuple."""
+    from backend.app.services.library_identity import LibraryIdentity
+
+    return LibraryIdentity.capture(file)
 
 
 async def _visible_files(db: AsyncSession, request: Request, user: User | None, ids: list[int]):

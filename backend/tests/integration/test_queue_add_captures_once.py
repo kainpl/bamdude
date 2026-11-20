@@ -158,7 +158,8 @@ async def test_one_capture_serves_every_plate_and_copy_of_one_auto_queue_request
     for item in items:
         assert item.source_snapshot == {
             "version": SOURCE_SNAPSHOT_VERSION,
-            "provenance": {"kind": "library_file", "id": source.id},
+            # The row the bytes came from, with its incarnation (G03 B, A27).
+            "provenance": {"kind": "library_file", "id": source.id, "incarnation": source.recovery_identity},
             "display_filename": source.filename,
             "format": "3mf",
             "plate_fallback": None,

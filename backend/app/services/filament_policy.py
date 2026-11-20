@@ -253,30 +253,20 @@ def queue_policy(item):
     return policy
 
 
-def restore_routing_source(item):
-    """Repeat/copy keeps the source the intent describes, even after an execution archive was linked.
+def clear_routing_runtime(item):
+    """A re-armed or copied job starts its routing afresh: the last attempt's runtime record goes.
 
-    Reads every supported version, or Repeat/Retry/clone would silently stop
-    restoring the source of every row written before the bump.
-
-    It restores the ORIGINAL references only. ``queue_source_id`` is already on
-    the row in each of these flows (Repeat and Retry re-arm the same row, a clone
-    carries both columns), and re-attaching a blob from a payload is a WRITE to
-    the spool's ownership: it would have to happen under
-    ``queue_sources.storage_mutation()`` and refuse a row that is no longer
-    ``ready``, which a synchronous column-fixer cannot do.
+    Reads every supported version, or Repeat/Retry/clone would silently keep a stale blocked revision on every
+    row written before the bump. The job's SOURCE LINK is not this function's: it is written only by the one
+    source-link rule (``queue_source_link``, G03 B A27), which names a proven incarnation or nothing — the
+    intent's ``source_identity`` is a candidate there, never written back as it is.
     """
     snapshot = decode(item.filament_routing)
     if not isinstance(snapshot, dict) or type(snapshot.get("version")) is not int:
         return
     if snapshot["version"] not in SUPPORTED_VERSIONS:
         return
-    source = snapshot.get("source_identity", {})
-    if not isinstance(source, dict):
+    if "runtime" not in snapshot:
         return
-    if source.get("kind") == "library" and source.get("id"):
-        item.library_file_id, item.archive_id = source["id"], None
-    elif source.get("kind") == "archive" and source.get("id"):
-        item.archive_id, item.library_file_id = source["id"], None
     snapshot.pop("runtime", None)
     item.filament_routing = json.dumps(snapshot)

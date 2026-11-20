@@ -48,6 +48,7 @@ from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.library_helpers import NOT_SLICED_DETAIL, UNSLICED_PROJECT_DETAIL, sliced_source_refusal
 from backend.app.services.order_filing import resolve_line_id, resolve_link
 from backend.app.services.printer_manager import printer_manager
+from backend.app.services.printer_occupancy import queue_header_holds
 from backend.app.services.queue_ops import place_pending_block, queue_scope_lock
 from backend.app.services.queue_publication import PublicationReceipt
 from backend.app.services.queue_source_capture import (
@@ -250,6 +251,7 @@ async def add_items_to_printer_queue(
             library_file,
             publication_receipt=publication_receipt,
             authority=authority,
+            queue_identity=queue.recovery_identity,
         )
     except BaseException:
         await discard_staged(staged)
@@ -407,6 +409,8 @@ async def _add_items_from_queue_source(
 
             creator = await current_creator(db, authority, current_user)
             async with queue_scope_lock(db, data.queue_id):
+                if not await queue_header_holds(db, data.queue_id, queue.recovery_identity):
+                    raise HTTPException(400, "Queue not found")
                 project_line_id = data.project_line_id
                 if project_line_id is None and effective_project_id is not None:
                     project_line_id = await resolve_line_id(
@@ -511,6 +515,7 @@ async def _publish_items(
     *,
     publication_receipt: PublicationReceipt | None = None,
     authority=None,
+    queue_identity: str | None = None,
 ) -> list[int]:
     """Publish the captured bytes and write the rows in ONE transaction (§5 step 6).
 
@@ -562,6 +567,9 @@ async def _publish_items(
 
         creator = await current_creator(session, authority, current_user)
         async with queue_scope_lock(session, data.queue_id):
+            # The header the validation read, under its lane (G03 B, A25).
+            if not await queue_header_holds(session, data.queue_id, queue_identity):
+                raise HTTPException(400, "Queue not found")
             if publication_receipt is not None:
                 # Under the queue's scope lock, before any row: a refusal here rolls the whole publication back.
                 await publication_receipt.claim(session, source)
@@ -896,6 +904,8 @@ async def add_next_block_to_printer_queue(
 
             creator = await current_creator(session, authority, current_user)
             async with queue_scope_lock(session, first.queue_id):
+                if not await queue_header_holds(session, first.queue_id, queue.recovery_identity):
+                    raise HTTPException(400, "Queue not found")
                 rows: list[PrintQueueItem] = []
                 from backend.app.services.order_auto_eject import capture
 
@@ -1056,6 +1066,8 @@ async def _add_next_block_from_queue_source(
 
             creator = await current_creator(db, authority, current_user)
             async with queue_scope_lock(db, first.queue_id):
+                if not await queue_header_holds(db, first.queue_id, queue.recovery_identity):
+                    raise HTTPException(400, "Queue not found")
                 from backend.app.services.order_auto_eject import capture
 
                 rows: list[PrintQueueItem] = []

@@ -319,8 +319,22 @@ async def test_start_calibration_manual_enqueues_print(
     db_session.add(queue)
     await db_session.commit()
 
-    async def enqueue(**_kwargs):
+    async def enqueue(**kwargs):
+        # As the real insert (G03 B, A7/F5): the job row, the session's link to it and the queue's counters in one
+        # transaction -- the service only reads them back.
+        from sqlalchemy import update
+
+        from backend.app.models.calibration_session import CalibrationSession
+        from backend.app.services.queue_counters import update_queue_counters
+
         db_session.add(PrintQueueItem(id=42, queue_id=queue.id, status="pending", position=1, is_calibration=True))
+        await db_session.flush()
+        await db_session.execute(
+            update(CalibrationSession)
+            .where(CalibrationSession.id == kwargs["calibration_session_id"])
+            .values(print_queue_item_id=42)
+        )
+        await update_queue_counters(db_session, queue.id)
         await db_session.commit()
         return 42
 

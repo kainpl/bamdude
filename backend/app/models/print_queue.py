@@ -41,6 +41,11 @@ class PrintQueueItem(Base):
         # A recorded decision must not survive retry/reorder/edit or a legacy
         # producer replacing its prose. The scheduler sets the typed decision
         # AFTER setting waiting_reason. Loading from the DB skips validators.
+        if key == "status":
+            # Every assignment of ``status`` voids the deferral proof (G03 B, A16 / R11), whatever the old and new
+            # values: ``printing -> pending -> printing`` before one flush must not leave a stale token. Only
+            # ``defer_claim``'s own Core compare-and-set writes it.
+            self.deferred_claim_token = None
         if getattr(self, key, None) != value:
             if key != "waiting_reason" and key in self.__dict__:
                 self.waiting_reason = None
@@ -225,6 +230,10 @@ class PrintQueueItem(Base):
 
     # Tracking
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # The deferral proof (m250): the start token of the attempt a no-effect deferral sent back to pending,
+    # written only by that deferral and voided by the next claim and by every other status write. A Stop that
+    # waited for the lane acts on a pending row only when this names the attempt it read (G03 B, A16).
+    deferred_claim_token: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The closed class of a failed row: a ``utils/failure_reasons`` key, decided

@@ -666,67 +666,67 @@
     },
     {
       "site": [
-        "api/routes/printers.py::_delete_printer_rows",
+        "api/routes/printers.py::_delete_printer_queue_rows",
         "db.delete",
         "printer"
       ],
-      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references (G03 B: moved into its lane-holding helper, A21 / A22)"
     },
     {
       "site": [
-        "api/routes/printers.py::_delete_printer_rows",
+        "api/routes/printers.py::_delete_printer_queue_rows",
         "sqlalchemy.delete",
         "backend.app.models.ha_sensor_history.HASensorHistory"
       ],
-      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references (G03 B: moved into its lane-holding helper, A21 / A22)"
     },
     {
       "site": [
-        "api/routes/printers.py::_delete_printer_rows",
+        "api/routes/printers.py::_delete_printer_queue_rows",
         "sqlalchemy.delete",
         "backend.app.models.maintenance.MaintenanceHistory"
       ],
-      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references (G03 B: moved into its lane-holding helper, A21 / A22)"
     },
     {
       "site": [
-        "api/routes/printers.py::_delete_printer_rows",
+        "api/routes/printers.py::_delete_printer_queue_rows",
         "sqlalchemy.delete",
         "backend.app.models.maintenance.PrinterMaintenance"
       ],
-      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references (G03 B: moved into its lane-holding helper, A21 / A22)"
     },
     {
       "site": [
-        "api/routes/printers.py::_delete_printer_rows",
+        "api/routes/printers.py::_delete_printer_queue_rows",
         "sqlalchemy.delete",
         "backend.app.models.print_queue.PrintQueueItem"
       ],
-      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references (G03 B: moved into its lane-holding helper, A21 / A22)"
     },
     {
       "site": [
-        "api/routes/printers.py::_delete_printer_rows",
+        "api/routes/printers.py::_delete_printer_queue_rows",
         "sqlalchemy.delete",
         "backend.app.models.smart_sensor_binding.SmartSensorBinding"
       ],
-      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references (G03 B: moved into its lane-holding helper, A21 / A22)"
     },
     {
       "site": [
-        "api/routes/printers.py::_delete_printer_rows",
+        "api/routes/printers.py::_delete_printer_queue_rows",
         "sqlalchemy.delete",
         "backend.app.models.smart_sensor_binding.SmartSensorBindingThreshold"
       ],
-      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references (G03 B: moved into its lane-holding helper, A21 / A22)"
     },
     {
       "site": [
-        "api/routes/printers.py::_delete_printer_rows",
+        "api/routes/printers.py::_delete_printer_queue_rows",
         "sqlalchemy.delete",
         "model"
       ],
-      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references (G03 B: moved into its lane-holding helper, A21 / A22)"
     },
     {
       "site": [
@@ -802,35 +802,35 @@
     },
     {
       "site": [
-        "api/routes/projects.py::delete_project",
+        "api/routes/projects.py::_delete_project_in_lanes",
         "db.delete",
         "project"
       ],
-      "owner_policy": "Outside C parent purge: api/routes/projects.py::delete_project retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+      "owner_policy": "Outside C parent purge: api/routes/projects.py::delete_project retains its domain-owned transaction and policy; any new or changed locator requires adjudication (G03 B: moved into its lane-holding helper, A21 / A22)"
     },
     {
       "site": [
-        "api/routes/projects.py::delete_project",
+        "api/routes/projects.py::_delete_project_in_lanes",
         "sqlalchemy.delete",
         "backend.app.models.order_working_plan.OrderPlanReceipt"
       ],
-      "owner_policy": "Outside C parent purge: api/routes/projects.py::delete_project retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+      "owner_policy": "Outside C parent purge: api/routes/projects.py::delete_project retains its domain-owned transaction and policy; any new or changed locator requires adjudication (G03 B: moved into its lane-holding helper, A21 / A22)"
     },
     {
       "site": [
-        "api/routes/projects.py::delete_project",
+        "api/routes/projects.py::_delete_project_in_lanes",
         "sqlalchemy.delete",
         "backend.app.models.order_working_plan.OrderPlanSubmission"
       ],
-      "owner_policy": "Outside C parent purge: api/routes/projects.py::delete_project retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+      "owner_policy": "Outside C parent purge: api/routes/projects.py::delete_project retains its domain-owned transaction and policy; any new or changed locator requires adjudication (G03 B: moved into its lane-holding helper, A21 / A22)"
     },
     {
       "site": [
-        "api/routes/projects.py::delete_project",
+        "api/routes/projects.py::_delete_project_in_lanes",
         "sqlalchemy.delete",
         "backend.app.models.order_working_plan.OrderWorkingPlan"
       ],
-      "owner_policy": "Outside C parent purge: api/routes/projects.py::delete_project retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+      "owner_policy": "Outside C parent purge: api/routes/projects.py::delete_project retains its domain-owned transaction and policy; any new or changed locator requires adjudication (G03 B: moved into its lane-holding helper, A21 / A22)"
     },
     {
       "site": [
@@ -2415,15 +2415,15 @@
     },
     {
       "site": [
-        "api/routes/printers.py::_delete_printer_rows",
-        "archive_service.delete_archive"
+        "api/routes/printers.py::_delete_printer_queue_rows",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
       ],
-      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references (G03 B: moved into its lane-holding helper, A21 / A22)"
     },
     {
       "site": [
         "api/routes/printers.py::_delete_printer_rows",
-        "backend.app.services.queue_counters.detach_print_queue_refs"
+        "archive_service.delete_archive"
       ],
       "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
     },
@@ -2767,10 +2767,17 @@
     },
     {
       "site": [
-        "api/routes/printers.py::_delete_printer_rows",
+        "api/routes/printers.py::_delete_printer_queue_rows",
         "backend.app.services.queue_counters.detach_print_queue_refs"
       ],
-      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references (G03 B: step 2, one transaction under the lanes)"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::_delete_printer_rows",
+        "backend.app.api.routes.printers._delete_printer_queue_rows"
+      ],
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references (G03 B: the printer deletion's step 2, A21)"
     },
     {
       "site": [
@@ -2943,9 +2950,9 @@
     {
       "site": [
         "main.py::_on_print_start_impl",
-        "backend.app.services.plate_hold.answer_by_clearing"
+        "backend.app.services.plate_hold.clear_held_row"
       ],
-      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls. (G03 B: under the printer's lanes, A21)"
     },
     {
       "site": [
@@ -2978,9 +2985,9 @@
     {
       "site": [
         "main.py::_recover_running_print",
-        "backend.app.services.plate_hold.answer_by_clearing"
+        "backend.app.services.plate_hold.clear_held_row"
       ],
-      "owner_policy": "Target running-print recovery retains existing publication ownership; renamed helper delegates reviewed terminal/queue transitions, no new parent purge."
+      "owner_policy": "Target running-print recovery retains existing publication ownership; renamed helper delegates reviewed terminal/queue transitions, no new parent purge. (G03 B: under the printer's lanes, A21)"
     },
     {
       "site": [
@@ -3317,6 +3324,13 @@
         "backend.app.services.queue_counters.detach_print_queue_refs"
       ],
       "owner_policy": "Outside C parent purge: services/plate_hold.py::clean_up_finished_row retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/plate_hold.py::clear_held_row",
+        "backend.app.services.plate_hold.answer_by_clearing"
+      ],
+      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls. (G03 B: the start-time / recovery clear's lane holder, A21)"
     },
     {
       "site": [

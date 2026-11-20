@@ -57,7 +57,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.queue_source import FORMAT_3MF, FORMAT_GCODE, STATE_READY, QueueSource
-from backend.app.services import queue_sources, swap_compatibility
+from backend.app.services import queue_source_link, queue_sources, swap_compatibility
 from backend.app.services.filament_intake import require_source_requirements, resolve_source_path, routing_detail
 from backend.app.services.filament_requirements import PrintRequirements, PrintRequirementsCache
 from backend.app.services.queue_source_descriptor import QueueSourceDescriptor
@@ -155,7 +155,11 @@ def plan_capture(*, archive=None, library_file=None, background: bool = False) -
         # Plate authority stays on the job row; this is only what a job that
         # names no plate falls back to, and only an archive has one (§4).
         plate_fallback=archive.plate_index if archive is not None else None,
-        provenance={"kind": "archive" if archive is not None else "library_file", "id": source.id},
+        # The row the bytes are captured from, with its incarnation (G03 B, A27): a later restore or copy of the
+        # job's link names this very row or nothing — never the next row that took its id.
+        provenance=queue_source_link.stamp(
+            {"kind": "archive" if archive is not None else "library_file", "id": source.id}, source
+        ),
         background=background,
         swap_fact=swap_fact,
         expected_sha256=expected_sha256,

@@ -48,6 +48,9 @@ class TestEverySiteSaysWhy:
             "not_idle",
             "drying",
             "dispatched",
+            # G03 B, A8: the row changed since the pass loaded it, or a verdict's proof refused.
+            "item_changed",
+            "verdict_changed",
         }
 
 

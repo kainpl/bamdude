@@ -425,12 +425,7 @@ async def _reconcile_complete_archive(
         get_print_file_analysis,
     )
     from backend.app.services.printer_manager import printer_manager
-    from backend.app.services.queue_counters import (
-        set_queue_error,
-        set_queue_idle,
-        set_queue_paused,
-        update_queue_counters,
-    )
+    from backend.app.services.queue_counters import halt_lane, set_queue_idle, update_queue_counters
 
     # SQLite's writer (PostgreSQL's row lock) BEFORE the authoritative read: a second sweep waits here and then sees
     # what the first one committed.
@@ -593,13 +588,9 @@ async def _reconcile_complete_archive(
             ).all()
         )
         if len(owner_rows) > 1:
-            from backend.app.models.printer_queue import PrinterQueue
-
-            queue = await db.get(PrinterQueue, archive.printer_id)
-            if queue is not None:
-                queue.is_paused = True
             await db.commit()
             await library_usage.finish(db)
+            await _pause_under_the_lanes(db, archive)
             logger.warning(
                 "reconcile: duplicate execution claims archive=%s count=%s; owner effects deferred",
                 archive.id,
@@ -618,49 +609,69 @@ async def _reconcile_complete_archive(
             return None
         if archive.printer_id is not None and not swap_owed:
             await printer_manager.arm_awaiting_plate_clear(archive.printer_id, archive.id)
-        if not await _still_the_row_this_sweep_closed(db, archive, loaded[:3], status, record_lives):
-            return None
 
-        # The row that RAN this archive -- still holding the printer. A job queued from the archive later (a
-        # reprint names it as its source) is not this run and is never closed by it.
-        owners = list(
-            (
-                await db.scalars(
-                    select(PrintQueueItem)
-                    .where(PrintQueueItem.archive_id == archive.id, PrintQueueItem.status == "printing")
-                    .with_for_update()
+        # The row's close, its header and the queue's other rows are a lane writer (G03 B, A18): the printer's
+        # queues read here, then the archive's guard and the lanes before the authoritative reads again, one commit.
+        from backend.app.services.queue_ops import claim_lanes
+
+        queues = await _printer_queue_ids(db, archive.printer_id)
+        await db.commit()
+        item = None
+        async with claim_lanes(db, queues, archive_id=archive.id):
+            if not await _still_the_row_this_sweep_closed(db, archive, loaded[:3], status, record_lives):
+                await db.commit()  # nothing written; the writer goes with the lanes
+                return None
+            if await _printer_queue_ids(db, archive.printer_id) != queues:
+                await db.commit()
+                logger.info(
+                    "reconcile: printer %s's queues changed under the lanes; preserving claims", archive.printer_id
                 )
-            ).all()
-        )
-        if len(owners) > 1:
-            from backend.app.models.printer_queue import PrinterQueue
+                return archive.id
 
-            queue = await db.get(PrinterQueue, archive.printer_id)
-            if queue is not None:
-                queue.is_paused = True
-            return archive.id
-        item = owners[0] if owners else None
-        if item is not None:
-            item.status = status
-            item.completed_at = now
-            if status == "failed":
-                item.error_code = row_class(status, archive.failure_reason)
-                await set_queue_error(db, item.queue_id, failed_item_id=item.id)
-            elif status == "cancelled":
-                await set_queue_paused(db, item.queue_id, paused_item_id=item.id)
-            elif not swap_owed:
-                await set_queue_idle(db, item.queue_id)
-            if status == "completed":
-                # A success closed by the sweep releases "only after a successful previous print" exactly as
-                # the live completion does — in the same transaction, before this row is cleaned up (G03 D1(a)).
-                await acknowledge_failures_before_success(db, item.queue_id, success_item_id=item.id)
-            await update_queue_counters(db, item.queue_id)
-            # ⚠️ Not while our table swap is owed: this row is the proof of the run ``_resolve_pending_swaps``
-            # decides on, and it cleans the row up itself after a swap (swap-source-lifecycle spec r4 R2-5).
-            if not swap_owed:
-                from backend.app.services.plate_hold import clean_up_finished_row
+            # The row that RAN this archive -- still holding the printer. A job queued from the archive later (a
+            # reprint names it as its source) is not this run and is never closed by it.
+            owners = list(
+                (
+                    await db.scalars(
+                        select(PrintQueueItem)
+                        .where(PrintQueueItem.archive_id == archive.id, PrintQueueItem.status == "printing")
+                        .with_for_update(key_share=True)
+                    )
+                ).all()
+            )
+            if len(owners) > 1 or any(owner.queue_id not in queues for owner in owners):
+                from backend.app.models.printer_queue import PrinterQueue
 
-                await clean_up_finished_row(db, item, queue_status=status, plate_auto_cleared=False)
+                queue = await db.get(PrinterQueue, archive.printer_id)
+                if queue is not None and queue.id in queues:
+                    queue.is_paused = True
+                await db.commit()
+                return archive.id
+            item = owners[0] if owners else None
+            if item is not None:
+                item.status = status
+                item.completed_at = now
+                if status == "failed":
+                    item.error_code = row_class(status, archive.failure_reason)
+                    await halt_lane(db, item.queue_id, item_id=item.id, kind="error")
+                elif status == "cancelled":
+                    await halt_lane(db, item.queue_id, item_id=item.id, kind="paused")
+                elif not swap_owed:
+                    # The release names the row it closes (A18): another run's claim is never released by it.
+                    await set_queue_idle(db, item.queue_id, expected_item_id=item.id)
+                if status == "completed":
+                    # A success closed by the sweep releases "only after a successful previous print" exactly as
+                    # the live completion does — in the same transaction, before this row is cleaned up (G03 D1(a)).
+                    await acknowledge_failures_before_success(db, item.queue_id, success_item_id=item.id)
+                await update_queue_counters(db, item.queue_id)
+                # ⚠️ Not while our table swap is owed: this row is the proof of the run ``_resolve_pending_swaps``
+                # decides on, and it cleans the row up itself after a swap (swap-source-lifecycle spec r4 R2-5).
+                # Inside the lanes, before their commit (A21).
+                if not swap_owed:
+                    from backend.app.services.plate_hold import clean_up_finished_row
+
+                    await clean_up_finished_row(db, item, queue_status=status, plate_auto_cleared=False)
+            await db.commit()
 
         logger.info(
             "reconcile: closed archive %s as %s%s",
@@ -686,6 +697,30 @@ async def _reconcile_complete_archive(
             discard_print_file_analysis(
                 printer_manager, analysis_printer_id, analysis_archive_id, expected_identity=loaded[3]
             )
+
+
+async def _printer_queue_ids(db: AsyncSession, printer_id: int | None) -> list[int]:
+    """The printer's queues, read before the lanes are taken (A18)."""
+    from backend.app.models.printer_queue import PrinterQueue
+
+    if printer_id is None:
+        return []
+    return sorted((await db.execute(select(PrinterQueue.id).where(PrinterQueue.printer_id == printer_id))).scalars())
+
+
+async def _pause_under_the_lanes(db: AsyncSession, archive: PrintArchive) -> None:
+    """Duplicate execution claims: the printer's queue paused, under its lanes and the archive's guard (A18)."""
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.queue_ops import claim_lanes
+
+    queues = await _printer_queue_ids(db, archive.printer_id)
+    await db.commit()
+    async with claim_lanes(db, queues, archive_id=archive.id):
+        for queue_id in queues:
+            queue = await db.get(PrinterQueue, queue_id, populate_existing=True, with_for_update={"key_share": True})
+            if queue is not None:
+                queue.is_paused = True
+        await db.commit()
 
 
 def _accepted_terminal_checkpoint(archive: PrintArchive) -> dict | None:
@@ -725,17 +760,27 @@ async def _recover_accepted_terminal_checkpoint(db: AsyncSession, archive: Print
     an explicit uncertainty record.  It deliberately does not call the normal
     completion handler or ``_reconcile_complete_archive``.
     """
-    from backend.app.main import _TERMINAL_ACCEPTANCE_KEY
 
     marker = _accepted_terminal_checkpoint(archive)
     if marker is None:
         return None
 
-    from backend.app.core.database import take_write_lock
+    from backend.app.services.queue_ops import claim_lanes
 
-    # The writer before the authoritative read: a second sweep holding the same stale copy waits, then finds the
-    # attempt no longer printing and closes nothing (Codex review r1).
-    await take_write_lock(db, PrintArchive.__table__, archive.id)
+    # A lane writer (G03 B, A18): the printer's queues read first, then the archive's guard and the lanes -- SQLite's
+    # writer with them -- before the authoritative read: a second sweep holding the same stale copy waits, then finds
+    # the attempt no longer printing and closes nothing (Codex review r1). One commit.
+    queues = await _printer_queue_ids(db, archive.printer_id)
+    await db.commit()
+    async with claim_lanes(db, queues, archive_id=archive.id):
+        closed = await _recover_checkpoint_locked(db, archive, marker, queues)
+        await db.commit()
+    return closed
+
+
+async def _recover_checkpoint_locked(db: AsyncSession, archive: PrintArchive, marker: dict, queues) -> int | None:
+    from backend.app.main import _TERMINAL_ACCEPTANCE_KEY
+
     item = await db.scalar(
         select(PrintQueueItem)
         .where(
@@ -743,13 +788,14 @@ async def _recover_accepted_terminal_checkpoint(db: AsyncSession, archive: Print
             PrintQueueItem.archive_id == archive.id,
             PrintQueueItem.status == "printing",
         )
-        .with_for_update()
+        .with_for_update(key_share=True)
         .execution_options(populate_existing=True)
     )
     if (
         item is None
         or item.started_at is None
         or not _checkpoint_started_at_matches(marker["queue_started_at"], item.started_at)
+        or item.queue_id not in queues
     ):
         logger.warning(
             "reconcile: accepted terminal checkpoint for archive %s no longer owns its queue attempt; preserving state",
@@ -757,7 +803,7 @@ async def _recover_accepted_terminal_checkpoint(db: AsyncSession, archive: Print
         )
         return None
 
-    from backend.app.services.queue_counters import set_queue_paused, update_queue_counters
+    from backend.app.services.queue_counters import halt_lane, update_queue_counters
 
     now = datetime.now(timezone.utc)
     archive.status = marker["outcome"]
@@ -781,7 +827,7 @@ async def _recover_accepted_terminal_checkpoint(db: AsyncSession, archive: Print
     item.status = marker["outcome"]
     item.completed_at = now
     item.error_code = row_class(item.status, archive.failure_reason)
-    await set_queue_paused(db, item.queue_id, paused_item_id=item.id, expected_item_id=item.id)
+    await halt_lane(db, item.queue_id, item_id=item.id, kind="paused")
     if item.status == "completed":
         # The printer's own accepted finish: a success, whatever the effects. It releases the
         # previous-success gate like every other completed row (G03 D1(a)); no effect is replayed.
@@ -1150,7 +1196,7 @@ async def _repair_terminal_queue_items(
                     select(PrintQueueItem)
                     .where(PrintQueueItem.queue_id == queue_id, PrintQueueItem.status == "printing")
                     .order_by(PrintQueueItem.id)
-                    .with_for_update()
+                    .with_for_update(key_share=True)
                     .execution_options(populate_existing=True)
                 )
             ).all()
@@ -1911,7 +1957,7 @@ async def _swap_settle(
     """
     from backend.app.services.plate_hold import clean_up_finished_row
     from backend.app.services.printer_occupancy import read_queue_occupancy
-    from backend.app.services.queue_counters import set_queue_idle, set_queue_paused
+    from backend.app.services.queue_counters import halt_lane, set_queue_idle
     from backend.app.services.queue_ops import queue_claim_scope
 
     if queue_id is None:
@@ -1933,14 +1979,28 @@ async def _swap_settle(
         row = await _swap_run(db, archive_id, queue_id) if run is not None else None
         if swapped:
             if ours:
-                await set_queue_idle(db, queue_id)
+                # The release names the claim it ends (A9): this run's header, or -- held by nobody alive -- the
+                # stale header as read, by its compare-and-set.
+                if run is not None and queue.current_item_id == run.id:
+                    await set_queue_idle(db, queue_id, expected_item_id=run.id)
+                else:
+                    await set_queue_idle(db, queue_id, stale_only=True, read_item_id=queue.current_item_id)
+                # The release and the row's deletion are one transaction, inside the lane (G03 B, A21): after the
+                # commit PostgreSQL's advisory guard is gone while the in-process lock is still held.
+                if row is not None:
+                    await clean_up_finished_row(db, row, queue_status="completed", plate_auto_cleared=True)
             await db.commit()
-            if ours and row is not None:
-                await clean_up_finished_row(db, row, queue_status="completed", plate_auto_cleared=True)
             return ours
         steer = ours or (queue.status == "paused" and queue.current_item_id is None)
         if ours:
-            await set_queue_paused(db, queue_id)
+            # The one writer of a halt (G03 B, A9): this run's header, or -- held by nobody alive -- the stale header
+            # as read, by its compare-and-set.
+            if run is not None and queue.current_item_id == run.id:
+                await halt_lane(db, queue_id, item_id=run.id, kind="paused")
+            else:
+                await halt_lane(
+                    db, queue_id, item_id=None, kind="paused", stale_only=True, read_item_id=queue.current_item_id
+                )
         if row is not None:
             row.waiting_reason = reason
         if steer:

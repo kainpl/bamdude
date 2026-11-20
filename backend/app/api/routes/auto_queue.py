@@ -57,7 +57,7 @@ from backend.app.schemas.print_options_preference import PrintOptionsToggles
 from backend.app.schemas.project import RebalanceOut
 from backend.app.services import queue_rebalance
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
-from backend.app.services.auto_queue_eligibility import busy_printer_ids, find_eligible_printer
+from backend.app.services.auto_queue_eligibility import begin_router_write, busy_printer_ids, find_eligible_printer
 from backend.app.services.filament_intake import (
     fail_auto_source,
     loaded_descriptor,
@@ -66,6 +66,7 @@ from backend.app.services.filament_intake import (
     source_display_filename,
 )
 from backend.app.services.filament_preview import printer_routing_preview, routing_preview
+from backend.app.services.queue_counters import lock_auto_rows
 from backend.app.services.queue_source_descriptor import source_storage_state
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable
 from backend.app.utils.model_compatibility import model_compatibility
@@ -439,10 +440,27 @@ async def update_auto_queue_item(
 
     update_data = data.model_dump(exclude_unset=True)
     source_model = await _validate_model_update(db, item, update_data)
-    _apply_item_update(item, update_data, source_model=source_model)
+    # The validation stays outside any lock; the apply locks the row, re-reads it and writes only the row the
+    # validation read -- still pending, the same incarnation (G03 B, A20).
+    identity = item.recovery_identity
+    await begin_router_write(db)
+    locked = (await lock_auto_rows(db, [item_id])).get(item_id)
+    if locked is None or locked.status != "pending" or locked.recovery_identity != identity:
+        raise _router_row_changed()
+    _apply_item_update(locked, update_data, source_model=source_model)
 
     await db.commit()
     return _to_response((await db.execute(stmt)).scalar_one())
+
+
+def _router_row_changed() -> HTTPException:
+    return HTTPException(
+        409,
+        detail={
+            "error": "queue_item_changed",
+            "message": "This job changed or started while it was being edited. Nothing was saved; refresh and try again.",
+        },
+    )
 
 
 def _apply_item_update(item: AutoQueueItem, update_data: dict, *, source_model: str | None) -> None:
@@ -542,8 +560,18 @@ async def update_auto_queue_batch(
     update_data = data.model_dump(exclude_unset=True)
     update_data.pop("position", None)
     source_models = [await _validate_model_update(db, item, update_data) for item in items]
-    for item, source_model in zip(items, source_models, strict=True):
-        _apply_item_update(item, update_data, source_model=source_model)
+    # All or none (G03 B, A20): the copies locked ascending and re-read; one that left pending or is another
+    # incarnation since the validation refuses the whole edit, nothing written.
+    validated = {item.id: (item.recovery_identity, model) for item, model in zip(items, source_models, strict=True)}
+    await begin_router_write(db)
+    rows = await lock_auto_rows(db, validated)
+    if any(
+        rows.get(item_id) is None or rows[item_id].status != "pending" or rows[item_id].recovery_identity != identity
+        for item_id, (identity, _model) in validated.items()
+    ):
+        raise _router_row_changed()
+    for item_id, (_identity, source_model) in sorted(validated.items()):
+        _apply_item_update(rows[item_id], update_data, source_model=source_model)
     await db.commit()
     return AutoQueueBatchActionResponse(batch_id=batch_id, affected=len(items))
 
@@ -642,7 +670,7 @@ async def _cancel_promoted_rows(db: AsyncSession, which, now: datetime) -> int:
         await db.execute(
             update(PrintQueueItem)
             .where(which, PrintQueueItem.status == "pending")
-            .values(status="cancelled", completed_at=now)
+            .values(status="cancelled", completed_at=now, deferred_claim_token=None)  # A16: Core voids the proof
             .returning(PrintQueueItem.queue_id)
         )
     ).all()
@@ -657,10 +685,15 @@ async def reorder_auto_queue(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.QUEUE_REORDER),
 ):
-    """Persist a new ordering of pending auto items."""
+    """Persist a new ordering of pending auto items.
+
+    The named rows locked ascending and re-read before the first write (G03 B, A20); a row no longer pending keeps
+    its position (as before).
+    """
+    await begin_router_write(db)
+    rows = await lock_auto_rows(db, [entry.id for entry in payload.items])
     for entry in payload.items:
-        result = await db.execute(select(AutoQueueItem).where(AutoQueueItem.id == entry.id))
-        row = result.scalar_one_or_none()
+        row: AutoQueueItem | None = rows.get(entry.id)
         if row is not None and row.status == "pending":
             row.position = entry.position
     await db.commit()
@@ -711,8 +744,20 @@ async def assign_now(
     if item.status != "pending":
         raise HTTPException(400, f"Cannot assign-now item in status '{item.status}'")
 
+    from backend.app.services.auto_queue_eligibility import backfills, router_row_view, write_router_rows
     from backend.app.services.printer_occupancy import PrinterOccupancyConflict
 
+    # The revision this request read, before the eligibility (G03 B, A17 step 2, C5a): the placement compares the
+    # row under its lock with it, and so do the failure and the waiting write -- an edit in between is a refusal.
+    view = router_row_view(item)
+    fetched_reason = item.waiting_reason
+    changed = HTTPException(
+        409,
+        detail={
+            "error": "queue_item_changed",
+            "message": "This job changed or started while it was being edited. Nothing was saved; refresh and try again.",
+        },
+    )
     busy_printers = await busy_printer_ids(db)
     while True:
         eligible = await find_eligible_printer(db, item, busy_printers)
@@ -720,10 +765,12 @@ async def assign_now(
         if printer is None:
             source_reason = getattr(eligible.requirements, "reason", None)
             if source_reason in SOURCE_FAILURES:
-                await fail_auto_source(db, item, source_reason)
-            if reason:
-                item.waiting_reason = reason
-                await db.commit()
+                await fail_auto_source(db, view, source_reason)
+            else:
+                values = backfills(view, item)
+                if reason and reason != fetched_reason:
+                    values["waiting_reason"] = reason
+                await write_router_rows(db, {view.id: (view, values)} if values else {})
             raise HTTPException(409, reason or "No eligible printer available")
 
         try:
@@ -731,23 +778,25 @@ async def assign_now(
                 db,
                 item,
                 printer,
+                view=view,
+                router_view=False,
                 plan=eligible.plan,
                 requirements=eligible.requirements,
                 snapshot_signature=eligible.snapshot_signature,
             )
             break
         except SourceUnavailable as exc:
-            await db.refresh(item)
             if exc.reason in SOURCE_FAILURES:
-                await fail_auto_source(db, item, exc.reason)
-                await db.commit()
+                await fail_auto_source(db, view, exc.reason)
             raise HTTPException(409, routing_detail(exc.reason)) from exc
         except (PrinterOccupancyConflict, AutoPlacementConflict) as exc:
-            await db.refresh(item)
             if isinstance(exc, AutoPlacementConflict) and exc.code == "item_changed":
-                raise HTTPException(409, "Auto-queue item changed before assignment") from exc
+                raise changed from exc
+            # A refused placement rolled its transaction back: the row is read again for the next candidate.
+            item = await db.get(AutoQueueItem, item_id, populate_existing=True)
+            if item is None or item.status != "pending" or item.recovery_identity != view.recovery_identity:
+                raise changed from exc
             busy_printers.add(printer.id)
-    await db.commit()
     return await get_auto_queue_item(item_id, db, _)
 
 
@@ -770,7 +819,13 @@ async def retry_auto_queue_item(
         raise HTTPException(409, routing_detail(requirements.reason))
     result = await db.execute(
         update(AutoQueueItem)
-        .where(AutoQueueItem.id == item_id, AutoQueueItem.status == "failed", AutoQueueItem.cancelled_at.is_(None))
+        .where(
+            AutoQueueItem.id == item_id,
+            # The incarnation the revalidation read (G03 B, A20): SQLite gives a deleted row's id to the next one.
+            AutoQueueItem.recovery_identity == item.recovery_identity,
+            AutoQueueItem.status == "failed",
+            AutoQueueItem.cancelled_at.is_(None),
+        )
         .values(status="pending", waiting_reason=None)
     )
     if not result.rowcount:
@@ -801,11 +856,24 @@ async def cancel_auto_queue_batch(
         current_ids = set((await db.scalars(select(AutoQueueItem.id).where(AutoQueueItem.batch_id == batch_id))).all())
         if not current_ids <= set(ids):
             raise selection_changed()
+        # Every row of the batch locked ascending, any status (an assigned row's printer copy is what the cancel
+        # reaches), then the lanes read again from the locked rows: a placement that committed between the scope's
+        # re-read and this lock put a copy in a lane the scope does not hold -- a refusal, nothing written (A20).
+        from backend.app.services.queue_cancel_scope import _selection
+        from backend.app.services.queue_counters import lock_auto_rows
+        from backend.app.services.queue_ops import held_lanes
+
+        await lock_auto_rows(db, current_ids)
+        _identities, lanes_now = await _selection(db, sorted(current_ids), True)
+        if not lanes_now <= held_lanes(db):
+            raise selection_changed()
         pending_result = await db.execute(
-            select(AutoQueueItem).where(
+            select(AutoQueueItem)
+            .where(
                 AutoQueueItem.batch_id == batch_id,
                 AutoQueueItem.status.in_(["pending", "failed"]),
             )
+            .order_by(AutoQueueItem.id)
         )
         pending = list(pending_result.scalars().all())
 
@@ -827,12 +895,14 @@ async def cancel_auto_queue_batch(
         if auto_ids:
             await _cancel_promoted_rows(db, PrintQueueItem.source_auto_item_id.in_(auto_ids), now)
 
+        # The detach and the deletes in ascending id, each delete flushed in that order (A20).
         for item in pending:
             if item.assigned_to_item_id is None:
                 from backend.app.services.queue_counters import detach_auto_queue_refs
 
                 await detach_auto_queue_refs(db, [item.id])
                 await db.delete(item)
+                await db.flush()
             else:
                 item.status = "cancelled"
                 item.cancelled_at = now

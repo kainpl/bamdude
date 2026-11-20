@@ -38,6 +38,7 @@ from backend.app.services.filament_policy import decode, queue_policy
 from backend.app.services.print_option_defaults import preference_options
 from backend.app.services.queue_counters import update_queue_counters
 from backend.app.services.queue_ops import claim_lanes
+from backend.app.services.queue_row_basis import basis_values
 from backend.app.services.swap_source_declarations import fresh_api_key
 
 logger = logging.getLogger(__name__)
@@ -131,13 +132,9 @@ async def _rights(db, actor, item):
 
 
 def _row_basis(row):
-    # Waiting diagnostics are refreshed by the scheduler, not operator intent.
-    # Keep position/options and stable identity fenced, as in order_resources.
-    return {
-        column.key: getattr(row, column.key)
-        for column in row.__table__.columns
-        if column.key not in {"waiting_reason", "waiting_reason_code", "waiting_reason_checked_at", "updated_at"}
-    }
+    # Waiting diagnostics are refreshed by the scheduler, not operator intent. One definition with the
+    # scheduler's claim basis (G03 B, A1): position, options and stable identity fenced, as in order_resources.
+    return basis_values(row)
 
 
 async def _navigation_links(db, item):
@@ -164,7 +161,7 @@ async def _navigation_links(db, item):
 
 async def _facts(db, item_id, actor, *, lock=False):
     query = select(PrintQueueItem).where(PrintQueueItem.id == item_id).execution_options(populate_existing=True)
-    item = await db.scalar(query.with_for_update() if lock else query)
+    item = await db.scalar(query.with_for_update(key_share=True) if lock else query)
     if item is None:
         raise refusal("transfer_gone", 404)
     await _rights(db, actor, item)
@@ -216,7 +213,7 @@ async def _facts(db, item_id, actor, *, lock=False):
             .where(AutoQueueItem.id == item.source_auto_item_id)
             .execution_options(populate_existing=True)
         )
-        ancestor = await db.scalar(query.with_for_update() if lock else query)
+        ancestor = await db.scalar(query.with_for_update(key_share=True) if lock else query)
         if (
             ancestor is None
             or ancestor.status != "assigned"

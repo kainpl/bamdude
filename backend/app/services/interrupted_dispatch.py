@@ -144,27 +144,51 @@ async def recover_interrupted_dispatches(printer_id: int) -> list[str]:
 
 
 async def _settle(printer_id: int, queue_id: int, item_id: int, archive_id: int, boot: str) -> str | None:
-    from backend.app.services import swap_terminal
+    from backend.app.services import queue_source_link, swap_terminal
     from backend.app.services.archive_write_scope import load_active_archive_for_write
     from backend.app.services.print_scheduler import DISPATCH_MAX_ATTEMPTS
     from backend.app.services.print_state_recovery import effects_pending
-    from backend.app.services.queue_counters import set_queue_error, update_queue_counters
+    from backend.app.services.queue_counters import halt_lane, update_queue_counters
     from backend.app.services.queue_ops import claim_lanes
 
+    # The source link a requeue writes, planned from a read before the guards (G03 B, A27): its parent is in
+    # the plan — a library row as an early row, an archive with the execution archive, ascending.
+    async with database.async_session() as preflight:
+        read = await preflight.get(PrintQueueItem, item_id)
+        link_plan = queue_source_link.plan_link(read) if read is not None else queue_source_link.LinkPlan(None, False)
+    parent_archive = (
+        link_plan.candidate.id
+        if link_plan.needs_parent and link_plan.candidate.kind == queue_source_link.ARCHIVE
+        else None
+    )
+
+    async def library_first(session):
+        if link_plan.needs_parent and link_plan.candidate.kind == queue_source_link.LIBRARY_FILE:
+            await queue_source_link.lock_plans(session, [link_plan])
+
+    archives = sorted({archive_id, *([parent_archive] if parent_archive is not None else [])})
     # Archive before lane before rows, the order every archive + queue writer keeps; the rows
     # archive → queue → job, as operator print-state recovery takes them.
-    async with database.async_session() as db, claim_lanes(db, [queue_id], archive_id=archive_id):
-        archive = await load_active_archive_for_write(db, archive_id)
+    async with (
+        database.async_session() as db,
+        claim_lanes(db, [queue_id], archive_ids=archives, before_db=library_first),
+    ):
+        archive = None
+        for each in archives:
+            if each == archive_id:
+                archive = await load_active_archive_for_write(db, archive_id)
+            else:
+                await queue_source_link.lock_plans(db, [link_plan])
         queue = await db.scalar(
             select(PrinterQueue)
             .where(PrinterQueue.id == queue_id)
-            .with_for_update()
+            .with_for_update(key_share=True)
             .execution_options(populate_existing=True)
         )
         item = await db.scalar(
             select(PrintQueueItem)
             .where(PrintQueueItem.id == item_id)
-            .with_for_update()
+            .with_for_update(key_share=True)
             .execution_options(populate_existing=True)
         )
         if (
@@ -211,8 +235,14 @@ async def _settle(printer_id: int, queue_id: int, item_id: int, archive_id: int,
         archive.error_message = detail or f"{_INTERRUPTED}; the job went back to the queue."
         archive.completed_at = now
         if detail is None:
-            # Back to pending with its own bytes, options and macros; the attempt it spent stays spent.
-            _restore_source(item, archive_id)
+            # Back to pending with its own bytes, options and macros; the attempt it spent stays spent. Its link
+            # names the proven original, never its own failed attempt — or nothing (A27); a candidate that changed
+            # since the plan leaves the row for the operator.
+            if not queue_source_link.apply_link(item, link_plan, execution_archive_id=archive_id):
+                return None
+            from backend.app.services.filament_policy import clear_routing_runtime
+
+            clear_routing_runtime(item)
             item.status = "pending"
             item.started_at = None
             item.error_message = None
@@ -233,7 +263,7 @@ async def _settle(printer_id: int, queue_id: int, item_id: int, archive_id: int,
                     queue.status = "idle"
                     queue.current_item_id = None
             else:
-                await set_queue_error(db, queue_id, failed_item_id=item_id, expected_item_id=item_id)
+                await halt_lane(db, queue_id, item_id=item_id, kind="error")
         await update_queue_counters(db, queue_id)
         await db.commit()
     outcome = REQUEUED if detail is None else FAILED
@@ -252,24 +282,6 @@ async def _settle(printer_id: int, queue_id: int, item_id: int, archive_id: int,
     except Exception:  # noqa: BLE001 - committed; the next refresh shows it
         logger.warning("Interrupted dispatch settled; event delivery failed for printer %s", printer_id)
     return outcome
-
-
-def _restore_source(item, execution_archive_id: int) -> None:
-    """Point the job at what it was queued from again, as a Retry would — never at its own failed attempt."""
-    from backend.app.services.filament_policy import restore_routing_source
-
-    restore_routing_source(item)
-    if item.archive_id != execution_archive_id:
-        return
-    snapshot = item.source_snapshot if isinstance(item.source_snapshot, dict) else {}
-    provenance = snapshot.get("provenance") if isinstance(snapshot.get("provenance"), dict) else {}
-    kind, source_id = provenance.get("kind"), provenance.get("id")
-    if type(source_id) is not int:
-        return  # nothing names an original: the attempt's own copy of the bytes is the source, as on Retry
-    if kind == "archive":
-        item.archive_id, item.library_file_id = source_id, None
-    elif kind == "library_file":
-        item.archive_id, item.library_file_id = None, source_id
 
 
 async def recover_after_resume() -> None:

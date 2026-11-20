@@ -48,6 +48,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from backend.app.i18n import current_language, t
 from backend.app.models.auto_queue import AutoQueueItem
@@ -60,6 +61,7 @@ from backend.app.services.auto_queue_waiting import (
     WaitingFact,
     fact,
     file_params,
+    freeze,
     offline_params,
     routing_params,
 )
@@ -89,6 +91,112 @@ def router_view_conditions(now) -> tuple:
         AutoQueueItem.manual_start.is_(False),
         or_(AutoQueueItem.scheduled_time.is_(None), AutoQueueItem.scheduled_time <= now),
     )
+
+
+#: What a router row's revision leaves out (G03 B, A17 step 3): the pass's own writes and what it orders by.
+REVISION_IGNORED = frozenset({"waiting_reason", "position", "been_jumped", "created_at"})
+
+#: The columns the eligibility back-fills in memory (A23): persisted by the row's placement or the pass's end batch.
+BACKFILLED = ("plate_id", "target_model")
+
+
+def router_row_revision(item) -> tuple:
+    """A router row's revision: every column but :data:`REVISION_IGNORED`, as plain values (G03 B, A17 step 3).
+
+    One function, read by the decision, the pass's writes and the notification projection -- a same-pass freshness
+    check, never incident identity (names, row ids and revisions never enter ``WaitingFact.key()``)."""
+    return tuple(
+        (column.name, freeze(getattr(item, column.name)))
+        for column in AutoQueueItem.__table__.columns
+        if column.name not in REVISION_IGNORED
+    )
+
+
+@dataclass(frozen=True)
+class RouterRowView:
+    """What a pass decided about: the row's id, its incarnation and its revision, taken at the fetch, before any
+    back-fill, as plain values (G03 B, A17 step 3). Every write of the pass is addressed by one."""
+
+    id: int
+    recovery_identity: str | None
+    revision: tuple
+
+    def value(self, name: str):
+        return dict(self.revision).get(name)
+
+
+def router_row_view(item) -> RouterRowView:
+    return RouterRowView(item.id, item.recovery_identity, router_row_revision(item))
+
+
+def backfills(view: RouterRowView, item) -> dict:
+    """The eligibility's in-memory back-fills on ``item`` since ``view`` was taken (A23), as column values."""
+    return {name: getattr(item, name) for name in BACKFILLED if freeze(getattr(item, name)) != view.value(name)}
+
+
+def router_row_outcome(row, view: RouterRowView) -> str:
+    """``written`` when ``row`` (read under its lock) is still the row ``view`` decided about; ``gone`` when it is
+    missing, another incarnation (a delete + SQLite id reuse) or no longer pending; ``stale`` when its revision moved
+    (a source refresh, an edit)."""
+    if (
+        row is None
+        or row.recovery_identity != view.recovery_identity
+        or row.status != "pending"
+        or row.cancelled_at is not None
+    ):
+        return "gone"
+    if router_row_revision(row) != view.revision:
+        return "stale"
+    return "written"
+
+
+async def begin_router_write(db: AsyncSession) -> None:
+    """Start a short write transaction of the router's own: whatever read transaction the session had ends first
+    (nothing is held across a placement, A17), then on SQLite the writer, before the rows are read."""
+    from sqlalchemy import text
+
+    if db.in_transaction():
+        await db.commit()
+    if db.get_bind().dialect.name == "sqlite":
+        await db.execute(text("BEGIN IMMEDIATE"))
+
+
+async def write_router_rows(db: AsyncSession, writes: dict[int, tuple[RouterRowView, dict]]) -> dict[int, str]:
+    """Write router rows only where they are still the rows their views decided about (G03 B, A17 step 3).
+
+    ``writes`` maps an id to ``(view, values)``. One short transaction of its own, committed here: the rows locked
+    ascending (``lock_auto_rows``), re-read, compared (:func:`router_row_outcome`), and only a match written -- a
+    compare-and-set on the id, the view's incarnation, ``pending`` and not cancelled. Returns each id's outcome; a
+    non-``written`` one is part of the caller's pass (its observation is dropped, the projection does not resolve).
+    """
+    from sqlalchemy import update
+
+    from backend.app.services.queue_counters import lock_auto_rows
+
+    if not writes:
+        return {}
+    await begin_router_write(db)
+    rows = await lock_auto_rows(db, writes)
+    outcomes: dict[int, str] = {}
+    for item_id in sorted(writes):
+        view, values = writes[item_id]
+        outcome = router_row_outcome(rows.get(item_id), view)
+        if outcome == "written" and values:
+            result = await db.execute(
+                update(AutoQueueItem)
+                .where(
+                    AutoQueueItem.id == item_id,
+                    AutoQueueItem.recovery_identity == view.recovery_identity,
+                    AutoQueueItem.status == "pending",
+                    AutoQueueItem.cancelled_at.is_(None),
+                )
+                .values(**values)
+            )
+            if not result.rowcount:
+                outcome = "gone"
+        outcomes[item_id] = outcome
+    await db.commit()
+    return outcomes
 
 
 def router_order(sjf: bool) -> tuple:
@@ -317,9 +425,11 @@ async def find_eligible_printer(
         return EligiblePrinter(
             reason=reason, requirements=req, facts=(fact(req.reason, params=file_params(item, req), message=reason),)
         )
-    item.plate_id = req.resolved_plate_id
+    # Memory only (G03 B, A23): persisted by the row's own placement or by the pass's end batch, never left a
+    # pending change that another writer's flush would carry.
+    set_committed_value(item, "plate_id", req.resolved_plate_id)
     if not item.target_model:
-        item.target_model = req.model
+        set_committed_value(item, "target_model", req.model)
     # The printers whose queue is halted are no candidates (G03 E-3), but the job's waiting
     # reason names each of them: the operator's Resume is what would let them take it.
     halted: list[Printer] = []

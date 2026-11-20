@@ -3537,9 +3537,9 @@ async def slice_and_persist(
             await guard_snapshot(db, credential)
         if source_proof is not None:
             row = await db.scalar(
-                LibraryFile.active().where(LibraryFile.id == source_proof[0]).execution_options(populate_existing=True)
+                LibraryFile.active().where(LibraryFile.id == source_proof.id).execution_options(populate_existing=True)
             )
-            if row is None or (row.id, row.file_path, row.file_hash, row.created_at) != source_proof:
+            if not source_proof.matches(row):
                 raise HTTPException(409, {"code": "source_changed"})
             (await read_access(db, authority=ingest_authority)).ensure(row)
         reusable = await find_reusable_row(
@@ -3962,7 +3962,10 @@ async def slice_library_file(
     model_bytes = await preview_disk(src_path.read_bytes)
     folder_id = lib_file.folder_id
     source_lib_file_id = lib_file.id
-    source_proof = (lib_file.id, lib_file.file_path, lib_file.file_hash, lib_file.created_at)
+    from backend.app.services.library_identity import LibraryIdentity
+
+    # The row the caller chose (A32): checked again before the result is published.
+    source_proof = LibraryIdentity.capture(lib_file)
     # JWT user wins; fall back to the API key's owner so a cloud-scoped key
     # spends *that* user's token (#1182). The id is what the bg task needs —
     # it re-loads the User in its own session to look up cloud creds.

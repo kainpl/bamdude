@@ -75,6 +75,7 @@ from backend.app.models.product import Product, ProductPart, ProductPlate, produ
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption, variant_key
 from backend.app.schemas.product import CardNote
 from backend.app.services import part_images, product_variants
+from backend.app.services.library_identity import LibraryIdentity
 from backend.app.services.library_ingest import external_hash_is_stale, find_reusable_row, read_access
 from backend.app.services.order_metrics import grouped_figures, units_delivered
 from backend.app.services.part_names import canonicalize, name_key
@@ -1176,7 +1177,7 @@ async def import_zip(
                     continue
             file_ids.append(row.id)
             hash_by_file[row.id] = digest
-            source_proofs[row.id] = (row.file_path, row.file_hash, row.created_at)
+            source_proofs[row.id] = LibraryIdentity.capture(row)
 
         from types import SimpleNamespace
 
@@ -1198,7 +1199,7 @@ async def import_zip(
                 current = await db.scalar(
                     LibraryFile.active().where(LibraryFile.id == file_id).execution_options(populate_existing=True)
                 )
-                if current is None or (current.file_path, current.file_hash, current.created_at) != proof:
+                if not proof.matches(current):
                     raise HTTPException(409, {"code": "source_changed"})
                 access.ensure(current)
             # ---- the product ----

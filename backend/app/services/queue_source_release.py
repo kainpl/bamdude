@@ -373,14 +373,33 @@ async def _cancel_dependents(
             # It keeps printing. Nothing to do — and nothing to say, either: the
             # card already shows that it holds its own copy.
             continue
+        # Compare-and-sets inside the plan's lanes (G03 B, A19): the row read is the row written -- a row claimed,
+        # moved or reissued meanwhile is left as it is.
         if isinstance(row, AutoQueueItem):
-            row.status = _AUTO_DEAD
+            result = await db.execute(
+                update(AutoQueueItem)
+                .where(
+                    AutoQueueItem.id == row.id,
+                    AutoQueueItem.recovery_identity == row.recovery_identity,
+                    AutoQueueItem.status == _PENDING,
+                    AutoQueueItem.cancelled_at.is_(None),
+                )
+                .values(status=_AUTO_DEAD, waiting_reason=reason)
+            )
         else:
-            row.status = "cancelled"
-            row.completed_at = now
-            queue_ids.add(row.queue_id)
-        row.waiting_reason = reason
-        cancelled += 1
+            result = await db.execute(
+                update(PrintQueueItem)
+                .where(
+                    PrintQueueItem.id == row.id,
+                    PrintQueueItem.status == _PENDING,
+                    PrintQueueItem.queue_id == row.queue_id,
+                )
+                .values(status="cancelled", completed_at=now, waiting_reason=reason, deferred_claim_token=None)
+            )
+            if result.rowcount:
+                queue_ids.add(row.queue_id)
+        if result.rowcount:
+            cancelled += 1
     if cancelled:
         logger.info("%d queued job(s) cancelled: %s", cancelled, reason)
     _stage_recount(db, queue_ids)

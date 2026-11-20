@@ -123,16 +123,26 @@ async def an_interrupted_job(
         extra_data=deepcopy(extra),
     )
     db.add(archive)
+    from backend.app.models.queue_source import QueueSource
+
+    # The job owns its bytes, as every dispatched captured job does (inv-queue-job-owns-its-bytes).
+    blob = QueueSource(sha256="c" * 64, size_bytes=1, relative_path="objects/cc/plate.3mf", format="3mf", state="ready")
+    db.add(blob)
     await db.flush()
     item = PrintQueueItem(
         queue_id=queue.id,
+        queue_source_id=blob.id,
         archive_id=archive.id,
         status="printing",
         started_at=AN_HOUR_AGO,
         dispatch_attempts=attempts,
         plate_id=2,
         ams_mapping="[0, 3]",
-        source_snapshot={"version": 1, "provenance": {"kind": "archive", "id": source.id}},
+        # The capture's provenance, stamped with the original's incarnation (G03 B, A27).
+        source_snapshot={
+            "version": 1,
+            "provenance": {"kind": "archive", "id": source.id, "incarnation": source.recovery_identity},
+        },
     )
     db.add(item)
     await db.flush()
@@ -255,8 +265,13 @@ async def test_the_requeue_locks_the_queue_before_the_job_as_every_recovery_writ
     finally:
         event.remove(test_engine.sync_engine, "before_cursor_execute", seen)
 
+    # Inside the lane: the requeue reads the job's source-link candidate before its guards (A27), and that
+    # read locks nothing; the order under the lane starts where the lane is taken -- SQLite's BEGIN IMMEDIATE, or the
+    # PostgreSQL advisory guard.
+    lane = next(i for i, s in enumerate(statements) if "BEGIN IMMEDIATE" in s or "pg_advisory_xact_lock" in s)
+
     def first(pattern):
-        return next(i for i, s in enumerate(statements) if re.search(pattern, s, re.S))
+        return next(i for i, s in enumerate(statements) if i > lane and re.search(pattern, s, re.S))
 
     assert first(r"FROM printer_queues\s+WHERE printer_queues\.id =") < first(
         r"FROM print_queue\s+WHERE print_queue\.id ="

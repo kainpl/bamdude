@@ -647,7 +647,7 @@ class CalibrationService:
         await db.commit()
         await db.refresh(session)
 
-        print_queue_item_id = await background_dispatch.enqueue_calibration_print(
+        await background_dispatch.enqueue_calibration_print(
             printer_id=printer_id,
             asset_path="",  # legacy field, library_file_id is the truth
             cali_mode=cali_mode.value,
@@ -661,16 +661,8 @@ class CalibrationService:
             calibration_session_id=session.id,
         )
 
-        session.print_queue_item_id = print_queue_item_id
-        # The calibration row is a pending queue row like any other: the card's counter
-        # (``GET /queues/`` answers the cached column) is recounted with it (G03 D7.2).
-        from backend.app.models.print_queue import PrintQueueItem
-        from backend.app.services.queue_counters import update_queue_counters
-
-        queue_id = await db.scalar(select(PrintQueueItem.queue_id).where(PrintQueueItem.id == print_queue_item_id))
-        if queue_id is not None:
-            await update_queue_counters(db, queue_id)
-        await db.commit()
+        # The session's link to the job and the queue's counters were written with the job, in its lane
+        # transaction (G03 B, A7/F5); this session reads them back.
         await db.refresh(session)
         return session
 

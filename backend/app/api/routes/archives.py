@@ -1787,27 +1787,32 @@ async def count_archive_into_stock(
     An empty list is a legitimate answer, not a failure: the print may have
     finished nothing good, or its plate may belong to no product.
     """
-    archive = (await db.execute(PrintArchive.active().where(PrintArchive.id == archive_id))).scalar_one_or_none()
     # Vouching for a print the caller may see (WS-13 E13 ARC-06): the archive section's own
     # read, as every archive door asks it — someone else's print is the same 404 as a missing one.
     reads_all = await creds.allows(_archives_read_all)
     if not reads_all and not await creds.allows(_archives_read_own):
         raise HTTPException(404, "Archive not found")
-    archive = _ensure_archive_visible(archive, current_user, reads_all)
-    if archive.project_id is not None:
-        raise HTTPException(409, "This print is filed under an order — its parts are counted there")
-    if await part_stock.unfiled_credit_net(db, archive.id) > 0:
-        raise HTTPException(409, "This print has already been counted into stock")
+    # The archive held before the parts (G03 B, A29): the request's transaction ends, then its write scope and row;
+    # the visibility and both 409 conditions are read under that lock.
+    from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
 
-    try:
-        written = await part_stock.credit_unfiled_print(
-            db,
-            archive,
-            created_by=current_user.id if current_user else None,
-            note=part_stock.NOTE_COUNTED_BY_OPERATOR,
-        )
-    except part_stock.PartStockError as e:
-        raise HTTPException(409, str(e)) from e
+    await db.commit()
+    async with archive_write_scope(db, archive_id):
+        archive = _ensure_archive_visible(await load_active_archive_for_write(db, archive_id), current_user, reads_all)
+        if archive.project_id is not None:
+            raise HTTPException(409, "This print is filed under an order — its parts are counted there")
+        if await part_stock.unfiled_credit_net(db, archive.id) > 0:
+            raise HTTPException(409, "This print has already been counted into stock")
+
+        try:
+            written = await part_stock.credit_unfiled_print(
+                db,
+                archive,
+                created_by=current_user.id if current_user else None,
+                note=part_stock.NOTE_COUNTED_BY_OPERATOR,
+            )
+        except part_stock.PartStockError as e:
+            raise HTTPException(409, str(e)) from e
     names = {
         part.id: part.name
         for part in (
@@ -2004,8 +2009,12 @@ async def delete_archive(
         nonlocal locked
         locked = await _lock_exit_orders(db, archive_id)
 
-    async with archive_write_scope(db, archive_id, first=first):
-        result = await _delete_archive_locked(archive_id, db, auth_result, creds, locked)
+    # A plan writer for the jobs the trash cancels (G03 B, A19): their lanes with the print's guard, the orders it
+    # leaves as early rows.
+    from backend.app.services.archive_delete_scope import archive_delete_scope
+
+    async with archive_delete_scope(db, archive_id, purge=False, first=first) as plan:
+        result = await _delete_archive_locked(archive_id, db, auth_result, creds, locked, plan=plan)
     # Outside the scope: the trash may have cancelled queued jobs of this source on
     # other printers, whose cached counters are recounted after the commit.
     from backend.app.services.queue_source_release import recount_released_queues
@@ -2020,6 +2029,8 @@ async def _delete_archive_locked(
     auth_result: tuple[User | None, bool],
     creds: RequestCredentials,
     locked: set[int] | None = None,
+    *,
+    plan=None,
 ):
     """Soft-delete an archive (moves to the archive trash bin).
 
@@ -2046,6 +2057,8 @@ async def _delete_archive_locked(
     if not archive:
         raise HTTPException(404, "Archive not found")
     _refuse_a_moved_print(archive, locked)
+    if plan is not None:
+        await plan.recheck()  # the jobs and router rows the trash writes, read again under the row lock (A19)
 
     if not can_modify_all:
         if archive.created_by_id != user.id:

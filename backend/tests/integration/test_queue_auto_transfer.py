@@ -794,10 +794,15 @@ async def test_real_dispatch_claim_and_transfer(
             yield
 
     monkeypatch.setattr(module, attribute, barrier)
+    from backend.app.services.queue_row_basis import row_basis
+
+    # What a pass judged before either side started (A2): the claim compares the row with it.
+    async with sessions() as read:
+        basis = row_basis(await read.get(PrintQueueItem, item_id))
 
     async def claim():
         return await print_scheduler.PrintScheduler()._claim_for_dispatch(
-            item_id=item_id, queue_id=queue_id, printer_id=queue_id, plan_fields={}
+            item_id=item_id, queue_id=queue_id, printer_id=queue_id, plan_fields={}, basis=basis
         )
 
     first = asyncio.create_task(claim() if dispatch_first else move(async_client, item_id, pre))

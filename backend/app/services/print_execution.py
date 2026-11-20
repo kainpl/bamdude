@@ -268,7 +268,7 @@ async def close_noncurrent(db, archive):
                 select(PrintQueueItem)
                 .where(PrintQueueItem.archive_id == archive.id, PrintQueueItem.status == "printing")
                 .execution_options(populate_existing=True)
-                .with_for_update()
+                .with_for_update(key_share=True)
             )
         ).all()
     )

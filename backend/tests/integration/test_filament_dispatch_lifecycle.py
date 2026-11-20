@@ -271,7 +271,7 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
         if ok:
             assert job.outcome["success"] is True
     if ok:
-        from backend.app.services.filament_policy import restore_routing_source
+        from backend.app.services.filament_policy import clear_routing_runtime
 
         await db_session.refresh(item)
         assert item.status == "printing"
@@ -291,8 +291,7 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
             saved = json.loads(item.filament_routing)
             assert saved["source_identity"]["kind"] == "archive"
             assert saved["source_identity"]["id"] == item.archive_id
-            restore_routing_source(item)
-            assert item.library_file_id is None
+            clear_routing_runtime(item)
             assert (await preflight_item(db_session, item, printer_id)).plan.mapping == [-1, -1, 254]
         return
     if change == "delete":

@@ -250,7 +250,10 @@ def _item(**over):
         "waiting_reason": None,
     }
     base.update(over)
-    return SimpleNamespace(**base)
+    # A transient router row, not a namespace: the eligibility's back-fills are ORM memory (G03 B, A23).
+    from backend.app.models.auto_queue import AutoQueueItem
+
+    return AutoQueueItem(**base)
 
 
 def _off_snapshot(pid):

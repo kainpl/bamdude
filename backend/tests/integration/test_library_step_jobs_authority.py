@@ -189,3 +189,27 @@ async def test_the_source_holds_only_while_the_row_is_unchanged_and_not_trashed(
     row.deleted_at = datetime.now(timezone.utc)
     await db_session.commit()
     assert not await checks.source_holds(captured)
+
+
+@pytest.mark.asyncio
+async def test_a_row_that_took_the_sources_id_path_hash_and_time_is_another_source(db_session):
+    """SQLite: the row deleted and the same file registered again in the same second — every captured field
+    the same but the row's own identity (G03 B A32 / R28). The picture is not published for it."""
+    from uuid import uuid4
+
+    row = LibraryFile(
+        filename="part.step",
+        file_path="library/part.step",
+        file_type="step",
+        file_size=10,
+        file_hash="a" * 64,
+    )
+    db_session.add(row)
+    await db_session.commit()
+    await db_session.refresh(row)
+    captured = StepSource.capture(row)
+    assert captured.recovery_identity == row.recovery_identity
+    row.recovery_identity = str(uuid4())
+    await db_session.commit()
+    assert not await DatabaseChecks().source_holds(captured)
+    assert StepSource.capture(row).key != captured.key, "another execution, not the same one shared"

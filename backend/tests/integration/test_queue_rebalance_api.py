@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.core.auth import create_access_token, get_password_hash
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.group import Group
+from backend.app.models.library import LibraryFile
 from backend.app.models.queue_source import FORMAT_3MF, STATE_READY, QueueSource
 from backend.app.models.user import User
 from backend.app.services import queue_rebalance, queue_sources
@@ -387,7 +388,12 @@ async def test_a_moved_row_names_the_TARGET_files_bytes(db_session, printer_fact
         assert blob.sha256 == target_sha, f"row {row.id} still names the OLD model's file"
     converted = next(row for row in rows if row.id == item_id)
     assert converted.queue_source_id != old_blob_id
-    assert converted.source_snapshot["provenance"] == {"kind": "library_file", "id": small_id}
+    small = await db_session.get(LibraryFile, small_id)
+    assert converted.source_snapshot["provenance"] == {
+        "kind": "library_file",
+        "id": small_id,
+        "incarnation": small.recovery_identity,  # the capture's stamp (G03 B, A27)
+    }
     assert converted.source_snapshot["display_filename"] == small_name
 
 
@@ -474,6 +480,7 @@ async def test_a_failed_companion_creation_restores_the_old_bytes_too(
     assert len(rows) == 1
     assert (rows[0].library_file_id, rows[0].target_model) == (big_id, "P1S")
     assert rows[0].queue_source_id == old_blob_id, "the row kept the target file's bytes after the undo"
+    # The row kept its own snapshot, written by this test before any capture: no stamp to carry.
     assert rows[0].source_snapshot["provenance"] == {"kind": "library_file", "id": big_id}
     assert rows[0].rebalanced_at is None
 

@@ -4,13 +4,15 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Literal
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, inspect, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import set_committed_value
@@ -52,7 +54,8 @@ from backend.app.services.printer_occupancy import (
     require_scheduler_claim,
 )
 from backend.app.services.queue_ops import queue_claim_scope
-from backend.app.services.queue_wait_reason import set_wait_reason
+from backend.app.services.queue_row_basis import row_basis
+from backend.app.services.queue_wait_reason import write_wait_reason
 from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable, require_source_file
 from backend.app.services.spoolman_weights import spool_net_weight
@@ -95,6 +98,57 @@ class ClaimResult:
     #: The committed failure a refused claim wrote (``budget_exhausted``): its closed class and sentence.
     failure_code: str | None = None
     failure_message: str | None = None
+    #: The claimed row as plain values, as it was committed (G03 B, A5): what the dispatch is built from — never
+    #: the tick's copy, which may be older than the row the claim locked.
+    snapshot: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class VerdictResult:
+    """A durable verdict of the pass, proved under the lane (G03 B, A8): written, or refused with its code."""
+
+    written: bool
+    code: str | None = None
+
+
+def first_runnable_query(queue_id: int, now: datetime, cooling: set[int]):
+    """The row the claim and every verdict take for a queue's next one (G03 B, A3): pending, not staged, due at
+    ``now``, not cooling, by position then id — one definition, so the two cannot disagree on which row is next."""
+    query = (
+        select(PrintQueueItem.id)
+        .where(PrintQueueItem.queue_id == queue_id)
+        .where(PrintQueueItem.status == "pending")
+        .where(PrintQueueItem.manual_start.is_(False))
+        .where(or_(PrintQueueItem.scheduled_time.is_(None), PrintQueueItem.scheduled_time <= now))
+    )
+    if cooling:
+        query = query.where(PrintQueueItem.id.notin_(cooling))
+    return query.order_by(PrintQueueItem.position, PrintQueueItem.id).limit(1)
+
+
+async def lock_judged_row(cdb, *, item_id: int, queue_id: int, basis: str) -> tuple[PrintQueueItem | None, str | None]:
+    """The row the pass judged, locked under its lane (G03 B, A3 step 3): still pending, in the queue the pass
+    loaded it in, with the basis the pass recorded. Anything else is a refusal — the next pass reads it fresh."""
+    row = await cdb.scalar(
+        select(PrintQueueItem)
+        .where(PrintQueueItem.id == item_id)
+        .with_for_update(key_share=True)
+        .execution_options(populate_existing=True)
+    )
+    if row is None or row.status != "pending":
+        return None, "not_pending"
+    if row.queue_id != queue_id or row_basis(row) != basis:
+        return None, "item_changed"
+    return row, None
+
+
+async def basis_of(db: AsyncSession, item: PrintQueueItem) -> str:
+    """The basis of a row a caller passed without one (the webhook start, a direct call), taken at entry."""
+    columns = {attr.key for attr in inspect(type(item)).column_attrs}
+    unloaded = [name for name in inspect(item).unloaded if name in columns]
+    if unloaded:
+        await db.refresh(item, attribute_names=unloaded)
+    return row_basis(item)
 
 
 # Kept as a module-level name because ``auto_queue_eligibility`` imports it from
@@ -443,6 +497,10 @@ class PrintScheduler:
                 .order_by(PrintQueueItem.queue_id, PrintQueueItem.position, PrintQueueItem.id)
             )
             items = list(result.scalars().all())
+            # What the pass judges, recorded before any step reads a row (G03 B, A2): the claim and every verdict
+            # compare it with the row they lock, so an edit made while the pass awaited is never dispatched or
+            # ended on the old values.
+            bases = {item.id: row_basis(item) for item in items}
             requirements_cache = PrintRequirementsCache()
             dispatched = False
 
@@ -591,10 +649,34 @@ class PrintScheduler:
                 # Hold only this printer's pending work; a reachable HA sensor
                 # in its configured alert state is an operator-defined gate.
                 if printer_id in ha_interlocks:
-                    if set_wait_reason(item, "ha_sensor", f"Sensor alert: {ha_interlocks[printer_id]}"):
-                        await db.commit()
+                    await self._wait(db, item, "ha_sensor", f"Sensor alert: {ha_interlocks[printer_id]}")
                     skip_reasons["ha_sensor"] = skip_reasons.get("ha_sensor", 0) + 1
                     continue
+
+                # Check scheduled time first (scheduled_time is stored in UTC from ISO string)
+                if item.scheduled_time:
+                    sched = item.scheduled_time
+                    if sched.tzinfo is None:
+                        sched = sched.replace(tzinfo=timezone.utc)
+                    if sched > datetime.now(timezone.utc):
+                        await self._wait(db, item, "scheduled", "Scheduled start")
+                        skip_reasons["scheduled_future"] = skip_reasons.get("scheduled_future", 0) + 1
+                        continue
+
+                # Skip items that require manual start
+                if item.manual_start:
+                    await self._wait(db, item, "manual_start", "Manual start required")
+                    skip_reasons["manual_start"] = skip_reasons.get("manual_start", 0) + 1
+                    continue
+
+                # Everything above is either a printer-wide hold or what the claim's
+                # "first runnable" itself leaves out (cooling, scheduled for later,
+                # manual start). This row is therefore the printer's next one —
+                # unless an earlier row of the same printer already was (G03 E2).
+                if printer_id in heads_taken:
+                    skip_reasons["not_next"] = skip_reasons.get("not_next", 0) + 1
+                    continue
+                heads_taken.add(printer_id)
 
                 # ⚠️ A timelapse that was asked for and has nowhere to go PAUSES
                 # the queue rather than printing without one. That is a farm
@@ -607,52 +689,28 @@ class PrintScheduler:
                 # record at all is asked in the scheduling dialog, where a person
                 # is choosing printers and can act on the answer — pausing for a
                 # missing card would strand work nobody can un-strand from here.
+                #
+                # Asked of the head only, and before the busy check (G03 B, A14): a
+                # staged, future or later row never pauses its queue, while the next
+                # row of a printer that is still printing does (the early pause). The
+                # pause is a verdict proved under the lane (V4).
                 if getattr(item, "timelapse", False) and _timelapse_storage_full(printer_id):
-                    wait_changed = set_wait_reason(item, "storage_full", "Timelapse storage full")
-                    pause_changed = not item.queue.is_paused
-                    if not item.queue.is_paused:
-                        item.queue.is_paused = True
+                    outcome = await self._verdict_storage_full(db, item, bases[item.id], printer_id)
+                    if outcome.written:
                         logger.warning(
                             "[Scheduler] Queue for printer %s paused: item %s wants a timelapse and "
                             "the printer is out of space for one",
                             printer_id,
                             item.id,
                         )
-                    if wait_changed or pause_changed:
-                        await db.commit()
+                    else:
+                        mark_busy(printer_id, "verdict_changed")
                     skip_reasons["timelapse_storage_full"] = skip_reasons.get("timelapse_storage_full", 0) + 1
                     continue
 
-                # Check scheduled time first (scheduled_time is stored in UTC from ISO string)
-                if item.scheduled_time:
-                    sched = item.scheduled_time
-                    if sched.tzinfo is None:
-                        sched = sched.replace(tzinfo=timezone.utc)
-                    if sched > datetime.now(timezone.utc):
-                        if set_wait_reason(item, "scheduled", "Scheduled start"):
-                            await db.commit()
-                        skip_reasons["scheduled_future"] = skip_reasons.get("scheduled_future", 0) + 1
-                        continue
-
-                # Skip items that require manual start
-                if item.manual_start:
-                    if set_wait_reason(item, "manual_start", "Manual start required"):
-                        await db.commit()
-                    skip_reasons["manual_start"] = skip_reasons.get("manual_start", 0) + 1
-                    continue
-
-                # Skip if printer already busy this iteration
+                # Skip if printer already busy this iteration (after the head: A14)
                 if printer_id in busy_printers:
                     continue
-
-                # Everything above is either a printer-wide hold or what the claim's
-                # "first runnable" itself leaves out (cooling, scheduled for later,
-                # manual start). This row is therefore the printer's next one —
-                # unless an earlier row of the same printer already was (G03 E2).
-                if printer_id in heads_taken:
-                    skip_reasons["not_next"] = skip_reasons.get("not_next", 0) + 1
-                    continue
-                heads_taken.add(printer_id)
 
                 # Check if printer is idle
                 rpc = await _get_require_plate_clear(printer_id)
@@ -698,8 +756,9 @@ class PrintScheduler:
                     )
                     reason_code = "dispatch_runtime_conflict"
 
-                if set_wait_reason(item, reason_code, new_reason):
-                    await db.commit()
+                if not await self._wait(db, item, reason_code, new_reason):
+                    mark_busy(printer_id, "item_changed")
+                    continue
 
                 if reason_code == "order_resources":
                     continue
@@ -720,8 +779,8 @@ class PrintScheduler:
                     phase = self._power_on_phase(printer_id)
                     if phase is None:
                         phase = await self._begin_power_on(db, printer_id, auto_on_plugs[0])
-                        if phase == "booting" and set_wait_reason(item, "printer_offline", _POWERING_ON_REASON):
-                            await db.commit()
+                        if phase == "booting":
+                            await self._wait(db, item, "printer_offline", _POWERING_ON_REASON)
                     if phase == "booting":
                         mark_busy(printer_id, "powering_on")
                     else:
@@ -749,12 +808,12 @@ class PrintScheduler:
                     continue
 
                 if prepared_print_run_conflicts(printer_manager, printer_id):
-                    if set_wait_reason(
+                    await self._wait(
+                        db,
                         item,
                         "dispatch_runtime_conflict",
                         "A previous print context is blocking this start. Check print states on the System page.",
-                    ):
-                        await db.commit()
+                    )
                     mark_busy(printer_id, "dispatch_runtime_conflict")
                     continue
 
@@ -769,8 +828,7 @@ class PrintScheduler:
                 # A parked timer never ends by itself, so it holds nothing; the
                 # hold entry stays, and the stop below still reaches a unit we armed.
                 if self._drying_holds_queue(printer_id) and await self._get_bool_setting(db, "queue_drying_block"):
-                    if set_wait_reason(item, "drying", "Drying in progress"):
-                        await db.commit()
+                    await self._wait(db, item, "drying", "Drying in progress")
                     mark_busy(printer_id, "drying")
                     continue
 
@@ -779,37 +837,30 @@ class PrintScheduler:
                     stagger_reason = self._stagger_reason(
                         stagger_wait_bed, stagger_concurrent, printer_id, stagger_resolver
                     )
-                    if set_wait_reason(item, "stagger", stagger_reason):
-                        await db.commit()
+                    await self._wait(db, item, "stagger", stagger_reason)
                     skip_reasons["stagger_wait"] = skip_reasons.get("stagger_wait", 0) + 1
                     continue
 
                 # Clear waiting_reason - printer is ready
-                if set_wait_reason(item, None, None):
-                    await db.commit()
+                if not await self._wait(db, item, None, None):
+                    mark_busy(printer_id, "item_changed")
+                    continue
 
                 # The require_previous_success gate (m116). Checked here, at the
                 # last moment before the item is prepared, so it reads the most
                 # recent outcome on this printer rather than one from whenever
                 # the item was queued.
                 if item.require_previous_success and not await self.previous_print_succeeded(db, printer_id, item.id):
-                    item.status = "skipped"
-                    item.error_message = "Previous print failed"
-                    item.completed_at = datetime.now(timezone.utc)
-                    await db.commit()
+                    # V1, proved under the lane (G03 B, A8): the row is still the head the pass judged and the
+                    # gate is still shut in the verdict's own transaction.
+                    outcome = await self._verdict_skip(db, item, bases[item.id], printer_id)
+                    if not outcome.written:
+                        mark_busy(printer_id, "verdict_changed")
+                        continue
                     # The skipped head is no longer next: the row behind it is judged in this pass.
                     heads_taken.discard(printer_id)
+                    # The verdict told the operator, after its commit and only because it wrote.
                     logger.info("Skipped queue item %s — the previous print on printer %s failed", item.id, printer_id)
-
-                    job_name = await self._get_job_name(db, item)
-                    printer_row = await self._get_printer(db, printer_id)
-                    await notification_service.on_queue_job_skipped(
-                        job_name=job_name,
-                        printer_id=printer_id,
-                        printer_name=printer_row.name if printer_row else "Unknown",
-                        reason="Previous print failed",
-                        db=db,
-                    )
                     continue
 
                 # Resolve the AMS mapping when it's missing OR unresolved (all -1).
@@ -822,11 +873,12 @@ class PrintScheduler:
                     await preflight_item(db, item, printer_id, cache=requirements_cache)
                 except RoutingDeferred as exc:
                     if exc.reason in SOURCE_FAILURES:
-                        await self._fail_source_item(db, item, exc.reason)
-                        heads_taken.discard(printer_id)  # failed, so no longer next
+                        if (await self._fail_source_item(db, item, exc.reason, basis=bases[item.id])).written:
+                            heads_taken.discard(printer_id)  # failed, so no longer next
+                        else:
+                            mark_busy(printer_id, "verdict_changed")
                         continue
-                    set_wait_reason(item, "filament_unavailable", routing_detail(exc.reason)["message"])
-                    await db.commit()
+                    await self._wait(db, item, "filament_unavailable", routing_detail(exc.reason)["message"])
                     continue
                 # ⚠️ The plan is NOT written onto ``item`` here: this is the tick's
                 # session, and the final claim commits the plan in a session of its
@@ -876,7 +928,7 @@ class PrintScheduler:
                 # to "printing" + the stagger slot is pre-registered. This lets
                 # the next loop iteration dispatch a different printer in
                 # parallel instead of serialising through one global await.
-                if not await self._start_print(db, item, requirements_cache=requirements_cache):
+                if not await self._start_print(db, item, basis=bases[item.id], requirements_cache=requirements_cache):
                     if item.status != "pending":
                         # A refusal that ended the row itself (its source is gone):
                         # the row behind it is next, as it would have been before.
@@ -933,7 +985,8 @@ class PrintScheduler:
         requirements = await read_item_requirements(db, item)
         if requirements.status != "ok":
             return None
-        item.plate_id = requirements.resolved_plate_id
+        # Memory only (G03 B, A23): the claim's plan_fields fixed the plate (A5); this warning only reads it.
+        set_committed_value(item, "plate_id", requirements.resolved_plate_id)
         return [dict(f) for f in requirements.used_filaments]
 
     def _build_loaded_filaments(self, status, printer_id: int | None = None) -> list[dict]:
@@ -2803,107 +2856,341 @@ class PrintScheduler:
         result = await db.execute(select(Printer).where(Printer.id == printer_id))
         return result.scalar_one_or_none()
 
-    async def _fail_source_item(self, db: AsyncSession, item: PrintQueueItem, reason: str) -> None:
-        """Fail before dispatch without parking the printer's remaining queue."""
+    async def _wait(self, db: AsyncSession, item: PrintQueueItem, code, message) -> bool:
+        """A waiting diagnostic of the pass (G03 B, A8): addressed to the pending row the pass loaded, never a flush
+        of its copy. False: the row changed since it was loaded and the pass writes nothing else for it."""
+        changed = not (item.waiting_reason == message and getattr(item, "waiting_reason_code", None) == code)
+        holds = await write_wait_reason(db, item, code, message, queue_id=item.queue_id)
+        if changed:
+            # Ends the statement's transaction either way: an UPDATE that matched nothing still took SQLite's
+            # writer. A commit, never a rollback — a rollback would expire every copy the pass still reads.
+            await db.commit()
+        if not holds:
+            logger.info("Queue item %s changed since this pass loaded it — left to the next pass", item.id)
+        return holds
+
+    async def _prove_verdict(
+        self, cdb, item: PrintQueueItem, basis: str, *, admit: bool = True
+    ) -> tuple[PrintQueueItem | None, datetime | None, str | None]:
+        """A verdict's proof under its lane (G03 B, A8 steps 1-3), the caller holding ``queue_claim_scope``: the
+        lane admits a start (``admit=False``: is not already halted), the row is the head at a ``now`` read
+        after the lane's guards, and it is the row the pass judged — pending, same queue, same basis."""
+        now, refused = await self._prove_next_row(
+            cdb, item_id=item.id, queue_id=item.queue_id, printer_id=item.queue_id, admit=admit
+        )
+        if refused:
+            return None, now, refused
+        row, refused = await lock_judged_row(cdb, item_id=item.id, queue_id=item.queue_id, basis=basis)
+        return row, now, refused
+
+    @staticmethod
+    def _verdict_refused(item: PrintQueueItem, code: str) -> VerdictResult:
+        """Nothing written: no end, no halt, no notification, no auto-off. The next pass reads the row fresh."""
+        logger.info("Queue item %s: verdict not written (%s) — the next pass reads it fresh", item.id, code)
+        return VerdictResult(False, code)
+
+    @staticmethod
+    async def _end_tick(db: AsyncSession) -> None:
+        """A verdict runs in a session of its own; the tick's transaction ends first (it may hold SQLite's
+        writer, which the verdict's lane would then wait behind)."""
+        if db.in_transaction():
+            await db.commit()
+
+    async def _verdict_skip(self, db: AsyncSession, item: PrintQueueItem, basis: str, printer_id: int) -> VerdictResult:
+        """V1: the previous-success gate skips the head — only while the gate is still shut, asked again in the
+        verdict's own transaction (an acknowledgement committed since passes the gate)."""
         from backend.app.services.queue_counters import update_queue_counters
 
-        item.status = "failed"
-        item.error_message = routing_detail(reason)["message"]
-        item.error_code = failure_reasons.DISPATCH_SOURCE_UNAVAILABLE
-        # No physical print failed; this must not trip require_previous_success.
-        item.gate_acknowledged = True
-        item.completed_at = datetime.now(timezone.utc)
-        item.waiting_reason = None
-        item.waiting_reason_code = None
-        item.waiting_reason_checked_at = None
-        await update_queue_counters(db, item.queue_id)
-        await db.commit()
-        logger.warning("Queue item %s failed before dispatch: %s", item.id, reason)
+        queue_id = item.queue_id
+        await self._end_tick(db)
+        async with async_session() as cdb, queue_claim_scope(cdb, queue_id):
+            row, now, refused = await self._prove_verdict(cdb, item, basis)
+            if not refused and await self.previous_print_succeeded(cdb, printer_id, row.id):
+                refused = "gate_passes"
+            if refused:
+                return self._verdict_refused(item, refused)
+            await cdb.execute(
+                update(PrintQueueItem)
+                .where(
+                    PrintQueueItem.id == row.id,
+                    PrintQueueItem.status == "pending",
+                    PrintQueueItem.queue_id == queue_id,
+                )
+                .values(
+                    status="skipped",
+                    error_message="Previous print failed",
+                    completed_at=now,
+                    deferred_claim_token=None,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            await update_queue_counters(cdb, queue_id)
+            await cdb.commit()
+        set_committed_value(item, "status", "skipped")
+        job_name = await self._get_job_name(db, item)
+        printer_row = await self._get_printer(db, printer_id)
+        await notification_service.on_queue_job_skipped(
+            job_name=job_name,
+            printer_id=printer_id,
+            printer_name=printer_row.name if printer_row else "Unknown",
+            reason="Previous print failed",
+            db=db,
+        )
+        return VerdictResult(True)
 
-    async def _fail_item(self, db: AsyncSession, item: PrintQueueItem, error_message: str, code: str) -> None:
-        """Mark a row that never reached a claim as failed with its closed class, and halt its queue.
+    async def _verdict_storage_full(
+        self, db: AsyncSession, item: PrintQueueItem, basis: str, printer_id: int
+    ) -> VerdictResult:
+        """V4: a head that wants a timelapse on a full medium pauses its queue — asked of a lane that is only not
+        already halted (a pause is legitimate while the printer prints), while the medium is still full."""
+        from backend.app.models.printer_queue import PrinterQueue
+
+        queue_id = item.queue_id
+        await self._end_tick(db)
+        async with async_session() as cdb, queue_claim_scope(cdb, queue_id):
+            row, now, refused = await self._prove_verdict(cdb, item, basis, admit=False)
+            if not refused and not _timelapse_storage_full(printer_id):
+                refused = "storage_free"
+            if refused:
+                return self._verdict_refused(item, refused)
+            await cdb.execute(
+                update(PrintQueueItem)
+                .where(
+                    PrintQueueItem.id == row.id,
+                    PrintQueueItem.status == "pending",
+                    PrintQueueItem.queue_id == queue_id,
+                )
+                .values(
+                    waiting_reason="Timelapse storage full",
+                    waiting_reason_code="storage_full",
+                    waiting_reason_checked_at=now,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            await cdb.execute(
+                update(PrinterQueue)
+                .where(PrinterQueue.id == queue_id)
+                .values(is_paused=True)
+                .execution_options(synchronize_session=False)
+            )
+            await cdb.commit()
+        if item.queue is not None:
+            # The tick's copy of the header follows, so the printer's later rows skip as a paused queue.
+            set_committed_value(item.queue, "is_paused", True)
+        return VerdictResult(True)
+
+    async def _fail_source_item(
+        self, db: AsyncSession, item: PrintQueueItem, reason: str, *, basis: str | None = None
+    ) -> VerdictResult:
+        """V2: fail before dispatch without parking the printer's remaining queue, proved under the lane. Its cause
+        came from a file read; its proof is that the row and the head are what the pass judged."""
+        from backend.app.services.queue_counters import update_queue_counters
+
+        basis = basis if basis is not None else await basis_of(db, item)
+        queue_id = item.queue_id
+        await self._end_tick(db)
+        async with async_session() as cdb, queue_claim_scope(cdb, queue_id):
+            row, now, refused = await self._prove_verdict(cdb, item, basis)
+            if refused:
+                return self._verdict_refused(item, refused)
+            await cdb.execute(
+                update(PrintQueueItem)
+                .where(
+                    PrintQueueItem.id == row.id,
+                    PrintQueueItem.status == "pending",
+                    PrintQueueItem.queue_id == queue_id,
+                )
+                .values(
+                    status="failed",
+                    error_message=routing_detail(reason)["message"],
+                    error_code=failure_reasons.DISPATCH_SOURCE_UNAVAILABLE,
+                    # No physical print failed; this must not trip require_previous_success.
+                    gate_acknowledged=True,
+                    completed_at=now,
+                    waiting_reason=None,
+                    waiting_reason_code=None,
+                    waiting_reason_checked_at=None,
+                    deferred_claim_token=None,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            await update_queue_counters(cdb, queue_id)
+            await cdb.commit()
+        set_committed_value(item, "status", "failed")
+        logger.warning("Queue item %s failed before dispatch: %s", item.id, reason)
+        return VerdictResult(True)
+
+    async def _fail_item(
+        self, db: AsyncSession, item: PrintQueueItem, error_message: str, code: str, *, basis: str | None = None
+    ) -> VerdictResult:
+        """V3: mark a row that never reached a claim as failed with its closed class, and halt its queue.
 
         Only for the refusals ``_start_print`` decides before the claim, on the tick's own
-        row. An attempt that was claimed ends through :meth:`_fail_attempt`, which is
-        addressed to that attempt's claim token.
+        row, and proved under the lane (G03 B, A8): the lane admits a start and the row is
+        still the head the pass judged. The halt goes through ``halt_lane`` (A9). An attempt
+        that was claimed ends through :meth:`_fail_attempt`, addressed to its claim token.
         """
-        from backend.app.services.queue_counters import set_queue_error, update_queue_counters
+        from backend.app.services.queue_counters import halt_lane, update_queue_counters
 
-        item.status = "failed"
-        item.error_message = error_message
-        item.error_code = code
-        # Never claimed, so never sent: no physical print failed, and the next
-        # job's "only after a successful previous print" must not read one (G03 O-3).
-        item.gate_acknowledged = True
-        item.completed_at = datetime.now(timezone.utc)
-        await set_queue_error(db, item.queue_id, failed_item_id=item.id)
-        await update_queue_counters(db, item.queue_id)
-        await db.commit()
+        basis = basis if basis is not None else await basis_of(db, item)
+        queue_id = item.queue_id
+        await self._end_tick(db)
+        async with async_session() as cdb, queue_claim_scope(cdb, queue_id):
+            row, now, refused = await self._prove_verdict(cdb, item, basis)
+            if refused:
+                return self._verdict_refused(item, refused)
+            await cdb.execute(
+                update(PrintQueueItem)
+                .where(
+                    PrintQueueItem.id == row.id,
+                    PrintQueueItem.status == "pending",
+                    PrintQueueItem.queue_id == queue_id,
+                )
+                .values(
+                    status="failed",
+                    error_message=error_message,
+                    error_code=code,
+                    # Never claimed, so never sent: no physical print failed, and the next
+                    # job's "only after a successful previous print" must not read one (G03 O-3).
+                    gate_acknowledged=True,
+                    completed_at=now,
+                    deferred_claim_token=None,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            await halt_lane(cdb, queue_id, item_id=row.id, kind="error")
+            await update_queue_counters(cdb, queue_id)
+            await cdb.commit()
+        set_committed_value(item, "status", "failed")
+        return VerdictResult(True)
 
-    async def _cancel_item(self, db: AsyncSession, item: PrintQueueItem) -> None:
-        """Mark item as cancelled by user and pause the queue.
+    async def _cancel_item(
+        self,
+        db: AsyncSession,
+        item: PrintQueueItem,
+        *,
+        claim_started_at=None,
+        queue_id: int | None = None,
+        execution_archive_id: int | None = None,
+    ) -> bool:
+        """Mark THIS claimed attempt cancelled by the user and pause the queue (G03 B, A10).
 
         Differs from ``_fail_item`` in two ways: status is ``cancelled``
         (not ``failed``) and the queue is paused (not in error). User
         cancel is intentional — pausing lets the operator decide whether
         to resume the rest of the queue.
-        """
-        from backend.app.services.queue_counters import set_queue_paused, update_queue_counters
 
-        item.status = "cancelled"
-        item.error_message = "Cancelled by user"
-        item.completed_at = datetime.now(timezone.utc)
-        await set_queue_paused(db, item.queue_id, paused_item_id=item.id)
-        await update_queue_counters(db, item.queue_id)
-        await db.commit()
+        A compare-and-set on ``printing`` and the attempt's claim token, in the caller's
+        session made clean, under the claim queue's lane (the execution archive's guard
+        first when the attempt has one); the pause goes through ``halt_lane``. A row the
+        claim no longer owns is left as it is and a header that still names it is
+        released (A11). True when this attempt's row was cancelled.
+        """
+        from backend.app.models.archive import PrintArchive
+        from backend.app.services.queue_counters import halt_lane, release_lost_claim, update_queue_counters
+        from backend.app.services.queue_ops import claim_lanes
+
+        item_id = item.id
+        token = claim_started_at if claim_started_at is not None else item.started_at
+        claim_queue = queue_id if queue_id is not None else item.queue_id
+        if db.in_transaction():
+            await db.commit()
+        async with claim_lanes(db, [claim_queue], archive_id=execution_archive_id):
+            if execution_archive_id is not None:
+                await db.scalar(
+                    select(PrintArchive.id)
+                    .where(PrintArchive.id == execution_archive_id)
+                    .with_for_update(key_share=True)
+                )
+            result = await db.execute(
+                update(PrintQueueItem)
+                .where(
+                    PrintQueueItem.id == item_id,
+                    PrintQueueItem.status == "printing",
+                    PrintQueueItem.started_at.is_not_distinct_from(token),
+                )
+                .values(
+                    status="cancelled",
+                    error_message="Cancelled by user",
+                    completed_at=datetime.now(timezone.utc),
+                    deferred_claim_token=None,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if not result.rowcount:
+                await release_lost_claim(db, claim_queue, item_id)
+                await db.commit()
+                return False
+            await halt_lane(db, claim_queue, item_id=item_id, kind="paused")
+            await update_queue_counters(db, claim_queue)
+            await db.commit()
+        set_committed_value(item, "status", "cancelled")
+        return True
+
+    async def _prove_next_row(
+        self, cdb, *, item_id: int, queue_id: int, printer_id: int, admit: bool = True
+    ) -> tuple[datetime | None, str | None]:
+        """Under the lane, before the claim or a verdict decides (G03 B, A3 / A8 steps 1-2).
+
+        The lane admits a start — the HA interlock, the header locked with ``require_scheduler_claim``, the
+        farm's admission — or, ``admit=False``, the lane is only not already halted. Then the row is the queue's
+        runnable head at a ``now`` read after the lane's guards were granted: the one clock reading of the
+        decision (the claim writes it as its token, and nothing after it reads the clock again — r4, R15).
+        """
+        from backend.app.services.ha_sensor_manager import ha_sensor_manager
+
+        if admit and printer_id in await ha_sensor_manager.blocked_printers(cdb):
+            logger.info("Queue item %s: HA sensor alert on printer %s", item_id, printer_id)
+            return None, "ha_interlock"
+        try:
+            occupancy = await read_queue_occupancy(cdb, queue_id, for_update=True)
+            if admit:
+                require_scheduler_claim(occupancy)
+            elif occupancy.queue.status in {"paused", "error"}:
+                return None, "queue_paused"
+        except PrinterOccupancyConflict as exc:
+            logger.info("Queue item %s: admission lost (%s) — skipping", item_id, exc.code)
+            return None, exc.code
+        if admit and not farm_startup_guard.allowed():
+            return None, "farm_recovery_hold"
+        now = datetime.now(timezone.utc)
+        # A job cooling down after a busy spool is not "first": its neighbour may start (spec r4 §6).
+        cooling = self._cooling_item_ids() - {item_id}
+        if await cdb.scalar(first_runnable_query(queue_id, now, cooling)) != item_id:
+            logger.info("Queue item %s: no longer first runnable pending item — skipping", item_id)
+            return now, "not_first_runnable"
+        return now, None
 
     async def _claim_for_dispatch(
-        self, *, item_id: int, queue_id: int, printer_id: int, plan_fields: dict[str, Any]
+        self,
+        *,
+        item_id: int,
+        queue_id: int,
+        printer_id: int,
+        plan_fields: dict[str, Any],
+        basis: str,
     ) -> "ClaimResult":
         """The final ``pending → printing`` claim, in a short session of its own (post-rebuild D-R5).
 
-        Everything the claim depends on is read again here, under the lane's lock:
-        the HA interlock, the queue's occupancy, the farm's admission, the row still
-        being the first runnable one, and the dispatch budget. The routing plan and the
-        spent attempt are written in the SAME compare-and-set commit as the claim, so a
-        crash after it has spent the attempt and nothing can claim without the plan. A
-        refusal rolls back only this session; the tick that asked keeps every row it
-        read. The answer is plain values, never a row of another session.
+        Everything the claim depends on is read again here, under the lane's lock
+        (``_prove_next_row``): the HA interlock, the queue's occupancy, the farm's
+        admission and the row still being the first runnable one at the claim's own
+        ``now``; then the dispatch budget and the order's printer restrictions; then the
+        row itself, locked, compared with the basis the pass recorded (G03 B, A3) — a row
+        edited since the pass loaded it is refused ``item_changed`` and nothing is
+        written. The routing plan and the spent attempt are written in the SAME
+        compare-and-set commit as the claim, addressed to the lane (A4), so a crash after
+        it has spent the attempt and nothing can claim without the plan. A refusal rolls
+        back only this session; the tick that asked keeps every row it read. The answer
+        is plain values — the claimed row's snapshot included (A5) — never a row of
+        another session.
         """
-        from backend.app.services.ha_sensor_manager import ha_sensor_manager
-        from backend.app.services.queue_counters import set_queue_error, set_queue_printing, update_queue_counters
+        from backend.app.services.queue_counters import halt_lane, set_queue_printing, update_queue_counters
 
-        now = datetime.now(timezone.utc)
         async with async_session() as cdb, queue_claim_scope(cdb, queue_id):
-            # Recheck at the final claim: the sensor may have alerted while
-            # archive/routing preparation was running outside the queue lock.
-            if printer_id in await ha_sensor_manager.blocked_printers(cdb):
-                logger.info("Queue item %s: HA sensor alert on printer %s", item_id, printer_id)
-                return ClaimResult(False, "ha_interlock")
-            try:
-                require_scheduler_claim(await read_queue_occupancy(cdb, queue_id, for_update=True))
-            except PrinterOccupancyConflict as exc:
-                logger.info("Queue item %s: admission lost (%s) — skipping", item_id, exc.code)
-                return ClaimResult(False, exc.code)
-            if not farm_startup_guard.allowed():
-                return ClaimResult(False, "farm_recovery_hold")
-            # A job cooling down after a busy spool is not "first": its neighbour may start (spec r4 §6).
-            cooling = self._cooling_item_ids() - {item_id}
-            first_runnable = (
-                select(PrintQueueItem.id)
-                .where(PrintQueueItem.queue_id == queue_id)
-                .where(PrintQueueItem.status == "pending")
-                .where(PrintQueueItem.manual_start.is_(False))
-                .where(or_(PrintQueueItem.scheduled_time.is_(None), PrintQueueItem.scheduled_time <= now))
-            )
-            if cooling:
-                first_runnable = first_runnable.where(PrintQueueItem.id.notin_(cooling))
-            first_runnable_id = await cdb.scalar(
-                first_runnable.order_by(PrintQueueItem.position, PrintQueueItem.id).limit(1)
-            )
-            if first_runnable_id != item_id:
-                logger.info("Queue item %s: no longer first runnable pending item — skipping", item_id)
-                return ClaimResult(False, "not_first_runnable")
+            now, refused = await self._prove_next_row(cdb, item_id=item_id, queue_id=queue_id, printer_id=printer_id)
+            if refused:
+                return ClaimResult(False, refused)
             spent = await cdb.scalar(select(PrintQueueItem.dispatch_attempts).where(PrintQueueItem.id == item_id))
             if (spent or 0) >= DISPATCH_MAX_ATTEMPTS:
                 # The cap is asked BEFORE a new claim: a row whose attempts a crash
@@ -2914,19 +3201,24 @@ class PrintScheduler:
                 )
                 result = await cdb.execute(
                     update(PrintQueueItem)
-                    .where(PrintQueueItem.id == item_id, PrintQueueItem.status == "pending")
+                    .where(
+                        PrintQueueItem.id == item_id,
+                        PrintQueueItem.status == "pending",
+                        PrintQueueItem.queue_id == queue_id,
+                    )
                     .values(
                         status="failed",
                         error_code=failure_reasons.DISPATCH_INTERNAL_ERROR,
                         error_message=message,
                         completed_at=now,
                         gate_acknowledged=True,
+                        deferred_claim_token=None,
                     )
                     .execution_options(synchronize_session=False)
                 )
                 if not result.rowcount:
                     return ClaimResult(False, "not_pending")
-                await set_queue_error(cdb, queue_id, failed_item_id=item_id)
+                await halt_lane(cdb, queue_id, item_id=item_id, kind="error")
                 await update_queue_counters(cdb, queue_id)
                 await cdb.commit()
                 logger.warning("Queue item %s: dispatch budget exhausted (%s attempts)", item_id, spent)
@@ -2947,29 +3239,40 @@ class PrintScheduler:
             ).first()
             if link is None or not await allowed(cdb, link[0], printer_id, lock=True, project_line_id=link[1]):
                 return ClaimResult(False, "order_resources_changed")
+            row, changed = await lock_judged_row(cdb, item_id=item_id, queue_id=queue_id, basis=basis)
+            if changed:
+                # Nothing written: no attempt spent, no header, no counters, no plan. The pass leaves this
+                # printer's next row alone; the next pass reads the row fresh (G03 B, A3).
+                logger.info("Queue item %s: not claimed (%s) — the next pass reads it fresh", item_id, changed)
+                return ClaimResult(False, changed)
+            claimed = {
+                "status": "printing",
+                "started_at": now,
+                "waiting_reason": None,
+                "waiting_reason_code": None,
+                "waiting_reason_checked_at": None,
+                "gate_acknowledged": False,
+                # A new attempt voids the proof of the previous one (A16, R11).
+                "deferred_claim_token": None,
+                **plan_fields,
+            }
             cas_result = await cdb.execute(
                 update(PrintQueueItem)
                 .where(PrintQueueItem.id == item_id)
                 .where(PrintQueueItem.status == "pending")
-                .values(
-                    status="printing",
-                    started_at=now,
-                    waiting_reason=None,
-                    waiting_reason_code=None,
-                    waiting_reason_checked_at=None,
-                    gate_acknowledged=False,
-                    dispatch_attempts=func.coalesce(PrintQueueItem.dispatch_attempts, 0) + 1,
-                    **plan_fields,
-                )
+                .where(PrintQueueItem.queue_id == queue_id)
+                .values(dispatch_attempts=func.coalesce(PrintQueueItem.dispatch_attempts, 0) + 1, **claimed)
                 .execution_options(synchronize_session=False)
             )
             if cas_result.rowcount == 0:
                 logger.info("Queue item %s: no longer pending at dispatch (cancelled or removed) — skipping", item_id)
                 return ClaimResult(False, "not_pending")
+            snapshot = {column.key: getattr(row, column.key) for column in PrintQueueItem.__table__.columns}
+            snapshot.update(claimed, dispatch_attempts=(row.dispatch_attempts or 0) + 1)
             await set_queue_printing(cdb, queue_id, item_id)
             await update_queue_counters(cdb, queue_id)
             await cdb.commit()
-        return ClaimResult(True, started_at=now)
+        return ClaimResult(True, started_at=now, snapshot=MappingProxyType(snapshot))
 
     async def _fail_attempt(
         self,
@@ -2980,6 +3283,8 @@ class PrintScheduler:
         message: str,
         code: str,
         sent: bool = True,
+        queue_id: int | None = None,
+        execution_archive_id: int | None = None,
     ) -> bool:
         """End THIS claimed attempt as failed with its class, and halt the printer's queue until Resume.
 
@@ -2992,37 +3297,62 @@ class PrintScheduler:
         after a successful previous print" has no failed print to read (G03 O-3). A
         published start the printer did not take (``DispatchNotStarted``, a refused
         command) still gates; so does an outcome nobody typed (the default).
+
+        G03 B, A10: in the caller's session made clean, under the CLAIM queue's lane
+        (``queue_id``: the printer it was claimed on; the row's current queue only for a
+        caller that names none), the execution archive's guard and row first; the halt
+        through ``halt_lane`` (A9); a lost CAS releases a header that still names the
+        row (A11).
         """
-        from backend.app.services.queue_counters import set_queue_error, update_queue_counters
+        from backend.app.models.archive import PrintArchive
+        from backend.app.services.queue_counters import halt_lane, release_lost_claim, update_queue_counters
+        from backend.app.services.queue_ops import claim_lanes
 
         if claim_started_at is None:
             return False
-        result = await db.execute(
-            update(PrintQueueItem)
-            .where(
-                PrintQueueItem.id == item_id,
-                PrintQueueItem.status == "printing",
-                PrintQueueItem.started_at == claim_started_at,
+        claim_queue = queue_id
+        if claim_queue is None:
+            claim_queue = await db.scalar(select(PrintQueueItem.queue_id).where(PrintQueueItem.id == item_id))
+            if claim_queue is None:
+                return False
+        if db.in_transaction():
+            await db.commit()
+        async with claim_lanes(db, [claim_queue], archive_id=execution_archive_id):
+            if execution_archive_id is not None:
+                await db.scalar(
+                    select(PrintArchive.id)
+                    .where(PrintArchive.id == execution_archive_id)
+                    .with_for_update(key_share=True)
+                )
+            result = await db.execute(
+                update(PrintQueueItem)
+                .where(
+                    PrintQueueItem.id == item_id,
+                    PrintQueueItem.status == "printing",
+                    PrintQueueItem.started_at == claim_started_at,
+                )
+                .values(
+                    status="failed",
+                    error_message=message,
+                    error_code=code,
+                    completed_at=datetime.now(timezone.utc),
+                    gate_acknowledged=not sent,
+                    deferred_claim_token=None,
+                )
+                .execution_options(synchronize_session=False)
             )
-            .values(
-                status="failed",
-                error_message=message,
-                error_code=code,
-                completed_at=datetime.now(timezone.utc),
-                gate_acknowledged=not sent,
-            )
-            .execution_options(synchronize_session=False)
-        )
-        if not result.rowcount:
-            await db.rollback()
-            return False
-        queue_id = await db.scalar(select(PrintQueueItem.queue_id).where(PrintQueueItem.id == item_id))
-        await set_queue_error(db, queue_id, failed_item_id=item_id, expected_item_id=item_id)
-        await update_queue_counters(db, queue_id)
-        await db.commit()
+            if not result.rowcount:
+                await release_lost_claim(db, claim_queue, item_id)
+                await db.commit()
+                return False
+            await halt_lane(db, claim_queue, item_id=item_id, kind="error")
+            await update_queue_counters(db, claim_queue)
+            await db.commit()
         return True
 
-    async def _start_print(self, db: AsyncSession, item: PrintQueueItem, *, requirements_cache=None) -> bool:
+    async def _start_print(
+        self, db: AsyncSession, item: PrintQueueItem, *, basis: str | None = None, requirements_cache=None
+    ) -> bool:
         """Upload file and start print for a queue item.
 
         Supports two sources:
@@ -3031,31 +3361,47 @@ class PrintScheduler:
 
         True once this row was claimed and its dispatch spawned; False for every
         refusal, the claim's included — the caller never reads the row to find out.
+
+        ``basis`` is the row's claim basis as the pass loaded it (G03 B, A2); a caller
+        without one (the webhook start) gets the basis of the row it passed, at entry.
+        Every refusal before the claim is a verdict proved against it, and the dispatch is
+        built from the row the claim locked (A5), never from this copy.
         """
         item_id = item.id
         logger.info("Starting queue item %s", item_id)
+        if basis is None:
+            basis = await basis_of(db, item)
 
         # Get printer first (needed for both paths)
         result = await db.execute(select(Printer).where(Printer.id == item.queue_id))
         printer = result.scalar_one_or_none()
         if not printer:
-            await self._fail_item(db, item, "Printer not found", failure_reasons.DISPATCH_PRINTER_UNAVAILABLE)
+            outcome = await self._fail_item(
+                db, item, "Printer not found", failure_reasons.DISPATCH_PRINTER_UNAVAILABLE, basis=basis
+            )
             logger.error("Queue item %s: Printer %s not found", item.id, item.queue_id)
-            await self._power_off_if_needed(db, item)
+            if outcome.written:
+                await self._power_off_if_needed(db, item)
             return False
 
         # Check printer is connected
         if not printer_manager.is_connected(item.queue_id):
-            await self._fail_item(db, item, "Printer not connected", failure_reasons.DISPATCH_PRINTER_UNAVAILABLE)
+            outcome = await self._fail_item(
+                db, item, "Printer not connected", failure_reasons.DISPATCH_PRINTER_UNAVAILABLE, basis=basis
+            )
             logger.error("Queue item %s: Printer %s not connected", item.id, item.queue_id)
-            await self._power_off_if_needed(db, item)
+            if outcome.written:
+                await self._power_off_if_needed(db, item)
             return False
 
         # re-Connect MQTT if stalled
         if not await printer_manager.ensure_fresh_connection_for_printer(printer):
-            await self._fail_item(db, item, "Printer not connected", failure_reasons.DISPATCH_PRINTER_UNAVAILABLE)
+            outcome = await self._fail_item(
+                db, item, "Printer not connected", failure_reasons.DISPATCH_PRINTER_UNAVAILABLE, basis=basis
+            )
             logger.error("Queue item %s: Printer %s not connected", item.id, item.queue_id)
-            await self._power_off_if_needed(db, item)
+            if outcome.written:
+                await self._power_off_if_needed(db, item)
             return False
 
         # Determine source: the captured copy when this job has one (m173), else
@@ -3076,7 +3422,7 @@ class PrintScheduler:
             result = await db.execute(select(PrintArchive).where(PrintArchive.id == item.archive_id))
             archive = result.scalar_one_or_none()
             if not archive and descriptor is None:
-                await self._fail_source_item(db, item, "source_unreadable")
+                await self._fail_source_item(db, item, "source_unreadable", basis=basis)
                 logger.error("Queue item %s: Archive %s not found", item.id, item.archive_id)
                 return False
 
@@ -3084,13 +3430,13 @@ class PrintScheduler:
             result = await db.execute(LibraryFile.active().where(LibraryFile.id == item.library_file_id))
             library_file = result.scalar_one_or_none()
             if not library_file and descriptor is None:
-                await self._fail_source_item(db, item, "source_unreadable")
+                await self._fail_source_item(db, item, "source_unreadable", basis=basis)
                 logger.error("Queue item %s: Library file %s not found", item.id, item.library_file_id)
                 return False
 
         elif descriptor is None:
             # Neither a snapshot nor an archive nor a library file
-            await self._fail_source_item(db, item, "source_unreadable")
+            await self._fail_source_item(db, item, "source_unreadable", basis=basis)
             logger.error("Queue item %s: No archive_id or library_file_id specified", item.id)
             return False
 
@@ -3098,7 +3444,7 @@ class PrintScheduler:
         if file_path is None:
             # A source row with an empty ``file_path`` (a pending archive) — the
             # same refusal the missing-row branches above give.
-            await self._fail_source_item(db, item, "source_unreadable")
+            await self._fail_source_item(db, item, "source_unreadable", basis=basis)
             logger.error("Queue item %s: source row carries no file", item.id)
             return False
 
@@ -3113,20 +3459,18 @@ class PrintScheduler:
             await require_source_file(file_path)
         except SourceUnavailable as exc:
             if exc.reason in SOURCE_FAILURES:
-                await self._fail_source_item(db, item, exc.reason)
+                await self._fail_source_item(db, item, exc.reason, basis=basis)
             else:
-                set_wait_reason(item, "filament_unavailable", routing_detail(exc.reason)["message"])
-                await db.commit()
+                await self._wait(db, item, "filament_unavailable", routing_detail(exc.reason)["message"])
             return False
 
         try:
             guard = await preflight_item(db, item, printer.id, cache=requirements_cache)
         except RoutingDeferred as exc:
             if exc.reason in SOURCE_FAILURES:
-                await self._fail_source_item(db, item, exc.reason)
+                await self._fail_source_item(db, item, exc.reason, basis=basis)
                 return False
-            set_wait_reason(item, "filament_unavailable", routing_detail(exc.reason)["message"])
-            await db.commit()
+            await self._wait(db, item, "filament_unavailable", routing_detail(exc.reason)["message"])
             return False
         # The plan travels as plain values into the claim's own commit (D-R5): written on
         # this tick session it would be a dirty row the claim's writer waits behind, or
@@ -3173,7 +3517,10 @@ class PrintScheduler:
             installed = _installed_nozzle_diameters(printer_manager.get_status(item.queue_id))
             mismatch_msg = _nozzle_mismatch_message(sliced_nozzle, installed)
             if mismatch_msg:
-                await self._fail_item(db, item, mismatch_msg, failure_reasons.DISPATCH_START_REFUSED)
+                if not (
+                    await self._fail_item(db, item, mismatch_msg, failure_reasons.DISPATCH_START_REFUSED, basis=basis)
+                ).written:
+                    return False
                 logger.warning("Queue item %s: nozzle mismatch — %s", item.id, mismatch_msg)
                 await notification_service.on_queue_job_failed(
                     job_name=archive.filename.replace(".gcode.3mf", "").replace(".3mf", ""),
@@ -3193,7 +3540,7 @@ class PrintScheduler:
         if db.in_transaction():
             await db.commit()
         claim = await self._claim_for_dispatch(
-            item_id=item_id, queue_id=item.queue_id, printer_id=printer.id, plan_fields=plan_fields
+            item_id=item_id, queue_id=item.queue_id, printer_id=printer.id, plan_fields=plan_fields, basis=basis
         )
         if not claim.claimed:
             if claim.reason == "budget_exhausted":
@@ -3211,10 +3558,14 @@ class PrintScheduler:
         # The tick's copy follows the claim without becoming a write of its own.
         set_committed_value(item, "status", "printing")
         set_committed_value(item, "started_at", claim.started_at)
+        # From here on the dispatch reads the row the claim locked and committed (G03 B, A5) — never the tick's
+        # copy. The two are equal in every column the claim compared (the basis), so the source rows loaded above
+        # for the claimed row's archive / library ids are the claimed row's.
+        row = claim.snapshot
 
         # Parse per-item options into the shape background_dispatch expects.
         ams_mapping: list[int] | None = None
-        raw_mapping = plan_fields.get("ams_mapping", item.ams_mapping)
+        raw_mapping = row["ams_mapping"]
         if raw_mapping:
             try:
                 ams_mapping = json.loads(raw_mapping)
@@ -3222,64 +3573,64 @@ class PrintScheduler:
                 logger.warning("Queue item %s: Invalid AMS mapping JSON, ignoring", item.id)
 
         swap_events: list[str] = []
-        if item.execute_swap_macros and item.swap_macro_events:
+        if row["execute_swap_macros"] and row["swap_macro_events"]:
             try:
-                swap_events = json.loads(item.swap_macro_events) if isinstance(item.swap_macro_events, str) else []
+                swap_events = json.loads(row["swap_macro_events"]) if isinstance(row["swap_macro_events"], str) else []
             except (ValueError, TypeError):
                 swap_events = []
 
         options: dict[str, Any] = {
-            "mesh_mode_fast_check": item.mesh_mode_fast_check,
+            "mesh_mode_fast_check": row["mesh_mode_fast_check"],
             "ams_mapping": ams_mapping,
-            "plate_id": plan_fields.get("plate_id", item.plate_id),
+            "plate_id": row["plate_id"],
             # Tri-state calibration → mode string (off/auto/on) so an 'auto'
             # override reaches start_print. NULL *_mode derives from the legacy
             # bool, so existing items emit 'on'/'off' — byte-identical downstream
             # (start_print maps 'on'/'off' to today's exact bool + 0/1).
-            "bed_levelling": derive_mode(item.bed_levelling_mode, item.bed_levelling),
-            "flow_cali": derive_mode(item.flow_cali_mode, item.flow_cali),
-            "layer_inspect": item.layer_inspect,
+            "bed_levelling": derive_mode(row["bed_levelling_mode"], row["bed_levelling"]),
+            "flow_cali": derive_mode(row["flow_cali_mode"], row["flow_cali"]),
+            "layer_inspect": row["layer_inspect"],
             # #1721: the user's explicit timelapse choice flows straight through
             # to the printer. The #1397 force-on at dispatch was removed because it
             # un-gated the per-layer M622 J1 wipe blocks on Smooth-mode slicer
             # profiles. Finish-photo capture is now driven by the stg_cur=22
             # transition in bambu_mqtt.py, not by forcing a timelapse video.
-            "timelapse": item.timelapse,
+            "timelapse": row["timelapse"],
             # Which medium records it. Passed through raw — the dispatcher
             # re-checks it against the card, which may have left the machine
             # since this item was queued.
-            "timelapse_storage": item.timelapse_storage,
-            "use_ams": plan_fields.get("use_ams", item.use_ams),
-            "nozzle_offset_cali": derive_mode(item.nozzle_offset_cali_mode, item.nozzle_offset_cali),
+            "timelapse_storage": row["timelapse_storage"],
+            "use_ams": row["use_ams"],
+            "nozzle_offset_cali": derive_mode(row["nozzle_offset_cali_mode"], row["nozzle_offset_cali"]),
             # H2C rack-swap nozzle pick (#1780) — opaque JSON string captured
             # from Bambu Studio's project_file on VP intake; the MQTT layer
             # parses + injects it only for dual-nozzle models, so a null on
             # every other model is a transparent pass-through.
-            "nozzle_mapping": item.nozzle_mapping,
+            "nozzle_mapping": row["nozzle_mapping"],
             # The operator's rack-position pick (upstream #1784), the column's
             # JSON text as is; the dispatcher reads it after the upload, against
             # the rack as it stands then.
-            "nozzle_rack_choice": item.nozzle_rack_choice,
-            "execute_swap_macros": item.execute_swap_macros,
+            "nozzle_rack_choice": row["nozzle_rack_choice"],
+            "execute_swap_macros": row["execute_swap_macros"],
             "swap_macro_events": swap_events,
             # Which macros the operator ticked for this job. None means no
             # dialog ever asked — under opt-in that fires nothing.
             "selected_macro_ids": (
-                json.loads(item.selected_macro_ids) if isinstance(item.selected_macro_ids, str) else None
+                json.loads(row["selected_macro_ids"]) if isinstance(row["selected_macro_ids"], str) else None
             ),
-            "gcode_injection": item.gcode_injection,
+            "gcode_injection": row["gcode_injection"],
             # Preheat / heat-soak per-item override (#1468). Read by the preheat
             # stage in background_dispatch (services/preheat.py) before start_print.
-            "preheat_override": getattr(item, "preheat_override", "inherit"),
-            "preheat_chamber_target_override": getattr(item, "preheat_chamber_target_override", None),
+            "preheat_override": row.get("preheat_override", "inherit"),
+            "preheat_chamber_target_override": row.get("preheat_chamber_target_override"),
             # Filament-calibration tagging — dispatcher's pre-print bind hook
             # uses this to skip the ``extrusion_cali_sel`` re-bind (the
             # calibration print itself is what determines the new K value),
             # and the archive_print step forwards it to PrintArchive.is_calibration
             # so the resulting row is correctly tagged as a calibration print
             # in the archive listing (#filament-cal-archive-flag).
-            "is_calibration": item.is_calibration,
-            "calibration_session_id": item.calibration_session_id,
+            "is_calibration": row["is_calibration"],
+            "calibration_session_id": row["calibration_session_id"],
         }
 
         dispatch_source_id: int | None
@@ -3306,8 +3657,19 @@ class PrintScheduler:
             dispatch_source_id = None
             dispatch_source_name = snapshot_name
         else:
-            # Should have been caught above, but belt-and-braces.
-            await self._fail_item(db, item, "No source file specified", failure_reasons.DISPATCH_SOURCE_UNAVAILABLE)
+            # Should have been caught above, but belt-and-braces: the row is claimed by now, so it ends as the
+            # attempt it is, addressed to its claim token — in a session of its own: a lost compare-and-set
+            # rolls back, and the tick's copies must not expire with it.
+            async with async_session() as attempt_db:
+                await self._fail_attempt(
+                    attempt_db,
+                    item_id=item.id,
+                    claim_started_at=claim.started_at,
+                    message="No source file specified",
+                    code=failure_reasons.DISPATCH_SOURCE_UNAVAILABLE,
+                    sent=False,
+                    queue_id=item.queue_id,
+                )
             await self._power_off_if_needed(db, item)
             return False
 
@@ -3338,9 +3700,9 @@ class PrintScheduler:
                 dispatch_source_id=dispatch_source_id,
                 dispatch_source_name=dispatch_source_name,
                 options=options,
-                requested_by_user_id=item.created_by_id,
-                project_id=item.project_id,
-                project_line_id=item.project_line_id,
+                requested_by_user_id=row["created_by_id"],
+                project_id=row["project_id"],
+                project_line_id=row["project_line_id"],
                 job_name_short=job_name_short,
                 swap_events=swap_events,
                 claim_started_at=claim.started_at,
@@ -3418,6 +3780,7 @@ class PrintScheduler:
                     claim_started_at=claim_started_at,
                     message=f"Dispatch error: {e}",
                     code=failure_reasons.DISPATCH_INTERNAL_ERROR,
+                    queue_id=printer_id,
                 ):
                     item = await db.get(PrintQueueItem, queue_item_id)
                     if item is not None:
@@ -3437,6 +3800,10 @@ class PrintScheduler:
                     revision=outcome.get("revision"),
                     source_archive_id=outcome.get("source_archive_id"),
                     source_library_file_id=outcome.get("source_library_file_id"),
+                    source_archive_identity=outcome.get("source_archive_identity"),
+                    source_library_identity=outcome.get("source_library_identity"),
+                    # The claim queue, never the row's current one (A10).
+                    queue_id=printer_id,
                     restore_source=True,
                     disposition=outcome.get("disposition"),
                     execution_archive_id=outcome.get("execution_archive_id"),
@@ -3492,8 +3859,14 @@ class PrintScheduler:
                     # the queue. Don't fire the "queue job failed"
                     # notification: nothing failed, the user stopped it.
                     if item:
-                        await self._cancel_item(db, item)
-                        await self._power_off_if_needed(db, item)
+                        if await self._cancel_item(
+                            db,
+                            item,
+                            claim_started_at=claim_started_at,
+                            queue_id=printer_id,
+                            execution_archive_id=outcome.get("archive_id"),
+                        ):
+                            await self._power_off_if_needed(db, item)
                     if not published:
                         # The pre-registered stagger slot of a start that never went
                         # out would hold its group back for the settle window (G03 E-10).
@@ -3510,6 +3883,8 @@ class PrintScheduler:
                     message=err,
                     code=outcome.get("failure_code") or failure_reasons.DISPATCH_INTERNAL_ERROR,
                     sent=published,
+                    queue_id=printer_id,
+                    execution_archive_id=outcome.get("archive_id"),
                 ):
                     return
                 if not published:
@@ -3731,7 +4106,13 @@ class PrintScheduler:
                 return  # Already moved on (completed/cancelled/etc.)
             claim_started_at, execution_archive_id = item.started_at, item.archive_id
             failed = await scheduler._fail_attempt(
-                db, item_id=queue_item_id, claim_started_at=claim_started_at, message=message, code=code
+                db,
+                item_id=queue_item_id,
+                claim_started_at=claim_started_at,
+                message=message,
+                code=code,
+                queue_id=printer_id,
+                execution_archive_id=execution_archive_id,
             )
         if failed:
             from backend.app.services.background_dispatch import BackgroundDispatchService

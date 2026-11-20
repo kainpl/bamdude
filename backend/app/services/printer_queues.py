@@ -214,7 +214,9 @@ async def _detach_queue_children(db: AsyncSession, queue_id: int) -> int:
     from backend.app.services.queue_counters import detach_print_queue_refs
 
     item_ids = list(await db.scalars(select(PrintQueueItem.id).where(PrintQueueItem.queue_id == queue_id)))
-    await detach_print_queue_refs(db, item_ids)
+    await detach_print_queue_refs(
+        db, item_ids, outside_lanes="L2(c): an orphan queue adopted or re-keyed at start-up, before any lane holder"
+    )
     dropped = (await db.execute(delete(PrintQueueItem).where(PrintQueueItem.id.in_(item_ids)))).rowcount or 0
     await db.execute(update(PrintArchive).where(PrintArchive.queue_id == queue_id).values(queue_id=None))
     return dropped

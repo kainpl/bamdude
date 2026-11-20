@@ -214,7 +214,7 @@ async def library_delete_scope(
             await lock_prints(db, plan.archives[start : start + 500])
         for kind, row_id, _identity, _lane, *_details in plan.jobs:
             model = AutoQueueItem if kind == "auto" else PrintQueueItem
-            await db.execute(select(model.id).where(model.id == row_id).with_for_update())
+            await db.execute(select(model.id).where(model.id == row_id).with_for_update(key_share=True))
         try:
             # The early NO KEY UPDATE let existing print writers finish their
             # FK backfill without a print -> library wait cycle. Upgrade only

@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Literal
 
+from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,7 +30,11 @@ from backend.app.services.filament_intake import item_source
 from backend.app.services.filament_policy import record_queue_source
 from backend.app.services.filament_policy_write import prepare_routing
 from backend.app.services.order_filing import resolve_line_id
-from backend.app.services.printer_occupancy import read_queue_occupancy, require_direct_admission
+from backend.app.services.printer_occupancy import (
+    PrinterOccupancyConflict,
+    read_queue_occupancy,
+    require_direct_admission,
+)
 from backend.app.services.queue_counters import set_queue_printing, update_queue_counters
 from backend.app.services.queue_ops import queue_claim_scope, queue_scope_lock
 from backend.app.services.queue_source_capture import (
@@ -209,6 +214,11 @@ async def claim_printer_for_direct_print(
             staged=staged,
         )
     columns = {**(options or {}), "plate_id": plate}
+    # The printer's header as the claim is validated against it (G03 B, A25): one that is gone or another
+    # incarnation under the lane -- a deleted printer's id given to the next one -- is no claim.
+    planned_identity = await db.scalar(
+        select(PrinterQueue.recovery_identity).where(PrinterQueue.printer_id == printer_id)
+    )
 
     async def build(session: AsyncSession, source: QueueSource | None) -> PrintQueueItem:
         from contextlib import nullcontext
@@ -228,6 +238,8 @@ async def claim_printer_for_direct_print(
                 await require_allowed(session, project_id, printer_id, lock=True, project_line_id=project_line_id)
             queue = await ensure_printer_queue(session, printer_id)
             occupancy = await read_queue_occupancy(session, queue.id, for_update=True)
+            if planned_identity is not None and occupancy.queue.recovery_identity != planned_identity:
+                raise PrinterOccupancyConflict("queue_missing", queue_id=queue.id)
             if origin == "direct":
                 require_direct_admission(occupancy)
 
@@ -385,6 +397,7 @@ async def enqueue_batch_copies(
     # load on an async session the day somebody builds one with
     # ``expire_on_commit=True``.
     queue_id = queue.id
+    queue_identity = queue.recovery_identity  # the header this insert is validated against (A25)
     from backend.app.models.printer import Printer
 
     printer_row = await db.get(Printer, printer_id)
@@ -458,6 +471,10 @@ async def enqueue_batch_copies(
             creator = await current_creator(session, authority) if authority is not None else None
             creator_id = creator.id if creator is not None else None if authority is not None else created_by_id
             async with queue_scope_lock(session, queue_id):
+                from backend.app.services.printer_occupancy import queue_header_holds
+
+                if not await queue_header_holds(session, queue_id, queue_identity):
+                    raise HTTPException(400, "Queue not found")
                 ticket = None
                 if consumption is not None:
                     from backend.app.services import order_plan_submission

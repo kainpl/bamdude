@@ -187,9 +187,13 @@ async def test_queue_navigation_never_deletes_a_reused_auto_id(independent_facto
         )
         db.add(survivor)
         await db.flush()
-        await detach_auto_queue_refs(db, [auto_id])
-        await db.delete(auto)
-        await db.commit()
+        from backend.app.services.queue_ops import claim_lanes
+
+        # The detach writes the survivor's printer row: inside the caller's lane (G03 B, A20).
+        async with claim_lanes(db, [lane.id]):
+            await detach_auto_queue_refs(db, [auto_id])
+            await db.delete(auto)
+            await db.commit()
         await db.refresh(survivor)
         assert survivor.source_auto_item_id is None
         assert survivor.source_auto_identity == identity
@@ -485,9 +489,7 @@ async def test_assembly_uses_a_clean_plan_per_file_and_reports_partial_cleanup(
             db.add(file)
             await db.flush()
             proofs.append(LibraryIdentity.capture(file))
-            sources.append(
-                Source((file.id, file.file_path, file.file_hash, file.created_at), path, "3mf", file.filename)
-            )
+            sources.append(Source(LibraryIdentity.capture(file), path, "3mf", file.filename))
             await db.execute(product_files.insert().values(product_id=product.id, library_file_id=file.id))
         await db.commit()
     observed = []

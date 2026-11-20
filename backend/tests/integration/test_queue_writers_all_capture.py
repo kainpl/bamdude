@@ -191,7 +191,8 @@ async def test_the_bots_library_add_queues_from_a_captured_copy(
     assert item.library_file_id == source.id
     assert item.source_snapshot == {
         "version": SOURCE_SNAPSHOT_VERSION,
-        "provenance": {"kind": "library_file", "id": source.id},
+        # The row the bytes came from, with its incarnation (G03 B, A27).
+        "provenance": {"kind": "library_file", "id": source.id, "incarnation": source.recovery_identity},
         "display_filename": source.filename,
         "format": "3mf",
         "plate_fallback": None,

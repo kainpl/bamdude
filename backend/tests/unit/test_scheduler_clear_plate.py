@@ -180,6 +180,8 @@ class TestSchedulerQueueCheckLogging:
 
         with (
             patch("backend.app.services.print_scheduler.async_session") as mock_session_ctx,
+            # A mock row has no table: its claim basis (G03 B, A2) is not what this test is about.
+            patch("backend.app.services.print_scheduler.row_basis", return_value="basis"),
             caplog.at_level(logging.INFO, logger="backend.app.services.print_scheduler"),
         ):
             mock_db = AsyncMock()
