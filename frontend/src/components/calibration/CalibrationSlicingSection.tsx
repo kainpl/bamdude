@@ -320,16 +320,21 @@ export function CalibrationSlicingSection({
   }, [seeded, data, answer]);
 
   // Another slot: a preset chosen for another spool is not carried over.
+  // `filamentSlot` is the slot the filament field was decided FOR; it moves
+  // only together with the reset, in the same batch, so no report pairs the
+  // new slot with the old slot's preset (review I-2). Without a catalogue the
+  // reset waits — the slot is not marked handled until it ran.
   const seenSlot = useRef(slot?.key ?? null);
+  const [filamentSlot, setFilamentSlot] = useState<string | null>(slot?.key ?? null);
   useEffect(() => {
     const key = slot?.key ?? null;
-    if (seenSlot.current === key) return;
+    if (seenSlot.current === key || !seeded || !data) return;
     seenSlot.current = key;
-    if (!seeded || !data) return;
     choices.dispatch('filament', { kind: 'reset', pick: pickFilament(data) }, POLICY.filament);
+    setFilamentSlot(key);
     setGoneNamed((known) => known.filter((k) => k !== 'filament'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slot?.key]);
+  }, [slot?.key, seeded, data]);
 
   const showAll = filters.turnOff;
   const pickByHand = (key: FieldKey, ref: PresetRef | null) => {
@@ -419,7 +424,7 @@ export function CalibrationSlicingSection({
     filament: filamentRef,
     startBlocked,
     familyHint,
-    basis: { catalogue: catalogue.revision, nozzle, slot: slot?.key ?? null },
+    basis: { catalogue: catalogue.revision, nozzle, slot: filamentSlot },
   };
   const choiceKey = JSON.stringify(choice);
   useEffect(() => {

@@ -3,7 +3,7 @@
  * the section decides the presets, the slicer and the plate; the page keeps
  * the slot, the nozzle and everything K exactly as it was.
  */
-import { useLayoutEffect } from 'react';
+import { Profiler, useLayoutEffect } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -183,5 +183,80 @@ describe('CalibrationPresetPage', () => {
     await waitFor(() => expect(startButton()).toBeDisabled());
     expect(commitsWithoutCatalogue).not.toHaveLength(0);
     expect({ firstDisabled: commitsWithoutCatalogue[0], starts: onStart.mock.calls.length }).toEqual({ firstDisabled: true, starts: 0 });
+  });
+
+  // Review I-2 (third round): after a slot switch the section's filament is
+  // reset in an effect, a commit after the slot key moved. No commit in
+  // between may start the NEW slot with the OLD slot's preset — whether the
+  // new slot's family has no preset or another one.
+  const switchSlotsProbe = async (slotTwoTray: object, families: Record<string, object>) => {
+    spies();
+    vi.mocked(api.getPrinterStatus).mockResolvedValue({
+      ams: [{ id: 0, tray: [{ id: 0, state: 11, tray_info_idx: 'GFA01', tray_type: 'PLA', tray_sub_brands: 'PLA Matte' }, slotTwoTray] }],
+      vt_tray: [],
+    } as never);
+    vi.mocked(api.getSlicerLoadedFilaments).mockResolvedValue({ printers: [], farm_printers: [], families } as never);
+    const onStart = vi.fn<(preset: unknown) => Promise<void>>(async () => {});
+    let armed = false;
+    let clicked = false;
+    const slotTwo = () => screen.getByRole('button', { name: /AMS 1 · Slot 2/ });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <Profiler
+          id="calibration"
+          onRender={() => {
+            if (!armed || clicked || !slotTwo().classList.contains('border-bambu-green')) return;
+            const start = startButton() as HTMLButtonElement;
+            if (!start.disabled) {
+              clicked = true;
+              start.click();
+            }
+          }}
+        >
+          <CalibrationPresetPage
+            printerId={1}
+            caliMode="pa_tower"
+            method="manual"
+            capabilities={{ nozzles: [{ diameter: 0.4 }], extruders: [{ id: 0, name: 'Main' }], dual_extruder: false } as never}
+            onBack={() => {}}
+            onStart={onStart}
+          />
+        </Profiler>
+      </QueryClientProvider>,
+    );
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: /AMS 1 · Slot 1 · PLA Matte/ }));
+    await waitFor(() => expect(startButton()).toBeEnabled());
+    armed = true;
+    await user.click(slotTwo());
+    await new Promise((r) => setTimeout(r, 100));
+    return onStart.mock.calls.map(([preset]) => {
+      const payload = preset as { filaments: { slot_id: number }[]; filament_presets: { id: string }[] };
+      return { slot: payload.filaments[0].slot_id, preset: payload.filament_presets[0].id };
+    });
+  };
+  const MATTE_FAMILY = { name: 'Bambu PLA Matte', cloud: [], orca_cloud: [], local: [], standard: [MATTE], cloud_aliases: [] };
+
+  it('a switch to a slot whose family has no preset never starts with the previous slot’s preset (review I-2)', async () => {
+    const requests = await switchSlotsProbe(
+      { id: 1, state: 11, tray_info_idx: 'GFA02', tray_type: 'PLA', tray_sub_brands: 'PLA Unknown' },
+      { GFA01: MATTE_FAMILY },
+    );
+    expect(requests).toEqual([]);
+    expect(startButton()).toBeDisabled();
+  });
+
+  it('a switch to a slot of another family starts only with that slot’s own preset (review I-2)', async () => {
+    const requests = await switchSlotsProbe(
+      { id: 1, state: 11, tray_info_idx: 'GFA00', tray_type: 'PLA', tray_sub_brands: 'PLA Basic' },
+      {
+        GFA01: MATTE_FAMILY,
+        GFA00: { name: 'Bambu PLA Basic', cloud: [], orca_cloud: [], local: [], standard: ['Bambu PLA Basic @BBL A1'], cloud_aliases: [] },
+      },
+    );
+    // Whatever commit the click landed in, slot 2 never went with slot 1's Matte.
+    expect(requests.filter((r) => r.slot === 1 && r.preset === MATTE)).toEqual([]);
+    expect(requests.every((r) => r.slot === 1 && r.preset === 'Bambu PLA Basic @BBL A1')).toBe(true);
   });
 });

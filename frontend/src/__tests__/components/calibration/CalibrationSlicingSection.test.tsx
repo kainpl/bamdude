@@ -24,7 +24,7 @@ import {
 } from '../../../components/calibration/CalibrationSlicingSection';
 import { EMPTY_CALIBRATION_CHOICE } from '../../../components/calibration/calibrationChoice';
 import { __resetSharedMemoryForTests } from '../../../components/slicing-setup/memory';
-import { __resetPresetContextForTests } from '../../../utils/presetContext';
+import { __resetPresetContextForTests, bumpPresetContext } from '../../../utils/presetContext';
 import { pickFamilyFilament } from '../../../utils/slicePresetPicker';
 import { EMPTY_COMPATIBILITY_INDEX } from '../../../utils/slicerPrinterMatch';
 
@@ -290,6 +290,20 @@ describe('CalibrationSlicingSection — preset mode', () => {
     });
     await new Promise((r) => setTimeout(r, 50));
     expect(latest.filament?.id).toBe(BASIC);
+  });
+
+  it('a slot switch while the catalogue is away resets the filament once it is back (review I-2)', async () => {
+    spies();
+    const view = mount();
+    await waitFor(() => expect(latest.filament).toEqual({ source: 'standard', id: MATTE }));
+    let release: (v: UnifiedPresetsResponse) => void = () => undefined;
+    vi.mocked(api.getSlicerPresets).mockImplementation(() => new Promise<UnifiedPresetsResponse>((r) => (release = r)));
+    act(() => bumpPresetContext());
+    await waitFor(() => expect(latest.startBlocked).toBe('loading'));
+    view.rerenderWith({ slot: { key: '0:0:2', label: 'AMS 1 · Slot 3 · PLA Unknown', familyId: 'GFA09' } });
+    act(() => release(listing()));
+    await waitFor(() => expect(latest.basis.slot).toBe('0:0:2'));
+    expect(latest.filament).toBeNull();
   });
 
   it('two slots of the same family: switching resets and re-picks by key', async () => {

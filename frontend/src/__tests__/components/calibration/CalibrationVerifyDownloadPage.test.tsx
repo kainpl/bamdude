@@ -214,4 +214,51 @@ describe('CalibrationVerifyDownloadPage', () => {
     expect(commitsWithoutCatalogue).not.toHaveLength(0);
     expect({ firstDisabled: commitsWithoutCatalogue[0], sends: slice.mock.calls.length }).toEqual({ firstDisabled: true, sends: 0 });
   });
+
+  // Review J-1: two different answers under one key can share dataUpdatedAt
+  // (same millisecond). The revision must tell them apart.
+  it('a different answer written in the same millisecond still withdraws the old decision (review J-1)', async () => {
+    spies({ orca: true, bambu: true });
+    const slice = vi
+      .spyOn(api, 'sliceCalibrationForVerification')
+      .mockResolvedValue({ blob: new Blob(['x']), filename: 'probe.3mf' });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let armed = false;
+    const commits: boolean[] = [];
+    function ObserveCommit() {
+      const catalogue = usePresetCatalogue();
+      useLayoutEffect(() => {
+        if (!armed || catalogue.data?.standard.process.length !== 0) return;
+        const button = sliceButton() as HTMLButtonElement;
+        commits.push(button.disabled);
+        if (commits.length === 1 && !button.disabled) button.click();
+      });
+      return <CalibrationVerifyDownloadPage printerId={1} caliMode="pa_tower" onBack={() => {}} onDone={() => {}} />;
+    }
+    render(
+      <QueryClientProvider client={client}>
+        <ToastProvider>
+          <ObserveCommit />
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(sliceButton()).toBeEnabled());
+    const query = client.getQueryCache().findAll({ queryKey: ['slicerPresets'] }).find((q) => q.state.data !== undefined);
+    if (!query) throw new Error('catalogue query missing');
+    const firstTime = query.state.dataUpdatedAt;
+    const withoutProcess = { ...LISTING, standard: { ...LISTING.standard, process: [] } };
+    armed = true;
+    act(() => {
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(firstTime);
+      try {
+        client.setQueryData(query.queryKey, withoutProcess);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+    await waitFor(() => expect(sliceButton()).toBeDisabled());
+    expect(query.state.dataUpdatedAt).toBe(firstTime);
+    expect(commits.length).toBeGreaterThan(0);
+    expect({ firstDisabled: commits[0], sends: slice.mock.calls.length }).toEqual({ firstDisabled: true, sends: 0 });
+  });
 });
