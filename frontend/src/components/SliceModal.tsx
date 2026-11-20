@@ -9,7 +9,6 @@ import type { SettingValue } from '../types/slicerSettings';
 import {
   api,
   type PresetRef,
-  type PresetSource,
   type SliceJobProgress,
   type SliceRequest,
   type SlicerPipeline,
@@ -23,7 +22,7 @@ import type { Slot } from '../utils/presetPickerUtils';
 import { useIsWideLayout } from '../hooks/useIsWideLayout';
 import { defaultDesignKeys, designOverridesField } from '../lib/slicerSettings';
 import { filamentColoursPayload, resizeColourOverrides } from '../utils/sliceFilamentColours';
-import { buildPrinterParents, type PrinterParents } from '../utils/printerPresetParents';
+import { buildParentsBySource, buildPrinterParents } from '../utils/printerPresetParents';
 import {
   buildCompatibilityIndex,
   presetCompatibility,
@@ -67,13 +66,6 @@ interface SliceModalProps {
 
 // A filament field's choice key: one field per plate slot, by index.
 const filamentKey = (i: number) => `filament:${i}`;
-
-const SOURCES: PresetSource[] = ['local', 'orca_cloud', 'cloud', 'standard'];
-// Each source's printer lineage, so a preset's identity is read through its own
-// source (a namesake in another source may have been saved from another printer).
-function parentsFor(d: UnifiedPresetsResponse | undefined): Partial<Record<PresetSource, PrinterParents | null>> {
-  return Object.fromEntries(SOURCES.map((source) => [source, buildPrinterParents(d, source)]));
-}
 
 // Per-slot preset selection helpers (pickDefault / findPreset / findPresetByName
 // / pickProcessDefault / pickFilamentForSlot) live in
@@ -465,7 +457,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     [printerModelsQuery.data, printerParents],
   );
   // Each printer preset's identity is read through ITS source's lineage.
-  const parentsBySource = useMemo(() => parentsFor(data), [data]);
+  const parentsBySource = useMemo(() => buildParentsBySource(data), [data]);
 
   // Printer / process preset names the source 3MF was prepared with. The
   // plates query resolves before the presets query (the latter is gated on
@@ -562,7 +554,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     // The preset an assembled project was built from, by identity, before
     // any lookup by name.
     const built = builtFrom && findPreset(d, builtFrom.printer, 'printer') ? builtFrom.printer : null;
-    return built ?? findPresetByName(d, 'printer', embeddedPrinter) ?? pickPrinterFallback(d, parentsFor(d));
+    return built ?? findPresetByName(d, 'printer', embeddedPrinter) ?? pickPrinterFallback(d, buildParentsBySource(d));
   };
   const pickProcess = (d: UnifiedPresetsResponse): PresetRef | null =>
     pickProcessForField(d, processField?.pickKeep ?? (() => true), selectedPrinterName, compatIndex, {

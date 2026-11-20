@@ -412,6 +412,26 @@ export function isProvenPrinterPreset(
 }
 
 /**
+ * Is this printer preset of the given model (any nozzle)? `null` when its
+ * lineage states no model at all (a bare card, an unreadable name) — then
+ * nothing can be said either way. The calibration verify page marks a
+ * printer of another model with it (spec slicing-setup R4).
+ */
+export function isPrinterPresetOfModel(
+  name: string,
+  parents: PrinterParents | null | undefined,
+  model: string,
+  printerModels: Record<string, string>,
+): boolean | null {
+  const identity = printerPresetIdentity(name, parents);
+  if (!identity) return null;
+  return (
+    canonicalPrinterModel(identity.model, printerModels).toLowerCase()
+    === canonicalPrinterModel(model, printerModels).toLowerCase()
+  );
+}
+
+/**
  * Collapse a raw model token extracted from a preset name ("A1M",
  * "A1 mini", "X1C", "X1 Carbon"...) onto ONE canonical display fragment
  * from the backend registry ("A1 Mini", "X1 Carbon"). The cloud tabs' printer

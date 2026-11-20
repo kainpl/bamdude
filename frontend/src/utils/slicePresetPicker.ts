@@ -19,10 +19,11 @@
 //   mismatch buckets and only consults the mismatch bucket when the compatible
 //   bucket is empty (#1851).
 
-import type { PresetRef, PresetSource, UnifiedPreset, UnifiedPresetsResponse } from '../api/client';
+import type { FamilyPresetRefs, PresetRef, PresetSource, UnifiedPreset, UnifiedPresetsResponse } from '../api/client';
 import { colorsAreSimilar, filamentTypesCompatible, normalizeColorForCompare } from './amsHelpers';
 import { presetCompatibility, printerPresetIdentity, type PrinterCompatibilityIndex } from './slicerPrinterMatch';
 import type { PrinterParents } from './printerPresetParents';
+import { presetIsOfFamily } from './sliceFarmFilter';
 // `Slot` + the lookup priority live in utils/presetPickerUtils (BamDude's single
 // source of truth for both the SliceModal and the calibration preset pickers);
 // re-use them here rather than redefining a parallel copy.
@@ -162,6 +163,30 @@ export function pickProcessForField(
     return pickProcessDefault(fitting, printerName, compatIndex);
   }
   return pickProcessDefault(by, printerName, compatIndex);
+}
+
+/**
+ * Calibration's filament pick (spec slicing-setup r5 D6, §7.2): a preset of
+ * the loaded slot's FAMILY — by the family-only test, never by material — that
+ * is not a mismatch for the printer; a match before an unknown, in source
+ * order. Nothing qualifies → no pick, and the field waits for a person.
+ */
+export function pickFamilyFilament(
+  by: UnifiedPresetsResponse,
+  refs: FamilyPresetRefs | undefined,
+  printerName: string | null,
+  compatIndex: PrinterCompatibilityIndex,
+): PresetRef | null {
+  if (!refs) return null;
+  for (const wanted of ['match', 'unknown'] as const) {
+    for (const tier of SLICE_MODAL_TIER_ORDER) {
+      const p = by[tier].filament.find(
+        (f) => presetIsOfFamily(f, refs) && presetCompatibility(f, 'filament', printerName, compatIndex) === wanted,
+      );
+      if (p) return { source: p.source, id: p.id };
+    }
+  }
+  return null;
 }
 
 // Bambu's default layer height, the one its own presets are named "Standard"

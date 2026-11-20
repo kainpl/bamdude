@@ -63,3 +63,10 @@ export function printerPresetLineage(name: string, parents: PrinterParents | nul
   }
   return lineage;
 }
+
+/** Every source's lineage at once, so each printer preset is read through its OWN source's parents. */
+export function buildParentsBySource(
+  data: UnifiedPresetsResponse | null | undefined,
+): Partial<Record<PresetSource, PrinterParents | null>> {
+  return Object.fromEntries(TIER_ORDER.map((source) => [source, buildPrinterParents(data, source)]));
+}

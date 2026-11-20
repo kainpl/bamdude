@@ -15,6 +15,7 @@ import { describe, it, expect } from 'vitest';
 
 import modalSource from '../../components/SliceModal.tsx?raw';
 import calibrationSource from '../../components/calibration/CalibrationPresetPage.tsx?raw';
+import sectionSource from '../../components/calibration/CalibrationSlicingSection.tsx?raw';
 
 describe('SliceModal pickers', () => {
   it('composes the slicing-setup family and nothing of calibration’s', () => {
@@ -48,9 +49,12 @@ describe('SliceModal pickers', () => {
     expect(modalSource).not.toContain('import { CalibrationPresetSourceControl');
   });
 
-  it('leaves calibration’s copy of the filter alone', () => {
-    // ⚠️ The other half of this task's contract. Whether calibration should
-    // still have it is a separate question about a separate flow.
-    expect(calibrationSource).toContain('CalibrationPresetSourceControl');
+  it('gives calibration the family’s source segment through its shared section', () => {
+    // Calibration's own copy of the filter is gone (plan r6 Task 17): the
+    // preset page composes the shared section, which shows the family's
+    // source segment (spec slicing-setup §7.2).
+    expect(calibrationSource).toContain('<CalibrationSlicingSection');
+    expect(calibrationSource).not.toContain('CalibrationPresetSourceControl');
+    expect(sectionSource).toContain('parts={{ source: true }}');
   });
 });

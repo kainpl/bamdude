@@ -6040,6 +6040,12 @@ export default {
     gone: 'The chosen profile is no longer in the list. Choose one to continue.',
     notProven: 'This printer profile is not known to be this printer with the chosen nozzle. Choose a profile of this printer to start.',
     otherModel: 'This printer profile is for another model, so the file is for that model.',
+    family: {
+      pending: 'Waiting for the printer to say which filament family is in {{slot}}. You can choose a profile now.',
+      unavailable: 'The filament family in {{slot}} could not be read. Choose its profile.',
+      absent: 'No profile of the filament family in {{slot}} was found. Choose its profile.',
+    },
+    noCatalogue: 'Choosing presets here needs the right to slice files.',
   },
   slice: {
     title: 'Slice model',
