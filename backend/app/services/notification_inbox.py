@@ -243,6 +243,7 @@ async def deliver(
     printer_name: str | None = None,
     extra_data: dict | None = None,
     unless_subscribed_to: str | None = None,
+    severity: str | None = None,
 ) -> list[int]:
     """Fan the rendered event out to every subscribed user; one commit; then one live update each.
 
@@ -250,6 +251,9 @@ async def deliver(
     read back from an expired instance afterwards. ``title`` is truncated to the
     column's 255 characters — an inbox headline is a headline, and a refusal
     here would lose a notification over a long filename.
+
+    ``severity`` overrides the catalog's for these rows only: an external app's message carries the
+    level its sender chose (spec external-app-messages-spec); who receives it is still the catalog's.
     """
     meta = event_meta(event_type)
     user_ids = await recipients(db, event_type, unless_subscribed_to)
@@ -261,7 +265,7 @@ async def deliver(
         UserNotification(
             user_id=uid,
             event_type=event_type,
-            severity=meta.severity,
+            severity=severity or meta.severity,
             title=title[:255],
             message=message,
             printer_id=printer_id,

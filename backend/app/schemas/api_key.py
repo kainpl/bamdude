@@ -16,6 +16,7 @@ class APIKeyCreate(BaseModel):
     can_access_mcp: bool = False
     can_read_mcp_logs: bool = False
     can_update_energy_cost: bool = False
+    can_send_notifications: bool = False  # external app messages; deliberate, like energy cost
     can_manage_library: bool = True
     can_manage_inventory: bool = True
     can_manage_maintenance: bool = True  # Log/reset maintenance, edit intervals, manage type catalog (#1832 follow-up)
@@ -47,6 +48,7 @@ class APIKeyUpdate(IgnoresNullForRequiredColumns):
     can_access_mcp: bool | None = None
     can_read_mcp_logs: bool | None = None
     can_update_energy_cost: bool | None = None
+    can_send_notifications: bool | None = None
     can_manage_library: bool | None = None
     can_manage_inventory: bool | None = None
     can_manage_maintenance: bool | None = None
@@ -72,6 +74,7 @@ class APIKeyResponse(BaseModel):
     can_access_mcp: bool = False
     can_read_mcp_logs: bool = False
     can_update_energy_cost: bool = False
+    can_send_notifications: bool = False
     can_manage_library: bool = True
     can_manage_inventory: bool = True
     can_manage_maintenance: bool = True

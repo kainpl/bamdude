@@ -3668,6 +3668,72 @@ class NotificationService:
             except Exception:
                 logger.exception("Stock reorder copy of a break failed for %s", material)
 
+    async def on_external_app_message(
+        self,
+        db: AsyncSession,
+        *,
+        sender,
+        title: str,
+        message: str,
+        level: str,
+        link: str | None = None,
+    ) -> dict[str, int]:
+        """Another program's message (spec external-app-messages-spec): the inbox for everybody subscribed,
+        and every provider and Telegram chat that turned ``external_app_message`` on.
+
+        The SENDER is added here, never by the editable template, so no edit can make an app's message pass
+        for BamDude's own: the inbox keeps it in ``extra_data["sender"]`` (the page shows «From: …»), the
+        other channels get a last line ``— <key> · <owner>``. The inbox row carries the sender's level; the
+        other channels see it as ``{level_icon}`` in the title. Farm-wide: no printer, so a printer-scoped
+        provider receives it like the other farm-wide news. Returns how many people and channels it reached.
+        """
+        from backend.app.services import external_messages
+
+        event = external_messages.EVENT
+        variables = {
+            "title": title,
+            "message": message,
+            "level": level,
+            "level_icon": external_messages.LEVEL_ICONS[level],
+            "link": link or "",
+            "sender": sender.label,
+        }
+        rendered_title, rendered_message = await self._build_message_from_template(db, event, variables)
+        rendered_message = rendered_message.rstrip()
+        extra = {"sender": sender.as_extra(), **({"link": link} if link else {})}
+        providers = await self._get_providers_for_event(db, "on_external_app_message", None)
+        external = [p for p in providers if p.provider_type != "inbox"]
+
+        inbox_ids: list[int] = []
+        try:
+            inbox_ids = await notification_inbox.deliver(
+                db,
+                event_type=event,
+                title=rendered_title,
+                message=rendered_message,
+                extra_data=extra,
+                severity=level,
+            )
+        except Exception:
+            logger.exception("Inbox delivery of an external app message from key %s failed", sender.api_key_id)
+        if external:
+            await self._send_to_providers(
+                external,
+                rendered_title,
+                f"{rendered_message}\n\n— {sender.label}",
+                db,
+                event,
+                variables=variables,
+            )
+        logger.info(
+            "External app message from key %s (%s): %d inbox recipient(s), %d channel(s)",
+            sender.api_key_id,
+            level,
+            len(inbox_ids),
+            len(external),
+        )
+        return {"inbox_recipients": len(inbox_ids), "channels": len(external)}
+
     async def on_stock_depleted(
         self,
         material: str,

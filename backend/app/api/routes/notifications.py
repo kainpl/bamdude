@@ -8,13 +8,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequirePermission, require_external_message_sender
 from backend.app.core.credential_config import lock_credential_config
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.notification import PROVIDER_EVENT_DEFAULTS, NotificationLog, NotificationProvider
 from backend.app.models.user import User
 from backend.app.schemas.notification import (
+    ExternalMessageIn,
+    ExternalMessageOut,
     NotificationLogResponse,
     NotificationLogStats,
     NotificationProviderCreate,
@@ -360,6 +362,37 @@ async def test_all_notification_providers(
 # ============================================================================
 # Notification Log Routes (must come BEFORE /{provider_id} routes)
 # ============================================================================
+
+
+@router.post("/external-message", response_model=ExternalMessageOut)
+async def send_external_message(
+    payload: ExternalMessageIn,
+    db: AsyncSession = Depends(get_db),
+    sender=Depends(require_external_message_sender()),
+):
+    """Another program tells the farm's people something (spec external-app-messages-spec).
+
+    An API key with ``can_send_notifications`` whose owner may manage notifications; 20 messages a minute
+    per key. The message reaches everybody's inbox and every provider and Telegram chat that turned
+    «External app» on, always with its sender.
+    """
+    from backend.app.services import external_messages
+
+    retry_after = external_messages.admit(sender.api_key_id)
+    if retry_after is not None:
+        raise HTTPException(
+            429,
+            "Too many messages from this API key; try again in a minute",
+            headers={"Retry-After": str(retry_after)},
+        )
+    return await notification_service.on_external_app_message(
+        db,
+        sender=sender,
+        title=payload.title,
+        message=payload.message,
+        level=payload.level,
+        link=payload.link,
+    )
 
 
 @router.get("/photos/{filename}")

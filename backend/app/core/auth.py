@@ -977,6 +977,7 @@ class APIKeyAuthority:
     owner_is_admin: bool
     energy_cost_allowed: bool
     mcp_allowed: bool = False
+    notifications_send_allowed: bool = False
     mcp_logs_allowed: bool = False
     capture: FrozenAuthority | None = None
 
@@ -1061,6 +1062,7 @@ async def _read_key_authority(capture, key_hash):
             owner_permissions=frozenset(owner.get_permissions()),
             owner_is_admin=owner.is_admin,
             energy_cost_allowed=bool(key.can_update_energy_cost),
+            notifications_send_allowed=bool(key.can_send_notifications),
             mcp_allowed=bool(key.can_access_mcp),
             mcp_logs_allowed=bool(key.can_read_mcp_logs),
             capture=principal.capture,
@@ -2117,6 +2119,57 @@ def require_energy_cost_update():
             return authority.user
 
     return permission_checker
+
+
+def require_external_message_sender():
+    """Dependency for ``POST /notifications/external-message`` (spec external-app-messages-spec).
+
+    The door is for PROGRAMS: only an API key, and only one its owner allowed to speak
+    (``can_send_notifications``, off by default), whose owner is active and may manage notifications
+    (``notifications:update``). A browser session is refused -- people are not the senders here. The answer is
+    the sender every channel names, so an app's message can never pass for BamDude's own.
+    """
+    from backend.app.services.external_messages import ExternalSender
+
+    async def sender_checker(
+        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
+        x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+        request: Request = None,
+    ) -> ExternalSender:
+        async with _auth_database_errors(), async_session():
+            api_key_value = selected_api_key(request, credentials, x_api_key)
+            if api_key_value is None:
+                if credentials is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Could not validate credentials",
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+                raise HTTPException(403, "Only an API key can send external app messages")
+            key_authority = await _api_key_authority_or_none(request, api_key_value)
+            if key_authority is None:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid API key",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            owner = key_authority.owner
+            if owner is None or not owner.is_active:
+                raise HTTPException(403, "API key owner is deactivated or no longer exists")
+            if not key_authority.notifications_send_allowed:
+                raise HTTPException(403, "API key does not have 'send_notifications' permission")
+            if not (
+                key_authority.owner_is_admin or Permission.NOTIFICATIONS_UPDATE.value in key_authority.owner_permissions
+            ):
+                raise HTTPException(403, "API key owner may not manage notifications")
+            return ExternalSender(
+                api_key_id=key_authority.key.id,
+                key_name=key_authority.key.name,
+                owner_id=owner.id,
+                owner_name=owner.username,
+            )
+
+    return sender_checker
 
 
 def require_any_permission(*permissions: str | Permission):

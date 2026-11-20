@@ -9,6 +9,59 @@ from pydantic import BaseModel, Field, field_validator
 from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
 
 
+class ExternalMessageIn(BaseModel):
+    """``POST /notifications/external-message`` (spec external-app-messages-spec): plain text from another
+    program. Control characters are dropped and ``*`` is neutralised BEFORE the bounds are checked, so a title
+    of nothing but control characters is empty and refused."""
+
+    title: str
+    message: str
+    level: Literal["info", "warning", "error"] = "info"
+    link: str | None = None
+
+    @field_validator("title")
+    @classmethod
+    def _plain_title(cls, value: str) -> str:
+        from backend.app.services.external_messages import MAX_TITLE, plain
+
+        text = plain(value)
+        if not 1 <= len(text) <= MAX_TITLE:
+            raise ValueError(f"title must be 1 to {MAX_TITLE} characters of text")
+        return text
+
+    @field_validator("message")
+    @classmethod
+    def _plain_message(cls, value: str) -> str:
+        from backend.app.services.external_messages import MAX_MESSAGE, plain
+
+        text = plain(value)
+        if not 1 <= len(text) <= MAX_MESSAGE:
+            raise ValueError(f"message must be 1 to {MAX_MESSAGE} characters of text")
+        return text
+
+    @field_validator("link")
+    @classmethod
+    def _http_link(cls, value: str | None) -> str | None:
+        from urllib.parse import urlsplit
+
+        from backend.app.services.external_messages import MAX_LINK
+
+        if value is None or not value.strip():
+            return None
+        link = value.strip()
+        parts = urlsplit(link)
+        if len(link) > MAX_LINK or parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+            raise ValueError(f"link must be an http or https address of at most {MAX_LINK} characters")
+        return link
+
+
+class ExternalMessageOut(BaseModel):
+    """Whom the message reached: people whose inbox took it, and providers that were asked to send it."""
+
+    inbox_recipients: int
+    channels: int
+
+
 class ProviderType(StrEnum):
     """Supported notification provider types."""
 
@@ -98,6 +151,9 @@ class NotificationProviderBase(BaseModel):
     on_print_outcome_unchecked: bool = Field(
         default=False, description="Remind about a completed print whose result has not been checked"
     )
+
+    # Event triggers - a message another program sent through the external-message API
+    on_external_app_message: bool = Field(default=False, description="Messages from external apps")
 
     # Event triggers - Print queue
     on_queue_job_added: bool = Field(default=False, description="Notify when job is added to queue")
@@ -217,6 +273,7 @@ class NotificationProviderUpdate(IgnoresNullForRequiredColumns):
     on_first_layer_complete: bool | None = None
     on_pause_coming_up: bool | None = None
     on_print_outcome_unchecked: bool | None = None
+    on_external_app_message: bool | None = None
 
     # Event triggers - Print queue
     on_queue_job_added: bool | None = None
