@@ -110,5 +110,7 @@ def test_every_door_reaches_the_mark_through_the_writer():
         "services/telegram_handlers/defects.py",
     }
     assert callers.get("forget") == {"services/dispatch_phase.py"}
+    # A plate the swap changed by itself: our macro answered, or the file's own sequence cleared it.
+    assert callers.get("mark_checked_by_swap") == {"services/swap_terminal.py"}
     assert callers.get("carry_restored") == {"services/git_restore.py"}
     assert callers.get("remind_due") == {"services/notification_service.py"}

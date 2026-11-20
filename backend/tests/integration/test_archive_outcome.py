@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
@@ -19,7 +20,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.project import Project
 from backend.app.models.settings import Settings
-from backend.app.services import archive_defects, archive_outcome, dispatch_phase
+from backend.app.services import archive_defects, archive_outcome, dispatch_phase, swap_terminal
 from backend.tests.integration.test_plate_answers_defects import _finished_flat, _finished_on, _finished_printer
 from backend.tests.integration.test_workshop_library_rights import _jwt, _user
 
@@ -107,6 +108,79 @@ async def test_a_row_taken_back_as_the_running_print_loses_its_mark(db_session, 
     )
     dispatch_phase.forget_earlier_outcome(archive)
     assert archive.outcome_checked_at is None and archive.outcome_reminded_at is None
+
+
+# --- a plate the swap changed by itself (owner, 2026-11-20) ----------------------------------------------
+#
+# Nobody takes such a print off the plate, so nobody is asked to grade it. A swap that failed or was held
+# leaves the print on the plate: somebody must go to the printer anyway, and grades it there.
+
+_OWED_SWAP = {
+    "bamdude_terminal_effects": {"swap_change_table": {"stage": "attempted", "owner": "live"}},
+    "swap_macro_events_pending": ["swap_mode_change_table"],
+}
+
+
+async def test_a_swapped_plate_marks_the_print_before_it_reads_completed(
+    db_session, archive_factory, printer_factory, session_factory
+):
+    # The live completion runs the macro before it writes the archive's terminal status.
+    archive = await archive_factory((await printer_factory()).id, status="printing", extra_data=dict(_OWED_SWAP))
+
+    await swap_terminal.finish_change_table(session_factory, archive.id, ok=True)
+
+    await db_session.refresh(archive)
+    assert archive.outcome_checked_at is not None
+    archive.status = "completed"
+    assert not archive_outcome.is_unchecked(archive)
+
+
+async def test_a_failed_swap_leaves_the_print_unchecked(db_session, archive_factory, printer_factory, session_factory):
+    archive = await archive_factory((await printer_factory()).id, extra_data=dict(_OWED_SWAP))
+
+    await swap_terminal.finish_change_table(session_factory, archive.id, ok=False)
+
+    await db_session.refresh(archive)
+    assert archive.outcome_checked_at is None
+    assert archive_outcome.is_unchecked(archive)
+
+
+async def test_an_operator_settlement_does_not_mark(db_session, archive_factory, printer_factory):
+    # «The swap was done by hand»: somebody stood at the printer and can grade the print themselves.
+    archive = await archive_factory(
+        (await printer_factory()).id,
+        extra_data={
+            "bamdude_terminal_effects": {"swap_change_table": {"stage": "owed", "version": 1}},
+            "swap_macro_events_pending": ["swap_mode_change_table"],
+        },
+    )
+
+    swap_terminal.settle_by_operator(archive, action_identity=str(uuid4()), actor="operator", at=_utc_now())
+    await db_session.commit()
+    assert swap_terminal.operator_settlement(archive.extra_data, archive.recovery_identity) is not None
+
+    assert await _mark_of(db_session, archive.id) is None
+
+
+async def test_a_baked_clear_marks_the_print(db_session, archive_factory, printer_factory, session_factory):
+    # The file's own swap sequence changed the plate: the same "nobody takes it off" as our macro.
+    archive = await archive_factory((await printer_factory()).id, status="printing")
+
+    await swap_terminal.note_baked_clear(session_factory, archive.id)
+
+    assert await _mark_of(db_session, archive.id) is not None
+
+
+async def test_the_swap_mark_keeps_an_earlier_mark(db_session, archive_factory, printer_factory, session_factory):
+    earlier = datetime(2026, 11, 1, 10, 0)
+    archive = await archive_factory(
+        (await printer_factory()).id, outcome_checked_at=earlier, extra_data=dict(_OWED_SWAP)
+    )
+
+    await swap_terminal.finish_change_table(session_factory, archive.id, ok=True)
+    await swap_terminal.note_baked_clear(session_factory, archive.id)
+
+    assert await _mark_of(db_session, archive.id) == earlier
 
 
 # --- every defects door marks; a bare plate clear does not -----------------------------------------------
