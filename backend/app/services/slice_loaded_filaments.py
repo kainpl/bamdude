@@ -27,10 +27,18 @@ not coming back — the slot's identity is the resolver's.
 
 from __future__ import annotations
 
-from sqlalchemy import or_, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from dataclasses import dataclass
+from typing import Literal
 
+from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from backend.app.core import auth_lifetime
+from backend.app.models.local_preset import LocalPreset
 from backend.app.models.printer import Printer
+from backend.app.models.user import User
 from backend.app.models.user_filament import UserFilamentFamily, UserFilamentPreset
 from backend.app.schemas.slicer_presets import (
     FamilyPresetRefs,
@@ -39,6 +47,8 @@ from backend.app.schemas.slicer_presets import (
     LoadedFilamentsResponse,
     OnlinePrinter,
 )
+from backend.app.services import cloud_credentials
+from backend.app.services.bambu_cloud_credentials import get_stored_token
 from backend.app.utils import filament_catalog as catalog
 from backend.app.utils.filament_types import filament_types_compatible
 from backend.app.utils.model_compatibility import compatible_models
@@ -92,68 +102,225 @@ async def farm_printers(db: AsyncSession, printer_manager, allowed: frozenset[in
     return out
 
 
-async def _family_refs(
-    db: AsyncSession, family_ids: set[str], user_families: dict[str, UserFilamentFamily], user_id: int | None
-) -> dict[str, FamilyPresetRefs]:
-    """Every preset that IS one of these families, by the id its tier lists it under."""
-    if not family_ids:
-        return {}
-    owner = (
-        or_(UserFilamentPreset.owner_user_id.is_(None), UserFilamentPreset.owner_user_id == user_id)
-        if user_id is not None
-        else UserFilamentPreset.owner_user_id.is_(None)
-    )
-    mirrors = (
-        (
-            await db.execute(
-                select(UserFilamentPreset).where(UserFilamentPreset.family_filament_id.in_(family_ids), owner)
-            )
+Provider = Literal["bambu", "orca"]
+_PROVIDER_RIGHT: dict[str, str] = {"bambu": "cloud:auth", "orca": "orca_cloud:auth"}
+
+
+@dataclass(frozen=True)
+class ProviderView:
+    """One provider's consistent credential state for this read: the snapshot
+    whose generation and authority the final re-check compares against."""
+
+    snapshot: cloud_credentials.CredentialSnapshot
+
+
+@dataclass(frozen=True)
+class FamilyRefViewer:
+    """Who is reading the family refs (spec slicing-setup r5 §8.4): the
+    principal's id for mirror ownership, and per provider the view a cloud
+    bucket may be projected for — ``None`` means that bucket is empty."""
+
+    user_id: int | None
+    bambu: ProviderView | None
+    orca: ProviderView | None
+
+
+class _Unstable(Exception):
+    """The active identity or the provider link moved while it was read."""
+
+
+async def _gate_once(db: AsyncSession, principal: User, provider: Provider) -> ProviderView | None:
+    right = _PROVIDER_RIGHT[provider]
+    try:
+        snap = await cloud_credentials.snapshot(db, principal, provider)
+    except HTTPException as exc:
+        if exc.status_code == 503:
+            raise
+        if exc.status_code == 409:
+            raise _Unstable from exc
+        return None
+    if snap.authority is not None:
+        try:
+            row = (await auth_lifetime.validate_captured(db, snap.authority, required_permissions=(right,))).user
+        except HTTPException as exc:
+            if exc.status_code == 503:
+                raise
+            return None
+        except Exception:
+            return None
+    else:
+        row = await db.scalar(
+            select(User)
+            .where(User.id == principal.id)
+            .options(selectinload(User.groups))
+            .execution_options(populate_existing=True)
         )
+    if row is None or not row.is_active:
+        return None
+    if row.account_identity != snap.account_identity or getattr(row, f"{provider}_cloud_generation") != snap.generation:
+        raise _Unstable
+    if not row.has_permission(right):
+        return None
+    if provider == "bambu":
+        token, _email, _region = await get_stored_token(db, row)
+    else:
+        token = row.orca_cloud_token
+    return ProviderView(snap) if token else None
+
+
+async def provider_gate(db: AsyncSession, principal: User, provider: Provider) -> ProviderView | None:
+    """One consistent local state for one provider, or ``None``: the right, the
+    principal's OWN stored credentials and a stable identity and generation.
+    No OAuth loader, never a configured-global credential. A moving identity is
+    tried once more; a second failure in a row is ``None``. Only a 503
+    propagates — the rest of the answer is always served."""
+    for _attempt in range(2):
+        try:
+            return await _gate_once(db, principal, provider)
+        except _Unstable:
+            continue
+    return None
+
+
+async def family_ref_viewer(db: AsyncSession, user: User | None, key_owner: User | None) -> FamilyRefViewer:
+    """The principal is the signed-in user, else the owner behind a cloud-allowed
+    API key. Without one (an ownerless or cloud-denied key) no cloud bucket is
+    projected and no snapshot is taken."""
+    principal = user or key_owner
+    if principal is None:
+        return FamilyRefViewer(None, None, None)
+    return FamilyRefViewer(
+        principal.id,
+        await provider_gate(db, principal, "bambu"),
+        await provider_gate(db, principal, "orca"),
+    )
+
+
+async def recheck_provider(
+    db: AsyncSession, view: ProviderView, principal: User, provider: Provider
+) -> Literal["same", "generation_changed", "lost"]:
+    """A fresh read after the mirror rows: the snapshot still current, or the
+    access re-confirmed under a new link (private refs drop), or lost (the whole
+    bucket goes)."""
+    if await cloud_credentials.current(db, view.snapshot):
+        return "same"
+    return "lost" if await provider_gate(db, principal, provider) is None else "generation_changed"
+
+
+async def _read_mirrors(db: AsyncSession, family_ids: set[str]) -> list[UserFilamentPreset]:
+    """Every mirror row of these families, whoever owns it: which of its fields
+    the caller may see is decided by the projection, not by this read."""
+    return list(
+        (await db.execute(select(UserFilamentPreset).where(UserFilamentPreset.family_filament_id.in_(family_ids))))
         .scalars()
         .all()
     )
+
+
+async def _family_refs(
+    db: AsyncSession,
+    family_ids: set[str],
+    user_families: dict[str, UserFilamentFamily],
+    viewer: FamilyRefViewer,
+    principal: User | None,
+) -> dict[str, FamilyPresetRefs]:
+    """The refs a caller may see of each recognised family (spec §8.4).
+
+    Standard names and local preset ids are public. A Bambu / Orca Cloud bucket
+    exists only for a provider the viewer passed the gate for; inside it, a
+    mirror's cloud id only for the caller's own mirror, a push anchor only for
+    the caller's own account identity. The provider is re-checked after the
+    mirror rows were read: ``lost`` empties the whole bucket (system ids and
+    aliases too), ``generation_changed`` drops only the private ids. A custom
+    family's name comes last, from the refs that survived.
+    """
+    if not family_ids:
+        return {}
+    mirrors = await _read_mirrors(db, family_ids)
+    status: dict[str, str] = {}
+    for provider, view in (("bambu", viewer.bambu), ("orca", viewer.orca)):
+        if view is None or principal is None:
+            status[provider] = "lost"
+        else:
+            status[provider] = await recheck_provider(db, view, principal, provider)
+    private = {provider: state == "same" for provider, state in status.items()}
+    bucket = {provider: state != "lost" for provider, state in status.items()}
+    identity = {
+        "bambu": viewer.bambu.snapshot.account_identity if viewer.bambu else None,
+        "orca": viewer.orca.snapshot.account_identity if viewer.orca else None,
+    }
+
+    local_names: dict[int, str] = {}
+    local_ids = {row.local_preset_id for row in mirrors if row.local_preset_id is not None}
+    if local_ids:
+        local_names = dict(
+            (await db.execute(select(LocalPreset.id, LocalPreset.name).where(LocalPreset.id.in_(local_ids)))).all()
+        )
     out: dict[str, FamilyPresetRefs] = {}
     for fid in sorted(family_ids):
         system = catalog.get_family(fid)
-        user = user_families.get(fid)
-        if system is None and user is None:
+        if system is None and fid not in user_families:
             continue
         standard: set[str] = set()
         cloud: set[str] = set()
         for preset in catalog.presets_for_family(fid):
             standard.add(preset.name)
-            # Exact ids only: a base is no id of its own (spec slicing-setup
-            # §8.3) — the unambiguous ones travel as ``cloud_aliases``.
-            if preset.ecosystem == "bambu" and preset.setting_id:
+            # Exact ids only: a base is no id of its own (spec §8.3) — the
+            # unambiguous ones travel as ``cloud_aliases``.
+            if bucket["bambu"] and preset.ecosystem == "bambu" and preset.setting_id:
                 cloud.add(preset.setting_id)
         orca_cloud: set[str] = set()
-        local: set[str] = set()
-        for row in mirrors:
-            if row.family_filament_id != fid:
-                continue
-            if row.source == "cloud_bambu" and row.cloud_id:
-                cloud.add(row.cloud_id)
-            if row.source == "cloud_orca" and row.cloud_id:
-                orca_cloud.add(row.cloud_id)
-            if row.local_preset_id is not None:
-                local.add(str(row.local_preset_id))
-            if row.pushed_cloud_id:
-                cloud.add(row.pushed_cloud_id)
-            if row.orca_pushed_profile_id:
-                orca_cloud.add(row.orca_pushed_profile_id)
+        local: set[int] = set()
+        own_names: list[tuple[int, str]] = []
+        for row in sorted((r for r in mirrors if r.family_filament_id == fid), key=lambda r: r.id):
+            if row.local_preset_id is not None and row.local_preset_id in local_names:
+                local.add(row.local_preset_id)
+            mine = viewer.user_id is not None and row.owner_user_id == viewer.user_id
+            seen = False
+            if private["bambu"]:
+                if row.source == "cloud_bambu" and row.cloud_id and mine:
+                    cloud.add(row.cloud_id)
+                    seen = True
+                if row.pushed_cloud_id and row.bambu_pushed_owner_identity == identity["bambu"]:
+                    cloud.add(row.pushed_cloud_id)
+                    seen = True
+            if private["orca"]:
+                if row.source == "cloud_orca" and row.cloud_id and mine:
+                    orca_cloud.add(row.cloud_id)
+                    seen = True
+                if row.orca_pushed_profile_id and row.orca_pushed_owner_identity == identity["orca"]:
+                    orca_cloud.add(row.orca_pushed_profile_id)
+                    seen = True
+            if seen:
+                own_names.append((row.id, row.name))
+        if system is not None:
+            name: str | None = system.alias
+        elif own_names:
+            name = min(own_names)[1]
+        elif local:
+            name = local_names[min(local)]
+        else:
+            # A custom family's stored alias is global and may come from another
+            # user's private mirror: with no visible ref there is no name.
+            name = None
         out[fid] = FamilyPresetRefs(
-            name=(system.alias if system else user.alias),
+            name=name,
             cloud=sorted(cloud),
             orca_cloud=sorted(orca_cloud),
-            local=sorted(local),
+            local=[str(i) for i in sorted(local)],
             standard=sorted(standard),
-            cloud_aliases=sorted(catalog.alias_bases_for_family(fid)),
+            cloud_aliases=sorted(catalog.alias_bases_for_family(fid)) if bucket["bambu"] else [],
         )
     return out
 
 
 async def loaded_filaments(
-    db: AsyncSession, printer_manager, *, allowed: frozenset[int] | None, user_id: int | None
+    db: AsyncSession,
+    printer_manager,
+    *,
+    allowed: frozenset[int] | None,
+    user: User | None,
+    key_owner: User | None = None,
 ) -> LoadedFilamentsResponse:
     printers = await online_printers(db, printer_manager, allowed)
     snapshots = {printer.id: printer_manager.get_feed_snapshot(printer.id) for printer in printers}
@@ -173,7 +340,11 @@ async def loaded_filaments(
         if named
         else {}
     )
-    families = await _family_refs(db, named, user_families, user_id)
+    # Recognised first, independent of what the caller may see (spec §8.4):
+    # hiding refs never changes a source's family or its by_material basis.
+    recognised = {fid for fid in named if catalog.get_family(fid) is not None or fid in user_families}
+    viewer = await family_ref_viewer(db, user, key_owner) if recognised else FamilyRefViewer(None, None, None)
+    families = await _family_refs(db, recognised, user_families, viewer, user or key_owner)
     generic = catalog.generic_family_ids()
 
     out: list[OnlinePrinter] = []
@@ -184,7 +355,7 @@ async def loaded_filaments(
         for source in snapshot.sources:
             material = (source.material or "").strip()
             fid = (source.variant or "").strip()
-            family_id = fid if fid in families else None
+            family_id = fid if fid in recognised else None
             family = (catalog.get_family(fid) or user_families.get(fid)) if family_id else None
             family_type = family.filament_type if family else None
             by_material = (

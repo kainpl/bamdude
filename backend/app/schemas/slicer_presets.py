@@ -150,7 +150,9 @@ class FamilyPresetRefs(BaseModel):
     """The presets that ARE one family, by the ``id`` each tier of
     ``/slicer/presets`` lists them under."""
 
-    name: str
+    # A system family's catalogue name; a custom family's name only from a ref
+    # this caller may see (its stored alias is global) — else none.
+    name: str | None = None
     cloud: list[str] = []
     orca_cloud: list[str] = []
     local: list[str] = []
