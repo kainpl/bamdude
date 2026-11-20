@@ -2909,8 +2909,10 @@ export default {
     wearCostShort: 'знос',
     busiestDay: 'Найзавантаженіший день',
     successStreak: 'Серія успіхів',
-    streakPrint: 'послідовний друк',
-    streakPrints: '{{count}} послідовних друків',
+    streakPrints_one: 'послідовний друк',
+    streakPrints_few: 'послідовні друки',
+    streakPrints_many: 'послідовних друків',
+    streakPrints_other: 'послідовного друку',
     printerStats: 'Статистика принтера',
     hours: 'годин',
     avgPrints: 'Сер. друків',
@@ -2919,6 +2921,38 @@ export default {
     avgWeight: 'Сер. вага',
     avgTime: 'Сер. час',
     filamentByPrints: 'Друки',
+    weekOf: 'Тиждень з {{date}}',
+    avgCost: '{{cost}} у середньому',
+    colorsCount_one: '{{count}} колір',
+    colorsCount_few: '{{count}} кольори',
+    colorsCount_many: '{{count}} кольорів',
+    colorsCount_other: '{{count}} кольору',
+    printsCount_one: '{{count}} друк',
+    printsCount_few: '{{count}} друки',
+    printsCount_many: '{{count}} друків',
+    printsCount_other: '{{count}} друку',
+    legendLess: 'Менше',
+    legendMore: 'Більше',
+    durationBuckets: {
+      lt30m: '<30 хв',
+      m30h1: '30–60 хв',
+      h1h2: '1–2 год',
+      h2h4: '2–4 год',
+      h4h8: '4–8 год',
+      h8h12: '8–12 год',
+      h12h24: '12–24 год',
+      h24plus: '24+ год'
+    },
+    widget: {
+      dragToReorder: 'Перетягніть, щоб змінити порядок',
+      size: 'Розмір: {{size}} — натисніть, щоб змінити',
+      sizeQuarter: '1/4',
+      sizeHalf: '1/2',
+      sizeFull: 'Уся ширина',
+      hide: 'Сховати віджет',
+      hiddenList: 'Приховані віджети (натисніть, щоб показати):',
+      allHidden: 'Усі віджети приховано.'
+    },
     timeframe: {
       'today': 'Сьогодні',
       'this-week': 'Цей тиждень',
@@ -13116,6 +13150,17 @@ export default {
     inHours: 'через {{count}}год',
     daysAgo: '{{count}}дн тому',
     inDays: 'через {{count}}дн'
+  },
+
+  // Одиниці біля числа (utils/weight, utils/date з перекладачем).
+  units: {
+    grams: '{{value}}\u00a0г',
+    kilograms: '{{value}}\u00a0кг',
+    tonnes: '{{value}}\u00a0т',
+    hours: '{{value}}\u00a0год',
+    minutes: '{{minutes}}\u00a0хв',
+    hoursMinutes: '{{hours}}\u00a0год {{minutes}}\u00a0хв',
+    kwh: '{{value}}\u00a0кВт·год'
   },
 
   // Permission categories and actions (for group editor)

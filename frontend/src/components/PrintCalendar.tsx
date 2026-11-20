@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 
-import { localDateKey } from '../utils/date';
+import { localDateKey, weekdayShortLabels } from '../utils/date';
 
 interface PrintCalendarProps {
   /**
@@ -15,6 +16,9 @@ interface PrintCalendarProps {
 }
 
 export function PrintCalendar({ dayCounts, months = 3 }: PrintCalendarProps) {
+  const { t, i18n } = useTranslation();
+  // Month and weekday names in the UI language, not the browser's.
+  const locale = i18n.language;
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);
 
@@ -62,7 +66,7 @@ export function PrintCalendar({ dayCounts, months = 3 }: PrintCalendarProps) {
       // Track month labels
       if (current.getMonth() !== lastMonth) {
         monthLabels.push({
-          month: current.toLocaleDateString('en-US', { month: 'short' }),
+          month: current.toLocaleDateString(locale, { month: 'short' }),
           weekIndex,
         });
         lastMonth = current.getMonth();
@@ -77,7 +81,7 @@ export function PrintCalendar({ dayCounts, months = 3 }: PrintCalendarProps) {
     }
 
     return { weeks, monthLabels, printCounts: counts };
-  }, [dayCounts, months]);
+  }, [dayCounts, months, locale]);
 
   const maxCount = Math.max(1, ...Object.values(printCounts));
 
@@ -90,7 +94,8 @@ export function PrintCalendar({ dayCounts, months = 3 }: PrintCalendarProps) {
     return 'bg-bambu-green';
   };
 
-  const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  // The grid's rows run Sunday to Saturday (a week starts on getDay() === 0).
+  const dayLabels = weekdayShortLabels(locale, 'sunday');
 
   // Calculate cell size based on container width
   const numWeeks = weeks.length;
@@ -168,7 +173,7 @@ export function PrintCalendar({ dayCounts, months = 3 }: PrintCalendarProps) {
                       key={dayOfWeek}
                       className={`rounded-sm ${getColor(count)} ${isToday ? 'ring-1 ring-white' : ''}`}
                       style={{ width: cellSize, height: cellSize }}
-                      title={`${day.toLocaleDateString()}: ${count} print${count !== 1 ? 's' : ''}`}
+                      title={`${day.toLocaleDateString(locale)}: ${t('stats.printsCount', { count })}`}
                     />
                   );
                 })}
@@ -178,7 +183,7 @@ export function PrintCalendar({ dayCounts, months = 3 }: PrintCalendarProps) {
 
           {/* Legend */}
           <div className="flex items-center gap-2 mt-3 text-bambu-gray" style={{ fontSize }}>
-            <span>Less</span>
+            <span>{t('stats.legendLess')}</span>
             <div className="flex" style={{ gap }}>
               <div className="rounded-sm bg-bambu-dark" style={{ width: cellSize, height: cellSize }} />
               <div className="rounded-sm bg-bambu-green/30" style={{ width: cellSize, height: cellSize }} />
@@ -186,7 +191,7 @@ export function PrintCalendar({ dayCounts, months = 3 }: PrintCalendarProps) {
               <div className="rounded-sm bg-bambu-green/75" style={{ width: cellSize, height: cellSize }} />
               <div className="rounded-sm bg-bambu-green" style={{ width: cellSize, height: cellSize }} />
             </div>
-            <span>More</span>
+            <span>{t('stats.legendMore')}</span>
           </div>
         </div>
       )}

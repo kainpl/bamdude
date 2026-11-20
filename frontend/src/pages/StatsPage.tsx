@@ -46,7 +46,7 @@ import { FilamentTrends } from '../components/FilamentTrends';
 import { Dashboard, type DashboardWidget } from '../components/Dashboard';
 import { getCurrencySymbol } from '../utils/currency';
 import { formatWeight } from '../utils/weight';
-import { formatDuration, localDateOfBucket } from '../utils/date';
+import { formatDuration, hourOfDayLabel, localDateOfBucket, weekdayShortLabels } from '../utils/date';
 import { MetricToggle, type Metric } from '../components/MetricToggle';
 import { computeDateRange, localToday, type TimeframePreset } from '../utils/statsDateRange';
 
@@ -65,24 +65,21 @@ const TIMEFRAME_PRESETS: TimeframePreset[] = [
 ];
 
 // Constants
-const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+// Hours and weekdays are named by the UI language (utils/date), never a fixed
+// English table.
+const hourLabelsFor = (locale: string) => Array.from({ length: 24 }, (_, h) => hourOfDayLabel(h, locale));
 
-const HOUR_LABELS = [
-  '12am', '1am', '2am', '3am', '4am', '5am',
-  '6am', '7am', '8am', '9am', '10am', '11am',
-  '12pm', '1pm', '2pm', '3pm', '4pm', '5pm',
-  '6pm', '7pm', '8pm', '9pm', '10pm', '11pm',
-];
-
+// ``key`` is the server's bucket name (`by_duration[].bucket`); ``label`` its
+// stats.durationBuckets.* entry.
 const DURATION_BUCKETS = [
-  { key: '<30m', max: 1800 },
-  { key: '30m-1h', max: 3600 },
-  { key: '1-2h', max: 7200 },
-  { key: '2-4h', max: 14400 },
-  { key: '4-8h', max: 28800 },
-  { key: '8-12h', max: 43200 },
-  { key: '12-24h', max: 86400 },
-  { key: '24h+', max: Infinity },
+  { key: '<30m', label: 'lt30m', max: 1800 },
+  { key: '30m-1h', label: 'm30h1', max: 3600 },
+  { key: '1-2h', label: 'h1h2', max: 7200 },
+  { key: '2-4h', label: 'h2h4', max: 14400 },
+  { key: '4-8h', label: 'h4h8', max: 28800 },
+  { key: '8-12h', label: 'h8h12', max: 43200 },
+  { key: '12-24h', label: 'h12h24', max: 86400 },
+  { key: '24h+', label: 'h24plus', max: Infinity },
 ];
 
 const RECHARTS_TOOLTIP_STYLE = {
@@ -147,8 +144,8 @@ function QuickStatsWidget({
     <StatTiles
       items={[
         { icon: Package, color: 'text-bambu-green', label: t('stats.totalPrints'), value: `${stats?.total_prints || 0}` },
-        { icon: Package, color: 'text-orange-600 dark:text-orange-400', label: t('stats.filamentUsed'), value: formatWeight(stats?.total_filament_grams || 0) },
-        { icon: Clock, color: 'text-blue-600 dark:text-blue-400', label: t('stats.printTime'), value: `${stats?.total_print_time_hours?.toFixed(1) ?? '0'}h` },
+        { icon: Package, color: 'text-orange-600 dark:text-orange-400', label: t('stats.filamentUsed'), value: formatWeight(stats?.total_filament_grams || 0, t) },
+        { icon: Clock, color: 'text-blue-600 dark:text-blue-400', label: t('stats.printTime'), value: t('units.hours', { value: stats?.total_print_time_hours?.toFixed(1) ?? '0' }) },
         { icon: DollarSign, color: 'text-green-600 dark:text-green-400', label: t('stats.filamentCost'), value: `${currency} ${stats?.total_cost?.toFixed(2) ?? '0.00'}` },
       ]}
     />
@@ -215,7 +212,7 @@ function EnergyWidget({
           icon: Zap,
           color: 'text-yellow-600 dark:text-yellow-400',
           label: t('stats.energyWhilePrinting'),
-          value: `${approx}${stats?.print_energy_kwh?.toFixed(3) ?? '0.000'} kWh`,
+          value: `${approx}${t('units.kwh', { value: stats?.print_energy_kwh?.toFixed(3) ?? '0.000' })}`,
           warning: printNotes.length > 0,
           tooltip: printTooltip,
         },
@@ -223,7 +220,7 @@ function EnergyWidget({
           icon: Zap,
           color: 'text-amber-600 dark:text-amber-400',
           label: t('stats.energyAtThePlug'),
-          value: `${stats?.total_energy_kwh?.toFixed(3) ?? '0.000'} kWh`,
+          value: t('units.kwh', { value: stats?.total_energy_kwh?.toFixed(3) ?? '0.000' }),
           warning: warmingUp,
           tooltip: warmingUpTooltip ?? t('stats.energyAtThePlugTooltip'),
         },
@@ -476,6 +473,9 @@ function TimeAccuracyWidget({
 }
 
 function HourlyHeatmap({ buckets, dateFrom, dateTo }: { buckets: AggregateBucket[]; dateFrom: string; dateTo: string }) {
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language;
+  const hourLabels = useMemo(() => hourLabelsFor(locale), [locale]);
   const { days, hourlyCounts, maxCount } = useMemo(() => {
     const start = new Date(dateFrom + 'T00:00:00');
     const end = new Date(dateTo + 'T00:00:00');
@@ -486,7 +486,7 @@ function HourlyHeatmap({ buckets, dateFrom, dateTo }: { buckets: AggregateBucket
     while (current <= end) {
       days.push({
         key: fmtLocal(current),
-        label: current.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }),
+        label: current.toLocaleDateString(locale, { weekday: 'short', month: 'short', day: 'numeric' }),
       });
       current.setDate(current.getDate() + 1);
     }
@@ -505,7 +505,7 @@ function HourlyHeatmap({ buckets, dateFrom, dateTo }: { buckets: AggregateBucket
     });
 
     return { days, hourlyCounts: counts, maxCount: Math.max(1, max) };
-  }, [buckets, dateFrom, dateTo]);
+  }, [buckets, dateFrom, dateTo, locale]);
 
   const getColor = (count: number) => {
     if (count === 0) return 'bg-bambu-dark';
@@ -526,7 +526,7 @@ function HourlyHeatmap({ buckets, dateFrom, dateTo }: { buckets: AggregateBucket
       <div className="inline-flex flex-col" style={{ gap }}>
         {/* Hour labels row */}
         <div className="flex" style={{ gap, marginLeft: dayLabelWidth + 4 }}>
-          {HOUR_LABELS.map((label, i) => (
+          {hourLabels.map((label, i) => (
             <div
               key={i}
               className="text-bambu-gray text-[10px] text-center"
@@ -553,7 +553,7 @@ function HourlyHeatmap({ buckets, dateFrom, dateTo }: { buckets: AggregateBucket
                   key={hour}
                   className={`rounded-sm ${getColor(count)}`}
                   style={{ width: cellSize, height: cellSize }}
-                  title={`${day.label} ${HOUR_LABELS[hour]}: ${count} print${count !== 1 ? 's' : ''}`}
+                  title={`${day.label} ${hourLabels[hour]}: ${t('stats.printsCount', { count })}`}
                 />
               );
             })}
@@ -563,7 +563,7 @@ function HourlyHeatmap({ buckets, dateFrom, dateTo }: { buckets: AggregateBucket
 
       {/* Legend */}
       <div className="flex items-center gap-2 mt-3 text-bambu-gray text-xs">
-        <span>Less</span>
+        <span>{t('stats.legendLess')}</span>
         <div className="flex" style={{ gap }}>
           <div className="rounded-sm bg-bambu-dark" style={{ width: cellSize, height: cellSize }} />
           <div className="rounded-sm bg-bambu-green/30" style={{ width: cellSize, height: cellSize }} />
@@ -571,7 +571,7 @@ function HourlyHeatmap({ buckets, dateFrom, dateTo }: { buckets: AggregateBucket
           <div className="rounded-sm bg-bambu-green/75" style={{ width: cellSize, height: cellSize }} />
           <div className="rounded-sm bg-bambu-green" style={{ width: cellSize, height: cellSize }} />
         </div>
-        <span>More</span>
+        <span>{t('stats.legendMore')}</span>
       </div>
     </div>
   );
@@ -629,7 +629,8 @@ function PrinterStatsWidget({
   aggregate: ArchiveAggregate | undefined;
   printerById: Map<string, Printer>;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language;
   const [printerMetric, setPrinterMetric] = useState<Metric>('weight');
   const [habitsMetric, setHabitsMetric] = useState<Metric>('weight');
 
@@ -682,21 +683,21 @@ function PrinterStatsWidget({
   // this browser's own zone and still skips prints that never started.
   const hourlyData = useMemo(
     () =>
-      Array.from({ length: 24 }, (_, i) => ({
+      hourLabelsFor(locale).map((label, i) => ({
         hour: i,
-        label: HOUR_LABELS[i],
+        label,
         total: aggregate?.by_hour_of_day[i]?.prints ?? 0,
         failures: aggregate?.by_hour_of_day[i]?.failures ?? 0,
       })),
-    [aggregate],
+    [aggregate, locale],
   );
 
   // Duration distribution, bucketed server-side: the boundaries need each
   // print's own duration, which no longer travels to the browser.
   const durationData = useMemo(() => {
     const counts = new Map((aggregate?.by_duration ?? []).map(row => [row.bucket, row.prints]));
-    return DURATION_BUCKETS.map(b => ({ name: b.key, count: counts.get(b.key) ?? 0 }));
-  }, [aggregate]);
+    return DURATION_BUCKETS.map(b => ({ name: t(`stats.durationBuckets.${b.label}`), count: counts.get(b.key) ?? 0 }));
+  }, [aggregate, t]);
 
   // Habits (avg per day-of-week)
   const habitsData = useMemo(() => {
@@ -715,14 +716,18 @@ function PrinterStatsWidget({
       weeksSet.add(`${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, '0')}-${String(weekStart.getDate()).padStart(2, '0')}`);
     });
     const numWeeks = Math.max(weeksSet.size, 1);
-    return DAY_LABELS.map((name, i) => ({
+    // The rows run Monday to Sunday (day 0 = Monday above).
+    return weekdayShortLabels(locale, 'monday').map((name, i) => ({
       name,
       avg: Math.round((dayValues[i] / numWeeks) * 10) / 10,
     }));
-  }, [aggregate, habitsMetric]);
+  }, [aggregate, habitsMetric, locale]);
 
+  // One formatter per metric for both the axis and the tooltip, so a unit is
+  // the UI language's and never a hard-coded "g" or "h".
   const metricStyle = (m: Metric) => ({
-    unit: m === 'weight' ? 'g' : m === 'time' ? 'h' : '',
+    format: (v: number) =>
+      m === 'weight' ? formatWeight(v, t) : m === 'time' ? t('units.hours', { value: v }) : String(v),
     color: m === 'weight' ? '#00ae42' : m === 'time' ? '#3b82f6' : '#f59e0b',
   });
   const ps = metricStyle(printerMetric);
@@ -742,14 +747,11 @@ function PrinterStatsWidget({
           <ResponsiveContainer width="100%" height={Math.max(140, printerData.length * 40)}>
             <BarChart data={printerData} layout="vertical" margin={{ left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#3d3d3d" />
-              <XAxis type="number" stroke="#9ca3af" tick={{ fontSize: 11 }} unit={ps.unit} />
+              <XAxis type="number" stroke="#9ca3af" tick={{ fontSize: 11 }} tickFormatter={(v: number) => ps.format(v)} />
               <YAxis type="category" dataKey="name" stroke="#9ca3af" tick={{ fontSize: 11 }} width={100} />
               <Tooltip
                 contentStyle={RECHARTS_TOOLTIP_STYLE}
-                formatter={(v: number | undefined) => [
-                  printerMetric === 'weight' ? formatWeight(Number(v ?? 0)) : `${v ?? 0}${ps.unit}`,
-                  pLabel,
-                ]}
+                formatter={(v: number | undefined) => [ps.format(Number(v ?? 0)), pLabel]}
               />
               <Bar dataKey="value" fill={ps.color} radius={[0, 4, 4, 0]} />
             </BarChart>
@@ -789,8 +791,8 @@ function PrinterStatsWidget({
               <BarChart data={habitsData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#3d3d3d" />
                 <XAxis dataKey="name" stroke="#9ca3af" tick={{ fontSize: 11 }} />
-                <YAxis stroke="#9ca3af" tick={{ fontSize: 11 }} unit={hs.unit} />
-                <Tooltip contentStyle={RECHARTS_TOOLTIP_STYLE} formatter={(v: number | undefined) => [`${v ?? 0}${hs.unit}`, hLabel]} />
+                <YAxis stroke="#9ca3af" tick={{ fontSize: 11 }} tickFormatter={(v: number) => hs.format(v)} />
+                <Tooltip contentStyle={RECHARTS_TOOLTIP_STYLE} formatter={(v: number | undefined) => [hs.format(Number(v ?? 0)), hLabel]} />
                 <Bar dataKey="avg" fill={hs.color} radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
@@ -877,7 +879,7 @@ function FailureAnalysisWidget({ size = 1, dateFrom, dateTo, preset }: {
   dateTo?: string;
   preset: TimeframePreset;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const hasDateRange = !!(dateFrom || dateTo);
   const { data: analysis, isLoading } = useQuery({
     queryKey: ['failureAnalysis', dateFrom, dateTo],
@@ -896,7 +898,10 @@ function FailureAnalysisWidget({ size = 1, dateFrom, dateTo, preset }: {
     // Empty-state label mirrors the selected timeframe: explicit dates for a
     // custom range, otherwise the preset's own label (incl. "All time").
     const rangeLabel = preset === 'custom'
-      ? [dateFrom, dateTo].filter(Boolean).join(' – ') || t('stats.timeframe.custom')
+      ? [dateFrom, dateTo]
+          .filter((d): d is string => Boolean(d))
+          .map((d) => localDateOfBucket(d).toLocaleDateString(i18n.language, { year: 'numeric', month: 'short', day: 'numeric' }))
+          .join(' – ') || t('stats.timeframe.custom')
       : t(`stats.timeframe.${preset}`);
     return <p className="text-bambu-gray text-center py-4">{t('stats.noPrintDataForRange', { range: rangeLabel })}</p>;
   }
@@ -972,7 +977,8 @@ function FailureAnalysisWidget({ size = 1, dateFrom, dateTo, preset }: {
 }
 
 function RecordsWidget({ aggregate, currency }: { aggregate: ArchiveAggregate | undefined; currency: string }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language;
 
   const records = useMemo(() => {
     const result: Array<{
@@ -993,7 +999,7 @@ function RecordsWidget({ aggregate, currency }: { aggregate: ArchiveAggregate | 
     if (records.longest) {
       result.push({
         icon: Clock, iconColor: 'text-blue-600 dark:text-blue-400', label: t('stats.longestPrint'),
-        value: formatDuration(records.longest.seconds),
+        value: formatDuration(records.longest.seconds, t),
         detail: records.longest.print_name || null,
       });
     }
@@ -1001,7 +1007,7 @@ function RecordsWidget({ aggregate, currency }: { aggregate: ArchiveAggregate | 
     if (records.heaviest) {
       result.push({
         icon: Package, iconColor: 'text-orange-600 dark:text-orange-400', label: t('stats.heaviestPrint'),
-        value: formatWeight(records.heaviest.grams),
+        value: formatWeight(records.heaviest.grams, t),
         detail: records.heaviest.print_name || null,
       });
     }
@@ -1053,8 +1059,8 @@ function RecordsWidget({ aggregate, currency }: { aggregate: ArchiveAggregate | 
         icon: Calendar,
         iconColor: 'text-purple-600 dark:text-purple-400',
         label: t('stats.busiestDay'),
-        value: `${busiestCount} ${t('common.prints')}`,
-        detail: localDateOfBucket(busiestDay).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }),
+        value: t('stats.printsCount', { count: busiestCount }),
+        detail: localDateOfBucket(busiestDay).toLocaleDateString(locale, { month: 'short', day: 'numeric', year: 'numeric' }),
       });
     }
 
@@ -1068,12 +1074,13 @@ function RecordsWidget({ aggregate, currency }: { aggregate: ArchiveAggregate | 
         iconColor: 'text-yellow-600 dark:text-yellow-400',
         label: t('stats.successStreak'),
         value: `${streak}`,
-        detail: streak === 1 ? t('stats.streakPrint') : t('stats.streakPrints', { count: streak }),
+        // The value beside it is the number; the detail only names the unit.
+        detail: t('stats.streakPrints', { count: streak }),
       });
     }
 
     return result;
-  }, [aggregate, currency, t]);
+  }, [aggregate, currency, t, locale]);
 
   if (records.length === 0) {
     return <p className="text-bambu-gray text-center py-4">{t('stats.noArchiveData')}</p>;

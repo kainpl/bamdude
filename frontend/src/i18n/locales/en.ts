@@ -2889,8 +2889,8 @@ export default {
     wearCostShort: 'wear',
     busiestDay: 'Busiest Day',
     successStreak: 'Success Streak',
-    streakPrint: 'consecutive print',
-    streakPrints: '{{count}} consecutive prints',
+    streakPrints_one: 'consecutive print',
+    streakPrints_other: 'consecutive prints',
     printerStats: 'Printer Stats',
     hours: 'hours',
     avgPrints: 'Avg. prints',
@@ -2899,6 +2899,34 @@ export default {
     avgWeight: 'Avg. weight',
     avgTime: 'Avg. time',
     filamentByPrints: 'Prints',
+    weekOf: 'Week of {{date}}',
+    avgCost: '{{cost}} avg',
+    colorsCount_one: '{{count}} color',
+    colorsCount_other: '{{count}} colors',
+    printsCount_one: '{{count}} print',
+    printsCount_other: '{{count}} prints',
+    legendLess: 'Less',
+    legendMore: 'More',
+    durationBuckets: {
+      lt30m: '<30m',
+      m30h1: '30m-1h',
+      h1h2: '1-2h',
+      h2h4: '2-4h',
+      h4h8: '4-8h',
+      h8h12: '8-12h',
+      h12h24: '12-24h',
+      h24plus: '24h+'
+    },
+    widget: {
+      dragToReorder: 'Drag to reorder',
+      size: 'Size: {{size}} - Click to cycle',
+      sizeQuarter: '1/4',
+      sizeHalf: '1/2',
+      sizeFull: 'Full',
+      hide: 'Hide widget',
+      hiddenList: 'Hidden widgets (click to show):',
+      allHidden: 'All widgets are hidden.'
+    },
     timeframe: {
       'today': 'Today',
       'this-week': 'This Week',
@@ -12893,6 +12921,17 @@ export default {
     inHours: 'in {{count}}h',
     daysAgo: '{{count}}d ago',
     inDays: 'in {{count}}d'
+  },
+
+  // Units beside a number (utils/weight, utils/date with a translator).
+  units: {
+    grams: '{{value}}g',
+    kilograms: '{{value}}kg',
+    tonnes: '{{value}}t',
+    hours: '{{value}}h',
+    minutes: '{{minutes}}m',
+    hoursMinutes: '{{hours}}h {{minutes}}m',
+    kwh: '{{value}} kWh'
   },
 
   // Permission categories and actions (for group editor)

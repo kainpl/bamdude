@@ -370,18 +370,42 @@ export function formatETA(
  * Format a duration in seconds to a human-readable string, with null handling.
  *
  * @param seconds - Duration in seconds, or null/undefined
+ * @param t - Optional translator: the units in the UI language (``units.*``);
+ *   without it the English short form every caller had before.
  * @returns Formatted string (e.g., "2h 30m", "45m") or "--" if no value
  */
-export function formatDuration(seconds: number | null | undefined): string {
+export function formatDuration(seconds: number | null | undefined, t?: TranslateFunction): string {
   if (seconds == null || seconds < 0) return '--';
 
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
 
+  if (t) {
+    return hours > 0 ? t('units.hoursMinutes', { hours, minutes }) : t('units.minutes', { minutes });
+  }
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 }
 
-type TranslateFunction = (key: string, options?: Record<string, unknown>) => string;
+export type TranslateFunction = (key: string, options?: Record<string, unknown>) => string;
+
+/**
+ * The hour of the day as the given locale names it ("2 PM", "14").
+ * Charts label hours with it rather than a fixed English table.
+ */
+export function hourOfDayLabel(hour: number, locale: string): string {
+  return new Date(2000, 0, 1, hour).toLocaleTimeString(locale, { hour: 'numeric' });
+}
+
+/**
+ * The seven short weekday names in the given locale, from Monday or from
+ * Sunday. 2024-01-01 was a Monday.
+ */
+export function weekdayShortLabels(locale: string, firstDay: 'monday' | 'sunday'): string[] {
+  const start = firstDay === 'monday' ? 1 : 0;
+  return Array.from({ length: 7 }, (_, i) =>
+    new Date(2024, 0, start + i).toLocaleDateString(locale, { weekday: 'short' }),
+  );
+}
 
 /**
  * Format a date string as a human-readable relative time expression.

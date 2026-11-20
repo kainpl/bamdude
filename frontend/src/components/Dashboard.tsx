@@ -1,4 +1,5 @@
 import { useState, useEffect, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   DndContext,
   closestCenter,
@@ -68,6 +69,7 @@ function SortableWidget({
   onToggleVisibility: () => void;
   onToggleSize: () => void;
 }) {
+  const { t } = useTranslation();
   const {
     attributes,
     listeners,
@@ -103,7 +105,7 @@ function SortableWidget({
             {...attributes}
             {...listeners}
             className="cursor-grab active:cursor-grabbing p-1 hover:bg-bambu-dark-tertiary rounded transition-colors"
-            title="Drag to reorder"
+            title={t('stats.widget.dragToReorder')}
           >
             <GripVertical className="w-6 h-6 md:w-4 md:h-4 text-bambu-gray" />
           </button>
@@ -113,7 +115,9 @@ function SortableWidget({
           <button
             onClick={onToggleSize}
             className="p-1 hover:bg-bambu-dark-tertiary rounded transition-colors"
-            title={`Size: ${size === 1 ? '1/4' : size === 2 ? '1/2' : 'Full'} - Click to cycle`}
+            title={t('stats.widget.size', {
+              size: t(size === 1 ? 'stats.widget.sizeQuarter' : size === 2 ? 'stats.widget.sizeHalf' : 'stats.widget.sizeFull'),
+            })}
           >
             {size === 4 ? (
               <Minimize2 className="w-4 h-4 text-bambu-gray hover:text-white" />
@@ -124,7 +128,7 @@ function SortableWidget({
           <button
             onClick={onToggleVisibility}
             className="p-1 hover:bg-bambu-dark-tertiary rounded transition-colors"
-            title="Hide widget"
+            title={t('stats.widget.hide')}
           >
             <EyeOff className="w-4 h-4 text-bambu-gray hover:text-white" />
           </button>
@@ -139,6 +143,7 @@ function SortableWidget({
 }
 
 export function Dashboard({ widgets, storageKey, columns = 4, stackBelow, hideControls = false, onResetLayout, renderControls }: DashboardProps) {
+  const { t } = useTranslation();
   // Build default sizes from widget definitions
   const getDefaultSizes = () => {
     const sizes: Record<string, 1 | 2 | 4> = {};
@@ -316,7 +321,7 @@ export function Dashboard({ widgets, storageKey, columns = 4, stackBelow, hideCo
         <div className="flex items-center justify-end gap-2">
           <Button variant="secondary" size="sm" onClick={resetLayout}>
             <RotateCcw className="w-4 h-4" />
-            Reset Layout
+            {t('stats.resetLayout')}
           </Button>
           {hiddenWidgets.length > 0 && (
             <Button
@@ -325,7 +330,7 @@ export function Dashboard({ widgets, storageKey, columns = 4, stackBelow, hideCo
               onClick={() => setShowHiddenPanel(!showHiddenPanel)}
             >
               <Eye className="w-4 h-4" />
-              {hiddenWidgets.length} Hidden
+              {t('stats.hiddenCount', { count: hiddenWidgets.length })}
             </Button>
           )}
         </div>
@@ -334,7 +339,7 @@ export function Dashboard({ widgets, storageKey, columns = 4, stackBelow, hideCo
       {/* Hidden Widgets Panel */}
       {showHiddenPanel && hiddenWidgets.length > 0 && (
         <div className="p-4 bg-bambu-dark rounded-xl border border-bambu-dark-tertiary">
-          <p className="text-sm text-bambu-gray mb-3">Hidden widgets (click to show):</p>
+          <p className="text-sm text-bambu-gray mb-3">{t('stats.widget.hiddenList')}</p>
           <div className="flex flex-wrap gap-2">
             {hiddenWidgets.map((widget) => (
               <button
@@ -386,9 +391,9 @@ export function Dashboard({ widgets, storageKey, columns = 4, stackBelow, hideCo
 
       {visibleWidgets.length === 0 && (
         <div className="text-center py-12 text-bambu-gray">
-          <p>All widgets are hidden.</p>
+          <p>{t('stats.widget.allHidden')}</p>
           <Button className="mt-4" onClick={resetLayout}>
-            Reset Layout
+            {t('stats.resetLayout')}
           </Button>
         </div>
       )}
