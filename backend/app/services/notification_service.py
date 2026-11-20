@@ -239,13 +239,19 @@ class NotificationService:
         return template
 
     def _render_template(self, template_str: str, variables: dict[str, Any]) -> str:
-        """Render a template string with variables. Missing variables become empty."""
-        result = template_str
-        for key, value in variables.items():
-            result = result.replace("{" + key + "}", str(value) if value is not None else "")
-        # Remove any remaining unreplaced placeholders
-        result = re.sub(r"\{[a-z_]+\}", "", result)
-        return result
+        """Render a template string with variables. Missing variables become empty.
+
+        One pass over the TEMPLATE: a substituted value is never read as a template again. Replacing the
+        variables one after another let a value's own "{title}" take another field's value and erased any
+        "{word}" in it as an unknown placeholder -- harmless for a filename, a loss of text for a message an
+        external app sent (spec external-app-messages-spec).
+        """
+
+        def substitute(match: re.Match) -> str:
+            value = variables.get(match.group(1))
+            return str(value) if value is not None else ""
+
+        return re.sub(r"\{([a-z_]+)\}", substitute, template_str)
 
     async def _format_eta(self, seconds: int | None, db: AsyncSession) -> str:
         """Format ETA as wall-clock time, respecting user's time_format setting."""

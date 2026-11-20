@@ -293,7 +293,7 @@ async def test_the_sender_line_survives_an_edited_template(async_client, db_sess
     assert heard and heard[0].rstrip().endswith("— Home Assistant · kain"), "no template can make it pass for BamDude"
 
 
-def test_a_telegram_chat_decides_for_itself():
+async def test_a_telegram_chat_decides_for_itself():
     from backend.app.models.telegram_chat import ALL_NOTIFY_EVENTS, DEFAULT_NOTIFY_EVENTS
 
     assert "external_app_message" in ALL_NOTIFY_EVENTS
@@ -333,6 +333,22 @@ async def test_text_is_plain(async_client, db_session):
     row = (await _inbox(db_session))[0]
     assert row.title == "ℹ️ ∗Bold∗"
     assert row.message.startswith("a ∗b∗ c\nnext\tline")
+
+
+async def test_braces_in_the_text_are_the_text(async_client, db_session):
+    """A value is substituted once and never read as a template again: "{title}" in a message stays
+    those seven characters, and "{x}" is not swallowed as an unknown placeholder."""
+    await _seed_template(db_session)
+    raw, _, _ = await _sender(db_session)
+
+    response = await async_client.post(
+        URL, json={"title": "Set {temp}", "message": "Write {title} and {x} literally."}, headers=_as(raw)
+    )
+
+    assert response.status_code == 200, response.text
+    row = (await _inbox(db_session))[0]
+    assert row.title == "ℹ️ Set {temp}"
+    assert row.message.startswith("Write {title} and {x} literally.")
 
 
 @pytest.mark.parametrize(
