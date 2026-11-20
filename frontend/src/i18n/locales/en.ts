@@ -3105,10 +3105,6 @@ export default {
     sourceMode: 'Base',
     sourceModeType: 'From type (standard profile)',
     sourceModePreset: 'From an existing preset',
-    pickPreset: 'Pick a preset…',
-    tierLocal: 'local',
-    tierBambu: 'Bambu Cloud',
-    tierOrca: 'Orca Cloud',
     pushBambu: 'Also push to Bambu Cloud',
     pushOrca: 'Also push to Orca Cloud',
     orcaRequired: 'Connect Orca Cloud first (Profiles → Orca Cloud)',
@@ -6046,6 +6042,7 @@ export default {
       absent: 'No profile of the filament family in {{slot}} was found. Choose its profile.',
     },
     noCatalogue: 'Choosing presets here needs the right to slice files.',
+    fromPreset: 'Preset to start from',
   },
   slice: {
     title: 'Slice model',

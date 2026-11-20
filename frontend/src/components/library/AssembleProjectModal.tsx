@@ -35,7 +35,7 @@ import { PresetListStatus } from '../slicing-setup/PresetListStatus';
 import { PresetSelect } from '../slicing-setup/PresetSelect';
 import { applyPipeline } from '../slicing-setup/applyPipeline';
 import { POLICIES, useChoiceFields, type ChoicePolicy } from '../slicing-setup/choiceState';
-import { buildPresetField, type SoftFilterId } from '../slicing-setup/presetSets';
+import { buildPresetField } from '../slicing-setup/presetSets';
 import { usePresetCatalogue } from '../slicing-setup/usePresetCatalogue';
 import { usePresetFilters, type PresetFiltersState } from '../slicing-setup/usePresetFilters';
 import {
@@ -176,11 +176,7 @@ function TargetEditor({
       filament: buildPresetField({ listing: data, slot: 'filament', fit, filters: softFilters('filament'), pinned: refs.filament }),
     };
   }, [data, filters, printerName, compat, parentsBySource, refs.printer, refs.process, refs.filament]);
-  const showAll = (id: SoftFilterId) => {
-    if (id === 'source') filters.setSource('all');
-    else if (id === 'farm') filters.setOnlyFarmModels(false);
-    else filters.setOnlyLoaded(false);
-  };
+  const showAll = filters.turnOff;
   const pick = (slot: RowSlot, ref: PresetRef | null) => {
     setApplied(null);
     setUnresolved([]);

@@ -19,6 +19,7 @@ function state(over: Partial<PresetFiltersState> = {}): PresetFiltersState {
     retry: vi.fn(),
     offered: true,
     softFilters: () => [],
+    turnOff: vi.fn(),
     ...over,
   };
 }

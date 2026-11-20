@@ -138,6 +138,22 @@ describe('usePresetFilters', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
+  it('turnOff turns off exactly the filter a relaxation note names', () => {
+    localStorage.setItem(FARM_MODELS_KEY, '1');
+    const { result } = renderHook(() => usePresetFilters({ source: true, farmModels: true, loaded: true }), {
+      wrapper: wrapper(newClient()),
+    });
+    act(() => result.current.setOnlyLoaded(true));
+    act(() => result.current.turnOff('loaded'));
+    expect(result.current.onlyLoaded).toBe(false);
+    expect(result.current.onlyFarmModels).toBe(true);
+    expect(result.current.source).toBe('mine');
+    act(() => result.current.turnOff('source'));
+    expect(result.current.source).toBe('all');
+    act(() => result.current.turnOff('farm'));
+    expect(result.current.onlyFarmModels).toBe(false);
+  });
+
   it('missing farm_printers narrows nothing', async () => {
     localStorage.setItem(FARM_MODELS_KEY, '1');
     vi.spyOn(api, 'getSlicerLoadedFilaments').mockResolvedValue({ printers: [], families: {} } as unknown as LoadedFilamentsResponse);

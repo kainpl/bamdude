@@ -46,7 +46,7 @@ import { PresetSelect } from './slicing-setup/PresetSelect';
 import { SlicerChoice } from './slicing-setup/SlicerChoice';
 import { applyPipeline as applySet } from './slicing-setup/applyPipeline';
 import { POLICIES, blocksSubmit, useChoiceFields, type ChoiceEvent } from './slicing-setup/choiceState';
-import { buildPresetField, type SoftFilterId } from './slicing-setup/presetSets';
+import { buildPresetField } from './slicing-setup/presetSets';
 import { useBedPlate } from './slicing-setup/useBedPlate';
 import { usePresetCatalogue } from './slicing-setup/usePresetCatalogue';
 import { usePresetFilters } from './slicing-setup/usePresetFilters';
@@ -699,11 +699,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   }, [filters.onlyLoaded, loadedAnswer]);
 
   // "Show all" in a relaxation note turns that one filter off, for good.
-  const showAll = (id: SoftFilterId) => {
-    if (id === 'source') filters.setSource('all');
-    else if (id === 'farm') filters.setOnlyFarmModels(false);
-    else filters.setOnlyLoaded(false);
-  };
+  const showAll = filters.turnOff;
 
   const fieldBlocks = (key: string) => blocksSubmit(choices.get(key), true);
   const choiceBlocked =

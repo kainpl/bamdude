@@ -12,6 +12,7 @@ import {
 import { resolvePresetName } from '../utils/presetPickerUtils';
 import { Card, CardContent, CardHeader } from './Card';
 import { useToast } from '../contexts/ToastContext';
+import { usePresetCatalogue } from './slicing-setup/usePresetCatalogue';
 
 // Saved slice settings — CRUD only. A set is created from the Slice dialog
 // ("Save these settings"); this panel renames / re-describes / deletes them and
@@ -44,11 +45,7 @@ export function SlicerPipelinesPanel() {
   // PresetRef. Same query key the SliceModal uses, so opening the Slice
   // dialog after visiting this tab (or vice versa) reuses one cached listing
   // instead of round-tripping the slicer registry twice.
-  const { data: presets } = useQuery({
-    queryKey: ['slicerPresets'],
-    queryFn: () => api.getSlicerPresets(),
-    staleTime: 60_000,
-  });
+  const presets = usePresetCatalogue().data;
 
   const updateMutation = useMutation({
     mutationFn: ({

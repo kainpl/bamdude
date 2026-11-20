@@ -47,7 +47,7 @@ import { PresetSelect } from '../slicing-setup/PresetSelect';
 import { SlicerChoice } from '../slicing-setup/SlicerChoice';
 import { applyPipeline } from '../slicing-setup/applyPipeline';
 import { POLICIES, useChoiceFields, type ChoiceEvent, type ChoicePolicy } from '../slicing-setup/choiceState';
-import { buildPresetField, type SoftFilterId } from '../slicing-setup/presetSets';
+import { buildPresetField } from '../slicing-setup/presetSets';
 import { useBedPlate } from '../slicing-setup/useBedPlate';
 import { usePresetCatalogue } from '../slicing-setup/usePresetCatalogue';
 import { usePresetFilters } from '../slicing-setup/usePresetFilters';
@@ -317,9 +317,7 @@ export function CalibrationSlicingSection({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slot?.key]);
 
-  const showAll = (id: SoftFilterId) => {
-    if (id === 'source') filters.setSource('all');
-  };
+  const showAll = filters.turnOff;
   const pickByHand = (key: FieldKey, ref: PresetRef | null) => {
     setApplied(null);
     setUnresolved([]);

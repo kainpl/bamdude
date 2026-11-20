@@ -16,7 +16,7 @@ import type { PrinterParents } from '../../utils/printerPresetParents';
 import { filamentPresetIsLoaded, loadedFilamentsFor, printerPresetFitsFarmPrinter } from '../../utils/sliceFarmFilter';
 import { usePresetAuthKey } from './authContext';
 import { FARM_MODELS_KEY, LEGACY_ONLINE_KEY, LOADED_KEY, SOURCE_FILTER_KEY, useSharedChoice, useSharedFlag } from './memory';
-import type { SoftFilter } from './presetSets';
+import type { SoftFilter, SoftFilterId } from './presetSets';
 
 export interface PresetFiltersOptions {
   source?: boolean;
@@ -47,6 +47,8 @@ export interface PresetFiltersState {
   /** library:upload + printers:read — what the farm read asks. */
   offered: boolean;
   softFilters: (ctx: SoftFilterContext) => SoftFilter[];
+  /** "Show all" in a relaxation note: turns that one filter off, for good. */
+  turnOff: (id: SoftFilterId) => void;
 }
 
 const SOURCE_VALUES = ['all', 'mine', 'builtin'] as const;
@@ -116,6 +118,15 @@ export function usePresetFilters(opts: PresetFiltersOptions): PresetFiltersState
     [farm, farmStatus, onlyFarmModels, onlyLoaded, opts.farmModels, opts.loaded, opts.source, source],
   );
 
+  const turnOff = useCallback(
+    (id: SoftFilterId) => {
+      if (id === 'source') setSource('all');
+      else if (id === 'farm') setOnlyFarmModels(false);
+      else setOnlyLoaded(false);
+    },
+    [setSource, setOnlyFarmModels, setOnlyLoaded],
+  );
+
   return useMemo(
     () => ({
       source,
@@ -129,7 +140,8 @@ export function usePresetFilters(opts: PresetFiltersOptions): PresetFiltersState
       retry,
       offered,
       softFilters,
+      turnOff,
     }),
-    [farm, farmStatus, offered, onlyFarmModels, onlyLoaded, retry, setOnlyFarmModels, setOnlyLoaded, setSource, softFilters, source],
+    [farm, farmStatus, offered, onlyFarmModels, onlyLoaded, retry, setOnlyFarmModels, setOnlyLoaded, setSource, softFilters, source, turnOff],
   );
 }
