@@ -27,8 +27,11 @@ import { printerPresetModel } from './slicerPrinterMatch';
 
 type PresetModel = { model: string; nozzle: string | null };
 
-/** Is this online printer one the preset's model can be sliced for? */
-function printerIsOfModel(printer: OnlinePrinter, model: string): boolean {
+/** The parts of a farm printer the model comparison reads (online or not). */
+type FarmMachine = Pick<OnlinePrinter, 'model' | 'accepts' | 'nozzle_diameters'>;
+
+/** Is this printer one the preset's model can be sliced for? */
+function printerIsOfModel(printer: FarmMachine, model: string): boolean {
   if (!printer.model) return false;
   // `model` is the fragment a printer preset's name carries after "Bambu Lab "
   // ("X1 Carbon"); the long marketing name is the spelling the normaliser knows.
@@ -36,7 +39,7 @@ function printerIsOfModel(printer: OnlinePrinter, model: string): boolean {
   return verdict === 'exact' || verdict === 'compatible';
 }
 
-function printerHasNozzle(printer: OnlinePrinter, nozzle: string | null): boolean {
+function printerHasNozzle(printer: FarmMachine, nozzle: string | null): boolean {
   // A preset that states no nozzle, or a printer that reported none yet, is not
   // ruled out on a size nobody stated.
   if (nozzle === null || printer.nozzle_diameters.length === 0) return true;
@@ -45,15 +48,28 @@ function printerHasNozzle(printer: OnlinePrinter, nozzle: string | null): boolea
   return printer.nozzle_diameters.some((d) => Math.abs(d - size) < 1e-6);
 }
 
+/**
+ * Does a printer preset fit this farm printer — its model (exact or one the
+ * printer accepts) and, when the preset states one, a nozzle fitted there? A
+ * printer whose nozzles are unknown excludes no size (spec slicing-setup D4).
+ */
+export function printerPresetFitsFarmPrinter(
+  preset: Pick<UnifiedPreset, 'name'>,
+  printer: FarmMachine,
+  printerParents: PrinterParents | null | undefined,
+): boolean {
+  const identity: PresetModel | null = printerPresetModel(preset.name, printerParents);
+  if (!identity) return false;
+  return printerIsOfModel(printer, identity.model) && printerHasNozzle(printer, identity.nozzle);
+}
+
 /** Does a printer preset belong to a printer that is online now? */
 export function printerPresetIsOnline(
   preset: Pick<UnifiedPreset, 'name'>,
   farm: LoadedFilamentsResponse,
   printerParents: PrinterParents | null | undefined,
 ): boolean {
-  const identity: PresetModel | null = printerPresetModel(preset.name, printerParents);
-  if (!identity) return false;
-  return farm.printers.some((p) => printerIsOfModel(p, identity.model) && printerHasNozzle(p, identity.nozzle));
+  return farm.printers.some((p) => printerPresetFitsFarmPrinter(preset, p, printerParents));
 }
 
 /**
@@ -84,17 +100,23 @@ export function loadedFilamentsFor(
 
 // A stock preset's id may carry a version suffix ("GFSA00_07") where the
 // server names the base form too.
-function idsOf(preset: Pick<UnifiedPreset, 'id'>): string[] {
-  const base = preset.id.split('_')[0];
-  return base === preset.id ? [preset.id] : [preset.id, base];
-}
-
-function isOfFamily(preset: Pick<UnifiedPreset, 'id' | 'source'>, refs: FamilyPresetRefs | undefined): boolean {
+/**
+ * Is a preset one of this family's (spec slicing-setup r5 §8.3)? The server
+ * decided the ids: every list holds exact ids, so an exact id is checked
+ * first. Only a Bambu Cloud id the catalogue does not know — a system variant
+ * newer than the pinned catalogue — falls back to the family's aliases: bases
+ * that stand for this family alone, matched as the whole id or as `base_…`.
+ * A base two families share (GFSR99: Generic TPU and Generic EVA) is no alias
+ * of either, so nothing is guessed from it.
+ */
+export function presetIsOfFamily(
+  preset: Pick<UnifiedPreset, 'id' | 'source'>,
+  refs: FamilyPresetRefs | undefined,
+): boolean {
   if (!refs) return false;
-  const listed = refs[preset.source] ?? [];
-  // The bundle lists a preset under its name, which is its id there: exact.
-  if (preset.source === 'standard' || preset.source === 'local') return listed.includes(preset.id);
-  return idsOf(preset).some((id) => listed.includes(id));
+  if ((refs[preset.source] ?? []).includes(preset.id)) return true;
+  if (preset.source !== 'cloud') return false;
+  return (refs.cloud_aliases ?? []).some((base) => preset.id === base || preset.id.startsWith(`${base}_`));
 }
 
 /** Is a filament preset one of the loaded filaments? */
@@ -104,7 +126,7 @@ export function filamentPresetIsLoaded(
   families: Record<string, FamilyPresetRefs>,
 ): boolean {
   return loaded.some((filament) => {
-    if (filament.family_id && isOfFamily(preset, families[filament.family_id])) return true;
+    if (filament.family_id && presetIsOfFamily(preset, families[filament.family_id])) return true;
     // A spool without a family keeps ITS type: any preset of that material.
     return (
       filament.by_material

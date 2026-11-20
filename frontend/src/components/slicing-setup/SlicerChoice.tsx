@@ -1,61 +1,47 @@
-/**
- * ⚠️ Calibration's own preset picker. Was shared with the slice dialog until
- * that dialog was rebuilt on upstream's layout with inline pickers; the shared
- * copy is gone and this one belongs to the calibration flow alone. Changing it
- * changes calibration and nothing else — which is the point.
- */
+// The slicer cards of the slicing-setup family (spec slicing-setup r5, R7):
+// two card-buttons, each with its live health (version / offline / checking),
+// offline ones disabled, the selected one announced, the outdated-sidecar note
+// under them. The markup is the Slice dialog's.
 import { Check, Cog, Loader2, XCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { useSlicerHealth } from '../../../hooks/useSlicerHealth';
+import { useSlicerHealth, type SlicerKind } from '../../hooks/useSlicerHealth';
+import { SlicerOutdatedNote } from '../SlicerOutdatedNote';
 
-export type SlicerKind = 'orcaslicer' | 'bambu_studio';
-
-interface CalibrationSlicerPickerProps {
+interface SlicerChoiceProps {
   value: SlicerKind | null;
   onChange: (next: SlicerKind) => void;
   disabled?: boolean;
 }
 
-/**
- * Per-job slicer picker, card-style — mirrors the "Filament Tracking"
- * section in Settings. Two big card-buttons, each carrying a live
- * reachability badge (version / offline / checking) so the user sees
- * what's available WITHOUT a separate status strip cluttering the modal.
- *
- * Disabled cards (sidecar offline) cannot be picked. When only one is
- * healthy the calling form still works — pre-select whatever is
- * reachable; if neither, the backend will surface the real error at
- * submit time.
- */
-export function CalibrationSlicerPicker({ value, onChange, disabled }: CalibrationSlicerPickerProps) {
+const OPTIONS: { kind: SlicerKind; label: string }[] = [
+  { kind: 'orcaslicer', label: 'OrcaSlicer' },
+  { kind: 'bambu_studio', label: 'BambuStudio' },
+];
+
+export function SlicerChoice({ value, onChange, disabled }: SlicerChoiceProps) {
   const { t } = useTranslation();
-  const options: { kind: SlicerKind; label: string }[] = [
-    { kind: 'orcaslicer', label: 'OrcaSlicer' },
-    { kind: 'bambu_studio', label: 'BambuStudio' },
-  ];
   return (
     <fieldset>
-      <legend className="text-xs text-bambu-gray mb-2">
-        {t('slice.sidecarPicker', 'Slice with')}
-      </legend>
+      <legend className="text-xs text-bambu-gray mb-2">{t('slice.sidecarPicker', 'Slice with')}</legend>
       <div className="grid grid-cols-2 gap-3">
-        {options.map((opt) => (
-          <CalibrationSlicerPickerCard
+        {OPTIONS.map((opt) => (
+          <SlicerCard
             key={opt.kind}
             kind={opt.kind}
             label={opt.label}
             selected={value === opt.kind}
-            outerDisabled={!!disabled}
+            outerDisabled={Boolean(disabled)}
             onSelect={() => onChange(opt.kind)}
           />
         ))}
       </div>
+      <SlicerOutdatedNote kind={value} />
     </fieldset>
   );
 }
 
-interface CalibrationSlicerPickerCardProps {
+interface SlicerCardProps {
   kind: SlicerKind;
   label: string;
   selected: boolean;
@@ -63,20 +49,13 @@ interface CalibrationSlicerPickerCardProps {
   onSelect: () => void;
 }
 
-function CalibrationSlicerPickerCard({
-  kind,
-  label,
-  selected,
-  outerDisabled,
-  onSelect,
-}: CalibrationSlicerPickerCardProps) {
+function SlicerCard({ kind, label, selected, outerDisabled, onSelect }: SlicerCardProps) {
   const { t } = useTranslation();
   const { data, isLoading } = useSlicerHealth(kind);
   const healthy = data?.healthy === true;
   const version = data?.version ?? null;
   const error = data?.error ?? null;
-  // Disable when the outer form is busy OR the sidecar isn't reachable —
-  // clicking an offline card can't lead to a successful slice.
+  // An offline sidecar cannot be picked: clicking it could not lead to a slice.
   const isDisabled = outerDisabled || isLoading || !healthy;
 
   const statusLabel = isLoading
@@ -101,6 +80,7 @@ function CalibrationSlicerPickerCard({
         if (!isDisabled) onSelect();
       }}
       disabled={isDisabled}
+      aria-pressed={selected}
       className={`p-3 rounded-lg border-2 text-left transition-colors ${baseClass}`}
     >
       <div className="flex items-center gap-2 mb-1.5">
@@ -114,9 +94,7 @@ function CalibrationSlicerPickerCard({
         <span className={`text-sm font-medium ${titleClass}`}>{label}</span>
       </div>
       <p className={`text-xs ${descClass}`}>{statusLabel}</p>
-      {!isLoading && !healthy && error && (
-        <p className="text-xs text-red-400/80 mt-1 break-words">{error}</p>
-      )}
+      {!isLoading && !healthy && error && <p className="text-xs text-red-400/80 mt-1 break-words">{error}</p>}
       {selected && healthy && (
         <div className="flex items-center gap-1 mt-2">
           <Check className="w-3 h-3 text-bambu-green" />

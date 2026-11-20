@@ -725,6 +725,7 @@ async def list_loaded_filaments(
     request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD, Permission.PRINTERS_READ)),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ) -> LoadedFilamentsResponse:
     """Online printers and the filaments loaded on them, for the Slice dialog's
     "only online printers" / "only loaded filaments" filters.
@@ -744,7 +745,8 @@ async def list_loaded_filaments(
         db,
         printer_manager,
         allowed=key_printer_scope(request),
-        user_id=current_user.id if current_user is not None else None,
+        user=current_user,
+        key_owner=api_key_cloud_owner,
     )
 
 

@@ -1,5 +1,38 @@
 import { describe, it, expect } from 'vitest';
-import { resolvePresetName } from '../../utils/presetPickerUtils';
+import {
+  isOwnBambuCloudId,
+  isOwnPreset,
+  matchesSourceFilter,
+  resolvePresetName,
+} from '../../utils/presetPickerUtils';
+
+// R1 (spec slicing-setup r5): one rule for "my preset". Orca Cloud lists only
+// the user's own synced profiles; its ids are UUIDs, which the Bambu prefix
+// rule used to read as built-in.
+describe('isOwnPreset (R1)', () => {
+  it('local is mine', () => expect(isOwnPreset({ source: 'local', id: '12' })).toBe(true));
+  it('every Orca Cloud preset is mine', () =>
+    expect(isOwnPreset({ source: 'orca_cloud', id: '3f2a-uuid' })).toBe(true));
+  it('Bambu Cloud by the user prefix', () => {
+    expect(isOwnPreset({ source: 'cloud', id: 'PFUS1a2b' })).toBe(true);
+    expect(isOwnPreset({ source: 'cloud', id: 'GFSA00_02' })).toBe(false);
+  });
+  it('standard is built-in', () =>
+    expect(isOwnPreset({ source: 'standard', id: 'Bambu PLA Basic' })).toBe(false));
+  it('the Bambu id rule on its own', () => {
+    expect(isOwnBambuCloudId('PPUS9')).toBe(true);
+    expect(isOwnBambuCloudId('PF001')).toBe(true);
+    expect(isOwnBambuCloudId('GFSA00')).toBe(false);
+  });
+  it('the three filter values', () => {
+    const orca = { source: 'orca_cloud', id: 'u' } as const;
+    expect([
+      matchesSourceFilter(orca, 'mine'),
+      matchesSourceFilter(orca, 'builtin'),
+      matchesSourceFilter(orca, 'all'),
+    ]).toEqual([true, false, true]);
+  });
+});
 import { presetCompatibility, EMPTY_COMPATIBILITY_INDEX } from '../../utils/slicerPrinterMatch';
 import type { UnifiedPresetsResponse } from '../../api/client';
 

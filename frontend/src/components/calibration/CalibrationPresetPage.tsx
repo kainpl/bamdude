@@ -24,27 +24,17 @@ import type {
   PresetRef,
   Printer,
   PrinterStatus,
-  UnifiedPresetsResponse,
 } from '../../api/client';
 import {
-  CalibrationPresetDropdown,
-  CalibrationPresetSourceControl,
-} from './preset-picker/CalibrationPresetDropdown';
-import {
-  TIER_ORDER,
-  matchesOwnerFilter,
-  resolvePresetName,
-  type OwnerFilter,
-} from '../../utils/presetPickerUtils';
-import { CalibrationBedTypePicker } from './preset-picker/CalibrationBedTypePicker';
-import { CalibrationSlicerPicker, type SlicerKind } from './preset-picker/CalibrationSlicerPicker';
+  CalibrationSlicingSection,
+  type CalibrationPresetChoice,
+  type CalibrationSlot,
+} from './CalibrationSlicingSection';
+import { EMPTY_CALIBRATION_CHOICE, choiceDecidedNow } from './calibrationChoice';
+import { usePresetCatalogue } from '../slicing-setup/usePresetCatalogue';
+import { useAuth } from '../../contexts/AuthContext';
 import { tempDefaultsForFilament } from '../../utils/calibrationTemp';
 import { Select } from '../Select';
-import {
-  buildCompatibilityIndex,
-  presetCompatibility,
-  type PrinterCompatibilityIndex,
-} from '../../utils/slicerPrinterMatch';
 
 interface Props {
   printerId: number;
@@ -76,53 +66,6 @@ interface Props {
       events: Array<'swap_mode_start' | 'swap_mode_change_table'>;
     };
   }) => Promise<void>;
-}
-
-function pickDefaultRef(
-  data: UnifiedPresetsResponse | undefined,
-  slot: 'printer' | 'process' | 'filament',
-  ownerFilter: OwnerFilter,
-): PresetRef | null {
-  if (!data) return null;
-  for (const tier of TIER_ORDER) {
-    const entries = data[tier][slot].filter((p) => matchesOwnerFilter(p, ownerFilter));
-    if (entries.length > 0) {
-      return { source: entries[0].source, id: entries[0].id };
-    }
-  }
-  return null;
-}
-
-/**
- * BS-style shorthand for a printer model: "A1 mini" → "A1M",
- * "X1 Carbon" → "X1C", "P1S" → "P1S", "H2D" → "H2D". Used to match
- * presets named with the `@BBL <Shorthand>` suffix convention (e.g.
- * "0.20mm Standard @BBL A1M", "Generic PETG @BBL A1M"). One-token
- * models pass through unchanged.
- */
-function bsShorthand(model: string): string {
-  const tokens = model.toUpperCase().split(/\s+/).filter(Boolean);
-  if (tokens.length === 0) return '';
-  if (tokens.length === 1) return tokens[0];
-  return tokens[0] + tokens.slice(1).map((t) => t[0]).join('');
-}
-
-/**
- * Substring-match a preset name against a printer model, accepting
- * both the long form ("Bambu Lab A1 mini 0.4 nozzle") and the
- * `@BBL <Shorthand>` form ("0.20mm Standard @BBL A1M"). When the
- * model isn't known, returns true so unfiltered presets stay visible.
- */
-function matchesPrinterModel(presetName: string, model: string | null | undefined): boolean {
-  if (!model) return true;
-  const normName = presetName.toLowerCase();
-  const normModel = model.toLowerCase();
-  if (normName.includes(normModel)) return true;
-  const stripped = normModel.replace(/^bambu\s+lab\s+/, '').trim();
-  if (stripped && normName.includes(stripped)) return true;
-  const shorthand = bsShorthand(stripped || normModel);
-  if (shorthand && normName.toLowerCase().includes(shorthand.toLowerCase())) return true;
-  return false;
 }
 
 interface LoadedSlot {
@@ -167,122 +110,34 @@ export function CalibrationPresetPage({
   // for consistency (operator picks once, server discards).
   const needsPresetPicker = method !== 'auto';
 
-  const presetsQuery = useQuery<UnifiedPresetsResponse>({
-    queryKey: ['slicer-presets'],
-    queryFn: () => api.getSlicerPresets(),
-    staleTime: 30_000,
-    enabled: needsPresetPicker,
-  });
-  const settingsQuery = useQuery({
-    queryKey: ['ui-preferences'],
-    queryFn: api.getUiPreferences,
-    staleTime: 60_000,
-    enabled: needsPresetPicker,
-  });
-  // Printer model drives the preset / bundle filter — only show presets
-  // compatible with this printer + nozzle. Avoids operators picking a P1S
-  // preset for an A1 mini and getting -16 CLI_3MF_NEW_MACHINE_NOT_SUPPORTED
-  // at slice time.
+  // The printer model drives the per-model print-options preference below.
   const printerQuery = useQuery<Printer>({
     queryKey: ['printer', printerId],
     queryFn: () => api.getPrinter(printerId),
     staleTime: 60_000,
   });
   const printerModel = printerQuery.data?.model ?? null;
-  // Canonical Bambu printer-model registry — drives the @BBL name fallback in
-  // the shared compatibility matcher (#1325). Long staleTime: only changes
-  // across backend releases.
-  const printerModelsQuery = useQuery({
-    queryKey: ['slicerPrinterModels'],
-    queryFn: api.getPrinterModels,
-    staleTime: Infinity,
-    enabled: needsPresetPicker,
-  });
 
   // Nozzle the operator is calibrating (defaults to the printer's first
-  // installed nozzle). Declared here — above the preset filter — because the
-  // shared matcher is nozzle-aware: a 0.6-nozzle process is unusable on a 0.4
-  // printer, so the dropdowns must filter by nozzle as well as model.
+  // installed nozzle). The slicing section proves the printer preset for this
+  // nozzle and this printer's model (spec slicing-setup R4).
   const firstNozzleDia = capabilities?.nozzles?.[0]?.diameter ?? 0.4;
   const [nozzleDia, setNozzleDia] = useState<number>(firstNozzleDia);
   const [nozzleVolType, setNozzleVolType] = useState<NozzleVolumeType>('standard');
 
-  // Compatibility ground truth shared with the SliceModal: the slicer's own
-  // ``compatible_printers`` list + the backend printer-model registry (#1325).
-  const compatIndex = useMemo<PrinterCompatibilityIndex>(
-    () => buildCompatibilityIndex(printerModelsQuery.data ?? {}),
-    [printerModelsQuery.data],
-  );
-  const [printerRef, setPrinterRef] = useState<PresetRef | null>(null);
-  const [processRef, setProcessRef] = useState<PresetRef | null>(null);
-  const [filamentRef, setFilamentRef] = useState<PresetRef | null>(null);
-
-  // The printer-preset name the matcher classifies process / filament presets
-  // against MUST be the *real* selected printer preset's name — the exact
-  // string BambuStudio writes into a process preset's ``compatible_printers``.
-  // SliceModal does the same (it resolves its printer ref to the preset name);
-  // an earlier cut here fabricated "Bambu Lab <fragment> <nozzle> nozzle" from
-  // the hardware short code, but the registry fragment's casing ("A1 Mini") did
-  // not match the real preset name ("A1 mini"), so the printer's own profiles
-  // were classed as a mismatch and hidden. Resolve the selected printer ref
-  // against the raw preset catalogue instead. Null until a printer is picked →
-  // the matcher returns 'unknown' and nothing is hidden.
-  const selectedPrinterName = useMemo<string | null>(
-    () => resolvePresetName(presetsQuery.data, printerRef, 'printer'),
-    [presetsQuery.data, printerRef],
-  );
-
-  // Strict hide (D2): calibration drops process / filament presets that
-  // resolve to a *different* printer (a wrong-printer calibration print wastes
-  // a bed), but keeps compatibility-unknown presets (the operator's own custom
-  // profiles) so they're never silently hidden. The printer slot keeps the
-  // proven name/shorthand match — the matcher only classifies process /
-  // filament. Mirrors the SliceModal matcher; the difference is hide-vs-group.
-  const presets = useMemo<UnifiedPresetsResponse | undefined>(() => {
-    const data = presetsQuery.data;
-    if (!data || !printerModel) return data;
-    const keepPrinter = (entries: UnifiedPresetsResponse['cloud']['printer']) =>
-      entries.filter((p) => matchesPrinterModel(p.name, printerModel));
-    const keepCompat = (slot: 'process' | 'filament') => (entries: UnifiedPresetsResponse['cloud']['printer']) =>
-      entries.filter(
-        (p) => presetCompatibility(p, slot, selectedPrinterName, compatIndex) !== 'mismatch',
-      );
-    const filterTier = (tier: UnifiedPresetsResponse['cloud']) => ({
-      printer: keepPrinter(tier.printer),
-      process: keepCompat('process')(tier.process),
-      filament: keepCompat('filament')(tier.filament),
-    });
-    return {
-      orca_cloud: filterTier(data.orca_cloud),
-      cloud: filterTier(data.cloud),
-      local: filterTier(data.local),
-      standard: filterTier(data.standard),
-      cloud_status: data.cloud_status,
-      orca_cloud_status: data.orca_cloud_status,
-    };
-  }, [presetsQuery.data, printerModel, selectedPrinterName, compatIndex]);
-
-  // Default owner filter is 'custom' ("My presets"), matching the
-  // model-slicing picker.
-  const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>('custom');
-
-  useEffect(() => {
-    if (!presets) return;
-    setPrinterRef((cur) => cur ?? pickDefaultRef(presets, 'printer', ownerFilter));
-    setProcessRef((cur) => cur ?? pickDefaultRef(presets, 'process', ownerFilter));
-    setFilamentRef((cur) => cur ?? pickDefaultRef(presets, 'filament', ownerFilter));
-  }, [presets, ownerFilter]);
-
-  const [pickedSlicer, setPickedSlicer] = useState<SlicerKind | null>(null);
-  useEffect(() => {
-    if (pickedSlicer != null) return;
-    const preferred = settingsQuery.data?.preferred_slicer;
-    if (preferred === 'orcaslicer' || preferred === 'bambu_studio') {
-      setPickedSlicer(preferred);
-    }
-  }, [settingsQuery.data?.preferred_slicer, pickedSlicer]);
-
-  const [bedType, setBedType] = useState<BedType>('Textured PEI Plate');
+  // The slicing section (spec slicing-setup §7.2) decides the slicer, the bed
+  // plate and the three presets; the page reads its answer and keeps the slot,
+  // the nozzle and the K corridor to itself.
+  const [slicing, setSlicing] = useState<CalibrationPresetChoice>(EMPTY_CALIBRATION_CHOICE);
+  // The same catalogue the section reads: Start is judged on the answer this
+  // render shows, not only on the section's last report (review I-2).
+  const { hasPermission } = useAuth();
+  const catalogue = usePresetCatalogue({ enabled: hasPermission('library:upload') });
+  const printerRef = slicing.printer;
+  const processRef = slicing.process;
+  const filamentRef = slicing.filament;
+  const pickedSlicer = slicing.slicer;
+  const bedType = slicing.plate;
 
   // PA Tower per-mode spec — mirrors the verification page's defaults.
   const isPaTower = caliMode === 'pa_tower';
@@ -405,6 +260,20 @@ export function CalibrationPresetPage({
     setTempEnd(d.end);
   }, [isTemp, selectedSlot]);
 
+  // The slot the section picks a filament for, by its family (D6): another
+  // slot, or the same one on the other extruder, is another key.
+  const calibrationSlot = useMemo<CalibrationSlot | null>(
+    () =>
+      selectedSlot
+        ? {
+            key: `${activeExtruder}:${selectedSlot.ams_id}:${selectedSlot.slot_id}`,
+            label: selectedSlot.label,
+            familyId: selectedSlot.filament_id.trim() || null,
+          }
+        : null,
+    [activeExtruder, selectedSlot],
+  );
+
   const patchCurrent = (p: Partial<PerExtruderState>) =>
     setPerExtruder((prev) => ({
       ...prev,
@@ -522,8 +391,8 @@ export function CalibrationPresetPage({
   const [swapMacros, setSwapMacros] = useState<SwapMacrosOptions>(CALIBRATION_SWAP_MACROS_DEFAULT);
 
   // Read the operator's per-printer-model preference (set via PrintModal
-  // submits). Falls back silently to the calibration defaults above on
-  // 404 — same shape as PrintModal/index.tsx:230.
+  // submits). Nothing saved (null) or a failed read keeps the calibration
+  // defaults above — the same rule as the Print dialog.
   const { data: preferenceData } = useQuery({
     queryKey: ['print-options-preference', printerModel],
     queryFn: async () => {
@@ -676,6 +545,9 @@ export function CalibrationPresetPage({
   };
 
   const submitInner = async () => {
+    // Asked again at the click: the presets must be the current catalogue's
+    // and the printer proven now (review I-2).
+    if (!presetShapeOk) return;
     if (method === 'auto' && isDual) {
       const filaments: CalibFilamentIn[] = [];
       for (const ex of extruderList) {
@@ -708,7 +580,10 @@ export function CalibrationPresetPage({
 
   const presetShapeOk = (() => {
     if (!needsPresetPicker) return true;
-    return !!printerRef && !!processRef && !!filamentRef;
+    // Decided on the catalogue answer, nozzle and slot the page sees now: the
+    // printer's proof is the section's, made a commit late (review I-2).
+    const now = { catalogue: catalogue.revision, nozzle: nozzleDia, slot: calibrationSlot?.key ?? null };
+    return choiceDecidedNow(slicing, now) && !!printerRef && !!processRef && !!filamentRef;
   })();
 
   const canStart = (() => {
@@ -751,50 +626,20 @@ export function CalibrationPresetPage({
 
       {needsPresetPicker && (
         <section className="space-y-3">
-          <CalibrationSlicerPicker value={pickedSlicer} onChange={setPickedSlicer} />
-          <CalibrationBedTypePicker value={bedType} onChange={setBedType} />
-          <CalibrationPresetSourceControl
-            ownerFilter={ownerFilter}
-            onOwnerFilterChange={setOwnerFilter}
+          <CalibrationSlicingSection
+            printerId={printerId}
+            mode="preset"
+            needsPresetPicker={needsPresetPicker}
+            nozzle={nozzleDia}
+            slot={calibrationSlot}
+            value={slicing}
+            onChange={setSlicing}
+            disabled={isStarting}
           />
-          <div className="grid grid-cols-1 gap-2">
-            {presets ? (
-              <>
-                <CalibrationPresetDropdown
-                  label={t('slice.printer', 'Printer profile')}
-                  slot="printer"
-                  data={presets}
-                  value={printerRef}
-                  onChange={setPrinterRef}
-                  ownerFilter={ownerFilter}
-                />
-                <CalibrationPresetDropdown
-                  label={t('slice.process', 'Process profile')}
-                  slot="process"
-                  data={presets}
-                  value={processRef}
-                  onChange={setProcessRef}
-                  ownerFilter={ownerFilter}
-                />
-                <CalibrationPresetDropdown
-                  label={t('slice.filament', 'Filament profile')}
-                  slot="filament"
-                  data={presets}
-                  value={filamentRef}
-                  onChange={setFilamentRef}
-                  ownerFilter={ownerFilter}
-                />
-              </>
-            ) : (
-              <div className="p-3 bg-bambu-dark rounded text-sm text-bambu-gray">
-                {t('filamentCali.verifyDownload.loadingPresets', 'Loading presets…')}
-              </div>
-            )}
-          </div>
           {isPaTower && (
             <div className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
               <h4 className="text-sm font-medium text-bambu-gray">
-                {t('filamentCali.verifyDownload.specHeading')}
+                {t('filamentCali.verifyDownload.specHeadings.paTower')}
               </h4>
               <div className="grid grid-cols-2 gap-2">
                 <label className="block">
@@ -852,7 +697,7 @@ export function CalibrationPresetPage({
           {isPaPattern && (
             <div className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
               <h4 className="text-sm font-medium text-bambu-gray">
-                {t('filamentCali.verifyDownload.specHeading')}
+                {t('filamentCali.verifyDownload.specHeadings.paPattern')}
               </h4>
               <div className="grid grid-cols-3 gap-2">
                 <label className="block">
@@ -898,7 +743,7 @@ export function CalibrationPresetPage({
           {isPaLine && (
             <div className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
               <h4 className="text-sm font-medium text-bambu-gray">
-                {t('filamentCali.verifyDownload.specHeading')}
+                {t('filamentCali.verifyDownload.specHeadings.paLine')}
               </h4>
               <div className="grid grid-cols-3 gap-2">
                 <label className="block">
@@ -953,7 +798,7 @@ export function CalibrationPresetPage({
           {isVolSpeed && (
             <div className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
               <h4 className="text-sm font-medium text-bambu-gray">
-                {t('filamentCali.verifyDownload.specHeading')}
+                {t('filamentCali.verifyDownload.specHeadings.volSpeedTower')}
               </h4>
               <div className="grid grid-cols-3 gap-2">
                 <label className="block">
@@ -999,7 +844,7 @@ export function CalibrationPresetPage({
           {isVfa && (
             <div className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
               <h4 className="text-sm font-medium text-bambu-gray">
-                {t('filamentCali.verifyDownload.specHeading')}
+                {t('filamentCali.verifyDownload.specHeadings.vfaTower')}
               </h4>
               <div className="grid grid-cols-3 gap-2">
                 <label className="block">
@@ -1045,7 +890,7 @@ export function CalibrationPresetPage({
           {isTemp && (
             <div className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
               <h4 className="text-sm font-medium text-bambu-gray">
-                {t('filamentCali.verifyDownload.specHeading')}
+                {t('filamentCali.verifyDownload.specHeadings.tempTower')}
               </h4>
               <div className="grid grid-cols-2 gap-2">
                 <label className="block">

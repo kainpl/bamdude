@@ -19,9 +19,11 @@
 //   mismatch buckets and only consults the mismatch bucket when the compatible
 //   bucket is empty (#1851).
 
-import type { PresetRef, PresetSource, UnifiedPreset, UnifiedPresetsResponse } from '../api/client';
+import type { FamilyPresetRefs, PresetRef, PresetSource, UnifiedPreset, UnifiedPresetsResponse } from '../api/client';
 import { colorsAreSimilar, filamentTypesCompatible, normalizeColorForCompare } from './amsHelpers';
-import { presetCompatibility, type PrinterCompatibilityIndex } from './slicerPrinterMatch';
+import { presetCompatibility, printerPresetIdentity, type PrinterCompatibilityIndex } from './slicerPrinterMatch';
+import type { PrinterParents } from './printerPresetParents';
+import { presetIsOfFamily } from './sliceFarmFilter';
 // `Slot` + the lookup priority live in utils/presetPickerUtils (BamDude's single
 // source of truth for both the SliceModal and the calibration preset pickers);
 // re-use them here rather than redefining a parallel copy.
@@ -103,6 +105,88 @@ export function pickProcessDefault(
     }
   }
   return pickDefault(by, 'process');
+}
+
+/** The listing narrowed to the presets `keep` lets through, one slot at a time. */
+function narrowed(by: UnifiedPresetsResponse, slot: Slot, keep: (p: UnifiedPreset) => boolean): UnifiedPresetsResponse {
+  const out = { ...by };
+  for (const tier of SLICE_MODAL_TIER_ORDER) out[tier] = { ...by[tier], [slot]: by[tier][slot].filter(keep) };
+  return out;
+}
+
+/**
+ * The printer's last automatic step (spec slicing-setup R5, §4.4.4): over the
+ * WHOLE catalogue — the source and farm filters never steer a printer pick —
+ * a machine preset with a 0.4 mm nozzle, in source order; then any machine
+ * preset; never a model card ("Bambu Lab A1"), so a catalogue of cards only
+ * picks nothing.
+ */
+export function pickPrinterFallback(
+  by: UnifiedPresetsResponse,
+  parentsBySource: Partial<Record<PresetSource, PrinterParents | null>>,
+): PresetRef | null {
+  const machines = SLICE_MODAL_TIER_ORDER.flatMap((tier) =>
+    by[tier].printer
+      .map((p) => ({ p, identity: printerPresetIdentity(p.name, parentsBySource[p.source] ?? null) }))
+      .filter((x) => x.identity !== null),
+  );
+  const chosen = machines.find((x) => Number(x.identity?.nozzle) === 0.4) ?? machines[0];
+  return chosen ? { source: chosen.p.source, id: chosen.p.id } : null;
+}
+
+/**
+ * A field's process pick (spec slicing-setup R5): a usable file process from
+ * the whole catalogue; then `pickProcessDefault` over the field's pick offer,
+ * accepted only when it fits the printer; then `pickProcessDefault` over the
+ * whole catalogue — or, with `fittingOnly` (calibration), over the presets
+ * that are not a mismatch only, and nothing when none is.
+ */
+export function pickProcessForField(
+  by: UnifiedPresetsResponse,
+  pickKeep: (p: UnifiedPreset) => boolean,
+  printerName: string | null,
+  compatIndex: PrinterCompatibilityIndex,
+  opts?: { file?: { ref?: PresetRef | null; name?: string | null }; fittingOnly?: boolean },
+): PresetRef | null {
+  const fits = (p: UnifiedPreset | null) =>
+    p !== null && presetCompatibility(p, 'process', printerName, compatIndex) !== 'mismatch';
+  // The ref a record names, then the name the file carries — each only while
+  // it is listed and fits the printer.
+  for (const fileRef of [opts?.file?.ref ?? null, findPresetByName(by, 'process', opts?.file?.name)]) {
+    if (fileRef && fits(findPreset(by, fileRef, 'process'))) return fileRef;
+  }
+  const offered = narrowed(by, 'process', pickKeep);
+  const fromOffer = pickProcessDefault(offered, printerName, compatIndex);
+  if (fromOffer && fits(findPreset(offered, fromOffer, 'process'))) return fromOffer;
+  if (opts?.fittingOnly) {
+    const fitting = narrowed(by, 'process', (p) => fits(p));
+    return pickProcessDefault(fitting, printerName, compatIndex);
+  }
+  return pickProcessDefault(by, printerName, compatIndex);
+}
+
+/**
+ * Calibration's filament pick (spec slicing-setup r5 D6, §7.2): a preset of
+ * the loaded slot's FAMILY — by the family-only test, never by material — that
+ * is not a mismatch for the printer; a match before an unknown, in source
+ * order. Nothing qualifies → no pick, and the field waits for a person.
+ */
+export function pickFamilyFilament(
+  by: UnifiedPresetsResponse,
+  refs: FamilyPresetRefs | undefined,
+  printerName: string | null,
+  compatIndex: PrinterCompatibilityIndex,
+): PresetRef | null {
+  if (!refs) return null;
+  for (const wanted of ['match', 'unknown'] as const) {
+    for (const tier of SLICE_MODAL_TIER_ORDER) {
+      const p = by[tier].filament.find(
+        (f) => presetIsOfFamily(f, refs) && presetCompatibility(f, 'filament', printerName, compatIndex) === wanted,
+      );
+      if (p) return { source: p.source, id: p.id };
+    }
+  }
+  return null;
 }
 
 // Bambu's default layer height, the one its own presets are named "Standard"

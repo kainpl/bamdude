@@ -3105,10 +3105,6 @@ export default {
     sourceMode: 'Base',
     sourceModeType: 'From type (standard profile)',
     sourceModePreset: 'From an existing preset',
-    pickPreset: 'Pick a preset…',
-    tierLocal: 'local',
-    tierBambu: 'Bambu Cloud',
-    tierOrca: 'Orca Cloud',
     pushBambu: 'Also push to Bambu Cloud',
     pushOrca: 'Also push to Orca Cloud',
     orcaRequired: 'Connect Orca Cloud first (Profiles → Orca Cloud)',
@@ -3497,7 +3493,7 @@ export default {
     pipelines: {
       title: 'Slice settings',
       subtitle: 'Save the printer / process / filament / bed picks from the Slice dialog under a name, then apply them to the next file in one go.',
-      loading: 'Loading saved settingsâ¦',
+      loading: 'Loading saved settings…',
       loadError: 'Could not load saved settings.',
       confirmDelete: 'Delete these saved settings? This cannot be undone.',
       staleWarning: 'One or more referenced presets no longer exist. Re-save from the Slice dialog to fix.',
@@ -3527,7 +3523,7 @@ export default {
         profiles: 'Profiles',
         filaments: 'Filaments'
       },
-      searchPlaceholder: 'Search saved settingsâ¦',
+      searchPlaceholder: 'Search saved settings…',
       filter: {
         count: '{{shown}} / {{total}}',
         noMatches: 'Nothing matches the current filters.'
@@ -6027,12 +6023,33 @@ export default {
     noMatches: 'No settings match this search.',
   },
 
+  // The slicing-setup family's filters and field notes (spec slicing-setup r5).
+  slicingSetup: {
+    farmModels: 'Only models of my farm',
+    relaxed: {
+      source: 'No profile of your own fits here, so built-in profiles are shown too.',
+      farm: 'No profile of a printer model in your farm fits here, so every printer profile is shown.',
+      loaded: 'No profile of a loaded filament fits here, so every filament profile is shown.',
+    },
+    showAll: 'Show all',
+    noFit: 'No profile is known to fit this printer, so every profile is shown.',
+    gone: 'The chosen profile is no longer in the list. Choose one to continue.',
+    notProven: 'This printer profile is not known to be this printer with the chosen nozzle. Choose a profile of this printer to start.',
+    otherModel: 'This printer profile is for another model, so the file is for that model.',
+    family: {
+      pending: 'Waiting for the printer to say which filament family is in {{slot}}. You can choose a profile now.',
+      unavailable: 'The filament family in {{slot}} could not be read. Choose its profile.',
+      absent: 'No profile of the filament family in {{slot}} was found. Choose its profile.',
+    },
+    noCatalogue: 'Choosing presets here needs the right to slice files.',
+    fromPreset: 'Preset to start from',
+  },
   slice: {
     title: 'Slice model',
     action: 'Slice',
     pipelines: {
       label: 'Saved settings',
-      applyPrompt: 'Apply saved settingsâ¦',
+      applyPrompt: 'Apply saved settings…',
       empty: 'Nothing saved yet',
       saveButton: 'Save these settings',
       saveTitle: 'Save the current printer / process / filament / bed selection for reuse',
@@ -6062,20 +6079,10 @@ export default {
     autoArrange: 'Auto-arrange on the bed',
     autoArrangeHint: 'Let the slicer reposition objects before slicing. Applied automatically when re-slicing for a different nozzle class.',
     farmFilter: {
-      onlyOnline: 'Only printers that are online',
       onlyLoaded: 'Only filaments that are loaded',
-      noOnlinePrinters: 'No printer is online, so no printer profile matches.',
-      noOnlinePresets: 'No printer profile matches a printer that is online.',
-      nothingLoaded: 'Nothing is loaded on the printers that are online.',
-      noOnlineOfModel: 'No printer of the chosen model is online, so no filament counts as loaded.',
-      nothingLoadedOnModel: 'Nothing is loaded on the online printers of the chosen model.',
-      noLoadedPresets: 'No filament profile matches a loaded filament.',
       unavailable: 'The printers could not be read, so every profile is shown.',
       forbidden: 'These filters need the right to view printers, so every profile is shown.',
       stale: 'The printers could not be read again. The lists are still narrowed by the last answer, which may be out of date.',
-      showAll: 'Show all',
-      showAllPrinters: 'Show all printer profiles',
-      showAllFilaments: 'Show all filament profiles',
     },
     autoOrient: 'Auto-orient objects',
     autoOrientHint: 'Let the slicer rotate each object onto its best-scoring orientation. Overrides how the model was laid out.',
@@ -10669,7 +10676,16 @@ export default {
       intro:
         "Verification mode runs the calibration through your slicer sidecar and returns the sliced .gcode.3mf as a download. Open it in Bambu Studio or OrcaSlicer and compare against your reference output before BamDude wires this mode to dispatch real prints.",
       loadingPresets: 'Loading presets…',
-      specHeading: 'PA Tower parameters',
+      specHeadings: {
+        paLine: 'PA Line parameters',
+        paPattern: 'PA Pattern parameters',
+        paTower: 'PA Tower parameters',
+        flowRate: 'Flow Rate parameters',
+        tempTower: 'Temperature Tower parameters',
+        volSpeedTower: 'Max Volumetric Speed Tower parameters',
+        vfaTower: 'VFA Tower parameters',
+        retractionTower: 'Retraction Tower parameters',
+      },
       startK: 'Start K',
       endK: 'End K',
       stepK: 'K step',

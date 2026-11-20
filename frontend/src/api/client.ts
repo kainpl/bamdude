@@ -16,6 +16,7 @@ import type { PrintOptions as PrintDialogOptions } from '../components/PrintModa
 import { isMonitorKioskLocation } from '../features/monitor/location';
 import { createPrinterStatusBatcher } from './printerStatusBatch';
 import { createIdBatcher } from '../utils/idBatch';
+import { bumpPresetContext } from '../utils/presetContext';
 import { farmRead, farmReadBudget } from './farmReadBudget';
 
 export type PrintStateAction =
@@ -6250,16 +6251,31 @@ export interface OnlinePrinter {
 
 // The presets that ARE one family, by the id each tier of /slicer/presets lists them under.
 export interface FamilyPresetRefs {
-  name: string;
+  // A system family's name; a custom family's only from a ref this caller may
+  // see, else null (spec slicing-setup r5 §8.4).
+  name: string | null;
+  // Exact ids only, per source (spec slicing-setup r5 §8.3).
   cloud: string[];
   orca_cloud: string[];
   local: string[];
   standard: string[];
+  // Bambu Cloud bases that stand for this family alone; see presetIsOfFamily.
+  cloud_aliases: string[];
+}
+
+// A printer of the farm that is not archived — online, paused, offline or in
+// maintenance (spec slicing-setup D4). Nozzles unknown → [] (never assumed).
+export interface FarmPrinter {
+  printer_id: number;
+  model: string | null;
+  accepts: string[];
+  nozzle_diameters: number[];
 }
 
 export interface LoadedFilamentsResponse {
   printers: OnlinePrinter[];
   families: Record<string, FamilyPresetRefs>;
+  farm_printers: FarmPrinter[];
 }
 
 export interface SliceResponse {
@@ -10420,6 +10436,8 @@ export interface CalibBakeOnlyIn {
   spec?: Record<string, number | string | boolean>;
   extruder_count?: number;
   pass_n?: number;
+  // The plate is checked against this slicer (none = the preferred one).
+  slicer?: 'orcaslicer' | 'bambu_studio';
   bed_type?: BedType;
 }
 
@@ -12496,23 +12514,38 @@ export const api = {
     if (!response.ok) throw new ApiError(`HTTP ${response.status}`, response.status);
     return response.blob();
   },
-  cloudLogin: (email: string, password: string, region = 'global') =>
-    request<CloudLoginResponse>('/cloud/login', {
+  // A CONFIRMED binding change starts a new preset-catalogue context
+  // (utils/presetContext): a list read under the old link is never reused.
+  // A pending answer — a verification code still to come — changes nothing.
+  cloudLogin: async (email: string, password: string, region = 'global') => {
+    const result = await request<CloudLoginResponse>('/cloud/login', {
       method: 'POST',
       body: JSON.stringify({ email, password, region }),
-    }),
-  cloudVerify: (email: string, code: string, tfaKey?: string, region: string = 'global') =>
-    request<CloudLoginResponse>('/cloud/verify', {
+    });
+    if (result.success && !result.needs_verification) bumpPresetContext();
+    return result;
+  },
+  cloudVerify: async (email: string, code: string, tfaKey?: string, region: string = 'global') => {
+    const result = await request<CloudLoginResponse>('/cloud/verify', {
       method: 'POST',
       body: JSON.stringify({ email, code, tfa_key: tfaKey, region }),
-    }),
-  cloudSetToken: (access_token: string, region: string = 'global') =>
-    request<CloudAuthStatus>('/cloud/token', {
+    });
+    if (result.success) bumpPresetContext();
+    return result;
+  },
+  cloudSetToken: async (access_token: string, region: string = 'global') => {
+    const result = await request<CloudAuthStatus>('/cloud/token', {
       method: 'POST',
       body: JSON.stringify({ access_token, region }),
-    }),
-  cloudLogout: () =>
-    request<{ success: boolean }>('/cloud/logout', { method: 'POST' }),
+    });
+    bumpPresetContext();
+    return result;
+  },
+  cloudLogout: async () => {
+    const result = await request<{ success: boolean }>('/cloud/logout', { method: 'POST' });
+    if (result.success) bumpPresetContext();
+    return result;
+  },
 
   // Orca Cloud — RFC 8628 device pairing. deviceStart() returns a short
   // user_code + verification link; the user approves it in their Orca Cloud
@@ -12523,14 +12556,21 @@ export const api = {
     request<OrcaDeviceStartResponse>('/orca-cloud/device/start', {
       method: 'POST',
     }),
-  orcaCloudDevicePoll: () =>
-    request<OrcaDevicePollResponse>('/orca-cloud/device/poll', {
+  orcaCloudDevicePoll: async () => {
+    const result = await request<OrcaDevicePollResponse>('/orca-cloud/device/poll', {
       method: 'POST',
-    }),
+    });
+    // `authorization_pending` / `slow_down` answer too; only a pairing is a change.
+    if (result.connected) bumpPresetContext();
+    return result;
+  },
   orcaCloudStatus: () =>
     request<OrcaAuthStatusResponse>('/orca-cloud/status'),
-  orcaCloudLogout: () =>
-    request<{ success: boolean }>('/orca-cloud/logout', { method: 'POST' }),
+  orcaCloudLogout: async () => {
+    const result = await request<{ success: boolean }>('/orca-cloud/logout', { method: 'POST' });
+    if (result.success) bumpPresetContext();
+    return result;
+  },
   orcaCloudListProfiles: () =>
     request<OrcaProfileListResponse>('/orca-cloud/profiles'),
   orcaCloudGetProfile: (id: string) =>
@@ -15930,8 +15970,9 @@ export const api = {
   // Per-(user, printer-model) PrintModal toggle preferences. The model
   // string is URI-encoded so models with characters like spaces or "/"
   // round-trip correctly.
+  // ``null`` when nothing is saved yet for this model.
   getPrintOptionsPreference: (printerModel: string) =>
-    request<PrintOptionsPreferenceResponse>(
+    request<PrintOptionsPreferenceResponse | null>(
       `/print-option-preferences/${encodeURIComponent(printerModel)}`,
     ),
   upsertPrintOptionsPreference: (printerModel: string, data: PrintOptionsPreferenceData) =>

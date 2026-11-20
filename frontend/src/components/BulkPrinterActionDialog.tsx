@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { invalidatePrinterFleet } from '../utils/printerFleetInvalidation';
 import { useTranslation } from 'react-i18next';
 import { api, type Printer, type PrinterStatus, type MaintenanceStatus, type PrinterQueue, type WaitingPrint, type Permission } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
@@ -200,7 +201,7 @@ export function BulkPrinterActionDialog({ action, printers, onClose }: {
     } finally {
       setResults(output);
       setRunning(false);
-      void queryClient.invalidateQueries({ queryKey: ['printers'] });
+      void invalidatePrinterFleet(queryClient);
       void queryClient.invalidateQueries({ queryKey: ['queues'] });
       void queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
       void queryClient.invalidateQueries({ queryKey: ['maintenanceSummary'] });

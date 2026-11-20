@@ -616,7 +616,7 @@ export function PrintModal({
       try {
         return await api.getPrintOptionsPreference(effectivePrinterModel!);
       } catch {
-        // 404 — no preference saved yet, fall back to built-in defaults.
+        // A failed read falls back to the built-in defaults, as nothing saved (null) does.
         return null;
       }
     },

@@ -17,7 +17,7 @@
 //      "0.20mm" and "PA6" before "PA12".
 
 import type { PresetSource, UnifiedPreset } from '../api/client';
-import { isCustomPreset, type Slot } from './presetPickerUtils';
+import { isOwnPreset, type Slot } from './presetPickerUtils';
 
 /** The groups of a preset dropdown, in the order they are listed. */
 export const PRESET_GROUP_ORDER = ['local', 'orca_cloud', 'cloud_own', 'cloud', 'standard'] as const;
@@ -26,7 +26,7 @@ export type PresetGroup = (typeof PRESET_GROUP_ORDER)[number];
 /** The group a preset is listed in: its source, with Bambu Cloud split by owner. */
 export function presetGroupOf(preset: Pick<UnifiedPreset, 'source' | 'id'>): PresetGroup {
   const source: PresetSource = preset.source;
-  if (source === 'cloud') return isCustomPreset(preset as UnifiedPreset) ? 'cloud_own' : 'cloud';
+  if (source === 'cloud') return isOwnPreset(preset) ? 'cloud_own' : 'cloud';
   return source;
 }
 

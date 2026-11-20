@@ -134,17 +134,37 @@ class OnlinePrinter(BaseModel):
     filaments: list[LoadedFilament] = []
 
 
+class FarmPrinter(BaseModel):
+    """A printer of the farm, whatever its state — online, paused, offline or in
+    maintenance; only an archived printer is no longer of the farm (spec
+    slicing-setup D4: "Only models of my farm"). Nozzles are read from a live
+    connection only; an unknown fit is ``[]`` and excludes no size."""
+
+    printer_id: int
+    model: str | None = None
+    accepts: list[str] = []
+    nozzle_diameters: list[float] = []
+
+
 class FamilyPresetRefs(BaseModel):
     """The presets that ARE one family, by the ``id`` each tier of
     ``/slicer/presets`` lists them under."""
 
-    name: str
+    # A system family's catalogue name; a custom family's name only from a ref
+    # this caller may see (its stored alias is global) — else none.
+    name: str | None = None
     cloud: list[str] = []
     orca_cloud: list[str] = []
     local: list[str] = []
     standard: list[str] = []
+    # Bambu Cloud only: bases that stand for this family alone (every catalogue
+    # setting id with the base is the family's). An id the catalogue does not
+    # know matches when it IS such a base or starts with ``base + "_"``; every
+    # list above holds exact ids only (spec slicing-setup r5 §8.3).
+    cloud_aliases: list[str] = []
 
 
 class LoadedFilamentsResponse(BaseModel):
     printers: list[OnlinePrinter] = []
+    farm_printers: list[FarmPrinter] = []
     families: dict[str, FamilyPresetRefs] = {}
