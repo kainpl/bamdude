@@ -19,7 +19,7 @@ def main() -> int:
     archive_root = Path(bootstrap["archive_root"]).resolve(strict=True)
     from backend.app.services.analysis_codec import encode
     from backend.app.services.analysis_source import AnalysisSource, AnalysisSourceError
-    from backend.app.services.print_file_analysis import _parse_3mf
+    from backend.app.services.print_file_analysis import AnalysisResourceError, _parse_3mf
 
     (staging / "child.ready").write_text(str(os.getpid()), encoding="ascii")
 
@@ -50,7 +50,11 @@ def main() -> int:
             result = {"outcome": "ok"}
         except Exception as exc:
             result = {
-                "outcome": "resource_limit" if isinstance(exc, (ValueError, AnalysisSourceError)) else "parse_failed"
+                # The parser's own bounds (G-code size, timeline entries, result
+                # bytes) are limits, not a broken file.
+                "outcome": "resource_limit"
+                if isinstance(exc, (ValueError, AnalysisSourceError, AnalysisResourceError))
+                else "parse_failed"
             }
         if root is None:
             return 2

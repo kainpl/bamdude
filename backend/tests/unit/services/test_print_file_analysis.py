@@ -393,6 +393,59 @@ def test_parser_rejects_an_oversized_gcode_member_before_extracting(tmp_path, mo
         print_file_analysis._parse_3mf(str(path), 1)
 
 
+def test_the_gcode_limit_is_a_gibibyte():
+    # Owner's decision (2026-11-20): a long four-colour X2D plate is 305 MiB of
+    # G-code, and 256 MiB refused its whole analysis. Safe only because the
+    # timeline streams the member (next test) instead of holding it in memory.
+    from backend.app.services import print_file_analysis
+
+    assert print_file_analysis._MAX_GCODE_BYTES == 1024 * 1024 * 1024
+
+
+def test_the_analysis_deadlines_grow_with_the_gcode_limit():
+    # Owner (2026-11-20): the time to analyse grows with what may be analysed —
+    # 180 s for 256 MiB, the same ratio for the 1 GiB limit. The result's
+    # transfer does not depend on the G-code and keeps its own budget.
+    from backend.app.services import analysis_runtime, print_file_analysis
+
+    seconds_per_mib = 180 / 256
+    limit_mib = print_file_analysis._MAX_GCODE_BYTES / 2**20
+    assert analysis_runtime._COMPUTE_SECONDS == limit_mib * seconds_per_mib == 720
+    assert print_file_analysis._ANALYSIS_DEADLINE_SECONDS == analysis_runtime._COMPUTE_SECONDS
+    assert analysis_runtime._HARD_SECONDS == analysis_runtime._COMPUTE_SECONDS + analysis_runtime._TRANSFER_SECONDS
+
+
+def test_the_layer_timeline_streams_the_gcode_member(tmp_path, monkeypatch):
+    """Never read the whole member (bytes + str + a list of lines held at once
+    took ~1.4 GiB for 305 MiB of G-code): the stream gives the same timeline,
+    pauses included, and CRLF line ends change nothing."""
+    from backend.app.utils import threemf_tools
+
+    lines = ["M83", "M620 S0A", "M73 P0 R20"]
+    for layer in range(1, 11):
+        lines += [f"M73 P{layer * 10} R{20 - (layer - 1) * 2}", f"M73 L{layer}"]
+        if layer == 4:
+            lines += ["M400 U1", "M620 S1A"]
+        lines.append("G1 E1.0 ; extrude")
+    text = "\r\n".join(lines) + "\r\n"
+    expected = threemf_tools.parse_gcode_layer_filament_usage(text)
+    path = tmp_path / "job.3mf"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("Metadata/plate_1.gcode", text)
+
+    real_read = zipfile.ZipFile.read
+
+    def no_whole_gcode(self, name, *args, **kwargs):
+        assert not str(name).endswith(".gcode"), "the G-code member was read whole"
+        return real_read(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", no_whole_gcode)
+    scan = threemf_tools.extract_layer_filament_usage_from_3mf(path, 1)
+
+    assert scan is not None and dict(scan) == dict(expected) and len(scan) > 1
+    assert scan.pause_points == expected.pause_points and scan.pause_points
+
+
 def test_analysis_progress_index_matches_the_last_layer_at_or_before_target():
     analysis = PrintFileAnalysis(
         [],

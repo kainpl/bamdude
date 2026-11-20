@@ -331,6 +331,33 @@ async def test_analysis_cancel_forwards_service_cleanup_diagnostic(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_failed_parse_keeps_the_workers_reason(tmp_path, monkeypatch):
+    """The parent's failure names what the worker answered (local microservice
+    rule): "analysis service failed" alone hid a G-code over its size limit."""
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    path = archive_dir / "job.3mf"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("Metadata/plate_1.gcode", "M73 L1\nG1 E2\n")
+    broker = LocalWorkerBroker(tmp_path / ".cache" / "preview-service")
+    await broker.start()
+    runtime = AnalysisRuntime(tmp_path, broker)
+    try:
+        await runtime.start()
+        assert runtime.ready, runtime.reason
+
+        async def refused(command, timeout):
+            return {"outcome": "parse_failed"}
+
+        monkeypatch.setattr(runtime, "rpc", refused)
+        with pytest.raises(AnalysisResourceError, match="analysis service failed: analysis worker parse_failed"):
+            await runtime.parse(path, 1)
+    finally:
+        await runtime.stop()
+        await broker.stop()
+
+
+@pytest.mark.asyncio
 async def test_analysis_service_cleanup_failure_preserves_primary_outcome(tmp_path, monkeypatch):
     from backend.app import analysis_service
     from backend.app.services.worker_staging import CleanupResult
