@@ -1678,3 +1678,91 @@ async def test_start_flow_rate_stage2_rejects_missing_dispatch_args(
 
     with pytest.raises(ValueError, match="dispatch_args_json"):
         await service._start_flow_rate_stage2(db=db_session, parent=parent)
+
+
+@pytest.mark.asyncio
+async def test_flow_pass_reslice_uses_the_effective_plate(service, db_session, printer_factory, monkeypatch):
+    """Spec slicing-setup r5 §8.2: the fine pass re-slices with the stored
+    arguments, and builder and CLI get the same effective plate — the nested
+    spec value when set, else the top-level one — checked against the slicer."""
+    from fastapi import HTTPException
+
+    from backend.app.services import calib_3mf_builder, preset_resolver, slicer_api, slicer_routing
+
+    seen: dict = {"builder": [], "cli": []}
+
+    async def online(db):
+        return True
+
+    async def resolve(db, *, slicer_override=None):
+        return (slicer_override or "bambu_studio", "http://sidecar.invalid")
+
+    def build(*, cali_mode, spec, extruder_count, pass_n):
+        seen["builder"].append((pass_n, spec.get("bed_type")))
+        return b"not-a-zip"
+
+    async def preset(db, user, ref, slot):
+        return "{}"
+
+    async def stall(db):
+        return 60
+
+    class Svc:
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def slice_with_profiles(self, **kw):
+            seen["cli"].append(kw.get("bed_type"))
+            raise slicer_api.SlicerApiError("stopped by the test")
+
+    monkeypatch.setattr(slicer_routing, "any_sidecar_online", online)
+    monkeypatch.setattr(slicer_routing, "resolve_sidecar_url", resolve)
+    monkeypatch.setattr(calib_3mf_builder, "build_calibration_3mf", build)
+    monkeypatch.setattr(preset_resolver, "resolve_preset_ref", preset)
+    monkeypatch.setattr(slicer_api, "SlicerApiService", Svc)
+    monkeypatch.setattr(slicer_api, "get_stall_timeout_seconds", stall)
+
+    printer = await printer_factory(model="P1S")
+
+    def parent(dispatch_args: dict) -> CalibrationSession:
+        return CalibrationSession(
+            printer_id=printer.id,
+            user_id=None,
+            cali_mode="flow_rate",
+            method="manual",
+            nozzle_diameter=0.4,
+            nozzle_volume_type="standard",
+            extruder_id=0,
+            filaments_json='[{"ams_id":0,"slot_id":0,"tray_id":0,"filament_id":"GFG00"}]',
+            status="awaiting_user_input",
+            stage=1,
+            coarse_ratio=1.05,
+            dispatch_args_json=json.dumps(
+                {
+                    "printer_preset": {"source": "standard", "id": "P"},
+                    "process_preset": {"source": "standard", "id": "Q"},
+                    "filament_presets": [{"source": "standard", "id": "F"}],
+                    "print_options": None,
+                    "swap_macros": None,
+                    **dispatch_args,
+                }
+            ),
+        )
+
+    conflict = parent({"spec": {"bed_type": "Engineering Plate"}, "bed_type": "Cool Plate", "slicer": None})
+    with pytest.raises(ValueError, match="Slicer sidecar failed"):
+        await service._start_flow_rate_stage2(db=db_session, parent=conflict)
+    assert seen["builder"] == [(2, "Engineering Plate")]
+    assert seen["cli"] == ["Engineering Plate"]
+
+    orca_only = parent({"spec": {"bed_type": ""}, "bed_type": "Textured Cool Plate", "slicer": None})
+    with pytest.raises(HTTPException) as refused:
+        await service._start_flow_rate_stage2(db=db_session, parent=orca_only)
+    assert refused.value.status_code == 422
+    assert seen["builder"] == [(2, "Engineering Plate")]

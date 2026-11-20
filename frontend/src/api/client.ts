@@ -10431,6 +10431,8 @@ export interface CalibBakeOnlyIn {
   spec?: Record<string, number | string | boolean>;
   extruder_count?: number;
   pass_n?: number;
+  // The plate is checked against this slicer (none = the preferred one).
+  slicer?: 'orcaslicer' | 'bambu_studio';
   bed_type?: BedType;
 }
 

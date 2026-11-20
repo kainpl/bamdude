@@ -1312,6 +1312,7 @@
   "Unexpected response from Bambu Cloud: {}": "Неочікувана відповідь від Bambu Cloud: {}",
   "unknown action": "невідома дія",
   "Unknown action_type '{}'": "Невідомий action_type «{}»",
+  "Unknown bed plate": "Невідомий тип столу",
   "unknown filament family": "невідома сімʼя філаменту",
   "Unknown file type: {}": "Невідомий тип файлу: {}",
   "Unknown Git provider: {}": "Невідомий Git-провайдер: {}",
