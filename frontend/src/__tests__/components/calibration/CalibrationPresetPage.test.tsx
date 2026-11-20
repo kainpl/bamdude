@@ -55,16 +55,16 @@ function spies(model = 'A1') {
     ams: [{ id: 0, tray: [{ id: 0, state: 11, tray_info_idx: 'GFA01', tray_type: 'PLA', tray_sub_brands: 'PLA Matte' }] }],
     vt_tray: [],
   } as never);
-  vi.spyOn(api, 'getPrintOptionsPreference').mockRejectedValue(new Error('none'));
+  vi.spyOn(api, 'getPrintOptionsPreference').mockResolvedValue(null);
 }
 
-function mount(onStart = vi.fn<(preset: unknown) => Promise<void>>(async () => {})) {
+function mount(onStart = vi.fn<(preset: unknown) => Promise<void>>(async () => {}), caliMode = 'pa_tower') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
       <CalibrationPresetPage
         printerId={1}
-        caliMode="pa_tower"
+        caliMode={caliMode as never}
         method="manual"
         capabilities={{ nozzles: [{ diameter: 0.4 }], extruders: [{ id: 0, name: 'Main' }], dual_extruder: false } as never}
         onBack={() => {}}
@@ -115,5 +115,16 @@ describe('CalibrationPresetPage', () => {
     await screen.findByLabelText('Printer profile');
     await new Promise((r) => setTimeout(r, 50));
     expect(startButton()).toBeDisabled();
+  });
+
+  it.each([
+    ['pa_tower', 'PA Tower parameters'],
+    ['pa_line', 'PA Line parameters'],
+    ['pa_pattern', 'PA Pattern parameters'],
+  ])('the %s parameters carry their own mode in the heading', async (mode, heading) => {
+    spies();
+    mount(undefined, mode);
+    expect(await screen.findByText(heading)).toBeInTheDocument();
+    if (mode !== 'pa_tower') expect(screen.queryByText('PA Tower parameters')).toBeNull();
   });
 });

@@ -10676,7 +10676,16 @@ export default {
       intro:
         "Verification mode runs the calibration through your slicer sidecar and returns the sliced .gcode.3mf as a download. Open it in Bambu Studio or OrcaSlicer and compare against your reference output before BamDude wires this mode to dispatch real prints.",
       loadingPresets: 'Loading presets…',
-      specHeading: 'PA Tower parameters',
+      specHeadings: {
+        paLine: 'PA Line parameters',
+        paPattern: 'PA Pattern parameters',
+        paTower: 'PA Tower parameters',
+        flowRate: 'Flow Rate parameters',
+        tempTower: 'Temperature Tower parameters',
+        volSpeedTower: 'Max Volumetric Speed Tower parameters',
+        vfaTower: 'VFA Tower parameters',
+        retractionTower: 'Retraction Tower parameters',
+      },
       startK: 'Start K',
       endK: 'End K',
       stepK: 'K step',

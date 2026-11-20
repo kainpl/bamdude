@@ -385,8 +385,8 @@ export function CalibrationPresetPage({
   const [swapMacros, setSwapMacros] = useState<SwapMacrosOptions>(CALIBRATION_SWAP_MACROS_DEFAULT);
 
   // Read the operator's per-printer-model preference (set via PrintModal
-  // submits). Falls back silently to the calibration defaults above on
-  // 404 — same shape as PrintModal/index.tsx:230.
+  // submits). Nothing saved (null) or a failed read keeps the calibration
+  // defaults above — the same rule as the Print dialog.
   const { data: preferenceData } = useQuery({
     queryKey: ['print-options-preference', printerModel],
     queryFn: async () => {
@@ -627,7 +627,7 @@ export function CalibrationPresetPage({
           {isPaTower && (
             <div className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
               <h4 className="text-sm font-medium text-bambu-gray">
-                {t('filamentCali.verifyDownload.specHeading')}
+                {t('filamentCali.verifyDownload.specHeadings.paTower')}
               </h4>
               <div className="grid grid-cols-2 gap-2">
                 <label className="block">
@@ -685,7 +685,7 @@ export function CalibrationPresetPage({
           {isPaPattern && (
             <div className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
               <h4 className="text-sm font-medium text-bambu-gray">
-                {t('filamentCali.verifyDownload.specHeading')}
+                {t('filamentCali.verifyDownload.specHeadings.paPattern')}
               </h4>
               <div className="grid grid-cols-3 gap-2">
                 <label className="block">
@@ -731,7 +731,7 @@ export function CalibrationPresetPage({
           {isPaLine && (
             <div className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
               <h4 className="text-sm font-medium text-bambu-gray">
-                {t('filamentCali.verifyDownload.specHeading')}
+                {t('filamentCali.verifyDownload.specHeadings.paLine')}
               </h4>
               <div className="grid grid-cols-3 gap-2">
                 <label className="block">
@@ -786,7 +786,7 @@ export function CalibrationPresetPage({
           {isVolSpeed && (
             <div className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
               <h4 className="text-sm font-medium text-bambu-gray">
-                {t('filamentCali.verifyDownload.specHeading')}
+                {t('filamentCali.verifyDownload.specHeadings.volSpeedTower')}
               </h4>
               <div className="grid grid-cols-3 gap-2">
                 <label className="block">
@@ -832,7 +832,7 @@ export function CalibrationPresetPage({
           {isVfa && (
             <div className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
               <h4 className="text-sm font-medium text-bambu-gray">
-                {t('filamentCali.verifyDownload.specHeading')}
+                {t('filamentCali.verifyDownload.specHeadings.vfaTower')}
               </h4>
               <div className="grid grid-cols-3 gap-2">
                 <label className="block">
@@ -878,7 +878,7 @@ export function CalibrationPresetPage({
           {isTemp && (
             <div className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
               <h4 className="text-sm font-medium text-bambu-gray">
-                {t('filamentCali.verifyDownload.specHeading')}
+                {t('filamentCali.verifyDownload.specHeadings.tempTower')}
               </h4>
               <div className="grid grid-cols-2 gap-2">
                 <label className="block">

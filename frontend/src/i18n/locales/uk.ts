@@ -10896,7 +10896,16 @@ export default {
       intro:
         'У режимі перевірки калібровка проганяється через ваш слайсер-сайдкар і повертається як нарізаний .gcode.3mf для завантаження. Відкрий його в Bambu Studio або OrcaSlicer і порівняй з еталоном перед тим як BamDude почне реально друкувати цей режим.',
       loadingPresets: 'Завантажуємо пресети…',
-      specHeading: 'Параметри PA Tower',
+      specHeadings: {
+        paLine: 'Параметри PA Line',
+        paPattern: 'Параметри PA Pattern',
+        paTower: 'Параметри PA Tower',
+        flowRate: 'Параметри Flow Rate',
+        tempTower: 'Параметри температурної вежі',
+        volSpeedTower: 'Параметри вежі Max Volumetric Speed',
+        vfaTower: 'Параметри VFA вежі',
+        retractionTower: 'Параметри Retraction вежі',
+      },
       startK: 'Початковий K',
       endK: 'Кінцевий K',
       stepK: 'Крок K',

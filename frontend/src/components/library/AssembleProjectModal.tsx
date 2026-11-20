@@ -274,9 +274,18 @@ function PartEditor({ part, index, onChange }: { part: PartRow; index: number; o
   const { t } = useTranslation();
   const clamp = (value: number) => Math.min(MAX_COPIES, Math.max(1, Math.round(value) || 1));
   return (
-    <tr className="border-t border-bambu-dark-tertiary" data-testid={`assemble-part-${index}`}>
-      <td className="py-2 pr-2 text-sm text-white break-all">{part.name}</td>
-      <td className="py-2 pr-2">
+    // Below `sm` a part is a wrapping block (name, then copies and fill, then
+    // orientation): four table columns do not fit a phone. The explicit roles
+    // keep it a table for assistive tech whatever the display.
+    <tr
+      role="row"
+      className="border-t border-bambu-dark-tertiary flex flex-wrap items-center gap-x-3 gap-y-2 py-2 sm:table-row sm:py-0"
+      data-testid={`assemble-part-${index}`}
+    >
+      <td role="cell" className="block w-full sm:table-cell sm:w-auto sm:py-2 sm:pr-2 text-sm text-white break-all">
+        {part.name}
+      </td>
+      <td role="cell" className="block sm:table-cell sm:py-2 sm:pr-2">
         <div className="flex items-center gap-1">
           <button
             type="button"
@@ -308,7 +317,7 @@ function PartEditor({ part, index, onChange }: { part: PartRow; index: number; o
           </button>
         </div>
       </td>
-      <td className="py-2 pr-2">
+      <td role="cell" className="block sm:table-cell sm:py-2 sm:pr-2">
         <label className="flex items-center gap-2 text-sm text-white whitespace-nowrap">
           <input
             type="checkbox"
@@ -319,7 +328,7 @@ function PartEditor({ part, index, onChange }: { part: PartRow; index: number; o
           {t('fileManager.assemble.fill')}
         </label>
       </td>
-      <td className="py-2">
+      <td role="cell" className="block w-full sm:table-cell sm:w-auto sm:py-2">
         <Select
           value={part.orientation}
           onChange={(event) => onChange({ ...part, orientation: event.target.value as PartRow['orientation'] })}
@@ -828,16 +837,16 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
       <div className="space-y-5">
         <section>
           <h3 className="text-sm font-medium text-white mb-2">{t('fileManager.assemble.parts')}</h3>
-          <table className="w-full">
-            <thead>
-              <tr className="text-left text-xs text-bambu-gray">
-                <th className="font-normal pb-1">{t('fileManager.assemble.part')}</th>
-                <th className="font-normal pb-1">{t('fileManager.assemble.quantity')}</th>
-                <th className="font-normal pb-1" />
-                <th className="font-normal pb-1">{t('fileManager.assemble.orientationLabel')}</th>
+          <table role="table" className="w-full block sm:table">
+            <thead role="rowgroup" className="hidden sm:table-header-group">
+              <tr role="row" className="text-left text-xs text-bambu-gray">
+                <th role="columnheader" className="font-normal pb-1">{t('fileManager.assemble.part')}</th>
+                <th role="columnheader" className="font-normal pb-1">{t('fileManager.assemble.quantity')}</th>
+                <th role="columnheader" className="font-normal pb-1" />
+                <th role="columnheader" className="font-normal pb-1">{t('fileManager.assemble.orientationLabel')}</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody role="rowgroup" className="block sm:table-row-group">
               {form.parts.map((part, index) => (
                 <PartEditor key={index} part={part} index={index} onChange={(next) => setPart(index, next)} />
               ))}

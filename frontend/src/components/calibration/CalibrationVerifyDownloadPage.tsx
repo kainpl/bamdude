@@ -339,7 +339,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
       {isPaTower && (
         <section className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
           <h4 className="text-sm font-medium text-bambu-gray">
-            {t('filamentCali.verifyDownload.specHeading')}
+            {t('filamentCali.verifyDownload.specHeadings.paTower')}
           </h4>
           <div className="grid grid-cols-2 gap-2">
             <label className="block">
@@ -399,7 +399,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
       {isVolSpeed && (
         <section className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
           <h4 className="text-sm font-medium text-bambu-gray">
-            {t('filamentCali.verifyDownload.specHeading')}
+            {t('filamentCali.verifyDownload.specHeadings.volSpeedTower')}
           </h4>
           <div className="grid grid-cols-2 gap-2">
             <label className="block">
@@ -449,7 +449,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
       {isVfa && (
         <section className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
           <h4 className="text-sm font-medium text-bambu-gray">
-            {t('filamentCali.verifyDownload.specHeading')}
+            {t('filamentCali.verifyDownload.specHeadings.vfaTower')}
           </h4>
           <div className="grid grid-cols-3 gap-2">
             <label className="block">
@@ -489,7 +489,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
       {isTemp && (
         <section className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
           <h4 className="text-sm font-medium text-bambu-gray">
-            {t('filamentCali.verifyDownload.specHeading')}
+            {t('filamentCali.verifyDownload.specHeadings.tempTower')}
           </h4>
           <div className="grid grid-cols-2 gap-2">
             <label className="block">
@@ -520,7 +520,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
       {isRetraction && (
         <section className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
           <h4 className="text-sm font-medium text-bambu-gray">
-            {t('filamentCali.verifyDownload.specHeading')}
+            {t('filamentCali.verifyDownload.specHeadings.retractionTower')}
           </h4>
           <div className="grid grid-cols-3 gap-2">
             <label className="block">
@@ -560,7 +560,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
       {isFlowRate && (
         <section className="space-y-3 border border-bambu-dark-tertiary rounded p-3">
           <h4 className="text-sm font-medium text-bambu-gray">
-            {t('filamentCali.verifyDownload.specHeading')}
+            {t('filamentCali.verifyDownload.specHeadings.flowRate')}
           </h4>
           <div className="flex items-center gap-2">
             <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.flowRatePass')}</span>
@@ -611,7 +611,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
       {isPaPattern && (
         <section className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
           <h4 className="text-sm font-medium text-bambu-gray">
-            {t('filamentCali.verifyDownload.specHeading')}
+            {t('filamentCali.verifyDownload.specHeadings.paPattern')}
           </h4>
           <div className="grid grid-cols-2 gap-2">
             <label className="block">
@@ -661,7 +661,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
       {isPaLine && (
         <section className="space-y-2 border border-bambu-dark-tertiary rounded p-3">
           <h4 className="text-sm font-medium text-bambu-gray">
-            {t('filamentCali.verifyDownload.specHeading')}
+            {t('filamentCali.verifyDownload.specHeadings.paLine')}
           </h4>
           <div className="grid grid-cols-2 gap-2">
             <label className="block">
