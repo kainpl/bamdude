@@ -6036,6 +6036,10 @@ export default {
       loaded: 'No profile of a loaded filament fits here, so every filament profile is shown.',
     },
     showAll: 'Show all',
+    noFit: 'No profile is known to fit this printer, so every profile is shown.',
+    gone: 'The chosen profile is no longer in the list. Choose one to continue.',
+    notProven: 'This printer profile is not known to be this printer with the chosen nozzle. Choose a profile of this printer to start.',
+    otherModel: 'This printer profile is for another model, so the file is for that model.',
   },
   slice: {
     title: 'Slice model',
