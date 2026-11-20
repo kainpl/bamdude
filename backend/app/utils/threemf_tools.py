@@ -57,6 +57,25 @@ PROJECT_SETTINGS_SENTINELS: dict[str, str] = {
 PROJECT_SETTINGS_PATH = "Metadata/project_settings.config"
 
 
+# One G-code line, at most. Streaming bounds memory per line only: a member
+# with no line ends would otherwise become one string as large as the member
+# (up to the 1 GiB G-code limit). Real lines are short — moves are tens of
+# bytes, the config block's longest values a few KB — so 1 Mi chars is far
+# above any slicer's output and far below a memory problem.
+_MAX_GCODE_LINE_CHARS = 1 << 20
+
+
+def _bounded_gcode_lines(text: io.TextIOBase) -> Iterable[str]:
+    """Yield the lines of a text stream; refuse a line over the bound."""
+    while True:
+        line = text.readline(_MAX_GCODE_LINE_CHARS + 1)
+        if not line:
+            return
+        if len(line) > _MAX_GCODE_LINE_CHARS:
+            raise ValueError(f"G-code line longer than {_MAX_GCODE_LINE_CHARS} characters")
+        yield line
+
+
 def _is_sentinel(value: object, sentinel: str) -> bool:
     """Does ``value`` carry ``sentinel``, as text or as a JSON number?
 
@@ -414,7 +433,9 @@ def extract_layer_filament_usage_from_3mf(
             # 305 MiB plate), which the 1 GiB G-code limit could not afford.
             with zf.open(gcode_path) as member:
                 text = io.TextIOWrapper(member, encoding="utf-8", errors="ignore", newline=None)
-                scan = parse_gcode_layer_filament_usage(text)
+                # An overlong line raises here and is caught below: the timeline
+                # is unavailable, the metadata totals are not touched.
+                scan = parse_gcode_layer_filament_usage(_bounded_gcode_lines(text))
             if not plate_is_named:
                 scan.pause_points = ()
             return scan

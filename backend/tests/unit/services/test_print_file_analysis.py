@@ -446,6 +446,29 @@ def test_the_layer_timeline_streams_the_gcode_member(tmp_path, monkeypatch):
     assert scan.pause_points == expected.pause_points and scan.pause_points
 
 
+def test_an_overlong_gcode_line_stops_the_timeline_not_the_totals(tmp_path, monkeypatch):
+    """Streaming bounds memory only per line: a member without line ends would
+    still have become one string the size of the member. A line over the bound
+    gives up the timeline — the totals come from the metadata and stay."""
+    from backend.app.services import print_file_analysis
+    from backend.app.utils import threemf_tools
+
+    monkeypatch.setattr(threemf_tools, "_MAX_GCODE_LINE_CHARS", 64)
+    path = tmp_path / "job.3mf"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "Metadata/slice_info.config",
+            '<config><plate><metadata key="index" value="1" />'
+            '<filament id="1" used_g="12.5" type="PLA" /></plate></config>',
+        )
+        archive.writestr("Metadata/plate_1.gcode", "M83\nM73 L1\n" + "G1 E1.0 " * 40 + "\nM73 L2\n")
+
+    assert threemf_tools.extract_layer_filament_usage_from_3mf(path, 1) is None
+    analysis = print_file_analysis._parse_3mf(str(path), 1)
+    assert analysis.layer_usage is None
+    assert analysis.filament_usage and analysis.filament_usage[0]["used_g"] == 12.5
+
+
 def test_analysis_progress_index_matches_the_last_layer_at_or_before_target():
     analysis = PrintFileAnalysis(
         [],
