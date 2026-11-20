@@ -6252,10 +6252,13 @@ export interface OnlinePrinter {
 // The presets that ARE one family, by the id each tier of /slicer/presets lists them under.
 export interface FamilyPresetRefs {
   name: string;
+  // Exact ids only, per source (spec slicing-setup r5 §8.3).
   cloud: string[];
   orca_cloud: string[];
   local: string[];
   standard: string[];
+  // Bambu Cloud bases that stand for this family alone; see presetIsOfFamily.
+  cloud_aliases: string[];
 }
 
 // A printer of the farm that is not archived — online, paused, offline or in

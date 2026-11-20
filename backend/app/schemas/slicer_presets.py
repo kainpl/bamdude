@@ -155,6 +155,11 @@ class FamilyPresetRefs(BaseModel):
     orca_cloud: list[str] = []
     local: list[str] = []
     standard: list[str] = []
+    # Bambu Cloud only: bases that stand for this family alone (every catalogue
+    # setting id with the base is the family's). An id the catalogue does not
+    # know matches when it IS such a base or starts with ``base + "_"``; every
+    # list above holds exact ids only (spec slicing-setup r5 §8.3).
+    cloud_aliases: list[str] = []
 
 
 class LoadedFilamentsResponse(BaseModel):

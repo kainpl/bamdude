@@ -40,7 +40,7 @@ const FARM: LoadedFilamentsResponse = {
   farm_printers: [],
   printers: [h2d([{ kind: 'ams', material: 'PLA', family_id: 'GFA00', by_material: false }])],
   families: {
-    GFA00: { name: 'Bambu PLA Basic', cloud: [], orca_cloud: [], local: [], standard: ['Bambu PLA Basic @BBL H2D'] },
+    GFA00: { name: 'Bambu PLA Basic', cloud: [], orca_cloud: [], local: [], standard: ['Bambu PLA Basic @BBL H2D'], cloud_aliases: [] },
   },
 };
 

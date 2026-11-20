@@ -212,6 +212,22 @@ class TestLoaded:
         assert "Bambu PLA Basic @BBL X1C" in refs["standard"]
         assert "GFSA00" in refs["cloud"]
 
+    async def test_shared_bases_give_exact_ids_and_no_alias(self, async_client, printer_factory, farm):
+        """Spec slicing-setup §8.3: GFSR99 / GFSR99_10 are Generic TPU, the other
+        GFSR99_NN Generic EVA. Each family names exact ids only; the shared base
+        is an alias of neither, an unambiguous one (GFSA00) is PLA Basic's."""
+        printer = await printer_factory()
+        trays = [_tray(0, "TPU", "GFU99"), _tray(1, "EVA", "GFR99"), _tray(2, "PLA", PLA_BASIC)]
+        farm(printer, _state("X1C", trays=trays))
+
+        families = (await _answer(async_client))["families"]
+
+        tpu, eva = families["GFU99"], families["GFR99"]
+        assert {"GFSR99", "GFSR99_10"} <= set(tpu["cloud"]) and "GFSR99_01" not in tpu["cloud"]
+        assert "GFSR99_01" in eva["cloud"] and not {"GFSR99", "GFSR99_10"} & set(eva["cloud"])
+        assert "GFSR99" not in tpu["cloud_aliases"] and "GFSR99" not in eva["cloud_aliases"]
+        assert "GFSA00" in families[PLA_BASIC]["cloud_aliases"]
+
     async def test_a_slot_advertised_as_generic_answers_with_the_spool_it_holds(
         self, async_client, printer_factory, farm
     ):

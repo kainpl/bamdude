@@ -56,6 +56,7 @@ const FARM: LoadedFilamentsResponse = {
       orca_cloud: [],
       local: [],
       standard: ['Bambu PLA Basic @BBL H2D'],
+      cloud_aliases: ['GFSA00'],
     },
   },
 };

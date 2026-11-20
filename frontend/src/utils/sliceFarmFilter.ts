@@ -100,17 +100,23 @@ export function loadedFilamentsFor(
 
 // A stock preset's id may carry a version suffix ("GFSA00_07") where the
 // server names the base form too.
-function idsOf(preset: Pick<UnifiedPreset, 'id'>): string[] {
-  const base = preset.id.split('_')[0];
-  return base === preset.id ? [preset.id] : [preset.id, base];
-}
-
-function isOfFamily(preset: Pick<UnifiedPreset, 'id' | 'source'>, refs: FamilyPresetRefs | undefined): boolean {
+/**
+ * Is a preset one of this family's (spec slicing-setup r5 §8.3)? The server
+ * decided the ids: every list holds exact ids, so an exact id is checked
+ * first. Only a Bambu Cloud id the catalogue does not know — a system variant
+ * newer than the pinned catalogue — falls back to the family's aliases: bases
+ * that stand for this family alone, matched as the whole id or as `base_…`.
+ * A base two families share (GFSR99: Generic TPU and Generic EVA) is no alias
+ * of either, so nothing is guessed from it.
+ */
+export function presetIsOfFamily(
+  preset: Pick<UnifiedPreset, 'id' | 'source'>,
+  refs: FamilyPresetRefs | undefined,
+): boolean {
   if (!refs) return false;
-  const listed = refs[preset.source] ?? [];
-  // The bundle lists a preset under its name, which is its id there: exact.
-  if (preset.source === 'standard' || preset.source === 'local') return listed.includes(preset.id);
-  return idsOf(preset).some((id) => listed.includes(id));
+  if ((refs[preset.source] ?? []).includes(preset.id)) return true;
+  if (preset.source !== 'cloud') return false;
+  return (refs.cloud_aliases ?? []).some((base) => preset.id === base || preset.id.startsWith(`${base}_`));
 }
 
 /** Is a filament preset one of the loaded filaments? */
@@ -120,7 +126,7 @@ export function filamentPresetIsLoaded(
   families: Record<string, FamilyPresetRefs>,
 ): boolean {
   return loaded.some((filament) => {
-    if (filament.family_id && isOfFamily(preset, families[filament.family_id])) return true;
+    if (filament.family_id && presetIsOfFamily(preset, families[filament.family_id])) return true;
     // A spool without a family keeps ITS type: any preset of that material.
     return (
       filament.by_material

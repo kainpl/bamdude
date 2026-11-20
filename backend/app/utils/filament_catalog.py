@@ -182,6 +182,37 @@ def bambu_filament_id(filament_id: str | None) -> str | None:
     return value
 
 
+@cache
+def _families_by_base() -> dict[str, frozenset[str]]:
+    """Every setting-id base (the part before the first ``_``) of both
+    ecosystems, with the families whose setting ids carry it."""
+    out: dict[str, set[str]] = {}
+    for eco in _ECOSYSTEMS:
+        for presets in _load(eco).presets_by_family.values():
+            for preset in presets:
+                out.setdefault(_base_setting_id(preset.setting_id), set()).add(preset.filament_id)
+    return {base: frozenset(owners) for base, owners in out.items()}
+
+
+def alias_bases_for_family(filament_id: str) -> frozenset[str]:
+    """The bases that stand for this family (spec slicing-setup r5 §8.3, D9).
+
+    A base is an alias only when EVERY catalogue setting id with that base, in
+    both ecosystems, belongs to this family. Bambu reuses some bases across
+    families — ``GFSR99`` is Generic TPU bare and ``_10`` but Generic EVA
+    otherwise; ``GFSP97_03`` is PP-GF beside PP — and such a base stands for
+    nobody. An unambiguous base is still needed: a Bambu Cloud system variant
+    newer than the pinned catalogue is listed under an id the catalogue lacks.
+    """
+    index = _families_by_base()
+    bases = {
+        _base_setting_id(preset.setting_id)
+        for eco in _ECOSYSTEMS
+        for preset in _load(eco).presets_by_family.get(filament_id, ())
+    }
+    return frozenset(base for base in bases if index.get(base) == frozenset({filament_id}))
+
+
 def presets_for_family(filament_id: str) -> list[CatalogPreset]:
     seen: dict[str, CatalogPreset] = {}
     for eco in _ECOSYSTEMS:

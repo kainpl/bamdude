@@ -1,5 +1,6 @@
 ## [Unreleased]
 
+- **"Only filaments that are loaded" no longer mixes Generic TPU with Generic EVA, or PP with PP-GF.** Bambu Lab gives these families profile ids that start the same way, and the filter took a loaded TPU spool for EVA profiles (and EVA for TPU) and PP-GF for PP. A profile now counts for a loaded filament only by its own id, or — for a newer Bambu Cloud profile the app does not know yet — by an id start that belongs to that one filament alone.
 - **Calibration can print on the Textured Cool Plate, and its plate is checked before anything is built.** The calibration wizard refused OrcaSlicer's Textured Cool Plate outright; it is now accepted with OrcaSlicer and refused for Bambu Studio — also when Bambu Studio is the slicer by default — before the calibration plate is built or sliced, so a refused start leaves no session behind. When a calibration's settings named a plate of their own beside the selected one, the 3MF and the slicer could be given different plates; both now get the same one, and so does the second Flow Rate pass.
 - **Your Orca Cloud profiles count as yours.** The calibration wizard's "My presets" filter left out every profile synced from Orca Cloud and listed it under "Built-in". Orca Cloud holds only your own profiles, so they now appear under "My presets".
 

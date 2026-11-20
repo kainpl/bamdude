@@ -45,10 +45,6 @@ from backend.app.utils.model_compatibility import compatible_models
 from backend.app.utils.printer_models import normalize_model_name
 
 
-def _base_setting_id(setting_id: str) -> str:
-    return setting_id.split("_")[0]
-
-
 async def online_printers(db: AsyncSession, printer_manager, allowed: frozenset[int] | None) -> list[Printer]:
     """Printers available NOW: active, not archived, connected — within ``allowed``
     (an API key's printer list; ``None`` is every printer)."""
@@ -126,8 +122,10 @@ async def _family_refs(
         cloud: set[str] = set()
         for preset in catalog.presets_for_family(fid):
             standard.add(preset.name)
+            # Exact ids only: a base is no id of its own (spec slicing-setup
+            # §8.3) — the unambiguous ones travel as ``cloud_aliases``.
             if preset.ecosystem == "bambu" and preset.setting_id:
-                cloud.update((preset.setting_id, _base_setting_id(preset.setting_id)))
+                cloud.add(preset.setting_id)
         orca_cloud: set[str] = set()
         local: set[str] = set()
         for row in mirrors:
@@ -149,6 +147,7 @@ async def _family_refs(
             orca_cloud=sorted(orca_cloud),
             local=sorted(local),
             standard=sorted(standard),
+            cloud_aliases=sorted(catalog.alias_bases_for_family(fid)),
         )
     return out
 

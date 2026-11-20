@@ -45,8 +45,8 @@ const farmWith = (family_id: string, material: string): LoadedFilamentsResponse 
     },
   ],
   families: {
-    GFA01: { name: 'Bambu PLA Matte', cloud: [], orca_cloud: [], local: [], standard: [MATTE] },
-    GFG99: { name: 'Generic PETG', cloud: [], orca_cloud: [], local: [], standard: [PETG] },
+    GFA01: { name: 'Bambu PLA Matte', cloud: [], orca_cloud: [], local: [], standard: [MATTE], cloud_aliases: [] },
+    GFG99: { name: 'Generic PETG', cloud: [], orca_cloud: [], local: [], standard: [PETG], cloud_aliases: [] },
   },
 });
 const MATTE_LOADED = farmWith('GFA01', 'PLA');
@@ -165,6 +165,25 @@ describe('SliceModal — the automatic filament pick and "only filaments that ar
     await picked(BASIC);
   });
 
+  it('the automatic loaded pick still takes the GFSA00_07 preset', async () => {
+    // A Bambu Cloud system variant listed under an id newer than the catalogue:
+    // the family names its base as an alias (spec slicing-setup r5 §8.3).
+    const CLOUD_BASIC = { id: 'GFSA00_07', name: 'Bambu PLA Basic @BBL H2D (cloud)', source: 'cloud', filament_type: 'PLA' };
+    // An own cloud PLA listed first: the ordinary pick takes it, so only the
+    // alias can steer the pick to the loaded Basic.
+    const OWN_PLA = { id: 'PFUSownpla', name: 'My PLA', source: 'cloud', filament_type: 'PLA' };
+    const withCloud = { ...PRESETS, cloud: { ...none, filament: [OWN_PLA, CLOUD_BASIC] } } as typeof PRESETS;
+    const basicFarm = (cloud_aliases: string[]): LoadedFilamentsResponse => ({
+      ...farmWith('GFA00', 'PLA'),
+      families: { GFA00: { name: 'Bambu PLA Basic', cloud: ['GFSA00'], orca_cloud: [], local: [], standard: [], cloud_aliases } },
+    });
+    localStorage.setItem(LOADED_KEY, '1');
+    serve(basicFarm(['GFSA00']), undefined, withCloud);
+    open();
+    const filament = await filamentPicker();
+    await waitFor(() => expect(filament.value).toBe('cloud:GFSA00_07'));
+  });
+
   it('prefers the loaded preset when the dialog opens with the switch remembered on', async () => {
     localStorage.setItem(LOADED_KEY, '1');
     serve();
@@ -207,7 +226,7 @@ describe('SliceModal — the automatic filament pick and "only filaments that ar
     serve(
       {
         ...MATTE_LOADED,
-        families: { GFA01: { name: 'Bambu PLA Matte', cloud: [], orca_cloud: [], local: [], standard: [MATTE_A1] } },
+        families: { GFA01: { name: 'Bambu PLA Matte', cloud: [], orca_cloud: [], local: [], standard: [MATTE_A1], cloud_aliases: [] } },
       },
       undefined,
       {
