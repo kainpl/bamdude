@@ -8,7 +8,7 @@
  * dialog says so beside the field, and when it is gone from the listing the
  * dialog falls back and says that too.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
@@ -18,6 +18,7 @@ import { server } from '../mocks/server';
 import { SliceModal } from '../../components/SliceModal';
 import { SliceJobTrackerProvider } from '../../contexts/SliceJobTrackerContext';
 import type { PresetRef, UnifiedPreset, UnifiedPresetsBySlot } from '../../api/client';
+import { __resetSharedMemoryForTests } from '../../components/slicing-setup/memory';
 
 type Tier = 'local' | 'orca_cloud' | 'cloud' | 'standard';
 type Listing = Partial<Record<Tier, Partial<Record<keyof UnifiedPresetsBySlot, Partial<UnifiedPreset>[]>>>>;
@@ -125,6 +126,14 @@ async function refresh(user: ReturnType<typeof userEvent.setup>, next: Listing) 
 }
 
 const std = (id: string): PresetRef => ({ source: 'standard', id });
+
+// Spec slicing-setup §4.4.1: the source filter's first value is Mine. These
+// tests are about the rest of the dialog, so each starts from All.
+const startFromAllSources = () => {
+  __resetSharedMemoryForTests();
+  localStorage.setItem('bamdude:presets:source-filter', 'all');
+};
+beforeEach(startFromAllSources);
 
 describe('SliceModal — a process chosen by hand', () => {
   // A P1S whose process presets are all named for the X1C, from a sidecar that

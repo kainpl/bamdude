@@ -16,7 +16,8 @@ import { Select } from '../Select';
 interface PipelineSelectProps {
   onApply: (set: SlicerPipeline) => void;
   filterSets?: (set: SlicerPipeline) => boolean;
-  save?: { onSave: (name: string) => void; pending: boolean; canSave: boolean };
+  /** The save row closes once `onSave` resolves; a refusal keeps it open with its name. */
+  save?: { onSave: (name: string) => Promise<unknown>; pending: boolean; canSave: boolean };
   disabled?: boolean;
   applied?: { name: string; changed: string[] } | null;
   unresolved?: string[];
@@ -97,7 +98,14 @@ export function PipelineSelect({ onApply, filterSets, save, disabled, applied, u
             type="button"
             onClick={() => {
               const trimmed = draftName.trim();
-              if (trimmed) save.onSave(trimmed);
+              if (!trimmed) return;
+              save.onSave(trimmed).then(
+                () => {
+                  setSaveOpen(false);
+                  setDraftName('');
+                },
+                () => undefined,
+              );
             }}
             disabled={save.pending || !draftName.trim()}
             className="flex-shrink-0 px-3 py-1.5 text-sm rounded-md bg-bambu-green hover:bg-bambu-green/90 text-white font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"

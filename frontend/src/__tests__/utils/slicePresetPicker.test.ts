@@ -308,6 +308,15 @@ describe('pickProcessForField (R5)', () => {
       pickProcessForField(withFile, onlyMine, X1C, index, { file: { ref: { source: 'standard', id: 'std-fit' } } }),
     ).toEqual({ source: 'standard', id: 'std-fit' });
   });
+  it('a record ref that does not fit gives way to the process the file names', () => {
+    // Slice today: the assembly record first, then the 3MF's process name.
+    const both = makeUnified({
+      local: { printer: [], process: [proc('local', 'mine-mismatch', 'Bambu Lab A1 0.4 nozzle')], filament: [] },
+      standard: { printer: [], process: [proc('standard', 'std-fit', X1C), proc('standard', 'std-2', X1C)], filament: [] },
+    });
+    const file = { ref: { source: 'local' as const, id: 'mine-mismatch' }, name: 'std-2' };
+    expect(pickProcessForField(both, () => true, X1C, index, { file })).toEqual({ source: 'standard', id: 'std-2' });
+  });
   it('fittingOnly: a catalogue of mismatches only picks nothing', () => {
     const mismatches = makeUnified({
       standard: { printer: [], process: [proc('standard', 'a1-only', 'Bambu Lab A1 0.4 nozzle')], filament: [] },

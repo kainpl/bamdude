@@ -24,6 +24,7 @@ import { SliceJobTrackerProvider } from '../../contexts/SliceJobTrackerContext';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { ToastProvider } from '../../contexts/ToastContext';
 import type { LoadedFilamentsResponse } from '../../api/client';
+import { __resetSharedMemoryForTests } from '../../components/slicing-setup/memory';
 
 const H2D = 'Bambu Lab H2D 0.4 nozzle';
 const A1 = 'Bambu Lab A1 0.4 nozzle';
@@ -37,7 +38,7 @@ const h2d = (filaments: LoadedFilamentsResponse['printers'][number]['filaments']
   filaments,
 });
 const FARM: LoadedFilamentsResponse = {
-  farm_printers: [],
+  farm_printers: [{ printer_id: 1, model: 'H2D', accepts: [], nozzle_diameters: [0.4] }],
   printers: [h2d([{ kind: 'ams', material: 'PLA', family_id: 'GFA00', by_material: false }])],
   families: {
     GFA00: { name: 'Bambu PLA Basic', cloud: [], orca_cloud: [], local: [], standard: ['Bambu PLA Basic @BBL H2D'], cloud_aliases: [] },
@@ -126,10 +127,19 @@ const offered = (select: HTMLSelectElement) =>
   Array.from(select.querySelectorAll('option'))
     .filter((o) => o.value !== '')
     .map((o) => o.textContent);
-const onlineToggle = () => screen.findByRole('checkbox', { name: 'Only printers that are online' });
+const onlineToggle = () => screen.findByRole('checkbox', { name: 'Only models of my farm' });
 const loadedToggle = () => screen.findByRole('checkbox', { name: 'Only filaments that are loaded' });
 
-beforeEach(() => localStorage.clear());
+// Spec slicing-setup §4.4.1: the source filter's first value is Mine. These
+// tests are about the rest of the dialog, so each starts from All.
+const startFromAllSources = () => {
+  __resetSharedMemoryForTests();
+  localStorage.setItem('bamdude:presets:source-filter', 'all');
+};
+beforeEach(() => {
+  localStorage.clear();
+  startFromAllSources();
+});
 afterEach(() => localStorage.clear());
 
 describe('SliceModal — the farm answer goes stale while the dialog is open', () => {
@@ -160,7 +170,7 @@ describe('SliceModal — the farm answer goes stale while the dialog is open', (
     expect(offered(printer)).toEqual([H2D]);
   });
 
-  it('follows a new answer: a printer that came online is offered', async () => {
+  it('follows a new answer: a model that joined the farm is offered (§4.4.2)', async () => {
     const user = userEvent.setup();
     serve();
     const { readFarmAgain } = open();
@@ -173,6 +183,7 @@ describe('SliceModal — the farm answer goes stale while the dialog is open', (
     farm = {
       ...FARM,
       printers: [...FARM.printers, { printer_id: 2, model: 'A1', accepts: [], nozzle_diameters: [0.4], filaments: [] }],
+      farm_printers: [...FARM.farm_printers, { printer_id: 2, model: 'A1', accepts: [], nozzle_diameters: [0.4] }],
     };
     await readFarmAgain();
 
@@ -191,29 +202,26 @@ describe('SliceModal — why "only loaded filaments" leaves nothing', () => {
     await waitFor(() => expect(filament.value).not.toBe(''));
     await user.selectOptions(filament, '');
     await user.click(await loadedToggle());
-    await waitFor(() => expect(offered(filament)).toHaveLength(0));
+    // §4.4.3: the field shows its relaxed contents, with a note, instead of nothing.
+    await screen.findByText(/No profile of a loaded filament fits here/);
+    expect(offered(filament).length).toBeGreaterThan(0);
   };
 
-  it('says no printer of the chosen model is online when that is the reason', async () => {
+  it('relaxes the field when no printer of the chosen model is online (§4.4.3)', async () => {
     serve();
     // an A1 preset; the only online printer is an H2D, and it IS loaded
     await emptied(A1);
-
-    expect(screen.getByText(/No printer of the chosen model is online/)).toBeInTheDocument();
-    expect(screen.queryByText('Nothing is loaded on the printers that are online.')).toBeNull();
   });
 
-  it('says nothing is loaded when printers of the model are online and empty', async () => {
+  it('relaxes the field when printers of the model are online and empty (§4.4.3)', async () => {
     serve();
     farm = { printers: [h2d([])], families: {}, farm_printers: [] };
     await emptied(H2D);
-
-    expect(screen.getByText(/Nothing is loaded on the online printers of the chosen model/)).toBeInTheDocument();
   });
 });
 
 describe('SliceModal — the farm filters and the right to see printers', () => {
-  const ONLINE_KEY = 'bamdude:slice-modal:only-online-printers';
+  const ONLINE_KEY = 'bamdude:presets:only-farm-models';
   const LOADED_KEY = 'bamdude:slice-modal:only-loaded-filaments';
   const signedInWith = (permissions: string[]) =>
     http.get('/api/v1/auth/me', () =>
@@ -240,7 +248,7 @@ describe('SliceModal — the farm filters and the right to see printers', () => 
     await waitFor(() => expect(offered(printer)).toHaveLength(3));
     const filament = await picker('Filament profile');
     await waitFor(() => expect(offered(filament)).toHaveLength(2));
-    expect(screen.queryByRole('checkbox', { name: 'Only printers that are online' })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: 'Only models of my farm' })).toBeNull();
     expect(screen.queryByRole('checkbox', { name: 'Only filaments that are loaded' })).toBeNull();
     // Not asked, not narrowed, and the switches come back as they were left.
     expect(farmRequests).toBe(0);

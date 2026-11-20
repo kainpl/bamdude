@@ -1,5 +1,8 @@
 /**
- * The dialog owns its pickers, and no longer offers the owner filter.
+ * The dialog composes the slicing-setup family (spec slicing-setup r5 §7.1):
+ * its pickers come from `components/slicing-setup/`, never from calibration,
+ * and the old owner filter left no trace. The source segment it shows is the
+ * family's (§4.4.1).
  *
  * ⚠️ All / My / Built-in was a leftover from the sidecar-bundle era — the
  * other half of that control was deleted with the bundles (#1712) and this
@@ -14,12 +17,15 @@ import modalSource from '../../components/SliceModal.tsx?raw';
 import calibrationSource from '../../components/calibration/CalibrationPresetPage.tsx?raw';
 
 describe('SliceModal pickers', () => {
-  it('declares its pickers inline rather than importing calibration’s', () => {
-    // The whole point of the rework: the dialog composes, it does not host.
+  it('composes the slicing-setup family and nothing of calibration’s', () => {
+    // The dialog composes, it does not host.
     expect(modalSource).not.toContain("from './calibration/preset-picker/");
-    expect(modalSource).toContain('function PresetDropdown(');
-    expect(modalSource).toContain('function BedTypePicker(');
-    expect(modalSource).toContain('function SlicerPicker(');
+    for (const part of ['SlicerChoice', 'BedPlateSelect', 'PresetSelect', 'PresetFilters', 'PresetListStatus', 'PipelineSelect']) {
+      expect(modalSource).toContain(`from './slicing-setup/${part}'`);
+    }
+    expect(modalSource).not.toContain('function PresetDropdown(');
+    expect(modalSource).not.toContain('function BedTypePicker(');
+    expect(modalSource).not.toContain('function SlicerPicker(');
   });
 
   it('does not keep those pickers exported', () => {

@@ -22,9 +22,10 @@ import { AuthProvider } from '../../contexts/AuthContext';
 import { SliceJobTrackerProvider } from '../../contexts/SliceJobTrackerContext';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { ToastProvider } from '../../contexts/ToastContext';
-import { useSliceFarmFilters } from '../../hooks/useSliceFarmFilters';
+import { usePresetFilters } from '../../components/slicing-setup/usePresetFilters';
 import { buildPrinterParents } from '../../utils/printerPresetParents';
 import type { LoadedFilamentsResponse, UnifiedPresetsResponse } from '../../api/client';
+import { __resetSharedMemoryForTests } from '../../components/slicing-setup/memory';
 
 const H2D = 'Bambu Lab H2D 0.4 nozzle';
 const BASIC = 'Bambu PLA Basic @BBL H2D';
@@ -148,7 +149,16 @@ const picked = async (name: string) => {
 };
 const loadedToggle = () => screen.findByRole('checkbox', { name: 'Only filaments that are loaded' });
 
-beforeEach(() => localStorage.clear());
+// Spec slicing-setup §4.4.1: the source filter's first value is Mine. These
+// tests are about the rest of the dialog, so each starts from All.
+const startFromAllSources = () => {
+  __resetSharedMemoryForTests();
+  localStorage.setItem('bamdude:presets:source-filter', 'all');
+};
+beforeEach(() => {
+  localStorage.clear();
+  startFromAllSources();
+});
 afterEach(() => localStorage.clear());
 
 describe('SliceModal — the automatic filament pick and "only filaments that are loaded"', () => {
@@ -296,32 +306,35 @@ describe('SliceModal — the automatic filament pick and "only filaments that ar
   });
 });
 
-describe('useSliceFarmFilters — what may steer a pick', () => {
+// The family's filter hook in the dialog's place (plan r6 Task 16): the
+// loaded filter steers a pick only while its answer is good.
+describe('usePresetFilters — what may steer a pick', () => {
   const presets = PRESETS as unknown as UnifiedPresetsResponse;
-  const matte = presets.standard.filament[1];
-  const parents = buildPrinterParents(presets, 'standard');
+  const matte = presets.standard.filament.find((p) => p.name === MATTE)!;
+  const ctx = { slot: 'filament' as const, printerName: H2D, parentsBySource: { standard: buildPrinterParents(presets, 'standard') } };
+  const loaded = (state: ReturnType<typeof usePresetFilters>) => state.softFilters(ctx).find((f) => f.id === 'loaded');
 
   it('offers the loaded presets to the pick while the answer is good, and not once it is stale', async () => {
     localStorage.setItem(LOADED_KEY, '1');
     serve();
     const { Providers, readFarmAgain } = providers();
-    const { result } = renderHook(() => useSliceFarmFilters(presets, H2D, parents), { wrapper: Providers });
-    await waitFor(() => expect(result.current.pickFilament?.(matte)).toBe(true));
+    const { result } = renderHook(() => usePresetFilters({ loaded: true }), { wrapper: Providers });
+    await waitFor(() => expect(loaded(result.current)?.pickKeep?.(matte)).toBe(true));
 
     farm = 500;
     await readFarmAgain();
 
-    await waitFor(() => expect(result.current.stale).toBe(true));
+    await waitFor(() => expect(result.current.farmStatus).toBe('stale'));
     // The lists stay narrowed by the last good answer; a pick is not made from it.
-    expect(result.current.keepFilament?.(matte)).toBe(true);
-    expect(result.current.pickFilament).toBeUndefined();
+    expect(loaded(result.current)?.keep(matte)).toBe(true);
+    expect(loaded(result.current)?.pickKeep).toBeNull();
   });
 
   it('offers nothing to the pick while the switch is off', async () => {
     serve();
     const { Providers } = providers();
-    const { result } = renderHook(() => useSliceFarmFilters(presets, H2D, parents), { wrapper: Providers });
+    const { result } = renderHook(() => usePresetFilters({ loaded: true }), { wrapper: Providers });
 
-    expect(result.current.pickFilament).toBeUndefined();
+    expect(loaded(result.current)).toBeUndefined();
   });
 });

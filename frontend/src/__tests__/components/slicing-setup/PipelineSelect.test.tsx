@@ -37,7 +37,7 @@ describe('PipelineSelect', () => {
 
   it('save needs read and write', async () => {
     vi.spyOn(api, 'listSlicerPipelines').mockResolvedValue({ pipelines: [] } as never);
-    const save = { onSave: () => {}, pending: false, canSave: true };
+    const save = { onSave: async () => {}, pending: false, canSave: true };
     const { unmount } = renderSelect({ save });
     await waitFor(() => expect(screen.getByRole('combobox')).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: /save these settings/i })).toBeNull();
@@ -52,5 +52,22 @@ describe('PipelineSelect', () => {
     renderSelect({ filterSets: (s) => s.name === 'keep' });
     await waitFor(() => expect(screen.getByRole('option', { name: 'keep' })).toBeInTheDocument());
     expect(screen.queryByRole('option', { name: 'drop' })).toBeNull();
+  });
+
+  it('the save row closes only after the save resolves', async () => {
+    auth.permissions = new Set(['pipelines:read', 'pipelines:write']);
+    vi.spyOn(api, 'listSlicerPipelines').mockResolvedValue({ pipelines: [] } as never);
+    let fail = true;
+    const onSave = vi.fn(() => (fail ? Promise.reject(new Error('no')) : Promise.resolve()));
+    renderSelect({ save: { onSave, pending: false, canSave: true } });
+    const user = (await import('@testing-library/user-event')).default.setup();
+    await user.click(await screen.findByRole('button', { name: /save these settings/i }));
+    await user.type(screen.getByRole('textbox'), 'Set A');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('Set A'));
+    expect(screen.getByRole('textbox')).toHaveValue('Set A');
+    fail = false;
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull());
   });
 });

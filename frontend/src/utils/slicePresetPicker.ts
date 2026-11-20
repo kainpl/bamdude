@@ -149,8 +149,11 @@ export function pickProcessForField(
 ): PresetRef | null {
   const fits = (p: UnifiedPreset | null) =>
     p !== null && presetCompatibility(p, 'process', printerName, compatIndex) !== 'mismatch';
-  const fileRef = opts?.file?.ref ?? findPresetByName(by, 'process', opts?.file?.name);
-  if (fileRef && fits(findPreset(by, fileRef, 'process'))) return fileRef;
+  // The ref a record names, then the name the file carries — each only while
+  // it is listed and fits the printer.
+  for (const fileRef of [opts?.file?.ref ?? null, findPresetByName(by, 'process', opts?.file?.name)]) {
+    if (fileRef && fits(findPreset(by, fileRef, 'process'))) return fileRef;
+  }
   const offered = narrowed(by, 'process', pickKeep);
   const fromOffer = pickProcessDefault(offered, printerName, compatIndex);
   if (fromOffer && fits(findPreset(offered, fromOffer, 'process'))) return fromOffer;
