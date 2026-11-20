@@ -590,7 +590,14 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
   // starts over.
   const pickInRow = (rowKey: string, slot: RowSlot, ref: PresetRef | null) => {
     choices.dispatch(fieldKey(rowKey, slot), { kind: 'personPicked', ref }, POLICY[slot]);
-    if (slot !== 'printer' || !data) return;
+    if (slot === 'printer') followPrinter(rowKey);
+  };
+  // The row's printer changed — by hand or by a saved set, as Slice and
+  // calibration follow every printer change: its automatic process and
+  // filament are re-checked, a choice made by hand or by the set stays, the
+  // nozzle starts over.
+  const followPrinter = (rowKey: string) => {
+    if (!data) return;
     const printer = choices.get(fieldKey(rowKey, 'printer')).ref;
     const picks = defaultsFor(data, printer, models);
     for (const s of ['process', 'filament'] as const) {
@@ -631,6 +638,7 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
       if (before?.source !== entry.ref.source || before?.id !== entry.ref.id) changed.push(labels[slot]);
       choices.dispatch(fieldKey(rowKey, slot), { kind: 'pipelineApplied', ref: entry.ref }, POLICY[slot]);
     }
+    if (changed.includes(labels.printer)) followPrinter(rowKey);
     return { name: set.name, changed, unresolved };
   };
   const removeRow = (rowKey: string) => {
@@ -967,7 +975,7 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
       closeDisabled={submit.isPending}
       title={title}
       icon={<LayoutGrid className="w-5 h-5" />}
-      size="3xl"
+      size="4xl"
       bodyClassName="p-4"
       subheader={
         relayout ? <p className="px-4 pb-2 text-xs text-bambu-gray break-all">{mode.filename}</p> : undefined

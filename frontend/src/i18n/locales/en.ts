@@ -3493,7 +3493,7 @@ export default {
     pipelines: {
       title: 'Slice settings',
       subtitle: 'Save the printer / process / filament / bed picks from the Slice dialog under a name, then apply them to the next file in one go.',
-      loading: 'Loading saved settingsâ¦',
+      loading: 'Loading saved settings…',
       loadError: 'Could not load saved settings.',
       confirmDelete: 'Delete these saved settings? This cannot be undone.',
       staleWarning: 'One or more referenced presets no longer exist. Re-save from the Slice dialog to fix.',
@@ -3523,7 +3523,7 @@ export default {
         profiles: 'Profiles',
         filaments: 'Filaments'
       },
-      searchPlaceholder: 'Search saved settingsâ¦',
+      searchPlaceholder: 'Search saved settings…',
       filter: {
         count: '{{shown}} / {{total}}',
         noMatches: 'Nothing matches the current filters.'
@@ -6049,7 +6049,7 @@ export default {
     action: 'Slice',
     pipelines: {
       label: 'Saved settings',
-      applyPrompt: 'Apply saved settingsâ¦',
+      applyPrompt: 'Apply saved settings…',
       empty: 'Nothing saved yet',
       saveButton: 'Save these settings',
       saveTitle: 'Save the current printer / process / filament / bed selection for reuse',

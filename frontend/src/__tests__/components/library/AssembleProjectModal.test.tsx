@@ -742,4 +742,43 @@ describe('AssembleProjectModal — rows on the slicing-setup family', () => {
     expect(field(0, 'Printer')).toHaveValue('local:1');
     expect(field(0, 'Process')).toHaveValue('local:10');
   });
+
+  it('a set that changes the printer re-picks the automatic field it could not fill', async () => {
+    // As Slice and calibration: the row's automatic picks follow ANY printer
+    // change, a set's included; the field the set names but cannot resolve is
+    // reported, and an automatic value made for the old printer is not kept.
+    listing = withLocal({
+      filament: [
+        preset('22', 'My PLA @BBL X1C', { filament_type: 'PLA' }),
+        preset('23', 'My PLA @BBL H2D', { filament_type: 'PLA' }),
+      ],
+    });
+    server.use(
+      http.get('/api/v1/slicer/printer-models', () => HttpResponse.json({ 'Bambu Lab X1 Carbon': 'X1C', 'Bambu Lab H2D': 'H2D' })),
+      http.get('/api/v1/slicer-pipelines/', () =>
+        HttpResponse.json({
+          pipelines: [
+            {
+              id: 6,
+              name: 'H2D, gone filament',
+              printer_preset: { source: 'local', id: '2' },
+              process_preset: { source: 'local', id: '10' },
+              filament_presets: [{ source: 'local', id: '99' }],
+              bed_type: null,
+            },
+          ],
+        }),
+      ),
+    );
+    open();
+    await ready();
+    await waitFor(() => expect(field(0, 'Filament')).toHaveValue('local:22'));
+    const sets = within(target(0)).getByRole('combobox', { name: 'Saved settings' });
+    await waitFor(() => expect(within(sets).getAllByRole('option')).toHaveLength(2));
+    fireEvent.change(sets, { target: { value: '6' } });
+    await waitFor(() => expect(field(0, 'Printer')).toHaveValue('local:2'));
+    await waitFor(() => expect(field(0, 'Filament')).toHaveValue('local:23'));
+    expect(within(target(0)).getByText(/These stayed on their current selection: Filament/)).toBeInTheDocument();
+    await waitFor(() => expect(within(target(0)).getByRole('combobox', { name: 'Nozzle of printer 1' })).toHaveValue('1'));
+  });
 });
