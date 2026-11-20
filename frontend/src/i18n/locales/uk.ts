@@ -4084,6 +4084,12 @@ export default {
     archivesBadge: 'Архіви',
     projectsBadge: 'Проєкти',
     labelsBadge: 'Етикетки',
+    updateEnergyCost: 'Оновлювати ціну електрики',
+    updateEnergyCostDescription: 'Лише POST /settings/electricity-price — для Home Assistant і динамічних тарифів. Це не загальне право змінювати налаштування.',
+    energyCostBadge: 'Ціна електрики',
+    sendNotifications: 'Надсилати сповіщення як зовнішня програма',
+    sendNotificationsDescription: 'Лише POST /notifications/external-message: програма цього ключа повідомляє щось людям ферми, завжди з назвою ключа та його власником. Власник має мати право керувати сповіщеннями.',
+    sendNotificationsBadge: 'Сповіщення',
     legacyBadge: 'Legacy',
     unnamedKey: 'Безіменний ключ',
     lastUsed: 'Останнє використання',
@@ -12639,7 +12645,11 @@ export default {
     stockReorderAlert: 'Час замовляти',
     stockReorderAlertDescription: 'SKU досяг точки повторного замовлення',
     stockBreakAlert: 'Ризик закінчення',
-    stockBreakAlertDescription: 'Матеріал закінчиться до прибуття поповнення',
+    stockBreakAlertDescription: 'Матеріал закінчиться до прибуття поповнення — або вже закінчився',
+    // Повідомлення від зовнішніх програм (POST /notifications/external-message)
+    externalApps: 'Зовнішні програми',
+    externalAppMessageLabel: 'Зовнішня програма',
+    externalAppMessageDescription: 'Повідомлення, яке інша програма (Home Assistant, скрипт) надіслала через API, з відправником',
     printFailed: 'Друк невдалий',
     printStopped: 'Друк зупинено',
     printPausedLabel: 'Друк на паузі',
@@ -12844,6 +12854,8 @@ export default {
         cleared: 'Прибрано: {{count}}',
         delete: 'Видалити',
         openPlugs: 'Відкрити розетки',
+        from: 'Від: {{sender}}',
+        openLink: 'Відкрити посилання',
         notificationCount_one: 'сповіщення',
         notificationCount_few: 'сповіщення',
         notificationCount_many: 'сповіщень',
@@ -12904,7 +12916,8 @@ export default {
         ,ha_sensor_alert: 'Тривога HA-датчика принтера',
         location_ha_sensor_alert: 'Тривога HA-датчика зберігання',
         plug_meter_stalled: 'Лічильник енергії розетки завис',
-        credentials_reissue_required: "Потрібно перевипустити облікові дані інтеграцій"
+        credentials_reissue_required: "Потрібно перевипустити облікові дані інтеграцій",
+        external_app_message: 'Повідомлення від зовнішньої програми'
       }
     },
     // User email notification preferences

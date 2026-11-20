@@ -4046,6 +4046,12 @@ export default {
     archivesBadge: 'Archives',
     projectsBadge: 'Projects',
     labelsBadge: 'Labels',
+    updateEnergyCost: 'Update the electricity price',
+    updateEnergyCostDescription: 'Only POST /settings/electricity-price — for Home Assistant and dynamic tariffs. It is not a general right to change settings.',
+    energyCostBadge: 'Electricity price',
+    sendNotifications: 'Send notifications as an external app',
+    sendNotificationsDescription: 'Only POST /notifications/external-message: the key\'s program tells the farm\'s people something, always under the key\'s name and its owner. The owner needs the right to manage notifications.',
+    sendNotificationsBadge: 'Notifications',
     legacyBadge: 'Legacy',
     unnamedKey: 'Unnamed Key',
     lastUsed: 'Last used',
@@ -12412,7 +12418,11 @@ export default {
     stockReorderAlert: 'Reorder Alert',
     stockReorderAlertDescription: 'SKU has reached its reorder point',
     stockBreakAlert: 'Stock Break Alert',
-    stockBreakAlertDescription: 'Stock will run out before replenishment arrives',
+    stockBreakAlertDescription: 'Stock will run out before replenishment arrives — or has run out',
+    // Messages from external apps (POST /notifications/external-message)
+    externalApps: 'External apps',
+    externalAppMessageLabel: 'External App',
+    externalAppMessageDescription: 'A message another program (Home Assistant, a script) sent through the API, with its sender',
     printFailed: 'Print Failed',
     printStopped: 'Print Stopped',
     printPausedLabel: 'Print Paused',
@@ -12617,6 +12627,8 @@ export default {
         cleared: '{{count}} removed',
         delete: 'Delete',
         openPlugs: 'Open smart plugs',
+        from: 'From: {{sender}}',
+        openLink: 'Open link',
         notificationCount_one: 'notification',
         notificationCount_other: 'notifications',
         unread: 'Unread'
@@ -12675,7 +12687,8 @@ export default {
         ,ha_sensor_alert: 'Printer HA sensor alert',
         location_ha_sensor_alert: 'Storage HA sensor alert',
         plug_meter_stalled: 'Plug energy counter stalled',
-        credentials_reissue_required: "Integration credentials need reissuing"
+        credentials_reissue_required: "Integration credentials need reissuing",
+        external_app_message: 'Message from an external app'
       }
     },
     // User email notification preferences

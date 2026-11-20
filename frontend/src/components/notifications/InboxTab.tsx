@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 import { CheckCheck, Trash2 } from 'lucide-react';
-import { api, type InboxFilters, type InboxSeverity } from '../../api/client';
+import { api, type InboxFilters, type InboxItem, type InboxSeverity } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
 import { ConfirmModal } from '../ConfirmModal';
@@ -13,6 +13,28 @@ import { INBOX_QUERY_KEY } from '../../hooks/useInboxUnreadCount';
 import { PaginationBar } from '../PaginationBar';
 import { SeverityIcon } from './SeverityIcon';
 import { Select } from '../Select';
+
+/** Who sent an external app's message (spec external-app-messages-spec): the key and its owner, from the
+ *  row's own record -- never read out of the text, which a template shapes. */
+function externalSender(item: InboxItem): string | null {
+  if (item.event_type !== 'external_app_message') return null;
+  const sender = item.extra_data?.sender as { key_name?: unknown; owner_name?: unknown } | undefined;
+  if (!sender || typeof sender.key_name !== 'string' || typeof sender.owner_name !== 'string') return null;
+  return `${sender.key_name} · ${sender.owner_name}`;
+}
+
+/** The message's link, only when it is an http(s) address -- the server checks it too. */
+function externalLink(item: InboxItem): string | null {
+  if (item.event_type !== 'external_app_message') return null;
+  const link = item.extra_data?.link;
+  if (typeof link !== 'string') return null;
+  try {
+    const url = new URL(link);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
 
 const PERIOD_MS = { day: 24 * 3600e3, week: 7 * 24 * 3600e3, month: 30 * 24 * 3600e3 } as const;
 type Period = keyof typeof PERIOD_MS | 'all';
@@ -233,6 +255,11 @@ export function InboxTab() {
                     {item.printer_name && (
                       <span className="px-2 py-0.5 rounded bg-bambu-dark-secondary">{item.printer_name}</span>
                     )}
+                    {externalSender(item) && (
+                      <span className="px-2 py-0.5 rounded bg-bambu-dark-secondary">
+                        {t('notifications.center.inbox.from', { sender: externalSender(item) })}
+                      </span>
+                    )}
                     <span>{formatRelativeTime(item.created_at, 'system', t)}</span>
                   </span>
                 </button>
@@ -242,6 +269,16 @@ export function InboxTab() {
                   <Link to="/settings?tab=plugs" className="inline-block mt-1 text-xs text-bambu-green hover:underline">
                     {t('notifications.center.inbox.openPlugs')}
                   </Link>
+                )}
+                {externalLink(item) && (
+                  <a
+                    href={externalLink(item) ?? undefined}
+                    target="_blank"
+                    rel="noopener noreferrer nofollow"
+                    className="inline-block mt-1 text-xs text-bambu-green hover:underline"
+                  >
+                    {t('notifications.center.inbox.openLink')}
+                  </a>
                 )}
                 </div>
                 <button

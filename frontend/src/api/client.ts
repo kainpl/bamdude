@@ -4838,6 +4838,8 @@ export interface APIKey {
    *  dynamic-tariff integrations can update energy_cost_per_kwh. Does NOT
    *  grant general SETTINGS_UPDATE. Default false. */
   can_update_energy_cost: boolean;
+  /** Send messages to the farm as an external app (POST /notifications/external-message). Default false. */
+  can_send_notifications: boolean;
   /** File-manager scope: library upload/rename/delete-own + MakerWorld import.
    *  GHSA-r2qv-8222-hqg3. Default true (mirrors can_queue). */
   can_manage_library: boolean;
@@ -4881,6 +4883,7 @@ export interface APIKeyCreate {
   can_access_mcp?: boolean;
   can_read_mcp_logs?: boolean;
   can_update_energy_cost?: boolean;
+  can_send_notifications?: boolean;
   can_manage_library?: boolean;
   can_manage_inventory?: boolean;
   can_manage_maintenance?: boolean;
@@ -4904,6 +4907,7 @@ export interface APIKeyUpdate {
   can_access_mcp?: boolean;
   can_read_mcp_logs?: boolean;
   can_update_energy_cost?: boolean;
+  can_send_notifications?: boolean;
   can_manage_library?: boolean;
   can_manage_inventory?: boolean;
   can_manage_maintenance?: boolean;
@@ -8093,6 +8097,7 @@ export interface NotificationProvider {
   // A pause the slicer put into the print is coming up
   on_pause_coming_up: boolean;
   on_print_outcome_unchecked: boolean;
+  on_external_app_message: boolean;
   // Print queue events
   on_queue_job_added: boolean;
   on_queue_job_started: boolean;
@@ -8175,6 +8180,7 @@ export interface NotificationProviderCreate {
   on_first_layer_complete?: boolean;
   on_pause_coming_up?: boolean;
   on_print_outcome_unchecked?: boolean;
+  on_external_app_message?: boolean;
   // Print queue events
   on_queue_job_added?: boolean;
 
@@ -8249,6 +8255,7 @@ export interface NotificationProviderUpdate {
   on_first_layer_complete?: boolean;
   on_pause_coming_up?: boolean;
   on_print_outcome_unchecked?: boolean;
+  on_external_app_message?: boolean;
   // Print queue events
   on_queue_job_added?: boolean;
 
