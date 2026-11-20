@@ -41,8 +41,9 @@ export function PresetListStatus({ catalogue, disabled }: PresetListStatusProps)
 function CloudStatusBanner({ status, cloudName }: { status: SlicerCloudStatus; cloudName: 'bambu' | 'orca' }) {
   const { t } = useTranslation();
   // `ok` is the happy path; `not_authenticated` is silenced too — a person who
-  // never signed in needs no permanent nag. Only real breakage surfaces.
-  if (status === 'ok' || status === 'not_authenticated') return null;
+  // never signed in needs no permanent nag. Only real breakage surfaces, and a
+  // status this banner does not know (an older server sends none) says nothing.
+  if (status !== 'expired' && status !== 'unreachable') return null;
   const messages =
     cloudName === 'orca'
       ? {

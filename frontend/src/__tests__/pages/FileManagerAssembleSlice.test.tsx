@@ -72,7 +72,8 @@ function serve(useSlicerApi: boolean) {
     http.get('/api/v1/slicer/presets', () =>
       HttpResponse.json({
         local: {
-          printer: [local('1', 'My X1C')],
+          // a machine preset: a row's printer is picked only from those (spec slicing-setup R5)
+          printer: [local('1', 'Bambu Lab X1 Carbon 0.4 nozzle')],
           process: [local('10', '0.20mm Mine')],
           filament: [local('20', 'My PLA', { filament_type: 'PLA' })],
         },

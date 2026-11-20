@@ -10,12 +10,15 @@ import { AssembleProjectModal, type AssembleMode } from '../../../components/lib
 import { SliceJobTrackerProvider } from '../../../contexts/SliceJobTrackerContext';
 import { server } from '../../mocks/server';
 import { render } from '../../utils';
+import { __resetSharedMemoryForTests } from '../../../components/slicing-setup/memory';
 
 const preset = (id: string, name: string, extra: Record<string, unknown> = {}) => ({ id, name, source: 'local', ...extra });
 const EMPTY = { printer: [], process: [], filament: [] };
+// Machine presets (a name stating model and nozzle): a row's printer is picked
+// only from those, never from a model card (spec slicing-setup R5, as Slice §4.4.4).
 const PRESETS = {
   local: {
-    printer: [preset('1', 'My X1C'), preset('2', 'My H2D')],
+    printer: [preset('1', 'Bambu Lab X1 Carbon 0.4 nozzle'), preset('2', 'Bambu Lab H2D 0.4 nozzle')],
     process: [preset('10', '0.20mm Standard')],
     filament: [preset('20', 'My PLA', { filament_type: 'PLA' })],
   },
@@ -485,5 +488,258 @@ describe('AssembleProjectModal', () => {
     open({ kind: 'relayout', fileId: 56, filename: 'other.3mf' });
     expect(await screen.findByText('This file was not assembled here, or its record is damaged')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Re-layout' })).not.toBeInTheDocument();
+  });
+});
+
+// --- The rows on the slicing-setup family (plan r6 Task 19, spec §7.3, R5, R6) ---
+
+type Listing = typeof PRESETS;
+let listing: Listing = PRESETS;
+const withLocal = (over: Partial<Listing['local']>): Listing => ({ ...PRESETS, local: { ...PRESETS.local, ...over } });
+const serveListing = () => server.use(http.get('/api/v1/slicer/presets', () => HttpResponse.json(listing)));
+const field = (row: number, name: 'Printer' | 'Process' | 'Filament') =>
+  within(target(row)).getByRole('combobox', { name }) as HTMLSelectElement;
+const ready = async () => {
+  await waitFor(() => expect(field(0, 'Printer')).toHaveValue('local:1'));
+};
+const assembleButton = () => screen.getByRole('button', { name: /^(Assemble|Re-layout)$/ });
+const refresh = () => fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+const record = (over: { process?: string } = {}) => ({
+  set_id: 'c'.repeat(32),
+  base_name: 'jars',
+  parts: [{ name: 'jar.stl', quantity: 1, fill: false, orientation: 'as_is' }],
+  printer: {
+    printer: { source: 'local', id: '1' },
+    process: { source: 'local', id: over.process ?? '10' },
+    filament: { source: 'local', id: '20' },
+    nozzle: 1,
+    model: 'X1C',
+  },
+  layout: { spacing: 2, rotation_step: 90, centre: true, split_plates: false },
+  plates: [],
+  set_files: [{ id: 58, filename: 'jars.3mf' }],
+});
+const deferred = () => {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  return { gate, release };
+};
+
+describe('AssembleProjectModal — rows on the slicing-setup family', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    __resetSharedMemoryForTests();
+    listing = PRESETS;
+    serveListing();
+  });
+
+  it('filters once above the rows', async () => {
+    open();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add printer' }));
+    await waitFor(() => expect(field(1, 'Printer')).toHaveValue('local:1'));
+    expect(screen.getAllByRole('group', { name: 'Preset source' })).toHaveLength(1);
+    expect(screen.getAllByRole('checkbox', { name: 'Only models of my farm' })).toHaveLength(1);
+    expect(screen.getAllByRole('checkbox', { name: 'Only filaments that are loaded' })).toHaveLength(1);
+    expect(within(target(0)).queryByRole('group', { name: 'Preset source' })).toBeNull();
+  });
+
+  it('new row: 0.4 machine preset, no pick when only model cards', async () => {
+    listing = withLocal({
+      printer: [preset('c', 'Bambu Lab A1'), preset('6', 'Bambu Lab A1 0.6 nozzle'), preset('4', 'Bambu Lab A1 0.4 nozzle')],
+    });
+    const first = render(
+      <SliceJobTrackerProvider>
+        <AssembleProjectModal mode={{ kind: 'new', files: FILES }} onClose={() => {}} />
+      </SliceJobTrackerProvider>,
+    );
+    await waitFor(() => expect(field(0, 'Printer')).toHaveValue('local:4'));
+    first.unmount();
+    listing = withLocal({ printer: [preset('c', 'Bambu Lab A1')] });
+    open();
+    await screen.findByTestId('assemble-target-0');
+    await new Promise((r) => setTimeout(r, 30));
+    expect(field(0, 'Printer')).toHaveValue('');
+  });
+
+  it('a printer change keeps an explicit process and filament', async () => {
+    listing = withLocal({
+      process: [preset('10', '0.20mm Standard'), preset('11', '0.28mm Draft')],
+      filament: [preset('20', 'My PLA', { filament_type: 'PLA' }), preset('21', 'My PETG', { filament_type: 'PETG' })],
+    });
+    open();
+    await ready();
+    fireEvent.change(field(0, 'Process'), { target: { value: 'local:11' } });
+    fireEvent.change(field(0, 'Filament'), { target: { value: 'local:21' } });
+    fireEvent.change(field(0, 'Printer'), { target: { value: 'local:2' } });
+    await waitFor(() => expect(field(0, 'Printer')).toHaveValue('local:2'));
+    expect(field(0, 'Process')).toHaveValue('local:11');
+    expect(field(0, 'Filament')).toHaveValue('local:21');
+  });
+
+  it('an automatic process re-picks after a refresh drops it; an explicit one blocks', async () => {
+    listing = withLocal({ process: [preset('10', '0.20mm Standard'), preset('11', '0.28mm Draft')] });
+    open();
+    await ready();
+    expect(field(0, 'Process')).toHaveValue('local:10');
+    listing = withLocal({ process: [preset('11', '0.28mm Draft')] });
+    refresh();
+    await waitFor(() => expect(field(0, 'Process')).toHaveValue('local:11'));
+    await waitFor(() => expect(assembleButton()).toBeEnabled());
+
+    fireEvent.change(field(0, 'Process'), { target: { value: 'local:11' } });
+    listing = withLocal({ process: [preset('12', '0.12mm Fine')] });
+    refresh();
+    expect(await within(target(0)).findByText(/no longer available/)).toBeInTheDocument();
+    expect(assembleButton()).toBeDisabled();
+  });
+
+  it('a record ref the listing lacks blocks its row; the same ref returning restores it', async () => {
+    server.use(http.get('/api/v1/library/files/58/assembly', () => HttpResponse.json(record({ process: '99' }))));
+    open({ kind: 'relayout', fileId: 58, filename: 'jars.3mf' });
+    expect(await within(await screen.findByTestId('assemble-target-0')).findByText(/no longer available/)).toBeInTheDocument();
+    expect(assembleButton()).toBeDisabled();
+    listing = withLocal({ process: [preset('10', '0.20mm Standard'), preset('99', 'Old process')] });
+    refresh();
+    await waitFor(() => expect(within(target(0)).queryByText(/no longer available/)).toBeNull());
+    expect(field(0, 'Process')).toHaveValue('local:99');
+    await waitFor(() => expect(assembleButton()).toBeEnabled());
+  });
+
+  it('record seed: a listed ref is kept; an unlisted ref with the catalogue already loaded blocks; a catalogue arriving after the record seeds then', async () => {
+    // listed: kept
+    server.use(http.get('/api/v1/library/files/58/assembly', () => HttpResponse.json(record())));
+    const one = render(
+      <SliceJobTrackerProvider>
+        <AssembleProjectModal mode={{ kind: 'relayout', fileId: 58, filename: 'jars.3mf' }} onClose={() => {}} />
+      </SliceJobTrackerProvider>,
+    );
+    await waitFor(() => expect(field(0, 'Process')).toHaveValue('local:10'));
+    one.unmount();
+
+    // unlisted, the catalogue in first: blocks
+    const late = deferred();
+    server.use(
+      http.get('/api/v1/library/files/59/assembly', async () => {
+        await late.gate;
+        return HttpResponse.json(record({ process: '98' }));
+      }),
+    );
+    const two = render(
+      <SliceJobTrackerProvider>
+        <AssembleProjectModal mode={{ kind: 'relayout', fileId: 59, filename: 'jars.3mf' }} onClose={() => {}} />
+      </SliceJobTrackerProvider>,
+    );
+    await new Promise((r) => setTimeout(r, 30));
+    late.release();
+    expect(await within(await screen.findByTestId('assemble-target-0')).findByText(/no longer available/)).toBeInTheDocument();
+    two.unmount();
+
+    // the catalogue after the record: seeds then
+    const slow = deferred();
+    server.use(
+      http.get('/api/v1/library/files/60/assembly', () => HttpResponse.json(record())),
+      http.get('/api/v1/slicer/presets', async () => {
+        await slow.gate;
+        return HttpResponse.json(listing);
+      }),
+    );
+    open({ kind: 'relayout', fileId: 60, filename: 'jars.3mf' });
+    await new Promise((r) => setTimeout(r, 30));
+    slow.release();
+    await waitFor(() => expect(field(0, 'Process')).toHaveValue('local:10'));
+    expect(field(0, 'Printer')).toHaveValue('local:1');
+  });
+
+  it('Mine narrows the display, but the initial process is still pickProcessDefault on the whole catalogue', async () => {
+    listing = {
+      ...PRESETS,
+      local: { ...PRESETS.local, process: [preset('10', 'My process')] },
+      standard: { ...EMPTY, process: [{ id: 'std', name: '0.20mm Standard @BBL X1C', source: 'standard' }] },
+    } as unknown as Listing;
+    server.use(http.get('/api/v1/slicer/printer-models', () => HttpResponse.json({ 'Bambu Lab X1 Carbon': 'X1C' })));
+    open();
+    await ready();
+    await waitFor(() => expect(field(0, 'Process')).toHaveValue('standard:std'));
+    // the display under Mine: the own process, and the chosen standard one pinned
+    const values = Array.from(field(0, 'Process').options).map((o) => o.value).filter(Boolean);
+    expect(values).toContain('local:10');
+  });
+
+  it('the placeholder does not clear a block', async () => {
+    server.use(http.get('/api/v1/library/files/58/assembly', () => HttpResponse.json(record({ process: '99' }))));
+    open({ kind: 'relayout', fileId: 58, filename: 'jars.3mf' });
+    expect(await within(await screen.findByTestId('assemble-target-0')).findByText(/no longer available/)).toBeInTheDocument();
+    fireEvent.change(field(0, 'Process'), { target: { value: '' } });
+    expect(within(target(0)).getByText(/no longer available/)).toBeInTheDocument();
+    expect(assembleButton()).toBeDisabled();
+  });
+
+  it('removing the middle row moves no choice or note', async () => {
+    open();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add printer' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add printer' }));
+    await waitFor(() => expect(field(2, 'Printer')).toHaveValue('local:1'));
+    fireEvent.change(field(2, 'Printer'), { target: { value: 'local:2' } });
+    fireEvent.change(field(1, 'Process'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove printer 2' }));
+    await waitFor(() => expect(screen.queryByTestId('assemble-target-2')).toBeNull());
+    expect(field(0, 'Printer')).toHaveValue('local:1');
+    expect(field(0, 'Process')).toHaveValue('local:10');
+    expect(field(1, 'Printer')).toHaveValue('local:2');
+  });
+
+  it('the loaded predicate differs per row printer', async () => {
+    server.use(
+      http.get('/api/v1/slicer/loaded-filaments', () =>
+        HttpResponse.json({
+          printers: [{ printer_id: 2, model: 'H2D', accepts: [], nozzle_diameters: [0.4], filaments: [{ kind: 'ams', material: 'PLA', family_id: 'GFL99', by_material: false }] }],
+          farm_printers: [{ printer_id: 2, model: 'H2D', accepts: [], nozzle_diameters: [0.4] }],
+          families: { GFL99: { name: 'My PLA', cloud: [], orca_cloud: [], local: ['20'], standard: [], cloud_aliases: [] } },
+        }),
+      ),
+      http.get('/api/v1/slicer/printer-models', () => HttpResponse.json({ 'Bambu Lab X1 Carbon': 'X1C', 'Bambu Lab H2D': 'H2D' })),
+    );
+    open();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add printer' }));
+    await waitFor(() => expect(field(1, 'Printer')).toHaveValue('local:1'));
+    fireEvent.change(field(1, 'Printer'), { target: { value: 'local:2' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Only filaments that are loaded' }));
+    // the X1C row has nothing of its model loaded: its field relaxes, the H2D row's does not
+    expect(await within(target(0)).findByText(/No profile of a loaded filament fits here/)).toBeInTheDocument();
+    expect(within(target(1)).queryByText(/No profile of a loaded filament fits here/)).toBeNull();
+  });
+
+  it('a pipeline fills one row only', async () => {
+    listing = withLocal({ process: [preset('10', '0.20mm Standard'), preset('11', '0.28mm Draft')] });
+    server.use(
+      http.get('/api/v1/slicer-pipelines/', () =>
+        HttpResponse.json({
+          pipelines: [
+            {
+              id: 5,
+              name: 'Draft on H2D',
+              printer_preset: { source: 'local', id: '2' },
+              process_preset: { source: 'local', id: '11' },
+              filament_presets: [{ source: 'local', id: '20' }],
+              bed_type: null,
+            },
+          ],
+        }),
+      ),
+    );
+    open();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add printer' }));
+    await waitFor(() => expect(field(1, 'Printer')).toHaveValue('local:1'));
+    const sets = within(target(1)).getByRole('combobox', { name: 'Saved settings' });
+    await waitFor(() => expect(within(sets).getAllByRole('option')).toHaveLength(2));
+    fireEvent.change(sets, { target: { value: '5' } });
+    await waitFor(() => expect(field(1, 'Process')).toHaveValue('local:11'));
+    expect(field(1, 'Printer')).toHaveValue('local:2');
+    expect(field(0, 'Printer')).toHaveValue('local:1');
+    expect(field(0, 'Process')).toHaveValue('local:10');
   });
 });
