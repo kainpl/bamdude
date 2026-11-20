@@ -15970,8 +15970,9 @@ export const api = {
   // Per-(user, printer-model) PrintModal toggle preferences. The model
   // string is URI-encoded so models with characters like spaces or "/"
   // round-trip correctly.
+  // ``null`` when nothing is saved yet for this model.
   getPrintOptionsPreference: (printerModel: string) =>
-    request<PrintOptionsPreferenceResponse>(
+    request<PrintOptionsPreferenceResponse | null>(
       `/print-option-preferences/${encodeURIComponent(printerModel)}`,
     ),
   upsertPrintOptionsPreference: (printerModel: string, data: PrintOptionsPreferenceData) =>

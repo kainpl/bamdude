@@ -104,7 +104,7 @@ beforeEach(() => {
     ),
     http.get('/api/v1/archives/:id/plates', () => HttpResponse.json({ is_multi_plate: false, plates: [] })),
     http.get('/api/v1/archives/:id/filament-requirements', () => HttpResponse.json({ filaments: [] })),
-    http.get('/api/v1/print-option-preferences/:model', () => HttpResponse.json({ detail: 'none' }, { status: 404 })),
+    http.get('/api/v1/print-option-preferences/:model', () => HttpResponse.json(null)),
     http.put('/api/v1/print-option-preferences/:model', async ({ request }) =>
       HttpResponse.json({ printer_model: 'P1S', options: await request.json(), updated_at: '' }),
     ),
