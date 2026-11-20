@@ -287,6 +287,15 @@ DEFAULT_TEMPLATES = [
         "title_template": "Stock Break Risk: {filament}",
         "body_template": "{filament} ({brand}) will run out before replenishment arrives.\nStock: {stock_g}g | Rate: {rate_g_day}g/day | Lead time: {lead_time_days}d\nOnly {days_left}d of stock remaining — order immediately.",
     },
+    # The stock-break subscription's text for a SKU whose every spool is
+    # archived and that no other brand covers (2026-11-20): it ran out. Sent
+    # once, under the stock_break_alert event — a template, not an event.
+    {
+        "event_type": "stock_depleted_alert",
+        "name": "Stock Ran Out",
+        "title_template": "Out of stock: {filament}",
+        "body_template": "{filament} ({brand}) ran out: its last spool was archived, and no spool of this material and colour is on the shelf under another brand.\nRate while it lasted: {rate_g_day}g/day | Lead time: {lead_time_days}d\nOrder it if the colour is still needed; otherwise turn off alerts for this SKU in the forecast.",
+    },
     # User email notification templates (sent to the print job owner)
     {
         "event_type": "user_print_start",

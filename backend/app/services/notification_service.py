@@ -3577,6 +3577,8 @@ class NotificationService:
         subtype: str | None,
         color: str | None,
         skip_break_subscribers: bool = False,
+        template: str = "stock_reorder_alert",
+        extra: dict[str, str] | None = None,
     ):
         """The reorder message. ``skip_break_subscribers`` is the copy sent for a
         SKU that is already in stock BREAK: it reaches only recipients who asked
@@ -3612,9 +3614,10 @@ class NotificationService:
             "stock_g": f"{stock_g:.0f}",
             "rate_g_day": f"{rate_g_day:.1f}",
             "days_left": str(days_left),
+            **(extra or {}),
         }
 
-        title, message = await self._build_message_from_template(db, "stock_reorder_alert", variables)
+        title, message = await self._build_message_from_template(db, template, variables)
         await self._send_to_providers(
             providers,
             title,
@@ -3665,6 +3668,57 @@ class NotificationService:
             except Exception:
                 logger.exception("Stock reorder copy of a break failed for %s", material)
 
+    async def on_stock_depleted(
+        self,
+        material: str,
+        brand: str | None,
+        stock_g: float,
+        rate_g_day: float,
+        days_left: int,
+        lead_time_days: int,
+        db: AsyncSession,
+        subtype: str | None = None,
+        color: str | None = None,
+    ):
+        """A SKU whose every spool is archived and that no other brand covers ran out.
+
+        Not a new event: it reaches exactly whom a stock break reaches (the
+        break subscribers, and the reorder-only ones as the break's copy) under
+        the same event types, so no provider, chat or inbox subscription
+        changes. Only the text is its own (``stock_depleted_alert``): "will run
+        out before replenishment, 0 g left" was untrue of a colour already gone.
+        """
+        try:
+            await self._send_stock_break(
+                material,
+                brand,
+                stock_g,
+                rate_g_day,
+                days_left,
+                lead_time_days,
+                db,
+                subtype=subtype,
+                color=color,
+                template="stock_depleted_alert",
+            )
+        finally:
+            try:
+                await self._send_stock_reorder(
+                    material,
+                    brand,
+                    stock_g,
+                    rate_g_day,
+                    days_left,
+                    db,
+                    subtype=subtype,
+                    color=color,
+                    skip_break_subscribers=True,
+                    template="stock_depleted_alert",
+                    extra={"lead_time_days": str(lead_time_days)},
+                )
+            except Exception:
+                logger.exception("Stock reorder copy of a ran-out colour failed for %s", material)
+
     async def _send_stock_break(
         self,
         material: str,
@@ -3677,6 +3731,7 @@ class NotificationService:
         *,
         subtype: str | None,
         color: str | None,
+        template: str = "stock_break_alert",
     ):
         providers = await self._get_providers_for_event(db, "on_stock_break_alert", None)
         if not providers:
@@ -3694,7 +3749,7 @@ class NotificationService:
             "lead_time_days": str(lead_time_days),
         }
 
-        title, message = await self._build_message_from_template(db, "stock_break_alert", variables)
+        title, message = await self._build_message_from_template(db, template, variables)
         await self._send_to_providers(providers, title, message, db, "stock_break_alert", variables=variables)
 
     async def _queue_for_digest(

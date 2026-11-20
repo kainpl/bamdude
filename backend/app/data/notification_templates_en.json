@@ -199,6 +199,11 @@
     "title_template": "Stock Break Risk: {filament}",
     "body_template": "{filament} ({brand}) will run out before replenishment arrives.\nStock: {stock_g}g | Rate: {rate_g_day}g/day | Lead time: {lead_time_days}d\nOnly {days_left}d of stock remaining — order immediately."
   },
+  "stock_depleted_alert": {
+    "name": "Stock Ran Out",
+    "title_template": "Out of stock: {filament}",
+    "body_template": "{filament} ({brand}) ran out: its last spool was archived, and no spool of this material and colour is on the shelf under another brand.\nRate while it lasted: {rate_g_day}g/day | Lead time: {lead_time_days}d\nOrder it if the colour is still needed; otherwise turn off alerts for this SKU in the forecast."
+  },
   "user_print_start": {
     "name": "User Print Started Email",
     "title_template": "Your Print Has Started",

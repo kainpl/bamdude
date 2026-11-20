@@ -31,7 +31,7 @@ from backend.app.services.notification_service import NotificationService
 from backend.app.services.stock_forecast_alerts import StockForecastAlerts, find_stock_alerts
 
 _DATA = Path(__file__).resolve().parents[3] / "app/data"
-_EVENTS = ("stock_reorder_alert", "stock_break_alert")
+_EVENTS = ("stock_reorder_alert", "stock_break_alert", "stock_depleted_alert")
 
 # The bodies and titles shipped before this change — frozen here, never imported.
 _OLD = {
@@ -178,7 +178,7 @@ class TestTheShippedTextsAreUpgraded:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("lang", ["en", "uk"])
     async def test_an_untouched_default_becomes_the_new_one(self, db_session, lang) -> None:
-        for event in _EVENTS:
+        for event in _OLD[lang]:  # the two texts m229 upgrades
             title, body = _OLD[lang][event]
             db_session.add(NotificationTemplate(event_type=event, name="n", title_template=title, body_template=body))
         await db_session.commit()
@@ -384,6 +384,96 @@ class TestTheLegacyColourlessRowIsNotShadowed:
         assert own.stock_break_notified_at is not None
         legacy = next(row for row in rows if row.color_name is None)
         assert legacy.stock_break_notified_at is None  # other colours still fall back to a clean row
+
+
+class TestAColourThatRanOutSaysSo:
+    """Owner, 2026-11-20: a SKU whose last spool was archived is not "will run
+    out before replenishment, 0 g left" — it ran out. The same subscription
+    (the stock-break event) carries it; only the text differs."""
+
+    @staticmethod
+    def _depleted(service, db):
+        return service.on_stock_depleted(
+            material="PETG",
+            subtype="Basic",
+            color="Olive Green",
+            brand="Sunlu",
+            stock_g=0.0,
+            rate_g_day=5.3,
+            days_left=0,
+            lead_time_days=3,
+            db=db,
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("lang", "title", "said", "not_said"),
+        [
+            ("en", "Out of stock: PETG Basic Olive Green", "ran out", "will run out"),
+            ("uk", "Закінчився: PETG Basic Olive Green", "закінчився", "закінчиться"),
+        ],
+    )
+    async def test_the_text_says_it_ran_out(self, db_session, lang, title, said, not_said) -> None:
+        await _seed_templates(db_session, lang)
+
+        sent_title, body = await _rendered(db_session, lambda s: self._depleted(s, db_session))
+
+        assert sent_title == title
+        assert "PETG Basic Olive Green (Sunlu) " + said in body
+        assert not_said not in body and "3" in body and "5.3" in body
+
+    @pytest.mark.asyncio
+    async def test_each_recipient_hears_it_once_under_its_own_subscription(self, db_session, monkeypatch) -> None:
+        from backend.app.services.notification_service import notification_service
+
+        await _seed_templates(db_session, "en")
+        db_session.add_all(
+            [
+                TestAReorderOnlyRecipientHearsAboutABreak._provider("reorder-only", ["on_stock_reorder_alert"]),
+                TestAReorderOnlyRecipientHearsAboutABreak._provider(
+                    "both", ["on_stock_reorder_alert", "on_stock_break_alert"]
+                ),
+                TestAReorderOnlyRecipientHearsAboutABreak._provider("break-only", ["on_stock_break_alert"]),
+                User(username="u-reorder", password_hash="x", role="user", inbox_events=["stock_reorder_alert"]),
+                User(username="u-break", password_hash="x", role="user", inbox_events=["stock_break_alert"]),
+                _setting("forecast_global_lead_time_days", "7"),
+            ]
+        )
+        await db_session.commit()
+        spool = await _sku(db_session, color_name="Black", subtype="Basic", remaining=0.0)
+        spool.archived_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        await db_session.commit()
+
+        heard: list[tuple[str, str, str]] = []
+
+        async def capture(provider, title, message, db=None, **kwargs):
+            heard.append((provider.name, kwargs["event_type"], title))
+            return True, ""
+
+        notification_service._template_cache.clear()
+        monkeypatch.setattr("backend.app.services.stock_forecast_alerts.async_session", _ctx(db_session))
+        with (
+            patch.object(notification_service, "_send_to_provider", capture),
+            patch.object(notification_service, "_update_provider_status", AsyncMock()),
+            patch.object(notification_service, "_log_notification", AsyncMock()),
+        ):
+            await StockForecastAlerts().tick()
+        notification_service._template_cache.clear()
+
+        title = "Out of stock: PLA Basic Black"
+        assert sorted(heard) == [
+            ("both", "stock_break_alert", title),
+            ("break-only", "stock_break_alert", title),
+            ("reorder-only", "stock_reorder_alert", title),
+        ]
+        inbox = (
+            await db_session.execute(
+                select(User.username, UserNotification.event_type, UserNotification.title).join(
+                    User, User.id == UserNotification.user_id
+                )
+            )
+        ).all()
+        assert sorted(inbox) == [("u-break", "stock_break_alert", title), ("u-reorder", "stock_reorder_alert", title)]
 
 
 def _setting(key: str, value: str):
