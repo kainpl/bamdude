@@ -34,6 +34,7 @@ from backend.app.models.printer import Printer
 from backend.app.models.user_filament import UserFilamentFamily, UserFilamentPreset
 from backend.app.schemas.slicer_presets import (
     FamilyPresetRefs,
+    FarmPrinter,
     LoadedFilament,
     LoadedFilamentsResponse,
     OnlinePrinter,
@@ -65,6 +66,34 @@ async def online_printers(db: AsyncSession, printer_manager, allowed: frozenset[
         for printer in rows
         if (allowed is None or printer.id in allowed) and printer_manager.is_connected(printer.id)
     ]
+
+
+async def farm_printers(db: AsyncSession, printer_manager, allowed: frozenset[int] | None) -> list[FarmPrinter]:
+    """Every printer of the farm — not archived, within ``allowed`` (an API key's
+    printer list; ``None`` is every printer) — whatever its state: online,
+    paused, offline or in maintenance (spec slicing-setup D4). The rows are
+    selected before any live state is read; the model is the live one when the
+    printer is connected, else the row's, and the nozzles are known only from a
+    live connection — never an assumed size."""
+    rows = (await db.execute(select(Printer).where(Printer.archived.is_(False)).order_by(Printer.id))).scalars().all()
+    out: list[FarmPrinter] = []
+    for printer in rows:
+        if allowed is not None and printer.id not in allowed:
+            continue
+        snapshot = printer_manager.get_feed_snapshot(printer.id) if printer_manager.is_connected(printer.id) else None
+        model = (snapshot.model if snapshot is not None else None) or normalize_model_name(printer.model)
+        nozzles = (
+            sorted({d for sizes in snapshot.nozzle_diameters.values() for d in sizes}) if snapshot is not None else []
+        )
+        out.append(
+            FarmPrinter(
+                printer_id=printer.id,
+                model=model,
+                accepts=sorted(compatible_models(model)) if model else [],
+                nozzle_diameters=nozzles,
+            )
+        )
+    return out
 
 
 async def _family_refs(
@@ -177,4 +206,8 @@ async def loaded_filaments(
             )
         )
     used = {f.family_id for p in out for f in p.filaments if f.family_id}
-    return LoadedFilamentsResponse(printers=out, families={fid: refs for fid, refs in families.items() if fid in used})
+    return LoadedFilamentsResponse(
+        printers=out,
+        farm_printers=await farm_printers(db, printer_manager, allowed),
+        families={fid: refs for fid, refs in families.items() if fid in used},
+    )

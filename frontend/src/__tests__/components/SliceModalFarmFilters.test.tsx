@@ -39,6 +39,7 @@ const LISTING: Listing = {
 };
 
 const FARM: LoadedFilamentsResponse = {
+  farm_printers: [],
   printers: [
     {
       printer_id: 1,
@@ -180,7 +181,7 @@ describe('SliceModal — only printers that are online', () => {
   });
 
   it('says why the list is empty and shows everything again in one click', async () => {
-    serve({ printers: [], families: {} });
+    serve({ printers: [], families: {}, farm_printers: [] });
     open();
     const printer = await picker('Printer profile');
     await waitFor(() => expect(offered(printer)).toHaveLength(4));

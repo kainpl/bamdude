@@ -6270,8 +6270,7 @@ export interface FarmPrinter {
 export interface LoadedFilamentsResponse {
   printers: OnlinePrinter[];
   families: Record<string, FamilyPresetRefs>;
-  // Optional until the server sends it (plan Task 12).
-  farm_printers?: FarmPrinter[];
+  farm_printers: FarmPrinter[];
 }
 
 export interface SliceResponse {

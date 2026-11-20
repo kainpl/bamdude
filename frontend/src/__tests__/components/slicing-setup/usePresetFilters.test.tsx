@@ -140,7 +140,7 @@ describe('usePresetFilters', () => {
 
   it('missing farm_printers narrows nothing', async () => {
     localStorage.setItem(FARM_MODELS_KEY, '1');
-    vi.spyOn(api, 'getSlicerLoadedFilaments').mockResolvedValue({ printers: [], families: {} } as LoadedFilamentsResponse);
+    vi.spyOn(api, 'getSlicerLoadedFilaments').mockResolvedValue({ printers: [], families: {} } as unknown as LoadedFilamentsResponse);
     const { result } = renderHook(() => usePresetFilters({ farmModels: true }), { wrapper: wrapper(newClient()) });
     await waitFor(() => expect(result.current.farmStatus).toBe('ready'));
     expect(result.current.softFilters(ctx)).toEqual([]);

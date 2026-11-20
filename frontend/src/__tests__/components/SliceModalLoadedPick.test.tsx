@@ -34,6 +34,7 @@ const PETG = 'Generic PETG @BBL H2D';
 const LOADED_KEY = 'bamdude:slice-modal:only-loaded-filaments';
 
 const farmWith = (family_id: string, material: string): LoadedFilamentsResponse => ({
+  farm_printers: [],
   printers: [
     {
       printer_id: 1,

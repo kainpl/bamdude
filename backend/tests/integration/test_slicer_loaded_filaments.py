@@ -134,6 +134,69 @@ class TestOnline:
         assert [p["printer_id"] for p in body["printers"]] == [mine.id]
 
 
+class TestFarmPrinters:
+    """D4 (spec slicing-setup r5): every printer that is not archived — online,
+    paused, offline or in maintenance — names its model for "Only models of my
+    farm"; nozzles come from a live snapshot, else [] (never an assumed 0.4)."""
+
+    async def test_farm_printers_lists_offline_paused_and_maintenance(self, async_client, printer_factory, farm):
+        online = await printer_factory(name="online")
+        maintenance = await printer_factory(name="maintenance", is_active=False)
+        offline = await printer_factory(name="offline")
+        for printer in (online, maintenance):
+            farm(printer, _state("X1C", trays=[]))
+
+        body = await _answer(async_client)
+
+        assert {p["printer_id"] for p in body["farm_printers"]} == {online.id, maintenance.id, offline.id}
+        assert [p["printer_id"] for p in body["printers"]] == [online.id]
+
+    async def test_farm_printers_skips_archived(self, async_client, printer_factory, farm):
+        kept = await printer_factory(name="kept")
+        archived = await printer_factory(name="retired", archived=True)
+
+        body = await _answer(async_client)
+
+        ids = {p["printer_id"] for p in body["farm_printers"]}
+        assert kept.id in ids and archived.id not in ids
+
+    async def test_farm_printers_respects_key_scope_none_empty_and_cut(self, async_client, printer_factory, farm):
+        mine, theirs = await printer_factory(name="mine"), await printer_factory(name="theirs")
+        for printer in (mine, theirs):
+            farm(printer, _state("X1C", trays=[_tray(0, "PLA", PLA_BASIC)]))
+        scoped = await async_client.post(
+            "/api/v1/api-keys/", json={"name": "one", "printer_ids": [mine.id], "can_manage_library": True}
+        )
+        none = await async_client.post(
+            "/api/v1/api-keys/", json={"name": "none", "printer_ids": [], "can_manage_library": True}
+        )
+        assert scoped.status_code == 200 and none.status_code == 200
+
+        body = await _answer(async_client, headers={"X-API-Key": scoped.json()["key"], "Authorization": ""})
+        assert [p["printer_id"] for p in body["farm_printers"]] == [mine.id]
+        assert theirs.id not in {p["printer_id"] for p in body["printers"]}
+
+        empty = await _answer(async_client, headers={"X-API-Key": none.json()["key"], "Authorization": ""})
+        assert empty["farm_printers"] == [] and empty["printers"] == []
+
+    async def test_farm_printer_without_a_snapshot_has_no_nozzles(self, async_client, printer_factory, farm):
+        offline = await printer_factory(name="offline", model="X1C")
+
+        entry = next(p for p in (await _answer(async_client))["farm_printers"] if p["printer_id"] == offline.id)
+
+        assert entry["model"] == "X1C"
+        assert entry["nozzle_diameters"] == []
+
+    async def test_unarchived_offline_printer_is_listed(self, async_client, printer_factory, farm):
+        printer = await printer_factory(name="back", archived=True)
+        assert printer.id not in {p["printer_id"] for p in (await _answer(async_client))["farm_printers"]}
+
+        restored = await async_client.post(f"/api/v1/printers/{printer.id}/unarchive")
+        assert restored.status_code == 200, restored.text
+
+        assert printer.id in {p["printer_id"] for p in (await _answer(async_client))["farm_printers"]}
+
+
 class TestLoaded:
     async def test_a_family_names_its_presets_by_each_tiers_id(self, async_client, printer_factory, farm):
         printer = await printer_factory()

@@ -37,6 +37,7 @@ const h2d = (filaments: LoadedFilamentsResponse['printers'][number]['filaments']
   filaments,
 });
 const FARM: LoadedFilamentsResponse = {
+  farm_printers: [],
   printers: [h2d([{ kind: 'ams', material: 'PLA', family_id: 'GFA00', by_material: false }])],
   families: {
     GFA00: { name: 'Bambu PLA Basic', cloud: [], orca_cloud: [], local: [], standard: ['Bambu PLA Basic @BBL H2D'] },
@@ -204,7 +205,7 @@ describe('SliceModal — why "only loaded filaments" leaves nothing', () => {
 
   it('says nothing is loaded when printers of the model are online and empty', async () => {
     serve();
-    farm = { printers: [h2d([])], families: {} };
+    farm = { printers: [h2d([])], families: {}, farm_printers: [] };
     await emptied(H2D);
 
     expect(screen.getByText(/Nothing is loaded on the online printers of the chosen model/)).toBeInTheDocument();

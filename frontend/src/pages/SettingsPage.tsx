@@ -5,6 +5,7 @@ import { availableEngines, hasEngineChoice, resolveEngine, type SliceEngineId } 
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
 import { api, macrosApi } from '../api/client';
+import { invalidatePrinterFleet } from '../utils/printerFleetInvalidation';
 import { cameraTestMessage } from '../utils/cameraTestMessage';
 import type { SecretAction } from '../api/client';
 import { SecretInput } from '../components/SecretInput';
@@ -1295,7 +1296,7 @@ export function SettingsPage() {
     mutationFn: ({ id, data }: { id: number; data: Partial<{ secret_actions: Partial<Record<'external_camera_url' | 'external_camera_snapshot_url', 'keep' | 'clear' | 'replace'>>; external_camera_url: string | null; external_camera_type: string | null; external_camera_enabled: boolean; external_camera_snapshot_url: string | null; camera_rotation: number; camera_light_auto: CameraLightPolicy }> }) =>
       api.updatePrinter(id, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['printers'] });
+      void invalidatePrinterFleet(queryClient);
       showToast(t('settings.toast.cameraSettingsSaved'), 'success');
     },
     onError: (error: Error) => {

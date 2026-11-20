@@ -25,6 +25,7 @@ const printer = (over: Partial<OnlinePrinter>): OnlinePrinter => ({
 });
 
 const farm = (printers: OnlinePrinter[], families: LoadedFilamentsResponse['families'] = {}): LoadedFilamentsResponse => ({
+  farm_printers: [],
   printers,
   families,
 });

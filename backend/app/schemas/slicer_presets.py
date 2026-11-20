@@ -134,6 +134,18 @@ class OnlinePrinter(BaseModel):
     filaments: list[LoadedFilament] = []
 
 
+class FarmPrinter(BaseModel):
+    """A printer of the farm, whatever its state — online, paused, offline or in
+    maintenance; only an archived printer is no longer of the farm (spec
+    slicing-setup D4: "Only models of my farm"). Nozzles are read from a live
+    connection only; an unknown fit is ``[]`` and excludes no size."""
+
+    printer_id: int
+    model: str | None = None
+    accepts: list[str] = []
+    nozzle_diameters: list[float] = []
+
+
 class FamilyPresetRefs(BaseModel):
     """The presets that ARE one family, by the ``id`` each tier of
     ``/slicer/presets`` lists them under."""
@@ -147,4 +159,5 @@ class FamilyPresetRefs(BaseModel):
 
 class LoadedFilamentsResponse(BaseModel):
     printers: list[OnlinePrinter] = []
+    farm_printers: list[FarmPrinter] = []
     families: dict[str, FamilyPresetRefs] = {}

@@ -13,6 +13,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { RotateCcw, Trash2 } from 'lucide-react';
 import { api, type Printer } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
+import { invalidatePrinterFleet } from '../../utils/printerFleetInvalidation';
 
 export function ArchivedPrintersPanel() {
   const { t } = useTranslation();
@@ -26,7 +27,7 @@ export function ArchivedPrintersPanel() {
   const archived = useMemo(() => (all ?? []).filter((p: Printer) => p.archived), [all]);
 
   const invalidate = () => {
-    qc.invalidateQueries({ queryKey: ['printers'] });
+    void invalidatePrinterFleet(qc);
   };
 
   const unarchive = useMutation({
