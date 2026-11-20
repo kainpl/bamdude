@@ -211,20 +211,12 @@ function formatElapsed(seconds: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// The dialog's own pickers.
+// The dialog composes the slicing-setup family (spec slicing-setup r5 §7.1).
 //
-// ⚠️ Inline, and not exported, on purpose. These lived in a shared
-// `components/preset-picker/` folder that the slice dialog and two calibration
-// pages all drew from, which made this dialog a HOST for widgets rather than a
-// composition — every ported feature bolted on at the side instead of joining
-// the layout. Calibration keeps its own copy under
-// `calibration/preset-picker/`; these belong here and change with the dialog.
-//
-// ⚠️ `PresetSourceControl` (All / My / Built-in) is deliberately absent. It was
-// a leftover from the sidecar-bundle era — the other half of that control was
-// deleted with the bundles (#1712) and this half stayed hanging — and source is
-// chosen by the tier grouping below. It still exists for calibration, which is
-// a separate question about a separate flow.
+// ⚠️ A composition, never a host: the controls live in
+// `components/slicing-setup/` and are shared with calibration and assembly;
+// this file only decides which of them it shows and in what layout, and owns
+// its slicing-only parts (plates, design settings, the settings panel).
 // ---------------------------------------------------------------------------
 
 export function SliceModal({ source, onClose }: SliceModalProps) {

@@ -1,13 +1,11 @@
 /**
- * The preset pickers belong to calibration, and the plain names are reserved.
- *
- * ⚠️ They were shared by the slice dialog and two calibration pages, which is
- * why the dialog could not simply inline them. Calibration now owns the
- * originals under its own prefix; the slice dialog builds its own. A file
- * reintroducing `components/preset-picker/` is the mistake this guards.
+ * The preset controls have one home (spec slicing-setup r5 G1): the
+ * slicing-setup family. Neither the old shared `components/preset-picker/`
+ * folder nor calibration's copies under `calibration/preset-picker/` may come
+ * back — a second copy is exactly what the family replaced.
  */
 import { describe, it, expect } from 'vitest';
-import { readdirSync, existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 const SRC = join(process.cwd(), 'src');
@@ -17,12 +15,14 @@ describe('preset picker ownership', () => {
     expect(existsSync(join(SRC, 'components/preset-picker'))).toBe(false);
   });
 
-  it('keeps calibration’s copies under calibration', () => {
-    const files = readdirSync(join(SRC, 'components/calibration/preset-picker'));
-    expect(files.sort()).toEqual([
-      'CalibrationBedTypePicker.tsx',
-      'CalibrationPresetDropdown.tsx',
-      'CalibrationSlicerPicker.tsx',
-    ]);
+  it('has no calibration copy of the pickers', () => {
+    expect(existsSync(join(SRC, 'components/calibration/preset-picker'))).toBe(false);
+  });
+
+  it('keeps the controls in the slicing-setup family', () => {
+    const files = readdirSync(join(SRC, 'components/slicing-setup'));
+    for (const part of ['SlicerChoice.tsx', 'BedPlateSelect.tsx', 'PresetSelect.tsx', 'PresetFilters.tsx']) {
+      expect(files).toContain(part);
+    }
   });
 });

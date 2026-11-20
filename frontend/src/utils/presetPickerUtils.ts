@@ -51,17 +51,6 @@ export function matchesSourceFilter(p: Pick<UnifiedPreset, 'source' | 'id'>, fil
   return filter === 'mine' ? own : !own;
 }
 
-// Calibration's old names, kept until its copies are removed (plan Task 18).
-export type OwnerFilter = 'all' | 'custom' | 'builtin';
-
-export function isCustomPreset(p: UnifiedPreset): boolean {
-  return isOwnPreset(p);
-}
-
-export function matchesOwnerFilter(p: UnifiedPreset, filter: OwnerFilter): boolean {
-  return matchesSourceFilter(p, filter === 'custom' ? 'mine' : filter);
-}
-
 export function toRefValue(ref: PresetRef | null): string {
   return ref ? `${ref.source}:${ref.id}` : '';
 }

@@ -4,27 +4,13 @@ import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 
 import { api } from '../../api/client';
-import type {
-  BedType,
-  CalibBakeOnlyIn,
-  CaliMode,
-  CalibSliceOnlyIn,
-  PresetRef,
-  UnifiedPresetsResponse,
-} from '../../api/client';
+import type { CalibBakeOnlyIn, CaliMode, CalibSliceOnlyIn } from '../../api/client';
+import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { tempDefaultsForFilament } from '../../utils/calibrationTemp';
-import {
-  CalibrationPresetDropdown,
-  CalibrationPresetSourceControl,
-} from './preset-picker/CalibrationPresetDropdown';
-import {
-  TIER_ORDER,
-  matchesOwnerFilter,
-  type OwnerFilter,
-} from '../../utils/presetPickerUtils';
-import { CalibrationBedTypePicker } from './preset-picker/CalibrationBedTypePicker';
-import { CalibrationSlicerPicker, type SlicerKind } from './preset-picker/CalibrationSlicerPicker';
+import { usePresetCatalogue } from '../slicing-setup/usePresetCatalogue';
+import { CalibrationSlicingSection, type CalibrationPresetChoice } from './CalibrationSlicingSection';
+import { EMPTY_CALIBRATION_CHOICE } from './calibrationChoice';
 
 interface Props {
   printerId: number;
@@ -33,27 +19,13 @@ interface Props {
   onDone: () => void;
 }
 
-function pickDefaultRef(
-  data: UnifiedPresetsResponse | undefined,
-  slot: 'printer' | 'process' | 'filament',
-  ownerFilter: OwnerFilter,
-): PresetRef | null {
-  if (!data) return null;
-  for (const tier of TIER_ORDER) {
-    const entries = data[tier][slot].filter((p) => matchesOwnerFilter(p, ownerFilter));
-    if (entries.length > 0) {
-      return { source: entries[0].source, id: entries[0].id };
-    }
-  }
-  return null;
-}
-
 /**
  * Verification-mode download page (W2 Phase 1+).
  *
- * Renders the cloud / local / standard tiered preset dropdowns with a
- * 3-state owner filter; the PA Tower spec form stays below it. The
- * slicer-bundle path was removed with the feature (#1712).
+ * The shared calibration slicing section in verify mode decides the
+ * slicer, the plate and the preset triplet (spec slicing-setup §7.2); the
+ * per-mode spec form stays below it. The slicer-bundle path was removed
+ * with the feature (#1712).
  *
  * The backend's slice-only route accepts the PresetRef triplet (see
  * ``backend/app/schemas/filament_calibration.py::CalibSliceOnlyIn``).
@@ -62,53 +34,17 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   const { t } = useTranslation();
   const { showToast } = useToast();
 
-  const presetsQuery = useQuery<UnifiedPresetsResponse>({
-    queryKey: ['slicer-presets'],
-    queryFn: () => api.getSlicerPresets(),
-    staleTime: 30_000,
-  });
-  const settingsQuery = useQuery({
-    queryKey: ['ui-preferences'],
-    queryFn: api.getUiPreferences,
-    staleTime: 60_000,
-  });
+  // The section owns the catalogue; the page reads the same listing for the
+  // chosen filament's stored flow ratio and type.
+  const { hasPermission } = useAuth();
+  const presets = usePresetCatalogue({ enabled: hasPermission('library:upload') }).data;
 
-  const presets = presetsQuery.data;
-
-  const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>('all');
-
-  // Calibration testing is per-filament — operator picks the cloud /
-  // local filament preset to characterise.
-  const [printerRef, setPrinterRef] = useState<PresetRef | null>(null);
-  const [processRef, setProcessRef] = useState<PresetRef | null>(null);
-  const [filamentRef, setFilamentRef] = useState<PresetRef | null>(null);
-
-  // Auto-pick defaults when presets arrive / owner filter changes.
-  useEffect(() => {
-    if (!presets) return;
-    setPrinterRef((cur) => cur ?? pickDefaultRef(presets, 'printer', ownerFilter));
-    setProcessRef((cur) => cur ?? pickDefaultRef(presets, 'process', ownerFilter));
-    setFilamentRef((cur) => cur ?? pickDefaultRef(presets, 'filament', ownerFilter));
-  }, [presets, ownerFilter]);
-
-  // Per-job slicer picker. Default to global preferred_slicer when it
-  // lands; user can override via the card-style picker below the
-  // preset-source row. ``null`` means "use server's default" — the
-  // backend's resolve_sidecar_url falls back to preferred_slicer when
-  // the request body doesn't carry an override.
-  const [pickedSlicer, setPickedSlicer] = useState<SlicerKind | null>(null);
-  useEffect(() => {
-    if (pickedSlicer != null) return;
-    const preferred = settingsQuery.data?.preferred_slicer;
-    if (preferred === 'orcaslicer' || preferred === 'bambu_studio') {
-      setPickedSlicer(preferred);
-    }
-  }, [settingsQuery.data?.preferred_slicer, pickedSlicer]);
-
-  // Bed plate — defaults to Textured PEI Plate (filament-permissive;
-  // PETG / TPU don't tolerate Cool Plate, which is BS's hard-coded
-  // default in the pa_pattern.3mf scaffold we wrap STLs with).
-  const [bedType, setBedType] = useState<BedType>('Textured PEI Plate');
+  // The slicer, the bed plate and the preset triplet, as the section decided them.
+  const [slicing, setSlicing] = useState<CalibrationPresetChoice>(EMPTY_CALIBRATION_CHOICE);
+  const printerRef = slicing.printer;
+  const processRef = slicing.process;
+  const filamentRef = slicing.filament;
+  const bedType = slicing.plate;
 
   // PA Tower spec defaults — BS GUI defaults for PA Tower preset.
   const [start, setStart] = useState<number>(0.0);
@@ -285,7 +221,14 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   };
 
   const onBakeOnly = async () => {
-    const body: CalibBakeOnlyIn = { cali_mode: caliMode, spec: buildSpec(), bed_type: bedType };
+    // Bake keeps its own readiness; the slicer it is checked against goes only
+    // once known — else the server falls back to preferred_slicer (§8.2).
+    const body: CalibBakeOnlyIn = {
+      cali_mode: caliMode,
+      spec: buildSpec(),
+      bed_type: bedType,
+      ...(slicing.slicer ? { slicer: slicing.slicer } : {}),
+    };
     if (isFlowRate) body.pass_n = flowPassN;
     setIsBaking(true);
     try {
@@ -343,6 +286,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   const canSubmit =
     !isDownloading &&
     specValid &&
+    slicing.startBlocked === false &&
     !!printerRef && !!processRef && !!filamentRef;
 
   const onSubmit = async () => {
@@ -355,7 +299,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
       process_preset: processRef,
       filament_presets: [filamentRef],
     };
-    if (pickedSlicer) body.slicer = pickedSlicer;
+    if (slicing.slicer) body.slicer = slicing.slicer;
     body.bed_type = bedType;
     if (isFlowRate) body.pass_n = flowPassN;
 
@@ -380,61 +324,16 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
       <p className="text-sm text-bambu-gray">{t('filamentCali.verifyDownload.intro')}</p>
 
       <section className="space-y-3">
-        <CalibrationSlicerPicker
-          value={pickedSlicer}
-          onChange={setPickedSlicer}
+        <CalibrationSlicingSection
+          printerId={printerId}
+          mode="verify"
+          needsPresetPicker
+          nozzle={nozzleDiameter}
+          slot={null}
+          value={slicing}
+          onChange={setSlicing}
           disabled={isDownloading || isBaking}
         />
-
-        <CalibrationBedTypePicker
-          value={bedType}
-          onChange={setBedType}
-          disabled={isDownloading || isBaking}
-        />
-
-        <CalibrationPresetSourceControl
-          ownerFilter={ownerFilter}
-          onOwnerFilterChange={setOwnerFilter}
-          disabled={isDownloading}
-        />
-
-        <div className="grid grid-cols-1 gap-2">
-          {presets ? (
-            <>
-              <CalibrationPresetDropdown
-                label={t('slice.printer', 'Printer profile')}
-                slot="printer"
-                data={presets}
-                value={printerRef}
-                onChange={setPrinterRef}
-                disabled={isDownloading}
-                ownerFilter={ownerFilter}
-              />
-              <CalibrationPresetDropdown
-                label={t('slice.process', 'Process profile')}
-                slot="process"
-                data={presets}
-                value={processRef}
-                onChange={setProcessRef}
-                disabled={isDownloading}
-                ownerFilter={ownerFilter}
-              />
-              <CalibrationPresetDropdown
-                label={t('slice.filament', 'Filament profile')}
-                slot="filament"
-                data={presets}
-                value={filamentRef}
-                onChange={setFilamentRef}
-                disabled={isDownloading}
-                ownerFilter={ownerFilter}
-              />
-            </>
-          ) : (
-            <div className="p-3 bg-bambu-dark rounded text-sm text-bambu-gray">
-              {t('filamentCali.verifyDownload.loadingPresets', 'Loading presets…')}
-            </div>
-          )}
-        </div>
       </section>
 
       {isPaTower && (
