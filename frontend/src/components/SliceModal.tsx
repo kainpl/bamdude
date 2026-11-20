@@ -514,16 +514,16 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     [selectedPrinterName, compatIndex],
   );
   const printerFilters = useMemo(
-    () => filters.softFilters({ slot: 'printer', printerName: selectedPrinterName, parentsBySource }),
-    [filters, selectedPrinterName, parentsBySource],
+    () => filters.softFilters({ slot: 'printer', printerName: selectedPrinterName, printerSource, parentsBySource }),
+    [filters, selectedPrinterName, printerSource, parentsBySource],
   );
   const processFilters = useMemo(
-    () => filters.softFilters({ slot: 'process', printerName: selectedPrinterName, parentsBySource }),
-    [filters, selectedPrinterName, parentsBySource],
+    () => filters.softFilters({ slot: 'process', printerName: selectedPrinterName, printerSource, parentsBySource }),
+    [filters, selectedPrinterName, printerSource, parentsBySource],
   );
   const filamentFilters = useMemo(
-    () => filters.softFilters({ slot: 'filament', printerName: selectedPrinterName, parentsBySource }),
-    [filters, selectedPrinterName, parentsBySource],
+    () => filters.softFilters({ slot: 'filament', printerName: selectedPrinterName, printerSource, parentsBySource }),
+    [filters, selectedPrinterName, printerSource, parentsBySource],
   );
   const printerField = useMemo(
     () => (data ? buildPresetField({ listing: data, slot: 'printer', filters: printerFilters, pinned: printerPreset }) : null),
@@ -705,18 +705,23 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   const choiceBlocked =
     fieldBlocks('printer') || fieldBlocks('process') || filamentSlots.some((_, i) => fieldBlocks(filamentKey(i)));
 
+  // What a request may carry: nothing blocked, every ref listed in the
+  // current catalogue. Slicing and saving a set both ask it right before
+  // they send, so neither carries a profile the lists no longer show.
+  const selectionSendable = () => {
+    const listed = (ref: PresetRef | null, slot: Slot) => ref != null && data != null && findPreset(data, ref, slot) != null;
+    return (
+      !choiceBlocked &&
+      listed(printerPreset, 'printer') &&
+      listed(processPreset, 'process') &&
+      filamentPresets.length > 0 &&
+      filamentPresets.every((r) => listed(r, 'filament'))
+    );
+  };
+
   const enqueueMutation = useMutation({
     mutationFn: async () => {
-      // The refs are checked against the current listing once more: what is
-      // sent is what the lists show now.
-      const listed = (ref: PresetRef | null, slot: Slot) => ref != null && data != null && findPreset(data, ref, slot) != null;
-      if (
-        choiceBlocked ||
-        !listed(printerPreset, 'printer') ||
-        !listed(processPreset, 'process') ||
-        filamentPresets.length === 0 ||
-        filamentPresets.some((r) => !listed(r, 'filament'))
-      ) {
+      if (!selectionSendable()) {
         throw new Error(t('slice.allPresetsRequired', 'All presets must be selected'));
       }
       const body: SliceRequest = {
@@ -1001,15 +1006,17 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
               unresolved={unresolvedBundleSlots ?? undefined}
               save={{
                 onSave: (name) =>
-                  createPipelineMutation.mutateAsync({
-                    name,
-                    printer_preset: printerPreset as PresetRef,
-                    process_preset: processPreset as PresetRef,
-                    filament_presets: filamentPresets.filter((f): f is PresetRef => f !== null),
-                    bed_type: bedType,
-                  }),
+                  !selectionSendable()
+                    ? Promise.reject(new Error(t('slice.allPresetsRequired', 'All presets must be selected')))
+                    : createPipelineMutation.mutateAsync({
+                        name,
+                        printer_preset: printerPreset as PresetRef,
+                        process_preset: processPreset as PresetRef,
+                        filament_presets: filamentPresets.filter((f): f is PresetRef => f !== null),
+                        bed_type: bedType,
+                      }),
                 pending: createPipelineMutation.isPending,
-                canSave: !choiceBlocked && !useEmbedded && !isEnqueuing,
+                canSave: selectionSendable() && !useEmbedded && !isEnqueuing,
               }}
             />
             {/* Bed plate picker — five values from BambuStudio's

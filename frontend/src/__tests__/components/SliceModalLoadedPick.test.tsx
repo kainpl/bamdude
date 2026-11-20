@@ -311,7 +311,12 @@ describe('SliceModal — the automatic filament pick and "only filaments that ar
 describe('usePresetFilters — what may steer a pick', () => {
   const presets = PRESETS as unknown as UnifiedPresetsResponse;
   const matte = presets.standard.filament.find((p) => p.name === MATTE)!;
-  const ctx = { slot: 'filament' as const, printerName: H2D, parentsBySource: { standard: buildPrinterParents(presets, 'standard') } };
+  const ctx = {
+    slot: 'filament' as const,
+    printerName: H2D,
+    printerSource: 'standard' as const,
+    parentsBySource: { standard: buildPrinterParents(presets, 'standard') },
+  };
   const loaded = (state: ReturnType<typeof usePresetFilters>) => state.softFilters(ctx).find((f) => f.id === 'loaded');
 
   it('offers the loaded presets to the pick while the answer is good, and not once it is stale', async () => {

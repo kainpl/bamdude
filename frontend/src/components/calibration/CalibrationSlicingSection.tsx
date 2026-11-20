@@ -68,7 +68,9 @@ export interface CalibrationPresetChoice {
   filament: PresetRef | null;
   /** Why Start / slice-for-download cannot run now. A pending family answer is
    *  NOT a reason (spec §7.2): it only withholds the automatic pick. */
-  startBlocked: false | 'notProven' | 'empty' | 'gone' | 'noCatalogue';
+  /** `loading`: the current context's catalogue has not arrived (or failed),
+   *  or a chosen ref is not in it yet — nothing of an older catalogue is sent. */
+  startBlocked: false | 'notProven' | 'empty' | 'gone' | 'noCatalogue' | 'loading';
   /** Said beside the filament field, with the slot's label. */
   familyHint: 'pending' | 'unavailable' | 'absent' | null;
 }
@@ -155,9 +157,10 @@ export function CalibrationSlicingSection({
     physicalModel !== null &&
     isPrinterPresetOfModel(selectedPrinter.name, parentsBySource[selectedPrinter.source] ?? null, physicalModel, printerModels) === false;
 
+  const printerSource = printerRef?.source ?? null;
   const softFilters = useMemo(
-    () => filters.softFilters({ slot: 'printer', printerName: selectedPrinterName, parentsBySource }),
-    [filters, selectedPrinterName, parentsBySource],
+    () => filters.softFilters({ slot: 'printer', printerName: selectedPrinterName, printerSource, parentsBySource }),
+    [filters, selectedPrinterName, printerSource, parentsBySource],
   );
   const fit = useMemo(
     () => ({ printerName: selectedPrinterName, compatIndex, mode: 'hide' as const }),
@@ -288,7 +291,14 @@ export function CalibrationSlicingSection({
   const answer = preset && familyAnswered ? filters.farm : undefined;
   const seenAnswer = useRef<unknown>(undefined);
   useEffect(() => {
-    if (!seeded || !data || answer === undefined || seenAnswer.current === answer) return;
+    // A lost answer (stale / failed read) is forgotten, so the next good one
+    // counts even when TanStack hands back the same object for an equal body
+    // (review I-3): a slot chosen meanwhile still gets its family pick.
+    if (answer === undefined) {
+      seenAnswer.current = undefined;
+      return;
+    }
+    if (!seeded || !data || seenAnswer.current === answer) return;
     seenAnswer.current = answer;
     choices.dispatch(
       'filament',
@@ -373,15 +383,23 @@ export function CalibrationSlicingSection({
 
   // What the page reads.
   const gone = (['printer', 'process', 'filament'] as const).some((k) => choices.get(k).gone);
+  // A ref counts only when the CURRENT catalogue lists it: between a context
+  // change and its answer the refs are an older catalogue's (review I-2).
+  const unlisted = (['printer', 'process', 'filament'] as const).some((k) => {
+    const ref = choices.get(k).ref;
+    return ref !== null && (!data || findPreset(data, ref, k) === null);
+  });
   const startBlocked: CalibrationPresetChoice['startBlocked'] = !canSlice
     ? 'noCatalogue'
-    : gone
-      ? 'gone'
-      : preset && printerRef !== null && !printerProven
-        ? 'notProven'
-        : printerRef === null || processRef === null || filamentRef === null
-          ? 'empty'
-          : false;
+    : !data || unlisted
+      ? 'loading'
+      : gone
+        ? 'gone'
+        : preset && printerRef !== null && !printerProven
+          ? 'notProven'
+          : printerRef === null || processRef === null || filamentRef === null
+            ? 'empty'
+            : false;
   let familyHint: CalibrationPresetChoice['familyHint'] = null;
   if (preset && needsPresetPicker && slot && filamentRef === null && canSlice) {
     const status = filters.farmStatus;

@@ -31,9 +31,10 @@ function Probe({ log, enabled }: { log: (string | undefined)[]; enabled?: boolea
   const c = usePresetCatalogue({ enabled });
   log.push(tagOf(c.data));
   probe.refresh = c.refresh;
+  probe.isError = c.isError;
   return null;
 }
-const probe: { refresh: (() => Promise<void>) | null } = { refresh: null };
+const probe: { refresh: (() => Promise<void>) | null; isError: boolean } = { refresh: null, isError: false };
 
 function Key({ log }: { log: (string | null)[] }) {
   log.push(usePresetAuthKey());
@@ -183,5 +184,43 @@ describe('usePresetAuthKey / usePresetCatalogue', () => {
     expect(presetContextGeneration()).toBe(before + 1);
     await api.orcaCloudLogout();
     expect(presetContextGeneration()).toBe(before + 2);
+  });
+});
+
+// Review I-5: a declined forced refresh is not left to escape its click
+// handler — the ordinary query of the same, still active key reads again, and
+// shows its own error state when that read fails too.
+describe('a declined forced refresh', () => {
+  it('falls back to the ordinary read, which recovers', async () => {
+    const read = vi
+      .spyOn(api, 'getSlicerPresets')
+      .mockResolvedValueOnce(catalogue('cached'))
+      .mockRejectedValueOnce(new Error('temporary outage'))
+      .mockResolvedValueOnce(catalogue('recovered'));
+    const log: (string | undefined)[] = [];
+    render(
+      <QueryClientProvider client={newClient()}>
+        <Probe log={log} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(log.at(-1)).toBe('cached'));
+    await expect(probe.refresh?.()).resolves.toBeUndefined();
+    await waitFor(() => expect(log.at(-1)).toBe('recovered'));
+    expect(read).toHaveBeenCalledTimes(3);
+  });
+
+  it('shows the error state when the ordinary read is refused too', async () => {
+    vi.spyOn(api, 'getSlicerPresets')
+      .mockResolvedValueOnce(catalogue('cached'))
+      .mockRejectedValue(new Error('down'));
+    const log: (string | undefined)[] = [];
+    render(
+      <QueryClientProvider client={newClient()}>
+        <Probe log={log} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(log.at(-1)).toBe('cached'));
+    await expect(probe.refresh?.()).resolves.toBeUndefined();
+    await waitFor(() => expect(probe.isError).toBe(true));
   });
 });

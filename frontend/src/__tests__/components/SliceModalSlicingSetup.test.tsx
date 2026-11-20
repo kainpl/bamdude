@@ -6,7 +6,7 @@
  */
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter } from 'react-router';
@@ -196,6 +196,39 @@ describe('Slice dialog on the slicing-setup family (§4.4)', () => {
 
     await user.selectOptions(await field('Printer profile'), `standard:${A104}`);
     await waitFor(() => expect(sliceButton()).toBeEnabled());
+  });
+
+  it('§4.4.5 an open save row sends nothing for a gone printer, also when it comes back (review I-1)', async () => {
+    let posts = 0;
+    serve();
+    server.use(
+      http.post('*/api/v1/slicer-pipelines/', () => {
+        posts += 1;
+        return HttpResponse.json({ id: 9, name: 'x' });
+      }),
+    );
+    open();
+    const user = userEvent.setup();
+    const printer = await valueOf('Printer profile', `standard:${H2D04}`);
+    await user.selectOptions(printer, `standard:${A104}`);
+    await waitFor(() => expect(sliceButton()).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: 'Save these settings' }));
+    await user.type(screen.getByRole('textbox', { name: /name/i }), 'Mine');
+
+    presets = listing({ printer: [CARD, H2D06, H2D04] });
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await screen.findByText(/no longer in the list/);
+    const save = screen.getByRole('button', { name: 'Save' });
+    expect(save).toBeDisabled();
+    fireEvent.click(save);
+
+    presets = listing();
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(posts).toBe(0);
   });
 
   it('§4.4.6 the remembered slicer stores only a person’s choice', async () => {

@@ -4,7 +4,7 @@
  */
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -108,6 +108,7 @@ function mount(props: SectionProps = {}) {
   );
   return {
     ...view,
+    client,
     rerenderWith: (next: SectionProps) =>
       view.rerender(
         <QueryClientProvider client={client}>
@@ -238,6 +239,57 @@ describe('CalibrationSlicingSection — preset mode', () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(latest.process).toBeNull();
     expect(latest.startBlocked).toBe('empty');
+  });
+
+  // Review I-3: the farm read goes ready → error while another slot is chosen,
+  // then answers again with an EQUAL body — TanStack keeps the same object.
+  // The family pick must still run for the slot chosen meanwhile; a person's
+  // choice made meanwhile stays.
+  const loseAndRegainTheAnswer = async (view: ReturnType<typeof mount>, farmSpy: ReturnType<typeof spies>) => {
+    const query = view.client
+      .getQueryCache()
+      .findAll({ queryKey: ['slicerLoadedFilaments'] })
+      .find((q) => q.state.data !== undefined);
+    const previous = query?.state.data;
+    farmSpy.mockRejectedValueOnce(new Error('temporary farm failure'));
+    await act(async () => {
+      await view.client.invalidateQueries({ queryKey: ['slicerLoadedFilaments'] });
+    });
+    await waitFor(() => expect(query?.state.status).toBe('error'));
+    return { query, previous };
+  };
+
+  it('the family pick recovers after an unchanged farm answer (review I-3)', async () => {
+    const farmSpy = spies();
+    const view = mount();
+    await waitFor(() => expect(latest.filament).toEqual({ source: 'standard', id: MATTE }));
+    const { query, previous } = await loseAndRegainTheAnswer(view, farmSpy);
+    view.rerenderWith({ slot: SLOT_B });
+    await waitFor(() => expect(latest.filament).toBeNull());
+    farmSpy.mockResolvedValueOnce(structuredClone(FARM));
+    await act(async () => {
+      await view.client.invalidateQueries({ queryKey: ['slicerLoadedFilaments'] });
+    });
+    await waitFor(() => expect(query?.state.status).toBe('success'));
+    expect(query?.state.data).toBe(previous);
+    await waitFor(() => expect(latest.filament).toEqual({ source: 'standard', id: MATTE }));
+  });
+
+  it('a person’s choice made while the answer was lost stays when it returns (review I-3)', async () => {
+    const farmSpy = spies();
+    const view = mount();
+    await waitFor(() => expect(latest.filament).toEqual({ source: 'standard', id: MATTE }));
+    await loseAndRegainTheAnswer(view, farmSpy);
+    view.rerenderWith({ slot: SLOT_B });
+    await waitFor(() => expect(latest.filament).toBeNull());
+    await userEvent.setup().selectOptions(await field('Filament profile'), `standard:${BASIC}`);
+    await waitFor(() => expect(latest.filament?.id).toBe(BASIC));
+    farmSpy.mockResolvedValueOnce(structuredClone(FARM));
+    await act(async () => {
+      await view.client.invalidateQueries({ queryKey: ['slicerLoadedFilaments'] });
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(latest.filament?.id).toBe(BASIC);
   });
 
   it('two slots of the same family: switching resets and re-picks by key', async () => {

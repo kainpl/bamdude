@@ -5,7 +5,7 @@
  * §8.2).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -14,7 +14,7 @@ import { api, type CalibBakeOnlyIn, type UnifiedPreset, type UnifiedPresetsRespo
 import { CalibrationVerifyDownloadPage } from '../../../components/calibration/CalibrationVerifyDownloadPage';
 import { ToastProvider } from '../../../contexts/ToastContext';
 import { __resetSharedMemoryForTests } from '../../../components/slicing-setup/memory';
-import { __resetPresetContextForTests } from '../../../utils/presetContext';
+import { __resetPresetContextForTests, bumpPresetContext } from '../../../utils/presetContext';
 
 const auth = { permissions: new Set<string>() };
 vi.mock('../../../contexts/AuthContext', () => ({
@@ -129,5 +129,50 @@ describe('CalibrationVerifyDownloadPage', () => {
     await waitFor(() => expect(bake).toHaveBeenCalledTimes(1));
     const body = bake.mock.calls[0][1] as CalibBakeOnlyIn;
     expect('slicer' in body).toBe(false);
+  });
+
+  // Review I-2: a new authorisation context whose catalogue has not arrived
+  // (or failed) holds the sliced download; the old context's refs are never
+  // sent. The pre-slice bake keeps its own readiness.
+  it('the sliced download waits for the new context’s catalogue, then sends its refs (review I-2)', async () => {
+    const bake = spies({ orca: true, bambu: true });
+    const slice = vi
+      .spyOn(api, 'sliceCalibrationForVerification')
+      .mockResolvedValue({ blob: new Blob(['x']), filename: 'probe.3mf' });
+    const user = userEvent.setup();
+    mount();
+    await waitFor(() => expect(sliceButton()).toBeEnabled());
+    let release: (v: UnifiedPresetsResponse) => void = () => undefined;
+    vi.mocked(api.getSlicerPresets).mockImplementation(
+      () => new Promise<UnifiedPresetsResponse>((resolve) => (release = resolve)),
+    );
+    act(() => bumpPresetContext());
+    await waitFor(() => expect(api.getSlicerPresets).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(sliceButton()).toBeDisabled());
+    await user.click(sliceButton());
+    expect(slice).not.toHaveBeenCalled();
+    await user.click(bakeButton());
+    await waitFor(() => expect(bake).toHaveBeenCalledTimes(1));
+
+    act(() => release(LISTING));
+    await waitFor(() => expect(sliceButton()).toBeEnabled());
+    await user.click(sliceButton());
+    await waitFor(() => expect(slice).toHaveBeenCalledTimes(1));
+    expect(slice.mock.calls[0][1].printer_preset).toEqual({ source: 'standard', id: 'Bambu Lab A1 0.4 nozzle' });
+  });
+
+  it('a failed catalogue of the new context keeps the sliced download blocked (review I-2)', async () => {
+    spies({ orca: true, bambu: true });
+    const slice = vi
+      .spyOn(api, 'sliceCalibrationForVerification')
+      .mockResolvedValue({ blob: new Blob(['x']), filename: 'probe.3mf' });
+    mount();
+    await waitFor(() => expect(sliceButton()).toBeEnabled());
+    vi.mocked(api.getSlicerPresets).mockRejectedValue(new Error('down'));
+    act(() => bumpPresetContext());
+    await waitFor(() => expect(api.getSlicerPresets).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(sliceButton()).toBeDisabled());
+    await userEvent.setup().click(sliceButton());
+    expect(slice).not.toHaveBeenCalled();
   });
 });

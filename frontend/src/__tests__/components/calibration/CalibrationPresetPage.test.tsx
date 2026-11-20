@@ -4,7 +4,7 @@
  * the slot, the nozzle and everything K exactly as it was.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -12,7 +12,7 @@ import pageSource from '../../../components/calibration/CalibrationPresetPage.ts
 import { api, type UnifiedPreset, type UnifiedPresetsResponse } from '../../../api/client';
 import { CalibrationPresetPage } from '../../../components/calibration/CalibrationPresetPage';
 import { __resetSharedMemoryForTests } from '../../../components/slicing-setup/memory';
-import { __resetPresetContextForTests } from '../../../utils/presetContext';
+import { __resetPresetContextForTests, bumpPresetContext } from '../../../utils/presetContext';
 
 const auth = { permissions: new Set<string>() };
 vi.mock('../../../contexts/AuthContext', () => ({
@@ -115,6 +115,20 @@ describe('CalibrationPresetPage', () => {
     await screen.findByLabelText('Printer profile');
     await new Promise((r) => setTimeout(r, 50));
     expect(startButton()).toBeDisabled();
+  });
+
+  it('Start waits for the new context’s catalogue and sends nothing of the old one (review I-2)', async () => {
+    spies();
+    const onStart = mount();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: /AMS 1 · Slot 1 · PLA Matte/ }));
+    await waitFor(() => expect(startButton()).toBeEnabled());
+    vi.mocked(api.getSlicerPresets).mockImplementation(() => new Promise<UnifiedPresetsResponse>(() => {}));
+    act(() => bumpPresetContext());
+    await waitFor(() => expect(api.getSlicerPresets).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(startButton()).toBeDisabled());
+    await user.click(startButton());
+    expect(onStart).not.toHaveBeenCalled();
   });
 
   it.each([

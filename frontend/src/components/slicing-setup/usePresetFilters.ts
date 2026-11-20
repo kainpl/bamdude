@@ -31,6 +31,10 @@ export type FarmStatus = 'off' | 'pending' | 'ready' | 'stale' | 'unavailable' |
 export interface SoftFilterContext {
   slot: Slot;
   printerName: string | null;
+  /** The selected printer preset's own source: its lineage is read from that
+   *  source's parents only — a namesake elsewhere may descend from another
+   *  model (review I-4). */
+  printerSource: PresetSource | null;
   parentsBySource: Partial<Record<PresetSource, PrinterParents | null>>;
 }
 
@@ -108,7 +112,7 @@ export function usePresetFilters(opts: PresetFiltersOptions): PresetFiltersState
         out.push({ id: 'farm', keep, pickKeep: steer ? keep : null });
       }
       if (ctx.slot === 'filament' && opts.loaded && onlyLoaded && farm) {
-        const parents = Object.assign({}, ...Object.values(ctx.parentsBySource).filter(Boolean)) as PrinterParents;
+        const parents = ctx.printerSource ? (ctx.parentsBySource[ctx.printerSource] ?? null) : null;
         const loaded = loadedFilamentsFor(farm, ctx.printerName, parents);
         const keep = (p: Parameters<SoftFilter['keep']>[0]) => filamentPresetIsLoaded(p, loaded, farm.families);
         out.push({ id: 'loaded', keep, pickKeep: steer ? keep : null });

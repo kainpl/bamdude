@@ -539,6 +539,9 @@ export function CalibrationPresetPage({
   };
 
   const submitInner = async () => {
+    // Asked again at the click: the presets must be the current catalogue's
+    // and the printer proven now (review I-2).
+    if (!presetShapeOk) return;
     if (method === 'auto' && isDual) {
       const filaments: CalibFilamentIn[] = [];
       for (const ex of extruderList) {

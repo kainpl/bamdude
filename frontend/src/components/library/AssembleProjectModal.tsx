@@ -168,7 +168,8 @@ function TargetEditor({
   // The row's own printer judges its process and filament, and its loaded test (spec §7.3).
   const { name: printerName, compat } = useMemo(() => rowContext(data, refs.printer, models), [data, refs.printer, models]);
   const fields = useMemo(() => {
-    const softFilters = (slot: RowSlot) => filters.softFilters({ slot, printerName, parentsBySource });
+    const softFilters = (slot: RowSlot) =>
+      filters.softFilters({ slot, printerName, printerSource: refs.printer?.source ?? null, parentsBySource });
     const fit = { printerName, compatIndex: compat, mode: 'group' as const };
     return {
       printer: buildPresetField({ listing: data, slot: 'printer', filters: softFilters('printer'), pinned: refs.printer }),

@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { api, ApiError, type LoadedFilamentsResponse, type UnifiedPreset } from '../../../api/client';
 import { usePresetFilters } from '../../../components/slicing-setup/usePresetFilters';
-import { FARM_MODELS_KEY, LEGACY_ONLINE_KEY, SOURCE_FILTER_KEY, __resetSharedMemoryForTests } from '../../../components/slicing-setup/memory';
+import { FARM_MODELS_KEY, LEGACY_ONLINE_KEY, LOADED_KEY, SOURCE_FILTER_KEY, __resetSharedMemoryForTests } from '../../../components/slicing-setup/memory';
 import { __resetPresetContextForTests } from '../../../utils/presetContext';
 
 // Task 6 (plan r6): the shared filters, their memory and the one farm read.
@@ -25,7 +25,7 @@ const farm = (over: Partial<LoadedFilamentsResponse> = {}): LoadedFilamentsRespo
   ...over,
 });
 const printer = (name: string) => ({ id: name, name, source: 'standard' }) as UnifiedPreset;
-const ctx = { slot: 'printer' as const, printerName: null, parentsBySource: {} };
+const ctx = { slot: 'printer' as const, printerName: null, printerSource: null, parentsBySource: {} };
 
 beforeEach(() => {
   localStorage.clear();
@@ -180,5 +180,35 @@ describe('usePresetFilters', () => {
     const { result } = renderHook(() => usePresetFilters({ farmRead: 'always' }), { wrapper: wrapper(newClient()) });
     act(() => result.current.retry());
     expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+// Review I-4: two printer presets share a name in two sources with different
+// parents (models) and different loaded materials. The loaded filter reads the
+// SELECTED printer's own source, never a merge where the last source wins.
+describe('only loaded follows the selected printer’s own lineage', () => {
+  it('a local clone of an A1 offers what the A1 holds, not its cloud namesake’s P1S material', async () => {
+    localStorage.setItem(LOADED_KEY, '1');
+    vi.spyOn(api, 'getSlicerLoadedFilaments').mockResolvedValue({
+      families: {},
+      farm_printers: [],
+      printers: [
+        { printer_id: 1, model: 'A1', accepts: [], nozzle_diameters: [0.4], filaments: [{ kind: 'ams', material: 'PLA', family_id: null, by_material: true }] },
+        { printer_id: 2, model: 'P1S', accepts: [], nozzle_diameters: [0.4], filaments: [{ kind: 'ams', material: 'PETG', family_id: null, by_material: true }] },
+      ],
+    } as LoadedFilamentsResponse);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrap = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    const { result } = renderHook(() => usePresetFilters({ loaded: true }), { wrapper: wrap });
+    await waitFor(() => expect(result.current.farmStatus).toBe('ready'));
+    const parentsBySource = {
+      local: { 'Workshop clone': 'Bambu Lab A1 0.4 nozzle' },
+      cloud: { 'Workshop clone': 'Bambu Lab P1S 0.4 nozzle' },
+    };
+    const filament = (type: string) => ({ source: 'standard', id: type, name: type, filament_type: type }) as UnifiedPreset;
+    for (const [printerSource, kept] of [['local', [true, false]], ['cloud', [false, true]]] as const) {
+      const [loaded] = result.current.softFilters({ slot: 'filament', printerName: 'Workshop clone', printerSource, parentsBySource });
+      expect([loaded.keep(filament('PLA')), loaded.keep(filament('PETG'))]).toEqual(kept);
+    }
   });
 });

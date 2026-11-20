@@ -291,7 +291,8 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
 
   const onSubmit = async () => {
     const spec = buildSpec();
-    if (!printerRef || !processRef || !filamentRef) return;
+    // Asked again at the click: the section's answer is the current catalogue's.
+    if (slicing.startBlocked !== false || !printerRef || !processRef || !filamentRef) return;
     const body: CalibSliceOnlyIn = {
       cali_mode: caliMode,
       spec,
