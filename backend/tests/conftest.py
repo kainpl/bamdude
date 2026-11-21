@@ -519,6 +519,21 @@ def _media_work_admission_bootstrap():
 
 
 @pytest.fixture(autouse=True)
+def _slice_dispatch_admission_scope():
+    """Keep the slice admission switch scoped to the test that changes it.
+
+    Restore and shutdown close slicing until process exit. Pytest reuses that
+    process across tests, so restore the switch after each test. Slice jobs
+    and their tasks stay with their owners and the existing task cleanup.
+    """
+    from backend.app.services.slice_dispatch import slice_dispatch
+
+    previous = slice_dispatch.open
+    yield
+    slice_dispatch.open = previous
+
+
+@pytest.fixture(autouse=True)
 def _folder_scan_admission_bootstrap():
     """Every test starts with folder scans admitted, as lifespan startup leaves them.
 
