@@ -70,7 +70,7 @@ async def test_the_attach_meeting_a_manual_credit_waits_on_the_archive(
     try:
         await asyncio.wait_for(reached.wait(), 10)
         attaching = asyncio.create_task(attach(factory, archive_id, source))
-        await a_waiter_appears(test_engine, factory, attaching, on=ANY_WAIT)
+        await a_waiter_appears(test_engine, factory, attaching, on=ANY_WAIT, archive_id=archive_id)
         release.set()
         response = await asyncio.wait_for(crediting, 20)
         assert await asyncio.wait_for(attaching, 20)
@@ -95,7 +95,7 @@ async def test_a_manual_credit_meeting_the_attach_waits_on_the_archive(
     try:
         await asyncio.wait_for(reached.wait(), 10)
         crediting = asyncio.create_task(async_client.post(f"/api/v1/archives/{archive_id}/count-into-stock"))
-        await a_waiter_appears(test_engine, factory, crediting, on=ANY_WAIT)
+        await a_waiter_appears(test_engine, factory, crediting, on=ANY_WAIT, archive_id=archive_id)
         release.set()
         assert await asyncio.wait_for(attaching, 20)
         response = await asyncio.wait_for(crediting, 20)

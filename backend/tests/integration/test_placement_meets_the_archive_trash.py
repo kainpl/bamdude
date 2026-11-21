@@ -20,7 +20,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.services import auto_queue_scheduler as scheduler_module
-from backend.tests.integration.lane_pairs import a_waiter_appears, bypass_the_process_lane, held_after
+from backend.tests.integration.lane_pairs import a_waiter_appears, bypass_the_process_lane, held_after, holding_here
 from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
 from backend.tests.integration.test_auto_queue_scheduler import _make_printer_with_queue
 from backend.tests.integration.test_auto_queue_tick_addresses_its_rows import printers_up
@@ -63,6 +63,7 @@ def held_on_the_archive(monkeypatch):
     async def held(db, model, row_id):
         result = await real(db, model, row_id)
         if model is PrintArchive and row_id is not None and not reached.is_set():
+            holding_here()
             reached.set()
             await asyncio.wait_for(release.wait(), 20)
         return result
@@ -95,7 +96,7 @@ async def test_the_trash_meeting_a_placement_that_holds_the_archive_waits_then_r
         try:
             await asyncio.wait_for(reached.wait(), 15)
             trash = asyncio.create_task(async_client.delete(f"/api/v1/archives/{archive_id}"))
-            await a_waiter_appears(test_engine, factory, trash, on=ANY_WAIT)
+            await a_waiter_appears(test_engine, factory, trash, on=ANY_WAIT, lane=printer_id, archive_id=archive_id)
             release.set()
             await asyncio.wait_for(placing, 20)
             response = await asyncio.wait_for(trash, 20)
@@ -124,7 +125,7 @@ async def test_a_placement_meeting_the_trash_that_holds_the_archive_waits_then_p
         try:
             await asyncio.wait_for(reached.wait(), 10)
             placing = asyncio.create_task(tick())
-            await a_waiter_appears(test_engine, factory, placing, on=ANY_WAIT)
+            await a_waiter_appears(test_engine, factory, placing, on=ANY_WAIT, lane=printer_id, archive_id=archive_id)
             release.set()
             response = await asyncio.wait_for(trash, 20)
             await asyncio.wait_for(placing, 20)

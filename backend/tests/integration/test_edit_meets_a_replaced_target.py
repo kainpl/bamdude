@@ -1,10 +1,10 @@
 """A move lands only in the header its checks judged, and Manual start writes only the group it read (G03 B, A6,
 A7, A25; review B1-01, B1-04).
 
-The edit's checks read the target queue and its printer; the printer is deleted through the real DELETE after
-them — and, in the second shape, a new printer takes its id with a new queue header. The single and batch edits
-answer 409 ``queue_item_changed`` and the job stays where it was, the bulk edit skips it; an unchanged target is
-the control. Manual start whose clicked row left its group between the read and the lane writes nothing.
+The edit's checks read the target queue and its printer once (``checked_facts``); the printer is deleted through the
+real DELETE -- right after that snapshot, before the first check that depends on it, or after all the checks -- and,
+in the second shape, a new printer takes its id with a new queue header. The single and batch edits answer 409
+``queue_item_changed`` and the job stays where it was, the bulk edit skips it; an unchanged target is the control. Manual start whose clicked row left its group between the read and the lane writes nothing.
 """
 
 from __future__ import annotations
@@ -27,7 +27,13 @@ from backend.tests.integration.test_queue_reuse_keeps_the_bytes import (  # noqa
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
-CHANGES = [None, "deleted", "replaced"]
+CASES = [
+    (None, "after_checks"),
+    ("deleted", "after_snapshot"),
+    ("replaced", "after_snapshot"),
+    ("deleted", "after_checks"),
+    ("replaced", "after_checks"),
+]
 
 
 async def a_target(db_session, printer_factory):
@@ -38,11 +44,13 @@ async def a_target(db_session, printer_factory):
     return target.id, header.recovery_identity
 
 
-def the_target_changes_after_the_checks(monkeypatch, async_client, printer_factory, target_id, old_identity, change):
-    """``routing_update`` runs after the target's checks; the target is deleted (and replaced) there."""
+def the_target_changes(monkeypatch, async_client, printer_factory, target_id, old_identity, change, when):
+    """The target is deleted (and replaced) right after the snapshot the checks are judged by (``checked_facts``),
+    or after the checks (``routing_update`` is the last of them)."""
     from backend.app.api.routes import print_queue
 
-    real = print_queue.routing_update
+    name = "checked_facts" if when == "after_snapshot" else "routing_update"
+    real = getattr(print_queue, name)
     fired = []
 
     async def validation(*args, **kwargs):
@@ -62,7 +70,7 @@ def the_target_changes_after_the_checks(monkeypatch, async_client, printer_facto
                     assert header.recovery_identity != old_identity
         return values
 
-    monkeypatch.setattr(print_queue, "routing_update", validation)
+    monkeypatch.setattr(print_queue, name, validation)
     return fired
 
 
@@ -86,14 +94,14 @@ async def a_second_member(item, batch_id: str) -> int:
         return sibling.id
 
 
-@pytest.mark.parametrize("change", CHANGES)
+@pytest.mark.parametrize(("change", "when"), CASES)
 async def test_a_single_move_lands_only_in_the_header_it_checked(
-    async_client, db_session, tmp_path, printer_factory, monkeypatch, sessions, change
+    async_client, db_session, tmp_path, printer_factory, monkeypatch, sessions, change, when
 ):
     item, _printer, source, _file, _original = await a_captured_item(db_session, tmp_path, printer_factory, monkeypatch)
     source_id, item_id = source.id, item.id
     target_id, identity = await a_target(db_session, printer_factory)
-    fired = the_target_changes_after_the_checks(monkeypatch, async_client, printer_factory, target_id, identity, change)
+    fired = the_target_changes(monkeypatch, async_client, printer_factory, target_id, identity, change, when)
     response = await async_client.patch(f"/api/v1/queue/{item_id}", json={"queue_id": target_id})
     assert bool(fired) == (change is not None)
     if change is None:
@@ -105,14 +113,14 @@ async def test_a_single_move_lands_only_in_the_header_it_checked(
         assert (await row(item_id)).queue_id == source_id
 
 
-@pytest.mark.parametrize("change", CHANGES)
+@pytest.mark.parametrize(("change", "when"), CASES)
 async def test_a_bulk_move_skips_a_job_whose_target_changed_after_its_checks(
-    async_client, db_session, tmp_path, printer_factory, monkeypatch, sessions, change
+    async_client, db_session, tmp_path, printer_factory, monkeypatch, sessions, change, when
 ):
     item, _printer, source, _file, _original = await a_captured_item(db_session, tmp_path, printer_factory, monkeypatch)
     source_id, item_id = source.id, item.id
     target_id, identity = await a_target(db_session, printer_factory)
-    the_target_changes_after_the_checks(monkeypatch, async_client, printer_factory, target_id, identity, change)
+    the_target_changes(monkeypatch, async_client, printer_factory, target_id, identity, change, when)
     response = await async_client.patch("/api/v1/queue/bulk", json={"item_ids": [item_id], "queue_id": target_id})
     assert response.status_code == 200, response.text
     body = response.json()
@@ -124,15 +132,15 @@ async def test_a_bulk_move_skips_a_job_whose_target_changed_after_its_checks(
         assert (await row(item_id)).queue_id == source_id
 
 
-@pytest.mark.parametrize("change", CHANGES)
+@pytest.mark.parametrize(("change", "when"), CASES)
 async def test_a_batch_move_lands_only_in_the_header_it_checked(
-    async_client, db_session, tmp_path, printer_factory, monkeypatch, sessions, change
+    async_client, db_session, tmp_path, printer_factory, monkeypatch, sessions, change, when
 ):
     item, _printer, source, _file, _original = await a_captured_item(db_session, tmp_path, printer_factory, monkeypatch)
     source_id, item_id = source.id, item.id
     sibling_id = await a_second_member(item, "moving-batch")
     target_id, identity = await a_target(db_session, printer_factory)
-    the_target_changes_after_the_checks(monkeypatch, async_client, printer_factory, target_id, identity, change)
+    the_target_changes(monkeypatch, async_client, printer_factory, target_id, identity, change, when)
     response = await async_client.patch(
         f"/api/v1/queue/batch/moving-batch?queue_id={source_id}", json={"queue_id": target_id}
     )

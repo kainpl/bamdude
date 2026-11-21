@@ -374,6 +374,7 @@ class AutoQueueScheduler:
                             plan=eligible.plan,
                             requirements=eligible.requirements,
                             snapshot_signature=eligible.snapshot_signature,
+                            header_identity=eligible.queue_identity,
                         )
                     except SourceUnavailable as exc:
                         expired = True
@@ -810,6 +811,7 @@ class AutoQueueScheduler:
         plan=None,
         requirements=None,
         snapshot_signature=None,
+        header_identity: str | None = None,
     ) -> PrintQueueItem:
         """Copy auto item into the printer's print_queue and mark assigned.
 
@@ -924,8 +926,12 @@ class AutoQueueScheduler:
         # swap fields above were decided from, never a second read.
         promoted_snapshot = await snapshot_for_copy(db, item, descriptor)
         # The header this placement is validated against (A25): SQLite gives a deleted printer's id, and its
-        # header's, to the next printer.
-        header_identity = await db.scalar(select(PrinterQueue.recovery_identity).where(PrinterQueue.id == printer.id))
+        # header's, to the next printer. The eligibility that chose the printer hands over the incarnation it read
+        # (``header_identity``); only a caller without one has it read here.
+        if header_identity is None:
+            header_identity = await db.scalar(
+                select(PrinterQueue.recovery_identity).where(PrinterQueue.id == printer.id)
+            )
         # The reads end; nothing is held into the placement (A17 step 2).
         await db.commit()
         # A lane another writer holds in process is this printer lost for the pass, never a wait

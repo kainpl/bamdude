@@ -773,6 +773,9 @@ async def assign_now(
                 await write_router_rows(db, {view.id: (view, values)} if values else {})
             raise HTTPException(409, reason or "No eligible printer available")
 
+        # A refused placement rolls its transaction back, which expires this Printer too (G03 B, A17): its id is
+        # kept as a value for the retry below.
+        printer_id = printer.id
         try:
             await auto_queue_scheduler._assign(
                 db,
@@ -783,6 +786,7 @@ async def assign_now(
                 plan=eligible.plan,
                 requirements=eligible.requirements,
                 snapshot_signature=eligible.snapshot_signature,
+                header_identity=eligible.queue_identity,
             )
             break
         except SourceUnavailable as exc:
@@ -796,7 +800,7 @@ async def assign_now(
             item = await db.get(AutoQueueItem, item_id, populate_existing=True)
             if item is None or item.status != "pending" or item.recovery_identity != view.recovery_identity:
                 raise changed from exc
-            busy_printers.add(printer.id)
+            busy_printers.add(printer_id)
     return await get_auto_queue_item(item_id, db, _)
 
 

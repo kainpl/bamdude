@@ -22,6 +22,9 @@ BACKENDS: dict[int, asyncio.Task] = {}
 # PostgreSQL: each task -> the task that created it. A writer called through the HTTP client runs its route in a task
 # of the middleware's, so the session's task is a descendant of the one the test started.
 PARENTS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+# The tasks that reached a pair's barrier holding their locks (``lane_pairs`` barriers): the default holder a monitor
+# accepts when a pair names none.
+HELD: weakref.WeakSet = weakref.WeakSet()
 
 
 def lineage(task) -> list:
@@ -83,9 +86,11 @@ async def test_engine(monkeypatch, tmp_path, request):
                     BACKENDS[pid] = task
 
         BACKENDS.clear()
+        HELD.clear()
         event.listen(Session, "after_begin", patient)
         request.addfinalizer(lambda: event.remove(Session, "after_begin", patient))
         request.addfinalizer(BACKENDS.clear)
+        request.addfinalizer(HELD.clear)
 
         loop = asyncio.get_running_loop()
         previous = loop.get_task_factory()

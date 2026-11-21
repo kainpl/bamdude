@@ -30,6 +30,7 @@ from backend.tests.integration.lane_pairs import (
     claim_holding_the_lane,
     go,
     held_after,
+    holding_here,
     pending_rows,
 )
 from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
@@ -342,7 +343,7 @@ async def test_the_reconciliation_close_meeting_a_bulk_retry_waits_on_the_lane(
         await asyncio.wait_for(reached.wait(), 10)
         closing = asyncio.create_task(reconcile(factory, archive_id))
         # SQLite: the close's first commit already waits for the writer the retry holds, before it asks for the lane.
-        await a_waiter_appears(test_engine, factory, closing)
+        await a_waiter_appears(test_engine, factory, closing, lane=queue_id)
         release.set()
         assert (await asyncio.wait_for(retrying, 20))["retried"] == [failed_id]
         assert await asyncio.wait_for(closing, 20) == archive_id
@@ -510,6 +511,7 @@ async def test_a_batch_cancel_meeting_the_waiting_batch_waits_on_the_router_rows
         locked = await real(db, wanted)
         if armed[0]:
             armed[0] = False
+            holding_here()
             reached.set()
             await asyncio.wait_for(release.wait(), 20)
         return locked

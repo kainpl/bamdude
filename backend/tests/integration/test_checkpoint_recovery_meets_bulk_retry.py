@@ -100,7 +100,7 @@ async def test_the_checkpoint_recovery_meeting_a_bulk_retry_waits_on_the_lane(
         await asyncio.wait_for(reached.wait(), 10)
         recovering = asyncio.create_task(recover(factory, archive_id))
         # SQLite: the recovery's first commit already waits for the writer the retry holds.
-        await a_waiter_appears(test_engine, factory, recovering)
+        await a_waiter_appears(test_engine, factory, recovering, lane=queue_id)
         release.set()
         assert (await asyncio.wait_for(retrying, 20))["retried"] == [failed_id]
         assert await asyncio.wait_for(recovering, 20) == archive_id

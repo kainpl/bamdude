@@ -9,6 +9,7 @@ process lock or on SQLite's writer.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 
 import pytest
 from sqlalchemy import select, text, update
@@ -31,11 +32,23 @@ LANE_WAIT = ("advisory",)
 ROW_WAIT = ("transactionid", "tuple")
 ANY_WAIT = ("transactionid", "tuple", "advisory")
 LANE_GUARD = 1625  # pg_advisory_xact_lock(1625, queue_id): the lane's database guard (queue_ops)
+ARCHIVE_GUARD = 182  # pg_advisory_xact_lock(182, archive_id): the archive's guard (archive_write_scope)
 
 _UNGRANTED = text(
     "SELECT pid, locktype, classid, objid, objsubid, pg_blocking_pids(pid) AS blockers "
     "FROM pg_locks WHERE NOT granted AND pid = ANY(:pids)"
 )
+
+
+@dataclass(frozen=True)
+class Edge:
+    """What the monitor saw: the waiter's backend, the lock it waits on, and the backends ahead of it."""
+
+    pid: int
+    locktype: str
+    classid: int | None
+    objid: int | None
+    blockers: tuple[int, ...]
 
 
 def _outcome(task) -> str | None:
@@ -46,33 +59,55 @@ def _outcome(task) -> str | None:
     return repr(task.exception()) if task.exception() else repr(task.result())
 
 
-def _matches(lock, on, queue_id) -> bool:
+def _matches(lock, on, queue_id, archive_id) -> bool:
+    """The lock is of a named kind; an advisory lock counts only as the lane guard of ``queue_id`` or the archive
+    guard of ``archive_id`` -- in every mode, so another advisory lock (another class, another key) never does."""
     if lock.locktype not in on:
         return False
-    if lock.locktype == "advisory" and on == LANE_WAIT:
-        # The lane's guard itself, and for a named lane that very key -- never another advisory lock.
-        if lock.classid != LANE_GUARD or lock.objsubid != 2:
-            return False
-        return queue_id is None or lock.objid == queue_id
-    return True
+    if lock.locktype != "advisory":
+        return True
+    if lock.objsubid != 2:
+        return False
+    if lock.classid == LANE_GUARD:
+        return queue_id is not None and lock.objid == queue_id
+    if lock.classid == ARCHIVE_GUARD:
+        return archive_id is not None and lock.objid == archive_id
+    return False
 
 
-async def postgres_edge(factory, task, queue_id=None, *, on=LANE_WAIT, behind=None) -> tuple[int, list[int]]:
-    """PostgreSQL: wait until a transaction of ``task`` itself waits on a lock of the named kind, and return
-    ``(waiter pid, holder pids)`` -- the edge ``pg_blocking_pids`` reports for that very backend.
+def _held_by(owner, pid, behind) -> bool:
+    """The blocker is the holder the pair names: an exact pid, an exact task (never merely one it created), or --
+    when nothing is named -- a task that reached one of this test's barriers (``held_after``, ``held_inside``,
+    ``claim_holding_the_lane``) and still holds it."""
+    from backend.tests.integration.queue_test_database import HELD
 
-    The waiter and the holder are known by pid: ``queue_test_database`` names each transaction's backend after the
-    task that began it, and each task after the task that created it -- a transaction of ``task`` is one begun by it
-    or by a task it created (a route the HTTP client runs is in a task of the middleware's). A lane wait is the lane guard's advisory lock (for a named lane, that key); a row wait is
-    ``transactionid`` / ``tuple``. Every holder must be another task of this test (``behind`` or a task it created,
-    when given) -- a foreign backend is a failure, not a match -- and the waiter's task must still be running: a task that ended
-    before its wait was seen fails at once. ``pg_locks`` and ``pg_blocking_pids`` are read live, the monitor's
-    transaction is ended on every poll (``pg_stat_activity`` would answer from a snapshot of its first read)."""
+    if isinstance(behind, int):
+        return pid == behind
+    if isinstance(behind, (set, frozenset, list, tuple)):
+        return pid in behind
+    if behind is not None:
+        return owner is behind
+    return any(owner is task for task in HELD)
+
+
+async def postgres_edge(
+    factory, task, queue_id=None, *, on=LANE_WAIT, behind=None, archive_id=None, timeout: float = 10
+) -> Edge:
+    """PostgreSQL: wait until a transaction of ``task`` waits on the named lock behind the named holder, and return
+    the :class:`Edge` -- ``pg_blocking_pids`` of that very backend.
+
+    The waiter is known by pid: ``queue_test_database`` names each transaction's backend after the task that began
+    it, and each task after the task that created it, so a transaction of ``task`` is one begun by it or by a task it
+    created (a route the HTTP client runs is in a task of the middleware's). The holder is named exactly -- a pid, a
+    task, or the barrier the test reached (:func:`_held_by`); a blocker no task of this test began is a failure, and
+    so is a waiter that ended before its wait was seen. An advisory wait counts only on the lane guard's key
+    (``queue_id``) or the archive guard's (``archive_id``). ``pg_locks`` and ``pg_blocking_pids`` are read live, the
+    monitor's transaction ended on every poll (``pg_stat_activity`` would answer from a snapshot of its first read)."""
     from backend.tests.integration.queue_test_database import BACKENDS, descends_from
 
     async with factory() as monitor:
         try:
-            async with asyncio.timeout(10):
+            async with asyncio.timeout(timeout):
                 while True:
                     if task.done():
                         pytest.fail(f"the waiter ended before it was seen waiting on {on}: {_outcome(task)}")
@@ -80,46 +115,51 @@ async def postgres_edge(factory, task, queue_id=None, *, on=LANE_WAIT, behind=No
                     locks = (await monitor.execute(_UNGRANTED, {"pids": mine})).all() if mine else []
                     await monitor.rollback()
                     for lock in locks:
-                        if not _matches(lock, on, queue_id):
+                        if not _matches(lock, on, queue_id, archive_id):
                             continue
                         blockers = list(lock.blockers or [])
-                        if not blockers:
-                            continue
                         owners = [BACKENDS.get(pid) for pid in blockers]
                         if any(owner is None for owner in owners):
                             pytest.fail(f"pid {lock.pid} of the waiter waits behind a foreign backend: {blockers}")
-                        if all(owner is BACKENDS.get(lock.pid) for owner in owners):
-                            continue  # behind another transaction of the very same task: no pair edge
-                        if behind is not None and not any(descends_from(owner, behind) for owner in owners):
-                            continue  # not (yet) behind the named holder; a wait that stays so times out below
-                        return lock.pid, blockers
+                        if any(_held_by(owner, pid, behind) for owner, pid in zip(owners, blockers, strict=True)):
+                            return Edge(lock.pid, lock.locktype, lock.classid, lock.objid, tuple(blockers))
                     await asyncio.sleep(0.02)
         except TimeoutError:
-            rows = (
-                await monitor.execute(
-                    text(
-                        "SELECT l.pid, l.locktype, l.classid, l.objid, l.granted, pg_blocking_pids(l.pid) "
-                        "FROM pg_locks l WHERE l.pid = ANY(:pids) AND l.locktype IN ('advisory','transactionid','tuple')"
-                    ),
-                    {"pids": list(BACKENDS)},
-                )
-            ).all()
-            named = [(*row, getattr(BACKENDS.get(row[0]), "get_name", lambda: "?")()) for row in rows]
-            pytest.fail(
-                f"no transaction of the waiter waited on {on} (lane {queue_id}); outcome={_outcome(task)}; "
-                f"its pids={[pid for pid, owner in BACKENDS.items() if descends_from(owner, task)]}; "
-                f"locks of this test: {named}"
+            # A query cut short leaves the connection unusable: drop it rather than roll it back.
+            await monitor.invalidate()
+    # Diagnose in a session of its own: the timeout may have cut the monitor's query short.
+    async with factory() as monitor:
+        rows = (
+            await monitor.execute(
+                text(
+                    "SELECT l.pid, l.locktype, l.classid, l.objid, l.granted, pg_blocking_pids(l.pid) "
+                    "FROM pg_locks l WHERE l.pid = ANY(:pids) AND l.locktype IN ('advisory','transactionid','tuple')"
+                ),
+                {"pids": list(BACKENDS)},
             )
+        ).all()
+        named = [(*row, getattr(BACKENDS.get(row[0]), "get_name", lambda: "?")()) for row in rows]
+        pytest.fail(
+            f"no transaction of the waiter waited on {on} (lane {queue_id}, archive {archive_id}) behind "
+            f"{behind!r}; outcome={_outcome(task)}; "
+            f"its pids={[pid for pid, owner in BACKENDS.items() if descends_from(owner, task)]}; "
+            f"locks of this test: {named}"
+        )
 
 
-async def a_waiter_appears(engine, factory, task, queue_id=None, *, on=LANE_WAIT, behind=None) -> None:
+async def a_waiter_appears(
+    engine, factory, task, queue_id=None, *, on=LANE_WAIT, behind=None, archive_id=None, lane=None
+):
     """The second writer of a pair is waiting -- on the lock it is meant to wait on, behind this test's holder.
 
-    PostgreSQL: :func:`postgres_edge` -- the waiter's own backend, its exact blocking edge and the lock's type (the
-    lane guard's key for a lane wait). SQLite: a task waits on the lane's process lock (when a lane is named), else
-    on SQLite's writer -- which only the task's still being unfinished can show."""
+    PostgreSQL: :func:`postgres_edge` -- the waiter's own backend, its exact edge to the holder and the lock's type
+    and key; ``lane`` names the lane guard's key there when ``queue_id`` is not passed (on SQLite ``queue_id`` means
+    "waits on that lane's process lock"). Returns the :class:`Edge`. SQLite: a task waits on the lane's process lock
+    (when a lane is named), else on SQLite's writer -- which only the task's still being unfinished can show."""
+    edge = None
     if engine.dialect.name == "postgresql":
-        await postgres_edge(factory, task, queue_id, on=on, behind=behind)
+        key = queue_id if queue_id is not None else lane
+        edge = await postgres_edge(factory, task, key, on=on, behind=behind, archive_id=archive_id)
     elif queue_id is not None:
         lock = queue_ops._queue_claim_locks[queue_id]
         async with asyncio.timeout(10):
@@ -128,6 +168,15 @@ async def a_waiter_appears(engine, factory, task, queue_id=None, *, on=LANE_WAIT
     else:
         await asyncio.sleep(0.3)
     assert not task.done(), "the second writer did not wait"
+    return edge
+
+
+def holding_here() -> None:
+    from backend.tests.integration.queue_test_database import HELD
+
+    task = asyncio.current_task()
+    if task is not None:
+        HELD.add(task)
 
 
 async def pending_rows(db, printer_factory, count=2) -> tuple[int, list[int]]:
@@ -150,6 +199,7 @@ async def claim_holding_the_lane(factory, queue_id, item_id, reached, release, *
     async with factory() as db, queue_ops.claim_lanes(db, [queue_id]):
         await db.scalar(select(PrinterQueue.id).where(PrinterQueue.id == queue_id).with_for_update(key_share=True))
         await db.scalar(select(PrintQueueItem.id).where(PrintQueueItem.id == item_id).with_for_update(key_share=True))
+        holding_here()
         reached.set()
         await asyncio.wait_for(release.wait(), 20)
         result = await db.execute(
@@ -176,6 +226,7 @@ def held_after(monkeypatch, owner, name):
         result = await real(*args, **kwargs)
         if armed[0]:
             armed[0] = False
+            holding_here()
             reached.set()
             await asyncio.wait_for(release.wait(), 20)
         return result
@@ -204,6 +255,7 @@ def held_inside(monkeypatch, owner, name):
         async with real(*args, **kwargs) as value:
             if armed[0]:
                 armed[0] = False
+                holding_here()
                 reached.set()
                 await asyncio.wait_for(release.wait(), 20)
             yield value

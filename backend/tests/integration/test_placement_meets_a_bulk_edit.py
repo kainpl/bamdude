@@ -97,7 +97,7 @@ async def test_a_placement_meeting_a_bulk_edit_on_its_lane_waits_or_gives_the_pr
                     await asyncio.sleep(0.02)
             await asyncio.wait_for(held[0][0].wait(), 10)
             if test_engine.dialect.name == "postgresql":
-                await a_waiter_appears(test_engine, factory, tick)
+                await a_waiter_appears(test_engine, factory, tick, p1.id)
             else:
                 # SQLite: the placement gives the held lane up for the pass instead of waiting behind it. (The pass's
                 # end batch then waits for SQLite's writer, as any short write does -- so the edit is let go now.)

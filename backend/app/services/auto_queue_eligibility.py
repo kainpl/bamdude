@@ -252,7 +252,11 @@ HALTED_QUEUE_STATUSES = ("paused", "error")
 
 
 async def printers_for_item(
-    db: AsyncSession, item: AutoQueueItem, *, halted: list[Printer] | None = None
+    db: AsyncSession,
+    item: AutoQueueItem,
+    *,
+    halted: list[Printer] | None = None,
+    headers: dict[int, str | None] | None = None,
 ) -> tuple[list[Printer], str, str]:
     """Every printer this item is allowed to run on, before any readiness is asked.
 
@@ -273,6 +277,10 @@ async def printers_for_item(
     resumed, the category ``is_paused`` already belongs to. A caller that names the
     halted printers in its waiting reason passes ``halted``: the printers that would
     otherwise qualify are appended to it, never returned.
+
+    ``headers``, when given, receives each candidate printer's queue header incarnation (``recovery_identity``) from
+    this very read (G03 B, A25): a placement lands only in the header its eligibility judged, never in a header
+    created later under the same id.
     """
     # ⚠️ ``normalize_model_name``, not ``normalize_printer_model``: the latter
     # hands an internal code straight back, so an item targeting "C12" matched
@@ -283,7 +291,7 @@ async def printers_for_item(
 
     # Filter active printers of the right model + location, with auto-distribute eligible.
     query = (
-        select(Printer, PrinterQueue.status)
+        select(Printer, PrinterQueue.status, PrinterQueue.recovery_identity)
         .join(PrinterQueue, PrinterQueue.printer_id == Printer.id)
         .where(Printer.is_active.is_(True))
         .where(Printer.archived.is_(False))
@@ -325,7 +333,9 @@ async def printers_for_item(
     setting = await db.scalar(select(Settings.value).where(Settings.key == "auto_queue_compatible_models"))
     allow_compatible = isinstance(setting, str) and setting.lower() == "true"
     exact, compatible, stopped = [], [], []
-    for printer, queue_status in result.all():
+    for printer, queue_status, queue_identity in result.all():
+        if headers is not None:
+            headers[printer.id] = queue_identity
         if not permits(resources, printer.id, printer_manager.effective_model_for(printer.id, printer.model)):
             continue
         verdict = model_compatibility(normalized_model, printer_manager.effective_model_for(printer.id, printer.model))
@@ -381,6 +391,9 @@ class EligiblePrinter:
     #: told to ignore.
     snapshot_signature: tuple[int, str] | None = None
     facts: tuple[WaitingFact, ...] = ()
+    #: The chosen printer's queue header incarnation as this eligibility read it (A25): the placement refuses a
+    #: header that is not this one.
+    queue_identity: str | None = None
 
     def __iter__(self):
         # Compatibility for callers that only display the result. Assignment
@@ -433,7 +446,8 @@ async def find_eligible_printer(
     # The printers whose queue is halted are no candidates (G03 E-3), but the job's waiting
     # reason names each of them: the operator's Resume is what would let them take it.
     halted: list[Printer] = []
-    printers, normalized_model, location_suffix = await printers_for_item(db, item, halted=halted)
+    headers: dict[int, str | None] = {}
+    printers, normalized_model, location_suffix = await printers_for_item(db, item, halted=halted, headers=headers)
     halted_ids = {printer.id for printer in halted}
     if not printers and not halted:
         reason = t(
@@ -543,7 +557,11 @@ async def find_eligible_printer(
             key=lambda c: returned_printer_rank(failed_identity, c[4].connector_identity, c[:4]),
         )
         return EligiblePrinter(
-            printer, plan=plan, requirements=req, snapshot_signature=feed_signature(policy, snapshot)
+            printer,
+            plan=plan,
+            requirements=req,
+            snapshot_signature=feed_signature(policy, snapshot),
+            queue_identity=headers.get(printer.id),
         )
     facts.sort(key=lambda item: (item.printer_id or 0, item.code, repr(item.params)))
     if not facts:

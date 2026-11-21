@@ -630,16 +630,31 @@ async def _reconcile_complete_archive(
 
             # The row that RAN this archive -- still holding the printer. A job queued from the archive later (a
             # reprint names it as its source) is not this run and is never closed by it.
+            # Locked only under the lanes held (L1); a printing row of another queue naming this archive is read
+            # without a lock -- its lane is someone else's -- and keeps the claims preserved, as before.
             owners = list(
                 (
                     await db.scalars(
                         select(PrintQueueItem)
-                        .where(PrintQueueItem.archive_id == archive.id, PrintQueueItem.status == "printing")
+                        .where(
+                            PrintQueueItem.archive_id == archive.id,
+                            PrintQueueItem.status == "printing",
+                            PrintQueueItem.queue_id.in_(queues),
+                        )
                         .with_for_update(key_share=True)
                     )
                 ).all()
             )
-            if len(owners) > 1 or any(owner.queue_id not in queues for owner in owners):
+            foreign = await db.scalar(
+                select(PrintQueueItem.id)
+                .where(
+                    PrintQueueItem.archive_id == archive.id,
+                    PrintQueueItem.status == "printing",
+                    PrintQueueItem.queue_id.not_in(queues),
+                )
+                .limit(1)
+            )
+            if len(owners) > 1 or foreign is not None:
                 from backend.app.models.printer_queue import PrinterQueue
 
                 queue = await db.get(PrinterQueue, archive.printer_id)

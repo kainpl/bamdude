@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.services import archive_colors, queue_counters
-from backend.tests.integration.lane_pairs import ANY_WAIT, a_waiter_appears, bypass_the_process_lane, held_after
+from backend.tests.integration.lane_pairs import ROW_WAIT, a_waiter_appears, bypass_the_process_lane, held_after
 from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
 from backend.tests.integration.test_reprint_creates_new_archive import run_reprint
 
@@ -61,7 +61,7 @@ async def test_the_runners_archive_and_a_stop_meet_without_a_deadlock(
     db_session.add(User(id=99, username="reprinter", password_hash="unused", role="admin", is_active=True))
     await db_session.commit()
     runner = asyncio.create_task(run_reprint(db_session, test_engine, tmp_path, monkeypatch, printer_factory))
-    stopping = None
+    stopping, edge = None, None
     try:
         reached = asyncio.ensure_future(arrived.wait())
         await asyncio.wait({reached, runner}, timeout=30, return_when=asyncio.FIRST_COMPLETED)
@@ -99,13 +99,15 @@ async def test_the_runners_archive_and_a_stop_meet_without_a_deadlock(
         if first == "runner":
             await asyncio.wait_for(flushed.wait(), 20)
             stopping = asyncio.create_task(stop())
-            await a_waiter_appears(test_engine, factory, stopping, on=ANY_WAIT, behind=runner)
+            # Measured on PostgreSQL: the Stop / _cancel_item waits on the job row the runner's flush wrote.
+            edge = await a_waiter_appears(test_engine, factory, stopping, on=ROW_WAIT, behind=runner)
             runner_go.set()
         else:
             stopping = asyncio.create_task(stop())
             await asyncio.wait_for(writer_held.wait(), 20)
             runner_go.set()
-            await a_waiter_appears(test_engine, factory, runner, on=ANY_WAIT, behind=stopping)
+            # Measured on PostgreSQL: the runner's flush waits on the job row the Stop / _cancel_item wrote.
+            edge = await a_waiter_appears(test_engine, factory, runner, on=ROW_WAIT, behind=stopping)
             writer_go.set()
         outcomes = await asyncio.wait_for(asyncio.gather(runner, stopping, return_exceptions=True), 60)
     finally:
@@ -113,6 +115,7 @@ async def test_the_runners_archive_and_a_stop_meet_without_a_deadlock(
         if first == "writer" and "writer_go" in locals():
             writer_go.set()
         await asyncio.gather(runner, *([stopping] if stopping else []), return_exceptions=True)
+    assert edge is None or edge.locktype == "transactionid", edge  # None: SQLite, which has no pg_locks
     assert not any(deadlocked(outcome) for outcome in outcomes), outcomes
     assert not isinstance(outcomes[1], BaseException), outcomes
     async with factory() as db:

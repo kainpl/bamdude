@@ -174,7 +174,7 @@ async def test_a_head_writer_meeting_the_verdict_waits_on_the_lane_then_applies(
     try:
         await asyncio.wait_for(reached.wait(), 10)
         writing = asyncio.create_task(request(async_client, row_id))
-        await a_waiter_appears(test_engine, factory, writing, lane_of(writer, queue_id))
+        await a_waiter_appears(test_engine, factory, writing, lane_of(writer, queue_id), lane=queue_id)
         release.set()
         outcome = await asyncio.wait_for(judging, 20)
         response = await asyncio.wait_for(writing, 20)
@@ -200,7 +200,7 @@ async def test_the_verdict_meeting_a_head_writer_waits_on_the_lane_then_judges_t
     try:
         await asyncio.wait_for(reached.wait(), 10)
         judging = asyncio.create_task(verdict(factory, name, judged_id))
-        await a_waiter_appears(test_engine, factory, judging, lane_of(writer, queue_id))
+        await a_waiter_appears(test_engine, factory, judging, lane_of(writer, queue_id), lane=queue_id)
         release.set()
         response = await asyncio.wait_for(writing, 20)
         outcome = await asyncio.wait_for(judging, 20)

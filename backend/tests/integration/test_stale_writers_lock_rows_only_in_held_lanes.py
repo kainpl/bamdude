@@ -116,6 +116,7 @@ async def test_the_former_lock_by_id_alone_waited_behind_the_q2_holder(moved):
     """Negative control: the statement the writers used before -- the row by id under Q1's lane."""
     case = moved
     holder, lanes = await held_in_q2(case)
+    holder_pid = await holder.scalar(text("SELECT pg_backend_pid()"))
 
     async def by_id_alone():
         async with case["factory"]() as db, queue_ops.claim_lanes(db, [case["q1"]]):
@@ -124,7 +125,8 @@ async def test_the_former_lock_by_id_alone_waited_behind_the_q2_holder(moved):
 
     waiting = asyncio.create_task(by_id_alone())
     try:
-        await postgres_edge(case["factory"], waiting, on=ROW_WAIT, behind=asyncio.current_task())
+        edge = await postgres_edge(case["factory"], waiting, on=ROW_WAIT, behind=holder_pid)
+        assert holder_pid in edge.blockers
         assert not waiting.done()
     finally:
         await let_go(holder, lanes)

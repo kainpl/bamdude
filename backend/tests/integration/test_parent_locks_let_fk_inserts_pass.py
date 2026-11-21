@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from backend.app.models.archive import PrintArchive
@@ -62,9 +62,10 @@ async def an_execution_archive(factory, queue_id) -> None:
         await db.commit()
 
 
-async def waits(factory, task) -> None:
-    """The insert's own backend waits on a row lock, and the edge leads to the holder -- this test's own session."""
-    await postgres_edge(factory, task, on=ROW_WAIT, behind=asyncio.current_task())
+async def waits(factory, task, holder_pid: int) -> None:
+    """The insert's own backend waits on a row lock, and the edge leads to the holder's very backend."""
+    edge = await postgres_edge(factory, task, on=ROW_WAIT, behind=holder_pid)
+    assert holder_pid in edge.blockers
     assert not task.done()
 
 
@@ -84,9 +85,10 @@ async def test_the_former_for_update_of_the_order_made_that_insert_wait(postgres
     order_id = await an_order(factory)
     async with factory() as holder:
         await holder.execute(select(Project.id).where(Project.id == order_id).with_for_update())
+        holder_pid = await holder.scalar(text("SELECT pg_backend_pid()"))
         inserting = asyncio.create_task(journal(factory, order_id))
         try:
-            await waits(factory, inserting)
+            await waits(factory, inserting, holder_pid)
         finally:
             await holder.rollback()
         await asyncio.wait_for(inserting, 10)
@@ -117,9 +119,10 @@ async def test_the_former_for_update_of_the_header_made_that_insert_wait(
     factory = async_sessionmaker(test_engine, expire_on_commit=False)
     async with factory() as holder:
         await holder.execute(select(PrinterQueue.id).where(PrinterQueue.id == printer.id).with_for_update())
+        holder_pid = await holder.scalar(text("SELECT pg_backend_pid()"))
         inserting = asyncio.create_task(an_execution_archive(factory, printer.id))
         try:
-            await waits(factory, inserting)
+            await waits(factory, inserting, holder_pid)
         finally:
             await holder.rollback()
         await asyncio.wait_for(inserting, 10)

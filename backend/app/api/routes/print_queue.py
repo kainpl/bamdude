@@ -126,7 +126,9 @@ def _end_capture_cooldowns(item_ids) -> None:
         scheduler.clear_capture_cooldown(item_id)
 
 
-async def _swap_update(db: AsyncSession, item: PrintQueueItem, update: dict, target_queue: PrinterQueue | None) -> dict:
+async def _swap_update(
+    db: AsyncSession, item: PrintQueueItem, update: dict, target_queue: PrinterQueue | None, snapshot=None
+) -> dict:
     """The job's swap columns after an edit, from its OWN captured declaration (swap-source-lifecycle spec r4 §8).
 
     Asked only when the edit touches the swap fields or moves the job to another printer's queue: a baked source
@@ -147,8 +149,13 @@ async def _swap_update(db: AsyncSession, item: PrintQueueItem, update: dict, tar
         events = json.loads(events) if isinstance(events, str) else events
     else:
         events = json.loads(item.swap_macro_events) if item.swap_macro_events else None
-    queue = target_queue if moves else await db.get(PrinterQueue, item.queue_id)
-    printer = await db.get(Printer, queue.printer_id) if queue is not None and queue.printer_id else None
+    # The header and printer as the edit's checks read them (``snapshot``, G03 B A6), else read here.
+    queue = target_queue if moves else (snapshot.queue(item.queue_id) if snapshot is not None else None)
+    if queue is None and not moves:
+        queue = await db.get(PrinterQueue, item.queue_id)
+    printer = snapshot.printer(queue.id) if snapshot is not None and queue is not None else None
+    if printer is None and queue is not None and queue.printer_id:
+        printer = await db.get(Printer, queue.printer_id)
     descriptor = await item_descriptor(db, item)
     fact = descriptor.swap_fact.value if descriptor is not None else None
     execute, events = swap_request(
@@ -825,7 +832,7 @@ async def bulk_update_queue_items(
     if moving_to is not None:
         if facts[moving_to] is None:
             raise HTTPException(400, "Queue not found")
-        new_queue = await db.get(PrinterQueue, moving_to)
+        new_queue = facts.queue(moving_to)
 
     # Check every row that will really move before the first mutation. A row
     # skipped for status/ownership cannot veto the entire operator action.
@@ -846,7 +853,7 @@ async def bulk_update_queue_items(
     # The swap columns of every row that will change, decided before the first
     # write: one unknown source asked for our macros refuses the whole action.
     swap_updates = {
-        item.id: await _swap_update(db, item, update_data, new_queue)
+        item.id: await _swap_update(db, item, update_data, new_queue, facts)
         for item in items
         if item.status == "pending" and (can_modify_all or item.created_by_id == user.id)
     }
@@ -862,7 +869,7 @@ async def bulk_update_queue_items(
             skipped_count += 1
             continue
 
-        item_update = await routing_update(db, item, update_data)
+        item_update = await routing_update(db, item, update_data, snapshot=facts)
         item_update.update(swap_updates[item.id])
         _drop_rack_pick_on_move(item, item_update, new_queue, printer_model)
         if isinstance(item_update.get("ams_mapping"), list):
@@ -1300,9 +1307,9 @@ async def update_queue_item(
     if moving_to is not None:
         if facts[moving_to] is None:
             raise HTTPException(400, "Queue not found")
-        new_queue = await db.get(PrinterQueue, moving_to)
+        new_queue = facts.queue(moving_to)
     if "plate_id" in update_data or (new_queue and new_queue.id != item.queue_id):
-        target_queue = new_queue or await db.get(PrinterQueue, item.queue_id)
+        target_queue = new_queue or facts.queue(item.queue_id)
         if target_queue and target_queue.printer_id is not None:
             await _check_item_model_for_queue(
                 db,
@@ -1313,11 +1320,11 @@ async def update_queue_item(
                 facts[target_queue.id][3],
             )
 
-    swap_columns = await _swap_update(db, item, update_data, new_queue)
+    swap_columns = await _swap_update(db, item, update_data, new_queue, facts)
     moved_to_model = None
     if new_queue is not None and new_queue.id != item.queue_id and new_queue.printer_id is not None:
         moved_to_model = facts[new_queue.id][3]
-    update_data = await routing_update(db, item, update_data)
+    update_data = await routing_update(db, item, update_data, snapshot=facts)
     update_data.pop("swap_macro_events", None)  # decided above, stored as its JSON
     update_data.update(swap_columns)
     _drop_rack_pick_on_move(item, update_data, new_queue, moved_to_model)
@@ -2724,12 +2731,12 @@ async def update_batch(
     if moving_to is not None:
         if facts[moving_to] is None:
             raise HTTPException(400, "Queue not found")
-        batch_queue = await db.get(PrinterQueue, moving_to)
+        batch_queue = facts.queue(moving_to)
         if batch_queue.printer_id is not None:
             batch_model = facts[moving_to][3]
     moves = batch_queue is not None and batch_queue.id != target
     if "plate_id" in update_data or moves:
-        check_queue = batch_queue if moves else await db.get(PrinterQueue, target)
+        check_queue = batch_queue if moves else facts.queue(target)
         if check_queue is not None and check_queue.printer_id is not None:
             check_model = batch_model if moves else facts[target][3]
             cache = PrintRequirementsCache()
@@ -2738,12 +2745,12 @@ async def update_batch(
                     db, item, check_queue, update_data.get("plate_id", item.plate_id), cache, check_model
                 )
 
-    swap_updates = {item.id: await _swap_update(db, item, update_data, batch_queue) for item in pending}
+    swap_updates = {item.id: await _swap_update(db, item, update_data, batch_queue, facts) for item in pending}
     update_data.pop("swap_macro_events", None)
 
     plans = []
     for item in pending:
-        item_update = await routing_update(db, item, update_data)
+        item_update = await routing_update(db, item, update_data, snapshot=facts)
         item_update.update(swap_updates[item.id])
         _drop_rack_pick_on_move(item, item_update, batch_queue, batch_model)
         if isinstance(item_update.get("ams_mapping"), list):

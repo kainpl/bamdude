@@ -21,6 +21,7 @@ from backend.tests.integration.lane_pairs import (
     claim_holding_the_lane,
     go,
     held_after,
+    holding_here,
     pending_rows,
 )
 from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
@@ -111,6 +112,7 @@ async def test_a_claim_meeting_a_batch_writer_waits_on_the_lane(
     async def held_lane(*args, **kwargs):
         async with real(*args, **kwargs) as value:
             if not reached.is_set():
+                holding_here()
                 reached.set()
                 await asyncio.wait_for(release.wait(), 20)
             yield value
@@ -161,6 +163,7 @@ async def test_the_auto_queue_reorder_and_the_waiting_batch_lock_their_rows_asce
     async def held_by_the_first(db, wanted):
         locked = await real(db, wanted)
         if not reached.is_set():
+            holding_here()
             reached.set()
             await asyncio.wait_for(release.wait(), 20)
         return locked

@@ -238,6 +238,32 @@ DEMO = """
             .where(tuple_(PrintQueueItem.id, PrintQueueItem.queue_id).in_([(1, queue_id)]))
             .with_for_update(key_share=True)
         )
+
+
+    async def queue_named_but_not_restricted(db, queue_id):
+        from sqlalchemy import or_, select
+
+        await db.execute(
+            select(PrintQueueItem.id, PrintQueueItem.queue_id)
+            .where(PrintQueueItem.id == 1)
+            .with_for_update(key_share=True)
+        )
+        await db.execute(
+            select(PrintQueueItem)
+            .where(PrintQueueItem.id == 1)
+            .order_by(PrintQueueItem.queue_id)
+            .with_for_update(key_share=True)
+        )
+        await db.execute(
+            select(PrintQueueItem)
+            .where(PrintQueueItem.id == 1, or_(PrintQueueItem.queue_id == queue_id, PrintQueueItem.id > 0))
+            .with_for_update(key_share=True)
+        )
+        await db.execute(
+            select(PrintQueueItem)
+            .where(PrintQueueItem.id == 1, PrintQueueItem.queue_id != queue_id)
+            .with_for_update(key_share=True)
+        )
 """
 
 QUEUE_OPS = """
@@ -278,6 +304,7 @@ def synthetic(tmp_path_factory):
             "plain_lock": "helper",
             "no_key_lock": "helper",
             "addressed_lock": "helper",
+            "queue_named_but_not_restricted": "helper",
         }.items()
     }
     return app, entries
@@ -387,8 +414,12 @@ def test_negative_control_a_plain_row_lock(synthetic):
 def test_negative_control_a_job_lock_without_its_queue(synthetic):
     scan_, data = _check(synthetic)
     found = guard.unaddressed_job_locks(scan_, data)
-    assert sorted(_function(v) for v in found) == ["no_key_lock"] * 3 + ["plain_lock"] * 2, (
-        "a lock by id alone and db.get(with_for_update=...) are refused; the queue in the condition passes"
+    assert (
+        sorted(_function(v) for v in found)
+        == ["no_key_lock"] * 3 + ["plain_lock"] * 2 + ["queue_named_but_not_restricted"] * 4
+    ), (
+        "a lock by id alone and db.get(with_for_update=...) are refused, and so is queue_id named only in the "
+        "projection, an ordering, an or_ or a negation (B1-08); the queue as a where condition passes"
     )
 
     signatures = {guard.signature(s) for s in scan_.functions()[D + "no_key_lock"] if s.kind == "lock-for-update"}

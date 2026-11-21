@@ -262,17 +262,34 @@ async def close_noncurrent(db, archive):
 
     if not valid_noncurrent(archive):
         raise ExecutionChanged("invalid noncurrent proof")
+    # Only the claims in the lane the caller holds (the archive's printer) are locked (L1). A printing row of
+    # another queue naming this archive -- a direct reprint's claim names its source archive until its own
+    # execution archive is written -- is read without a lock: its lane is someone else's, and its presence is the
+    # same refusal as before.
     rows = list(
         (
             await db.scalars(
                 select(PrintQueueItem)
-                .where(PrintQueueItem.archive_id == archive.id, PrintQueueItem.status == "printing")
+                .where(
+                    PrintQueueItem.archive_id == archive.id,
+                    PrintQueueItem.status == "printing",
+                    PrintQueueItem.queue_id == archive.printer_id,
+                )
                 .execution_options(populate_existing=True)
                 .with_for_update(key_share=True)
             )
         ).all()
     )
-    if any(row.queue_id != archive.printer_id for row in rows):
+    foreign = await db.scalar(
+        select(PrintQueueItem.id)
+        .where(
+            PrintQueueItem.archive_id == archive.id,
+            PrintQueueItem.status == "printing",
+            PrintQueueItem.queue_id != archive.printer_id,
+        )
+        .limit(1)
+    )
+    if foreign is not None:
         raise ExecutionChanged("foreign claim")
     now = datetime.now(timezone.utc)
     extra = dict(archive.extra_data)

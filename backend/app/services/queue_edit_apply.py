@@ -30,15 +30,19 @@ from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services.queue_row_basis import row_basis
 
 
-async def printer_facts(db, queue_id: int | None) -> tuple | None:
-    """What an edit's checks used about the printer it lands on: the queue, its printer, the model, whether the
-    printer is archived, and its swap mode."""
+async def _target_rows(db, queue_id: int | None) -> tuple[PrinterQueue | None, Printer | None]:
     if queue_id is None:
-        return None
+        return None, None
     queue = await db.get(PrinterQueue, queue_id, populate_existing=True)
     if queue is None:
-        return None
+        return None, None
     printer = await db.get(Printer, queue.printer_id, populate_existing=True) if queue.printer_id else None
+    return queue, printer
+
+
+def _facts_of(queue: PrinterQueue | None, printer: Printer | None) -> tuple | None:
+    if queue is None:
+        return None
     return (
         queue.id,
         queue.recovery_identity,  # a move lands only in the header the validation read (A25)
@@ -47,6 +51,32 @@ async def printer_facts(db, queue_id: int | None) -> tuple | None:
         bool(getattr(printer, "archived", False)),
         bool(getattr(printer, "swap_mode_enabled", False)),
     )
+
+
+async def printer_facts(db, queue_id: int | None) -> tuple | None:
+    """What an edit's checks used about the printer it lands on: the queue, its printer, the model, whether the
+    printer is archived, and its swap mode."""
+    return _facts_of(*await _target_rows(db, queue_id))
+
+
+class CheckedFacts(dict):
+    """Queue id -> the facts an edit's checks judge it by, and the header and printer rows they were read from.
+
+    The rows are held here for the whole validation: the session's identity map keeps a row only while something
+    references it, so a check reaching a header through ``db.get`` after its last reference went could read the
+    database again and find another header, or none. The checks take the rows from here (``queue`` / ``printer``),
+    never from a later read.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.rows: dict[int, tuple[PrinterQueue | None, Printer | None]] = {}
+
+    def queue(self, queue_id: int | None) -> PrinterQueue | None:
+        return self.rows.get(queue_id, (None, None))[0]
+
+    def printer(self, queue_id: int | None) -> Printer | None:
+        return self.rows.get(queue_id, (None, None))[1]
 
 
 @dataclass(frozen=True)
@@ -59,14 +89,20 @@ class EditPlan:
     values: dict = field(default_factory=dict)
 
 
-async def checked_facts(db, queue_ids: Iterable[int | None]) -> dict[int, tuple | None]:
+async def checked_facts(db, queue_ids: Iterable[int | None]) -> CheckedFacts:
     """The facts of every queue an edit lands in, read once BEFORE the edit's checks (A6, A25).
 
-    ``printer_facts`` loads the header and printer rows with ``populate_existing``, so the checks that follow —
-    which reach them through ``db.get`` — read exactly the rows these facts describe; the plan records these
-    facts, never a read taken after the checks.
+    The header and printer rows are read with ``populate_existing`` and held (:class:`CheckedFacts`); every check
+    that follows -- the model check, the swap decision, the routing intent, the rack pick -- takes them from the
+    snapshot, and the plan records these facts, never a read taken after the checks. A target that changes or
+    goes after this read is the apply's refusal under the lanes.
     """
-    return {queue_id: await printer_facts(db, queue_id) for queue_id in sorted({q for q in queue_ids if q is not None})}
+    snapshot = CheckedFacts()
+    for queue_id in sorted({q for q in queue_ids if q is not None}):
+        queue, printer = await _target_rows(db, queue_id)
+        snapshot.rows[queue_id] = (queue, printer)
+        snapshot[queue_id] = _facts_of(queue, printer)
+    return snapshot
 
 
 def plan_edit(

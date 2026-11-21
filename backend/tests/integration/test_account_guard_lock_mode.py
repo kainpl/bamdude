@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from backend.app.core.auth_lifetime import _guard_accounts, capture_account
@@ -70,10 +70,11 @@ async def test_the_former_for_update_made_that_insert_wait(postgres_only, test_e
     factory = async_sessionmaker(test_engine, expire_on_commit=False)
     async with factory() as holder:
         await holder.execute(select(User.id).where(User.account_identity == user.account_identity).with_for_update())
+        holder_pid = await holder.scalar(text("SELECT pg_backend_pid()"))
         inserting = asyncio.create_task(insert_naming(factory, user.id, queue_id))
         try:
-            # The insert's own backend waits on a row lock behind this test's holder (its FK check on FOR UPDATE).
-            await postgres_edge(factory, inserting, on=ROW_WAIT, behind=asyncio.current_task())
+            # The insert's own backend waits on a row lock behind the holder's very backend (its FK check on FOR UPDATE).
+            await postgres_edge(factory, inserting, on=ROW_WAIT, behind=holder_pid)
             assert not inserting.done(), "the FK check waited on FOR UPDATE"
         finally:
             await holder.rollback()
@@ -92,9 +93,10 @@ async def test_two_guards_of_one_account_still_serialise(postgres_only, test_eng
 
     async with factory() as first:
         await _guard_accounts(first, [capture])
+        first_pid = await first.scalar(text("SELECT pg_backend_pid()"))
         second = asyncio.create_task(second_guard())
         try:
-            await postgres_edge(factory, second, on=ROW_WAIT, behind=asyncio.current_task())
+            await postgres_edge(factory, second, on=ROW_WAIT, behind=first_pid)
             assert not second.done(), "a second guard of the account waits for the first"
         finally:
             await first.rollback()
