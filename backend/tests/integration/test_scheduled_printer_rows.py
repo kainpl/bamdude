@@ -13,6 +13,7 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.project import Project
 from backend.app.services import (
     auto_queue_scheduler as router,
+    farm_forecast,
     order_resources,
     print_scheduler as print_pass,
     printer_occupancy,
@@ -21,6 +22,8 @@ from backend.app.services import (
 from backend.app.services.auto_queue_eligibility import busy_printer_ids
 from backend.app.services.queue_counters import set_queue_idle
 from backend.app.services.queue_row_basis import row_basis
+from backend.app.services.rebalance_replay import Held, Job, replay
+from backend.app.services.stagger_groups import StaggerGroupResolver, StaggerSplit
 from backend.tests.integration.lane_pairs import ROW_WAIT, postgres_edge
 from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
 from backend.tests.integration.test_auto_queue_scheduler import (
@@ -472,3 +475,87 @@ async def test_sql_python_occupancy_and_claim_agree_at_the_utc_boundary(db_sessi
         printer_occupancy.require_auto_placement(occupancy)
     assert await db_session.scalar(print_pass.first_runnable_query(printer.id, T, set())) == pending[2].id
     assert await db_session.scalar(print_pass.first_runnable_query(printer.id, T, {pending[2].id})) == pending[3].id
+
+
+@pytest.mark.parametrize(
+    "paused,queue_status,auto_distribute,finish",
+    [
+        pytest.param(True, "idle", True, ("known", 20), id="operator-pause"),
+        pytest.param(False, "paused", True, ("known", 20), id="paused-status"),
+        pytest.param(False, "error", True, ("known", 20), id="error-status"),
+        pytest.param(True, "idle", False, ("known", 20), id="opted-out-and-paused"),
+        pytest.param(False, "error", False, ("known", 20), id="opted-out-and-error"),
+        pytest.param(False, "idle", True, ("unknown", None), id="unhalted"),
+        pytest.param(False, "idle", False, ("unknown", None), id="opted-out-unhalted"),
+    ],
+)
+async def test_staged_row_from_database_only_taints_peers_if_its_queue_can_start(
+    db_session,
+    printer_factory,
+    paused,
+    queue_status,
+    auto_distribute,
+    finish,
+):
+    other, header = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
+    receiver, _ = await _make_printer_with_queue(db_session, printer_factory, model="P1S")
+    header.is_paused = paused
+    header.status = queue_status
+    header.auto_distribute_eligible = auto_distribute
+    db_session.add(PrintQueueItem(queue_id=header.id, position=1, manual_start=True))
+    await db_session.commit()
+
+    elig, sched = _patch_printer_manager({other.id, receiver.id})
+    with elig, sched:
+        pass_printers = await queue_rebalance.load_printers(db_session, set(), set())
+        snapshot = await farm_forecast.load_snapshot(db_session, datetime.now(timezone.utc).replace(tzinfo=None))
+    machines = queue_rebalance._machines(snapshot, pass_printers, set(), set())
+    source_lane = queue_rebalance._lane(machines[other.id])
+    assert source_lane.has_staged_rows
+    lanes = [queue_rebalance._lane(machine) for machine in machines.values()]
+    stagger = farm_forecast.StaggerPolicy(1, 60, False, StaggerGroupResolver.global_only())
+    job = Job(job_id=41, group="P1S", position=1, seconds=20, fits=((receiver.id, True, 0),))
+    result = replay(lanes, [job], stagger=stagger)
+    assert result.lane_of == {41: receiver.id}
+    assert result.routed_at == {41: 0}
+
+    class Fits:
+        def home(self, item_id, printer_id):
+            return queue_rebalance.Fit("yes" if printer_id == home_id else "no")
+
+        def target(self, item_id, plate, printer_id, *, companion=False):
+            return queue_rebalance.Fit("yes" if printer_id == receiver.id else "no")
+
+        def target_prep(self, item_id, plate):
+            return 0
+
+    home_id = max(machines) + 1
+    separate_home = StaggerGroupResolver(
+        StaggerSplit(by_tags=True, tag_ids=frozenset({10, 20})),
+        tags_by_printer={other.id: frozenset({10}), receiver.id: frozenset({10}), home_id: frozenset({20})},
+        tag_names={10: "shared", 20: "home"},
+        location_by_printer={},
+        parent_by_location={},
+        location_names={},
+    )
+    farm = queue_rebalance.FarmView(
+        machines={
+            **machines,
+            home_id: queue_rebalance.Machine(home_id, "p2s", False, held=(Held(30, started=True),)),
+        },
+        fits=Fits(),
+        stagger=farm_forecast.StaggerPolicy(1, 60, False, separate_home),
+    )
+    plan = queue_rebalance.plan_moves(
+        [queue_rebalance.MovableItem(41, 7, "p2s", 1, 20)],
+        {7: [queue_rebalance.PlateOption(5, 6, 1, "p1s", "P1S", 1, 20)]},
+        farm,
+    )
+    assert plan.home == {41: ("known", 50)}
+    if finish[0] == "known":
+        assert len(plan.moves) == 1 and plan.moves[0].finish == 20
+    else:
+        assert not plan.moves and plan.skipped == [(41, "forecast_incomplete")]
+    assert result.outcome(41) == finish
+    assert source_lane.stuck is (paused or queue_status in {"paused", "error"})
+    assert source_lane.routable is (auto_distribute and not source_lane.stuck)

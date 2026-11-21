@@ -102,6 +102,8 @@ class MachineState:
     awaiting_operator: bool = False
     #: An otherwise eligible machine temporarily held by a queue pause.
     queue_paused: bool = False
+    #: The printer's own queue cannot start, irrespective of AutoQueue eligibility.
+    queue_halted: bool = False
 
 
 @dataclass
@@ -1043,6 +1045,7 @@ async def load_snapshot(
             model=printer_manager.effective_model_for(printer_id, model),
             accepts_new_work=accepts_auto and not paused,
             queue_paused=accepts_auto and paused,
+            queue_halted=paused or queue_status == "error",
             plate_clear_seconds=float(gap),
             waiting_seconds=float(waiting),
             stagger_interval_seconds=(int(interval_minutes) * 60) if interval_minutes else None,

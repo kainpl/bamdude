@@ -1374,8 +1374,8 @@ def _machines(
     holds it, read as ``farm_forecast._initial_state`` reads them.
 
     It may receive work only when the pass found it routable (``load_printers``: the router's
-    population, online); every other one still finishes what it holds and still takes stagger
-    windows. A routable lane is free now exactly when the router may place on it now — outside
+    population, online). Other printers still model the work they hold; a halted queue cannot
+    take a new start window. A routable lane is free now exactly when the router may place on it now — outside
     the busy set (spec T-A25). What the forecast can date is dated (final review C1): a print
     being dispatched — its claim taken, its archive not yet there — is its own estimate plus
     the preparation (``dispatching``: printer → seconds, ``None`` for no estimate); one past its
@@ -1392,6 +1392,8 @@ def _machines(
     for state in snapshot.printers:
         pid = state.printer_id
         passing = printers.get(pid)
+        # Keep the halt even for a printer outside the AutoQueue population.
+        dispatchable = not state.queue_halted and (passing is None or passing.dispatchable)
         claimed = passing is not None and pid in busy
         held: list[Held] = []
         blocked = False
@@ -1445,16 +1447,13 @@ def _machines(
             model=passing.key if passing else (model_key(state.model) or ""),
             ready=bool(passing and passing.ready),
             held=tuple(held),
-            # ⚠️ A halted queue (``paused`` / ``error``) receives no NEW work from the router
-            # (``auto_queue_eligibility.printers_for_item``, G03 E-3), so it is no home in the forecast
-            # either; what it already holds stays modelled, and never starts (``stuck``) until Resume.
-            routable=passing is not None and passing.dispatchable,
+            routable=passing is not None and dispatchable,
             waiting=waiting,
             hold_unknown=hold_unknown,
             gap=gap,
             requires_operator=state.requires_operator or gap > 0,
             interval=float(state.stagger_interval_seconds or 0),
-            dispatchable=bool(passing is None or passing.dispatchable),
+            dispatchable=dispatchable,
             printer_identity=passing.printer_identity if passing is not None else None,
             has_staged_rows=has_staged_rows,
         )

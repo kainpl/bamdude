@@ -1,7 +1,7 @@
 ## [Unreleased]
 
 - Printers with only future or manual-start jobs can take AutoQueue work. When a scheduled job is due, it keeps its place among jobs that can start and waits for any print already running to finish.
-  - Rebalancing accounts for manual starts that may take a shared stagger slot. Older jobs also clear their scheduled wait once due.
+  - Rebalancing accounts for manual starts that may take a shared stagger slot and honours queue pauses even on printers excluded from AutoQueue. Older jobs also clear their scheduled wait once due.
 
 - **AutoQueue can find another printer after a refused upload.** When BamDude can prove it sent no start command, an unchanged AutoQueue job with portable settings returns to the pool, up to twice. The failed attempt stays in the printer’s Issues with a link to the AutoQueue job. That printer takes no new work until Resume. Returns after a print that started still use the existing setting and their own limit.
   - Editing an archive’s order during a refusal and observing a second return through Connector now preserve the correct job state. The returned job link also works when the queue page sets its default view while AutoQueue is loading.
