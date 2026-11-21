@@ -68,6 +68,7 @@ from backend.app.services.auto_queue_eligibility import (
     router_view_conditions,
     write_router_rows,
 )
+from backend.app.services.auto_queue_placement_basis import placement_basis
 from backend.app.services.auto_queue_waiting import WaitingNotice, more_issues
 from backend.app.services.filament_intake import (
     fail_auto_source,
@@ -1083,6 +1084,8 @@ class AutoQueueScheduler:
                 )
                 db.add(new_item)
                 await db.flush()
+                # Include the persisted defaults in the placement proof before the placement commits.
+                new_item.placement_basis = placement_basis(new_item)
                 # Persist the same live counts ordinary enqueue maintains before
                 # the tick commits and tells clients to refetch this queue.
                 await update_queue_counters(db, printer_queue.id)

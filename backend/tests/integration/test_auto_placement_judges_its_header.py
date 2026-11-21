@@ -16,6 +16,7 @@ from backend.app.core import database
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services import auto_queue_eligibility, auto_queue_scheduler as scheduler_module
+from backend.app.services.auto_queue_placement_basis import placement_basis
 from backend.tests.integration.test_auto_queue_scheduler import (  # noqa: F401 - fixtures
     _make_printer_with_queue,
     routing_item,
@@ -56,6 +57,12 @@ async def jobs_in(queue_id: int) -> list[int]:
         return list(await db.scalars(select(PrintQueueItem.id).where(PrintQueueItem.queue_id == queue_id)))
 
 
+async def assert_saved_placement_basis(queue_id: int) -> None:
+    async with database.async_session() as db:
+        job = (await db.scalars(select(PrintQueueItem).where(PrintQueueItem.queue_id == queue_id))).one()
+        assert job.placement_basis == placement_basis(job)
+
+
 async def clear_header_identity(db, header_id):
     await db.execute(update(PrinterQueue).where(PrinterQueue.id == header_id).values(recovery_identity=None))
 
@@ -86,7 +93,7 @@ async def test_the_tick_places_only_in_the_header_its_eligibility_judged(
         assert ((await row(item_id)).status, await jobs_in(printer_id)) == ("pending", [])
     else:
         assert (await row(item_id)).status == "assigned"
-        assert len(await jobs_in(printer_id)) == 1
+        await assert_saved_placement_basis(printer_id)
 
 
 @pytest.mark.parametrize("case", ["replaced", "replaced-null", "unchanged", "unchanged-null"])
@@ -119,7 +126,7 @@ async def test_assign_now_places_only_in_the_header_its_eligibility_judged(
     else:
         assert response.status_code == 200, response.text
         assert (await row(item_id)).status == "assigned"
-        assert len(await jobs_in(printer_id)) == 1
+        await assert_saved_placement_basis(printer_id)
 
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")

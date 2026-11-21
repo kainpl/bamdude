@@ -40,6 +40,7 @@ class AutoQueueItem(Base):
     # undistributed rows (spec workshop-order-queue); measured plan in m191.
     __table_args__ = (
         CheckConstraint("failed_return_count >= 0", name="ck_aq_return_count"),
+        CheckConstraint("unsent_return_count >= 0", name="ck_aq_unsent_return_count"),
         Index("ix_auto_queue_items_project_status", "project_id", "status"),
         Index("ix_auto_queue_items_swap_declaration_identity", "swap_declaration_identity", unique=True),
     )
@@ -60,6 +61,8 @@ class AutoQueueItem(Base):
     # never-started transfer keeps this logical job's count and dispatch proof.
     failed_return_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     failed_return_proof: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    unsent_return_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    unsent_return_proof: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Source file (mirrors print_queue: archive_id XOR library_file_id)
     #

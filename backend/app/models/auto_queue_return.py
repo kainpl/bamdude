@@ -46,3 +46,28 @@ class AutoQueueReturn(Base):
     ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_refusal_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_refusal_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AutoQueueUnsentReturn(Base):
+    """A receipt committed by the failure writer for an attempt that published nothing."""
+
+    __tablename__ = "auto_queue_unsent_returns"
+    __table_args__ = (
+        UniqueConstraint("old_job_identity", name="uq_aq_unsent_return_job"),
+        UniqueConstraint("auto_identity", "ordinal", name="uq_aq_unsent_return_auto_ordinal"),
+        CheckConstraint("ordinal > 0", name="ck_aq_unsent_return_ordinal"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    old_job_id: Mapped[int] = mapped_column(Integer)
+    old_job_identity: Mapped[str] = mapped_column(String(36))
+    old_queue_id: Mapped[int] = mapped_column(Integer)
+    execution_archive_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    execution_archive_identity: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    auto_item_id: Mapped[int] = mapped_column(Integer)
+    auto_identity: Mapped[str] = mapped_column(String(36))
+    printer_id: Mapped[int] = mapped_column(Integer)
+    printer_identity: Mapped[str] = mapped_column(String(36))
+    failure_code: Mapped[str] = mapped_column(String(40))
+    ordinal: Mapped[int] = mapped_column(Integer)
+    returned_at: Mapped[datetime] = mapped_column(DateTime)

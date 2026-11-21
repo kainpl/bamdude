@@ -85,6 +85,15 @@ def test_a_lane_holder_locks_a_job_row_only_in_the_queue_it_holds(tree, data):
     assert guard.unaddressed_job_locks(tree, data) == []
 
 
+def test_only_promotion_writes_the_placement_basis(tree):
+    writers = {
+        guard.key(site)
+        for site in tree.sites
+        if "placement_basis" in site.columns and "PrintQueueItem" in (site.model or "").split("|")
+    }
+    assert writers == {"backend/app/services/auto_queue_scheduler.py::AutoQueueScheduler._assign"}
+
+
 @pytest.mark.parametrize("case", wi.SELFTEST_CASES, ids=lambda case: case[0][:60])
 def test_a_raw_statement_is_attributed_to_the_table_its_verb_names(case):
     sql, dml, lock = case

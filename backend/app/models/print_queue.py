@@ -26,6 +26,8 @@ class PrintQueueItem(Base):
     # Separate from the physical failure code. The receipt is historical proof,
     # not a cascading FK to an AutoQueue row that an operator may later replace.
     returned_receipt_identity: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # Written by AutoQueue promotion. An unset value provides no proof for an unsent return.
+    placement_basis: Mapped[str | None] = mapped_column(String(72), nullable=True)
 
     # Queue assignment (required - every item belongs to a printer's queue)
     queue_id: Mapped[int] = mapped_column(ForeignKey("printer_queues.id"), nullable=False)
