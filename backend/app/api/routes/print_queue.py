@@ -833,6 +833,9 @@ async def bulk_update_queue_items(
     # Validate queue_id if being changed. Every queue the rows land in is read once, before
     # the checks (A6, A25): they reach the rows that read refreshed, and the plans carry it.
     moving_to = update_data.get("queue_id")
+    # An explicit destination shared by every selected job is an in-place edit.
+    if moving_to is not None and items and all(item.queue_id == moving_to for item in items):
+        moving_to = None
     facts = await checked_facts(db, [moving_to] if moving_to is not None else [item.queue_id for item in items])
     new_queue = None
     if moving_to is not None:
@@ -1296,6 +1299,8 @@ async def update_queue_item(
     # read once, before every check (A6, A25): the checks reach the header and printer
     # rows that read refreshed, and the plan carries what they judged.
     moving_to = update_data.get("queue_id")
+    if moving_to == item.queue_id:
+        moving_to = None
     facts = await checked_facts(db, [moving_to if moving_to is not None else item.queue_id])
     new_queue = None
     if moving_to is not None:
@@ -2716,6 +2721,8 @@ async def update_batch(
     # The queue the copies land in is read once, before the checks (A6, A25): they reach the rows that read
     # refreshed, and the plans carry what they judged.
     moving_to = update_data.get("queue_id")
+    if moving_to == target:
+        moving_to = None
     facts = await checked_facts(db, [moving_to if moving_to is not None else target])
     batch_queue, batch_model = None, None
     if moving_to is not None:

@@ -155,16 +155,25 @@ async def test_a_batch_move_lands_only_in_the_header_it_checked(
         assert queues == (source_id, source_id)
 
 
+async def patch_edit(client, route, item_ids, source_id, payload):
+    if route == "single":
+        return await client.patch(f"/api/v1/queue/{item_ids[0]}", json=payload)
+    if route == "bulk":
+        return await client.patch("/api/v1/queue/bulk", json={"item_ids": item_ids, **payload})
+    return await client.patch(f"/api/v1/queue/batch/editing-batch?queue_id={source_id}", json=payload)
+
+
 @pytest.mark.parametrize("route", ["single", "bulk", "batch"])
+@pytest.mark.parametrize("explicit_queue", [False, True], ids=["omitted", "explicit-current"])
 async def test_in_place_edit_meets_a_queue_deleted_before_its_snapshot(
-    async_client, db_session, tmp_path, printer_factory, monkeypatch, sessions, route
+    async_client, db_session, tmp_path, printer_factory, monkeypatch, sessions, route, explicit_queue
 ):
     from backend.app.api.routes import print_queue
 
     item, _, source, _, _ = await a_captured_item(db_session, tmp_path, printer_factory, monkeypatch)
     item_id, source_id = item.id, source.id
     deleted_ids = [item_id]
-    if route == "batch":
+    if route == "batch" or (route == "bulk" and explicit_queue):
         deleted_ids.append(await a_second_member(item, "editing-batch"))
 
     survivor, _, other_queue, _, _ = await a_captured_item(
@@ -189,17 +198,19 @@ async def test_in_place_edit_meets_a_queue_deleted_before_its_snapshot(
 
     monkeypatch.setattr(print_queue, "checked_facts", delete_then_capture)
     payload = {"use_ams": False}
-    if route == "single":
-        response = await async_client.patch(f"/api/v1/queue/{item_id}", json=payload)
-    elif route == "bulk":
-        response = await async_client.patch("/api/v1/queue/bulk", json={"item_ids": [item_id, survivor_id], **payload})
-    else:
-        response = await async_client.patch(f"/api/v1/queue/batch/editing-batch?queue_id={source_id}", json=payload)
+    if explicit_queue:
+        payload["queue_id"] = source_id
+    edit_survivor = route == "bulk" and not explicit_queue
+    requested_ids = [*deleted_ids, survivor_id] if edit_survivor else deleted_ids
+    response = await patch_edit(async_client, route, requested_ids, source_id, payload)
 
     assert captured
     if route == "bulk":
         assert response.status_code == 200, response.text
-        assert (response.json()["updated_count"], response.json()["skipped_count"]) == (1, 1)
+        assert (response.json()["updated_count"], response.json()["skipped_count"]) == (
+            int(edit_survivor),
+            len(deleted_ids),
+        )
     else:
         assert response.status_code == 409, response.text
         assert response.json()["detail"]["error"] == "queue_item_changed"
@@ -209,7 +220,23 @@ async def test_in_place_edit_meets_a_queue_deleted_before_its_snapshot(
         for deleted_id in deleted_ids:
             assert await db.get(PrintQueueItem, deleted_id) is None
         survivor = await db.get(PrintQueueItem, survivor_id)
-        assert (survivor.queue_id, survivor.status, survivor.use_ams) == (survivor_queue, "pending", route != "bulk")
+        assert (survivor.queue_id, survivor.status, survivor.use_ams) == (survivor_queue, "pending", not edit_survivor)
+
+
+@pytest.mark.parametrize("route", ["single", "bulk", "batch"])
+async def test_edit_refuses_a_move_to_a_different_missing_queue(async_client, db_session, printer_factory, route):
+    source_id, item_ids = await pending_rows(
+        db_session, printer_factory, count=2, batch_id="editing-batch", use_ams=True
+    )
+    missing_id = source_id + 1
+    assert await db_session.get(PrinterQueue, missing_id) is None
+    response = await patch_edit(async_client, route, item_ids, source_id, {"queue_id": missing_id, "use_ams": False})
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "Queue not found"
+    async with database.async_session() as db:
+        for item_id in item_ids:
+            item = await db.get(PrintQueueItem, item_id)
+            assert (item.queue_id, item.status, item.use_ams) == (source_id, "pending", True)
 
 
 @pytest.mark.parametrize("regroup", ["ungroup", "join"])
