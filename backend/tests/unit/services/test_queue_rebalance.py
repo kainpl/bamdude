@@ -17,7 +17,7 @@ import pytest
 from fastapi import HTTPException
 
 from backend.app.services import queue_sources
-from backend.app.services.farm_forecast import QueuedRow, StaggerPolicy
+from backend.app.services.farm_forecast import MachineState, QueuedRow, StaggerPolicy
 from backend.app.services.queue_rebalance import (
     SKIP_REASONS,
     TARGET_SOURCE_UNREADABLE,
@@ -573,16 +573,7 @@ def test_every_budget_gives_each_item_one_verdict_and_never_a_partial_decision()
 
 
 def _state(pid, *queued):
-    return SimpleNamespace(
-        printer_id=pid,
-        model="P1S",
-        queued=list(queued),
-        plate_clear_seconds=0,
-        waiting_seconds=0,
-        awaiting_operator=False,
-        requires_operator=False,
-        stagger_interval_seconds=None,
-    )
+    return MachineState(pid, "P1S", queued=list(queued))
 
 
 def test_what_a_printer_holds_is_read_as_the_router_reads_it():
