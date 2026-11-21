@@ -30,7 +30,7 @@ from backend.tests.integration.lane_pairs import (
     claim_holding_the_lane,
     go,
     held_after,
-    holding_here,
+    hold_until,
     pending_rows,
 )
 from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
@@ -511,9 +511,7 @@ async def test_a_batch_cancel_meeting_the_waiting_batch_waits_on_the_router_rows
         locked = await real(db, wanted)
         if armed[0]:
             armed[0] = False
-            holding_here()
-            reached.set()
-            await asyncio.wait_for(release.wait(), 20)
+            await hold_until(reached, release)
         return locked
 
     monkeypatch.setattr(queue_counters, "lock_auto_rows", held_by_the_batch)

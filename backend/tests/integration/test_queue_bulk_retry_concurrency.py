@@ -14,6 +14,7 @@ from backend.app.services.printer_queues import ensure_printer_queue
 from backend.app.services.queue_bulk_retry import retry_block
 from backend.app.services.swap_source_declarations import Actor
 from backend.tests.auth_helpers import bind_test_key, mint_test_session
+from backend.tests.integration.lane_pairs import hold_until
 from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
 
 
@@ -41,8 +42,7 @@ async def test_final_claim_waits_and_never_sees_half_a_retry_block(
 
     async def barrier(db, queue_id):
         await original(db, queue_id)
-        staged.set()
-        await asyncio.wait_for(release.wait(), 15)
+        await hold_until(staged, release)
 
     monkeypatch.setattr(queue_counters, "update_queue_counters", barrier)
     if test_engine.dialect.name == "postgresql":

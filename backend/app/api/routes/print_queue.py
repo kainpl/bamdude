@@ -72,7 +72,7 @@ from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.queue_add import add_items_to_printer_queue, add_next_block_to_printer_queue
 from backend.app.services.queue_add_effects import announce_printer_queue_add
-from backend.app.services.queue_edit_apply import apply_edits, checked_facts, plan_edit
+from backend.app.services.queue_edit_apply import CheckedFacts, apply_edits, checked_facts, plan_edit
 from backend.app.services.queue_row_basis import row_basis
 from backend.app.services.queue_source_capture import refusal, reusing_sources, swap_request
 from backend.app.services.queue_source_descriptor import source_storage_state
@@ -126,8 +126,18 @@ def _end_capture_cooldowns(item_ids) -> None:
         scheduler.clear_capture_cooldown(item_id)
 
 
+def _queue_edit_conflict() -> HTTPException:
+    return HTTPException(
+        409,
+        detail={
+            "error": "queue_item_changed",
+            "message": "This job changed or started while it was being edited. Nothing was saved; refresh and try again.",
+        },
+    )
+
+
 async def _swap_update(
-    db: AsyncSession, item: PrintQueueItem, update: dict, target_queue: PrinterQueue | None, snapshot=None
+    db: AsyncSession, item: PrintQueueItem, update: dict, target_queue: PrinterQueue | None, snapshot: CheckedFacts
 ) -> dict:
     """The job's swap columns after an edit, from its OWN captured declaration (swap-source-lifecycle spec r4 §8).
 
@@ -149,13 +159,9 @@ async def _swap_update(
         events = json.loads(events) if isinstance(events, str) else events
     else:
         events = json.loads(item.swap_macro_events) if item.swap_macro_events else None
-    # The header and printer as the edit's checks read them (``snapshot``, G03 B A6), else read here.
-    queue = target_queue if moves else (snapshot.queue(item.queue_id) if snapshot is not None else None)
-    if queue is None and not moves:
-        queue = await db.get(PrinterQueue, item.queue_id)
-    printer = snapshot.printer(queue.id) if snapshot is not None and queue is not None else None
-    if printer is None and queue is not None and queue.printer_id:
-        printer = await db.get(Printer, queue.printer_id)
+    # The printer as the edit's checks read it (G03 B A6).
+    queue_id = target_queue.id if moves else item.queue_id
+    printer = snapshot.printer(queue_id)
     descriptor = await item_descriptor(db, item)
     fact = descriptor.swap_fact.value if descriptor is not None else None
     execute, events = swap_request(
@@ -834,41 +840,30 @@ async def bulk_update_queue_items(
             raise HTTPException(400, "Queue not found")
         new_queue = facts.queue(moving_to)
 
+    editable = [
+        item
+        for item in items
+        if item.status == "pending"
+        and (can_modify_all or item.created_by_id == user.id)
+        and (new_queue is not None or facts[item.queue_id] is not None)
+    ]
+
     # Check every row that will really move before the first mutation. A row
     # skipped for status/ownership cannot veto the entire operator action.
     printer_model = None
     if new_queue and new_queue.printer_id is not None:
         printer_model = facts[new_queue.id][3]
         cache = PrintRequirementsCache()
-        for item in items:
-            if item.status != "pending" or item.queue_id == new_queue.id:
-                continue
-            if not can_modify_all and item.created_by_id != user.id:
-                continue
-            await _check_item_model_for_queue(db, item, new_queue, item.plate_id, cache, printer_model)
-
-    updated_count = 0
-    skipped_count = 0
+        for item in editable:
+            if item.queue_id != new_queue.id:
+                await _check_item_model_for_queue(db, item, new_queue, item.plate_id, cache, printer_model)
 
     # The swap columns of every row that will change, decided before the first
     # write: one unknown source asked for our macros refuses the whole action.
-    swap_updates = {
-        item.id: await _swap_update(db, item, update_data, new_queue, facts)
-        for item in items
-        if item.status == "pending" and (can_modify_all or item.created_by_id == user.id)
-    }
+    swap_updates = {item.id: await _swap_update(db, item, update_data, new_queue, facts) for item in editable}
 
     plans = []
-    for item in items:
-        if item.status != "pending":
-            skipped_count += 1
-            continue
-
-        # Ownership check
-        if not can_modify_all and item.created_by_id != user.id:
-            skipped_count += 1
-            continue
-
+    for item in editable:
         item_update = await routing_update(db, item, update_data, snapshot=facts)
         item_update.update(swap_updates[item.id])
         _drop_rack_pick_on_move(item, item_update, new_queue, printer_model)
@@ -889,15 +884,14 @@ async def bulk_update_queue_items(
     await db.rollback()
     outcome = await apply_edits(plans, set_field=_set_item_field, all_or_nothing=False)
     updated_count = len(outcome.applied)
-    skipped_count += len(outcome.changed)
+    skipped_count = len(items) - len(editable) + len(outcome.changed)
     _end_capture_cooldowns(outcome.applied)
 
     logger.info("Bulk updated %s queue items, skipped %s", updated_count, skipped_count)
     return PrintQueueBulkUpdateResponse(
         updated_count=updated_count,
         skipped_count=skipped_count,
-        message=f"Updated {updated_count} items"
-        + (f", skipped {skipped_count} non-pending/not-owned" if skipped_count else ""),
+        message=f"Updated {updated_count} items" + (f", skipped {skipped_count}" if skipped_count else ""),
     )
 
 
@@ -1308,6 +1302,8 @@ async def update_queue_item(
         if facts[moving_to] is None:
             raise HTTPException(400, "Queue not found")
         new_queue = facts.queue(moving_to)
+    elif facts[item.queue_id] is None:
+        raise _queue_edit_conflict()
     if "plate_id" in update_data or (new_queue and new_queue.id != item.queue_id):
         target_queue = new_queue or facts.queue(item.queue_id)
         if target_queue and target_queue.printer_id is not None:
@@ -1357,13 +1353,7 @@ async def update_queue_item(
     await db.rollback()  # the validation's reads end before the lanes
     outcome = await apply_edits([plan], set_field=_set_item_field, all_or_nothing=True)
     if outcome.changed:
-        raise HTTPException(
-            409,
-            detail={
-                "error": "queue_item_changed",
-                "message": "This job changed or started while it was being edited. Nothing was saved; refresh and try again.",
-            },
-        )
+        raise _queue_edit_conflict()
     _end_capture_cooldowns([item_id])
 
     # Re-query with full eager loading (queue→printer chain)
@@ -2734,6 +2724,8 @@ async def update_batch(
         batch_queue = facts.queue(moving_to)
         if batch_queue.printer_id is not None:
             batch_model = facts[moving_to][3]
+    elif facts[target] is None:
+        raise _queue_edit_conflict()
     moves = batch_queue is not None and batch_queue.id != target
     if "plate_id" in update_data or moves:
         check_queue = batch_queue if moves else facts.queue(target)
@@ -2768,13 +2760,7 @@ async def update_batch(
     await db.rollback()
     outcome = await apply_edits(plans, set_field=_set_item_field, all_or_nothing=True)
     if outcome.changed:
-        raise HTTPException(
-            409,
-            detail={
-                "error": "queue_item_changed",
-                "message": "This job changed or started while it was being edited. Nothing was saved; refresh and try again.",
-            },
-        )
+        raise _queue_edit_conflict()
     _end_capture_cooldowns(outcome.applied)
     return {
         "updated": len(outcome.applied),

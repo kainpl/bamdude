@@ -20,7 +20,13 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.services import archive_colors, queue_counters
-from backend.tests.integration.lane_pairs import ROW_WAIT, a_waiter_appears, bypass_the_process_lane, held_after
+from backend.tests.integration.lane_pairs import (
+    ROW_WAIT,
+    a_waiter_appears,
+    bypass_the_process_lane,
+    held_after,
+    hold_until,
+)
 from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
 from backend.tests.integration.test_reprint_creates_new_archive import run_reprint
 
@@ -49,9 +55,8 @@ async def test_the_runners_archive_and_a_stop_meet_without_a_deadlock(
         if first == "writer":
             await asyncio.wait_for(runner_go.wait(), 20)  # the writer goes inside first
         await db.flush()  # the job row and the header's KEY SHARE are now held by the runner's transaction
-        flushed.set()
         if first == "runner":
-            await asyncio.wait_for(runner_go.wait(), 20)
+            await hold_until(flushed, runner_go)
         return await real_colors(db, archive, printer_id, mapping)
 
     monkeypatch.setattr(archive_colors, "apply_loaded_spool_colors", colors)

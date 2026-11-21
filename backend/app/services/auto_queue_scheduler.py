@@ -104,6 +104,7 @@ logger = logging.getLogger(__name__)
 
 SJF_SETTING_KEY = "queue_shortest_first"
 PREFER_LOWEST_SETTING_KEY = "prefer_lowest_filament"
+_READ_HEADER_IDENTITY = object()
 
 
 class AutoPlacementConflict(RuntimeError):
@@ -811,7 +812,7 @@ class AutoQueueScheduler:
         plan=None,
         requirements=None,
         snapshot_signature=None,
-        header_identity: str | None = None,
+        header_identity: str | None | object = _READ_HEADER_IDENTITY,
     ) -> PrintQueueItem:
         """Copy auto item into the printer's print_queue and mark assigned.
 
@@ -829,6 +830,10 @@ class AutoQueueScheduler:
         (``router_view``; ``assign-now`` passes False, C5a). The copy is built from the re-read row; the eligibility's
         back-fills are written by the claim (A23). Commit, or rollback on any refusal.
         """
+        # An eligibility that read NULL has no header identity to compare. Only callers that omit the argument
+        # may read their own, before entering the lane.
+        if header_identity is None:
+            raise PrinterOccupancyConflict("queue_missing", queue_id=printer.id)
         view = view or router_row_view(item)
         filled = backfills(view, item)
         policy = auto_policy(item)
@@ -928,10 +933,12 @@ class AutoQueueScheduler:
         # The header this placement is validated against (A25): SQLite gives a deleted printer's id, and its
         # header's, to the next printer. The eligibility that chose the printer hands over the incarnation it read
         # (``header_identity``); only a caller without one has it read here.
-        if header_identity is None:
+        if header_identity is _READ_HEADER_IDENTITY:
             header_identity = await db.scalar(
                 select(PrinterQueue.recovery_identity).where(PrinterQueue.id == printer.id)
             )
+            if header_identity is None:
+                raise PrinterOccupancyConflict("queue_missing", queue_id=printer.id)
         # The reads end; nothing is held into the placement (A17 step 2).
         await db.commit()
         # A lane another writer holds in process is this printer lost for the pass, never a wait

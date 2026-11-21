@@ -16,6 +16,7 @@ from sqlalchemy import update
 
 from backend.app.core import database
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services import queue_ops
 from backend.tests.integration.test_edit_applies_under_the_lane import pending_rows, row
@@ -152,6 +153,63 @@ async def test_a_batch_move_lands_only_in_the_header_it_checked(
         assert response.status_code == 409, response.text
         assert response.json()["detail"]["error"] == "queue_item_changed"
         assert queues == (source_id, source_id)
+
+
+@pytest.mark.parametrize("route", ["single", "bulk", "batch"])
+async def test_in_place_edit_meets_a_queue_deleted_before_its_snapshot(
+    async_client, db_session, tmp_path, printer_factory, monkeypatch, sessions, route
+):
+    from backend.app.api.routes import print_queue
+
+    item, _, source, _, _ = await a_captured_item(db_session, tmp_path, printer_factory, monkeypatch)
+    item_id, source_id = item.id, source.id
+    deleted_ids = [item_id]
+    if route == "batch":
+        deleted_ids.append(await a_second_member(item, "editing-batch"))
+
+    survivor, _, other_queue, _, _ = await a_captured_item(
+        db_session, tmp_path, printer_factory, monkeypatch, name="survivor.gcode.3mf"
+    )
+    survivor_id, survivor_queue = survivor.id, other_queue.id
+    survivor.use_ams = True
+    await db_session.commit()
+
+    real_facts = print_queue.checked_facts
+    captured = False
+
+    async def delete_then_capture(db, queue_ids):
+        nonlocal captured
+        assert source_id in queue_ids
+        response = await async_client.delete(f"/api/v1/printers/{source_id}?delete_archives=false")
+        assert response.status_code == 200, response.text
+        facts = await real_facts(db, queue_ids)
+        assert source_id in facts and facts.queue(source_id) is None
+        captured = True
+        return facts
+
+    monkeypatch.setattr(print_queue, "checked_facts", delete_then_capture)
+    payload = {"use_ams": False}
+    if route == "single":
+        response = await async_client.patch(f"/api/v1/queue/{item_id}", json=payload)
+    elif route == "bulk":
+        response = await async_client.patch("/api/v1/queue/bulk", json={"item_ids": [item_id, survivor_id], **payload})
+    else:
+        response = await async_client.patch(f"/api/v1/queue/batch/editing-batch?queue_id={source_id}", json=payload)
+
+    assert captured
+    if route == "bulk":
+        assert response.status_code == 200, response.text
+        assert (response.json()["updated_count"], response.json()["skipped_count"]) == (1, 1)
+    else:
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"]["error"] == "queue_item_changed"
+    async with database.async_session() as db:
+        assert await db.get(Printer, source_id) is None
+        assert await db.get(PrinterQueue, source_id) is None
+        for deleted_id in deleted_ids:
+            assert await db.get(PrintQueueItem, deleted_id) is None
+        survivor = await db.get(PrintQueueItem, survivor_id)
+        assert (survivor.queue_id, survivor.status, survivor.use_ams) == (survivor_queue, "pending", route != "bulk")
 
 
 @pytest.mark.parametrize("regroup", ["ungroup", "join"])

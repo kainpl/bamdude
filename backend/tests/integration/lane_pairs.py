@@ -18,6 +18,7 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services import queue_ops
 from backend.app.services.printer_queues import ensure_printer_queue
+from backend.tests.integration.queue_test_database import BACKENDS, HELD, descends_from
 
 
 class NoProcessLock:
@@ -75,19 +76,12 @@ def _matches(lock, on, queue_id, archive_id) -> bool:
     return False
 
 
-def _held_by(owner, pid, behind) -> bool:
-    """The blocker is the holder the pair names: an exact pid, an exact task (never merely one it created), or --
-    when nothing is named -- a task that reached one of this test's barriers (``held_after``, ``held_inside``,
-    ``claim_holding_the_lane``) and still holds it."""
-    from backend.tests.integration.queue_test_database import HELD
-
+def _named_holder(backend, behind) -> bool:
     if isinstance(behind, int):
-        return pid == behind
+        return backend.pid == behind
     if isinstance(behind, (set, frozenset, list, tuple)):
-        return pid in behind
-    if behind is not None:
-        return owner is behind
-    return any(owner is task for task in HELD)
+        return backend.pid in behind
+    return backend.task is behind
 
 
 async def postgres_edge(
@@ -98,12 +92,20 @@ async def postgres_edge(
 
     The waiter is known by pid: ``queue_test_database`` names each transaction's backend after the task that began
     it, and each task after the task that created it, so a transaction of ``task`` is one begun by it or by a task it
-    created (a route the HTTP client runs is in a task of the middleware's). The holder is named exactly -- a pid, a
-    task, or the barrier the test reached (:func:`_held_by`); a blocker no task of this test began is a failure, and
-    so is a waiter that ended before its wait was seen. An advisory wait counts only on the lane guard's key
+    created (a route the HTTP client runs is in a task of the middleware's). The holder is pinned to the current
+    transaction at the sole active barrier, or the transactions of the named pid(s) or exact task. An observed
+    barrier must still be active. A foreign backend or a waiter that ended before its wait was seen is a failure.
+    An advisory wait counts only on the lane guard's key
     (``queue_id``) or the archive guard's (``archive_id``). ``pg_locks`` and ``pg_blocking_pids`` are read live, the
     monitor's transaction ended on every poll (``pg_stat_activity`` would answer from a snapshot of its first read)."""
-    from backend.tests.integration.queue_test_database import BACKENDS, descends_from
+    barriers = {backend for backend in HELD if BACKENDS.get(backend.pid) is backend}
+    if behind is None:
+        assert len(barriers) == 1, "expected one active PostgreSQL barrier or an explicitly named holder"
+        holders = barriers
+    else:
+        holders = {backend for backend in BACKENDS.values() if _named_holder(backend, behind)}
+        # If the named holder is stopped at a barrier, its other transactions are outside that barrier.
+        holders = (holders & barriers) or holders
 
     async with factory() as monitor:
         try:
@@ -111,17 +113,19 @@ async def postgres_edge(
                 while True:
                     if task.done():
                         pytest.fail(f"the waiter ended before it was seen waiting on {on}: {_outcome(task)}")
-                    mine = [pid for pid, owner in BACKENDS.items() if descends_from(owner, task)]
-                    locks = (await monitor.execute(_UNGRANTED, {"pids": mine})).all() if mine else []
+                    mine = {pid: backend for pid, backend in BACKENDS.items() if descends_from(backend.task, task)}
+                    locks = (await monitor.execute(_UNGRANTED, {"pids": list(mine)})).all() if mine else []
                     await monitor.rollback()
                     for lock in locks:
-                        if not _matches(lock, on, queue_id, archive_id):
+                        if BACKENDS.get(lock.pid) is not mine[lock.pid] or not _matches(lock, on, queue_id, archive_id):
                             continue
                         blockers = list(lock.blockers or [])
-                        owners = [BACKENDS.get(pid) for pid in blockers]
-                        if any(owner is None for owner in owners):
+                        backends = [BACKENDS.get(pid) for pid in blockers]
+                        if any(backend is None for backend in backends):
                             pytest.fail(f"pid {lock.pid} of the waiter waits behind a foreign backend: {blockers}")
-                        if any(_held_by(owner, pid, behind) for owner, pid in zip(owners, blockers, strict=True)):
+                        if any(
+                            backend in holders and (backend not in barriers or backend in HELD) for backend in backends
+                        ):
                             return Edge(lock.pid, lock.locktype, lock.classid, lock.objid, tuple(blockers))
                     await asyncio.sleep(0.02)
         except TimeoutError:
@@ -138,11 +142,11 @@ async def postgres_edge(
                 {"pids": list(BACKENDS)},
             )
         ).all()
-        named = [(*row, getattr(BACKENDS.get(row[0]), "get_name", lambda: "?")()) for row in rows]
+        named = [(*row, BACKENDS[row[0]].task.get_name() if row[0] in BACKENDS else "?") for row in rows]
         pytest.fail(
             f"no transaction of the waiter waited on {on} (lane {queue_id}, archive {archive_id}) behind "
             f"{behind!r}; outcome={_outcome(task)}; "
-            f"its pids={[pid for pid, owner in BACKENDS.items() if descends_from(owner, task)]}; "
+            f"its pids={[pid for pid, backend in BACKENDS.items() if descends_from(backend.task, task)]}; "
             f"locks of this test: {named}"
         )
 
@@ -171,12 +175,17 @@ async def a_waiter_appears(
     return edge
 
 
-def holding_here() -> None:
-    from backend.tests.integration.queue_test_database import HELD
-
+async def hold_until(reached, release) -> None:
+    """Register the current transaction for the lifetime of the barrier. SQLite has no backend to register."""
     task = asyncio.current_task()
-    if task is not None:
-        HELD.add(task)
+    active = [backend for backend in BACKENDS.values() if backend.task is task]
+    assert len(active) <= 1, "the barrier must identify one PostgreSQL transaction"
+    HELD.update(active)
+    try:
+        reached.set()
+        await asyncio.wait_for(release.wait(), 20)
+    finally:
+        HELD.difference_update(active)
 
 
 async def pending_rows(db, printer_factory, count=2) -> tuple[int, list[int]]:
@@ -199,9 +208,7 @@ async def claim_holding_the_lane(factory, queue_id, item_id, reached, release, *
     async with factory() as db, queue_ops.claim_lanes(db, [queue_id]):
         await db.scalar(select(PrinterQueue.id).where(PrinterQueue.id == queue_id).with_for_update(key_share=True))
         await db.scalar(select(PrintQueueItem.id).where(PrintQueueItem.id == item_id).with_for_update(key_share=True))
-        holding_here()
-        reached.set()
-        await asyncio.wait_for(release.wait(), 20)
+        await hold_until(reached, release)
         result = await db.execute(
             update(PrintQueueItem)
             .where(
@@ -226,9 +233,7 @@ def held_after(monkeypatch, owner, name):
         result = await real(*args, **kwargs)
         if armed[0]:
             armed[0] = False
-            holding_here()
-            reached.set()
-            await asyncio.wait_for(release.wait(), 20)
+            await hold_until(reached, release)
         return result
 
     monkeypatch.setattr(owner, name, held)
@@ -255,9 +260,7 @@ def held_inside(monkeypatch, owner, name):
         async with real(*args, **kwargs) as value:
             if armed[0]:
                 armed[0] = False
-                holding_here()
-                reached.set()
-                await asyncio.wait_for(release.wait(), 20)
+                await hold_until(reached, release)
             yield value
 
     monkeypatch.setattr(owner, name, held)

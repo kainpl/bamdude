@@ -264,6 +264,37 @@ DEMO = """
             .where(PrintQueueItem.id == 1, PrintQueueItem.queue_id != queue_id)
             .with_for_update(key_share=True)
         )
+
+    async def inner_queue_predicate(db, queue_id):
+        await db.execute(
+            select(PrintQueueItem)
+            .where(
+                PrintQueueItem.id == 1,
+                select(PrintQueueItem.id).where(PrintQueueItem.queue_id == queue_id).exists(),
+            )
+            .with_for_update(key_share=True)
+        )
+
+    async def conditional_queue_predicate(db, queue_id, use_queue):
+        await db.execute(
+            select(PrintQueueItem)
+            .where(PrintQueueItem.id == 1, PrintQueueItem.queue_id == queue_id if use_queue else true())
+            .with_for_update(key_share=True)
+        )
+
+    async def conditional_addressed_lock(db, queue_id, use_queue):
+        await db.execute(
+            select(PrintQueueItem)
+            .where(PrintQueueItem.queue_id == queue_id if use_queue else PrintQueueItem.queue_id.in_([queue_id]))
+            .with_for_update(key_share=True)
+        )
+
+    async def paired_addressed_lock(db, queue_id):
+        await db.execute(
+            select(PrintQueueItem)
+            .where(tuple_(PrintQueueItem.id, PrintQueueItem.queue_id).in_([(1, queue_id)]))
+            .with_for_update(key_share=True)
+        )
 """
 
 QUEUE_OPS = """
@@ -305,6 +336,10 @@ def synthetic(tmp_path_factory):
             "no_key_lock": "helper",
             "addressed_lock": "helper",
             "queue_named_but_not_restricted": "helper",
+            "inner_queue_predicate": "helper",
+            "conditional_queue_predicate": "helper",
+            "conditional_addressed_lock": "helper",
+            "paired_addressed_lock": "helper",
         }.items()
     }
     return app, entries
@@ -416,7 +451,10 @@ def test_negative_control_a_job_lock_without_its_queue(synthetic):
     found = guard.unaddressed_job_locks(scan_, data)
     assert (
         sorted(_function(v) for v in found)
-        == ["no_key_lock"] * 3 + ["plain_lock"] * 2 + ["queue_named_but_not_restricted"] * 4
+        == ["conditional_queue_predicate", "inner_queue_predicate"]
+        + ["no_key_lock"] * 3
+        + ["plain_lock"] * 2
+        + ["queue_named_but_not_restricted"] * 4
     ), (
         "a lock by id alone and db.get(with_for_update=...) are refused, and so is queue_id named only in the "
         "projection, an ordering, an or_ or a negation (B1-08); the queue as a where condition passes"

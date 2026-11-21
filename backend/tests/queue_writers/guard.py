@@ -510,7 +510,7 @@ def _is_queue_column(node) -> bool:
 def _restricts_the_queue(condition) -> bool:
     """A conjunct of a ``where`` that confines the rows to named queues: ``PrintQueueItem.queue_id == …``,
     ``PrintQueueItem.queue_id.in_(…)``, ``tuple_(…, PrintQueueItem.queue_id, …).in_(…)``, inside ``and_(…)`` or
-    either branch of a conditional expression. ``or_``, a negation, a projection or an ordering confine nothing."""
+    both branches of a conditional expression. ``or_``, a negation, a projection or an ordering confine nothing."""
     if isinstance(condition, ast.Compare):
         return (
             _is_queue_column(condition.left)
@@ -519,7 +519,7 @@ def _restricts_the_queue(condition) -> bool:
             and not _is_queue_column(condition.comparators[0])
         )
     if isinstance(condition, ast.IfExp):
-        return _restricts_the_queue(condition.body) or _restricts_the_queue(condition.orelse)
+        return _restricts_the_queue(condition.body) and _restricts_the_queue(condition.orelse)
     if not isinstance(condition, ast.Call):
         return False
     func = condition.func
@@ -539,16 +539,13 @@ def _restricts_the_queue(condition) -> bool:
 
 
 def _names_the_queue(statement) -> bool:
-    """A ``where`` / ``filter`` of the statement confines the locked rows to named queues (review B1-08): a mention
-    of ``queue_id`` in the projection, an ordering or an ineffective condition does not count."""
-    for node in ast.walk(statement):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr in {"where", "filter"}
-            and any(_restricts_the_queue(arg) for arg in node.args)
-        ):
+    """Follow the locked SELECT's method chain. Predicates in argument subqueries do not limit its rows."""
+    if isinstance(statement, ast.IfExp):
+        return _names_the_queue(statement.body) and _names_the_queue(statement.orelse)
+    while isinstance(statement, ast.Call) and isinstance(statement.func, ast.Attribute):
+        if statement.func.attr in {"where", "filter"} and any(_restricts_the_queue(arg) for arg in statement.args):
             return True
+        statement = statement.func.value
     return False
 
 
@@ -567,8 +564,9 @@ def unaddressed_job_locks(scan_: Scan, data: dict | None = None) -> list[str]:
             continue
         fn = scan_.function_node(site.file, site.func)
         calls = _lock_calls(fn, site.line)
-        statement = _statement_at(fn, site.line)
-        if any(call.func.attr == "get" for call in calls) or statement is None or not _names_the_queue(statement):
+        if not calls or not all(
+            call.func.attr == "with_for_update" and _names_the_queue(call.func.value) for call in calls
+        ):
             out.append(f"{key(site)}:{site.line} job row locked without its queue")
     return out
 

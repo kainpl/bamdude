@@ -15,7 +15,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from backend.app.models.printer import Printer
-from backend.tests.integration.lane_pairs import ANY_WAIT, LANE_GUARD, LANE_WAIT, ROW_WAIT, postgres_edge
+from backend.tests.integration.lane_pairs import ANY_WAIT, LANE_GUARD, LANE_WAIT, ROW_WAIT, held_after, postgres_edge
 from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -62,6 +62,66 @@ async def test_a_waiter_behind_a_sibling_is_not_the_named_holders_edge(postgres_
         finally:
             release.set()
             await asyncio.gather(sibling, waiter)
+
+
+async def test_a_released_barrier_does_not_authorize_a_later_transaction(
+    postgres_only, test_engine, printer_factory, monkeypatch
+):
+    first, active, later = [(await printer_factory()).id for _ in range(3)]
+    sessions = async_sessionmaker(test_engine)
+    later_ready, release_later = asyncio.Event(), asyncio.Event()
+
+    class Locks:
+        async def earlier_barrier(self, db):
+            return await take_row(db, first)
+
+        async def active_barrier(self, db):
+            return await take_row(db, active)
+
+    locks = Locks()
+    first_ready, release_first = held_after(monkeypatch, locks, "earlier_barrier")
+    active_ready, release_active = held_after(monkeypatch, locks, "active_barrier")
+
+    async def earlier_holder():
+        async with sessions() as db:
+            await locks.earlier_barrier(db)
+            await db.rollback()
+            await take_row(db, later)
+            later_ready.set()
+            await release_later.wait()
+
+    async def active_holder():
+        async with sessions() as db:
+            await locks.active_barrier(db)
+
+    async def waiter(row_id):
+        async with sessions() as db:
+            await take_row(db, row_id)
+
+    earlier = asyncio.create_task(earlier_holder())
+    tasks = [earlier]
+    try:
+        await asyncio.wait_for(first_ready.wait(), 5)
+        release_first.set()
+        await asyncio.wait_for(later_ready.wait(), 5)
+        tasks.append(asyncio.create_task(active_holder()))
+        await asyncio.wait_for(active_ready.wait(), 5)
+        wrong_waiter = asyncio.create_task(waiter(later))
+        tasks.append(wrong_waiter)
+        # This really is the later transaction of the earlier task, whose barrier has ended.
+        await postgres_edge(sessions, wrong_waiter, on=ROW_WAIT, behind=earlier)
+        with pytest.raises(pytest.fail.Exception, match="no transaction of the waiter"):
+            await postgres_edge(sessions, wrong_waiter, on=ROW_WAIT, timeout=1.5)
+
+        right_waiter = asyncio.create_task(waiter(active))
+        tasks.append(right_waiter)
+        edge = await postgres_edge(sessions, right_waiter, on=ROW_WAIT)
+        assert edge.locktype == "transactionid"
+    finally:
+        release_first.set()
+        release_later.set()
+        release_active.set()
+        await asyncio.gather(*tasks)
 
 
 async def test_an_advisory_lock_of_another_class_is_no_lane_wait_in_any_mode(postgres_only, test_engine):

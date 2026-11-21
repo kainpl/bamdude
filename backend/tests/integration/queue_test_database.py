@@ -6,25 +6,33 @@ An explicit PostgreSQL target uses a unique schema; default is temporary SQLite.
 import asyncio
 import os
 import weakref
+from dataclasses import dataclass
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, SessionTransaction
 
 from backend.app.core.config import settings
 from backend.app.core.credential_config import initialize_credential_config_anchor
 from backend.app.core.database import Base, _strip_tz_from_params, configure_sqlite_connection, import_all_models
 
-# PostgreSQL: server backend pid -> the asyncio task whose transaction began on it last (see ``patient`` below).
-BACKENDS: dict[int, asyncio.Task] = {}
+
+@dataclass(frozen=True, eq=False)
+class BackendTransaction:
+    pid: int
+    task: asyncio.Task
+    transaction: SessionTransaction
+
+
+# PostgreSQL: server backend pid -> the active root transaction, which can change even in the same task and pid.
+BACKENDS: dict[int, BackendTransaction] = {}
 # PostgreSQL: each task -> the task that created it. A writer called through the HTTP client runs its route in a task
 # of the middleware's, so the session's task is a descendant of the one the test started.
 PARENTS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
-# The tasks that reached a pair's barrier holding their locks (``lane_pairs`` barriers): the default holder a monitor
-# accepts when a pair names none.
-HELD: weakref.WeakSet = weakref.WeakSet()
+# PostgreSQL transactions currently stopped at a pair's barrier (see ``lane_pairs.hold_until``).
+HELD: set[BackendTransaction] = set()
 
 
 def lineage(task) -> list:
@@ -74,8 +82,8 @@ async def test_engine(monkeypatch, tmp_path, request):
         # The same hook names each transaction's server backend after the asyncio task that runs it (BACKENDS), so a
         # pair's monitor can tell ITS waiter and ITS holder from any other backend: a pooler hands a server
         # connection to one transaction at a time, so the task of the latest begin on a pid is the one using it.
-        def patient(_session, _transaction, connection):
-            if connection.engine is engine.sync_engine:
+        def patient(_session, transaction, connection):
+            if connection.engine is engine.sync_engine and transaction.parent is None:
                 connection.exec_driver_sql("SET LOCAL lock_timeout = '60s'")
                 pid = connection.exec_driver_sql("SELECT pg_backend_pid()").scalar()
                 try:
@@ -83,12 +91,20 @@ async def test_engine(monkeypatch, tmp_path, request):
                 except RuntimeError:
                     task = None
                 if task is not None:
-                    BACKENDS[pid] = task
+                    BACKENDS[pid] = BackendTransaction(pid, task, transaction)
+
+        def ended(_session, transaction):
+            if transaction.parent is None:
+                for pid, backend in list(BACKENDS.items()):
+                    if backend.transaction is transaction:
+                        del BACKENDS[pid]
 
         BACKENDS.clear()
         HELD.clear()
         event.listen(Session, "after_begin", patient)
+        event.listen(Session, "after_transaction_end", ended)
         request.addfinalizer(lambda: event.remove(Session, "after_begin", patient))
+        request.addfinalizer(lambda: event.remove(Session, "after_transaction_end", ended))
         request.addfinalizer(BACKENDS.clear)
         request.addfinalizer(HELD.clear)
 

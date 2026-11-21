@@ -137,9 +137,7 @@ async def routing_update(db, item, changes, cache=None, *, snapshot=None):
     if changes.get("use_ams") is not None and "feed_policy" not in changes and previous.mode == "auto":
         choices["feed_policy"] = "auto" if changes["use_ams"] else "external_only"
     queue_id = changes.get("queue_id") or item.queue_id
-    queue = snapshot.queue(queue_id) if snapshot is not None else None
-    if queue is None:
-        queue = await db.get(PrinterQueue, queue_id)
+    queue = snapshot.queue(queue_id) if snapshot is not None else await db.get(PrinterQueue, queue_id)
     descriptor = await item_descriptor(db, item)
     routing, plate = await prepare_routing(
         db,
