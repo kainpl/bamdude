@@ -95,6 +95,13 @@ def publishing_into(mock_db, *, max_position=None):
     return patch.object(queue_source_capture, "publish_staged", publish)
 
 
+@pytest.fixture(autouse=True)
+def _the_header_holds(monkeypatch):
+    """The VP insert re-reads its queue's header under the lane (G03 B, A25) -- proven against a real database in
+    ``integration/test_rows_enter_the_header_they_were_validated_for.py``; these mock-session tests stand it in."""
+    monkeypatch.setattr("backend.app.services.printer_occupancy.queue_header_holds", AsyncMock(return_value=True))
+
+
 class TestVirtualPrinterInstance:
     """Tests for VirtualPrinterInstance class."""
 
@@ -3214,6 +3221,26 @@ class TestVirtualPrinterSlicerIntake:
 
     # retroactive stamp (sub-fix 1)
 
+    @staticmethod
+    def _lanes_stood_in(mock_db):
+        """The stamp computes outside any lock, then applies under the rows' lanes to the rows its computation read
+        (G03 B, A7) -- stood in for here: no lane, every row still pending in queue 1 with the basis read before."""
+        from contextlib import ExitStack, asynccontextmanager
+
+        @asynccontextmanager
+        async def no_lanes(db, queue_ids, **_kwargs):
+            yield
+
+        async def rows(db, ids):
+            return {i: SimpleNamespace(id=i, status="pending", queue_id=1) for i in ids}
+
+        mock_db.get = AsyncMock(side_effect=lambda model, iid, **_kw: SimpleNamespace(id=iid, queue_id=1))
+        stack = ExitStack()
+        stack.enter_context(patch("backend.app.services.queue_ops.claim_lanes", no_lanes))
+        stack.enter_context(patch("backend.app.services.queue_ops.lock_named_rows", rows))
+        stack.enter_context(patch("backend.app.services.queue_row_basis.row_basis", lambda row: "basis"))
+        return stack
+
     @pytest.mark.asyncio
     async def test_restamp_updates_pending_items_omits_vibration_cali(self, tmp_path):
         inst, mock_db = self._make_inst(tmp_path, [])
@@ -3228,9 +3255,12 @@ class TestVirtualPrinterSlicerIntake:
         mock_db.execute = AsyncMock(side_effect=_exec)
         inst._recent_queue_items["late.3mf"] = ([5, 6], time.monotonic())
 
-        with patch(
-            "backend.app.services.filament_policy_write.routing_update",
-            new=AsyncMock(side_effect=lambda db, item, changes: changes),
+        with (
+            self._lanes_stood_in(mock_db),
+            patch(
+                "backend.app.services.filament_policy_write.routing_update",
+                new=AsyncMock(side_effect=lambda db, item, changes: changes),
+            ),
         ):
             await inst._restamp_recent_queue_item(
                 "late.3mf",
@@ -3299,10 +3329,11 @@ class TestVirtualPrinterSlicerIntake:
         mock_db.execute = AsyncMock(side_effect=_exec)
         # Queue item already committed for this FTP filename; no event waiting.
         inst._recent_queue_items["m.gcode.3mf"] = ([7], time.monotonic())
-        await inst.on_print_command(
-            "m",
-            {"command": "project_file", "file": "m.gcode.3mf", "nozzle_mapping": [3, 1], "bed_leveling": False},
-        )
+        with self._lanes_stood_in(mock_db):
+            await inst.on_print_command(
+                "m",
+                {"command": "project_file", "file": "m.gcode.3mf", "nozzle_mapping": [3, 1], "bed_leveling": False},
+            )
         assert len(executed) == 2
         params = executed[1].compile().params
         assert params["nozzle_mapping"] == "[3, 1]"

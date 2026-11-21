@@ -486,14 +486,23 @@ async def refresh(
             rows = {}
             for job in picked:
                 model = _job_model(job.kind)
-                rows[(job.kind, job.id)] = (
+                statement = select(model).where(model.id == job.id)
+                if job.kind == "queue":
+                    # A printer row is locked only inside the lanes this refresh holds (G03 B, A31, L1); one that
+                    # moved since the preflight is read unlocked below and answered as changed.
+                    statement = statement.where(model.queue_id.in_(lanes))
+                row = (
                     await db.execute(
-                        select(model)
-                        .where(model.id == job.id)
-                        .with_for_update()
-                        .execution_options(populate_existing=True)
+                        statement.with_for_update(key_share=True).execution_options(populate_existing=True)
                     )
                 ).scalar_one_or_none()
+                if row is None and job.kind == "queue":
+                    row = (
+                        await db.execute(
+                            select(model).where(model.id == job.id).execution_options(populate_existing=True)
+                        )
+                    ).scalar_one_or_none()
+                rows[(job.kind, job.id)] = row
             _source_gate(source_kind, source, actor, await _fresh_rights(db, source_kind, actor))
             # Every right read again on this writer session, after the wait: a key that lost its queue read, its
             # printer or itself while this request waited changes nothing (T9.7 R1).

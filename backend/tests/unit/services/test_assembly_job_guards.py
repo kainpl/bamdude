@@ -10,6 +10,7 @@ import pytest
 from backend.app.schemas.assembly import AssemblyLayout, AssemblyPrinter
 from backend.app.services.assembly import job
 from backend.app.services.assembly.job import Plan, Row, Source, _counts, _read_member, _stage, _take_packed
+from backend.app.services.library_identity import LibraryIdentity
 
 REF = {"source": "local", "id": "1"}
 TARGET = AssemblyPrinter(printer_preset=REF, process_preset=REF, filament_preset=REF)
@@ -139,7 +140,7 @@ def _source(tmp_path: Path, data: bytes, claimed: bytes | None = None) -> Source
     path = tmp_path / "model.stl"
     path.write_bytes(data)
     digest = hashlib.sha256(claimed if claimed is not None else data).hexdigest()
-    return Source((1, "model.stl", digest, None), path, "stl", "model.stl")
+    return Source(LibraryIdentity(1, "model.stl", digest, None), path, "stl", "model.stl")
 
 
 def test_staging_refuses_bytes_that_are_not_the_ones_the_caller_chose(tmp_path):
@@ -151,7 +152,7 @@ def test_staging_refuses_bytes_that_are_not_the_ones_the_caller_chose(tmp_path):
 def test_staging_copies_a_source_whose_hash_matches_or_is_unknown(tmp_path):
     _stage(tmp_path / "a", _plan(sources=[_source(tmp_path, b"bytes")]), [])
     assert (tmp_path / "a" / "src" / "0.stl").read_bytes() == b"bytes"
-    unknown = Source((1, "model.stl", None, None), tmp_path / "model.stl", "stl", "model.stl")
+    unknown = Source(LibraryIdentity(1, "model.stl", None, None), tmp_path / "model.stl", "stl", "model.stl")
     _stage(tmp_path / "b", _plan(sources=[unknown]), [])
     assert (tmp_path / "b" / "src" / "0.stl").is_file()
 
@@ -169,7 +170,12 @@ def test_a_step_source_is_staged_for_the_converter_and_named_as_the_mesh_it_will
     mesh = _source(tmp_path, b"mesh")
     drawing = tmp_path / "drawing.stp"
     drawing.write_bytes(b"ISO-10303-21;")
-    step = Source((2, "drawing.stp", hashlib.sha256(b"ISO-10303-21;").hexdigest(), None), drawing, "stp", "drawing.stp")
+    step = Source(
+        LibraryIdentity(2, "drawing.stp", hashlib.sha256(b"ISO-10303-21;").hexdigest(), None),
+        drawing,
+        "stp",
+        "drawing.stp",
+    )
     root = tmp_path / "stage"
     _stage(root, _plan(sources=[mesh, step, mesh]), [])
     assert (root / "step" / "1" / "input.step").read_bytes() == b"ISO-10303-21;"
@@ -184,7 +190,9 @@ def test_a_step_source_is_staged_for_the_converter_and_named_as_the_mesh_it_will
 def test_a_changed_step_source_is_caught_like_any_other(tmp_path):
     drawing = tmp_path / "drawing.step"
     drawing.write_bytes(b"new")
-    step = Source((2, "drawing.step", hashlib.sha256(b"old").hexdigest(), None), drawing, "step", "drawing.step")
+    step = Source(
+        LibraryIdentity(2, "drawing.step", hashlib.sha256(b"old").hexdigest(), None), drawing, "step", "drawing.step"
+    )
     with pytest.raises(job.SourceChanged):
         _stage(tmp_path / "stage", _plan(sources=[step]), [])
 

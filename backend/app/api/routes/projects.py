@@ -237,6 +237,8 @@ from backend.app.services.product_files import (
 )
 from backend.app.services.product_gate import product_gate
 from backend.app.services.queue_batch import enqueue_batch_copies
+from backend.app.services.queue_counters import lock_auto_rows
+from backend.app.services.queue_ops import claim_lanes
 from backend.app.utils.printer_models import normalize_model_name
 
 logger = logging.getLogger(__name__)
@@ -1733,6 +1735,35 @@ async def take_stock(
     return TakeStockOut(order=await _response(db, project.id), results=[StockTakenOut(**asdict(t)) for t in taken])
 
 
+async def _order_link_footprint(db, *, project_id=None, line_id=None) -> tuple[frozenset, frozenset]:
+    """The lanes of the job rows naming the order (or the line), any status, and the router rows naming it --
+    read in a clean session over the request's bind (G03 B, A22)."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    async with async_sessionmaker(db.bind, expire_on_commit=False)() as preflight:
+        return await _order_links(preflight, project_id=project_id, line_id=line_id)
+
+
+async def _order_links(db, *, project_id=None, line_id=None) -> tuple[frozenset, frozenset]:
+    if line_id is not None:
+        jobs = select(PrintQueueItem.queue_id).where(PrintQueueItem.project_line_id == line_id)
+        autos = select(AutoQueueItem.id).where(AutoQueueItem.project_line_id == line_id)
+    else:
+        jobs = select(PrintQueueItem.queue_id).where(PrintQueueItem.project_id == project_id)
+        autos = select(AutoQueueItem.id).where(AutoQueueItem.project_id == project_id)
+    return frozenset(await db.scalars(jobs)), frozenset(await db.scalars(autos))
+
+
+async def _require_footprint(db, lanes, autos, *, project_id=None, line_id=None) -> None:
+    """Under the guards: a job row of the order in a lane not held, or a router row not in the footprint, is the
+    deletion's refusal -- 409 ``queue_selection_changed``, nothing written (A22)."""
+    from backend.app.services.queue_cancel_scope import selection_changed
+
+    now_lanes, now_autos = await _order_links(db, project_id=project_id, line_id=line_id)
+    if not now_lanes <= lanes or not now_autos <= autos:
+        raise selection_changed()
+
+
 @router.delete("/{project_id}")
 async def delete_project(
     project_id: int,
@@ -1748,16 +1779,55 @@ async def delete_project(
         discard_access = await order_plan_access.capture(request, db, current_user)
     project = await _get_project(db, project_id)
     gated = {line.product_id for line in project.lines}
-    # The gates of its products first (WS-13 E1 BL3): the cascade below may delete a
-    # one-off product, which is a product writer.
-    await product_gate(db, sorted(gated))
-    # …and the order read again behind them (BL2): a line added meanwhile is released
-    # and detached like the others — or, of a product not gated, the request starts over.
-    project = await _get_project(db, project_id, fresh=True)
-    if not {line.product_id for line in project.lines} <= gated:
-        raise HTTPException(status_code=409, detail=order_fulfilment.ORDER_CHANGED)
-    if any(line.part_count_adjustments for line in project.lines):
-        raise HTTPException(409, "Reverse the order's recount corrections before deleting it")
+    # A plan writer for the job and router rows it unlinks (G03 B, A22): their lanes read first, in a clean session;
+    # then the lanes with the Workshop's early locks as their before_db step -- product gate, the order read again,
+    # positions, lines, parts -- so on PostgreSQL every one of them precedes the lane guards, as the filing writer
+    # (orders, then lanes) keeps.
+    lanes, autos = await _order_link_footprint(db, project_id=project_id)
+    await db.commit()
+    early_state: dict = {}
+
+    async def early(session) -> None:
+        # The gates of its products first (WS-13 E1 BL3): the cascade below may delete a
+        # one-off product, which is a product writer.
+        await product_gate(session, sorted(gated))
+        # …and the order read again behind them (BL2): a line added meanwhile is released
+        # and detached like the others — or, of a product not gated, the request starts over.
+        fresh = await _get_project(session, project_id, fresh=True)
+        if not {line.product_id for line in fresh.lines} <= gated:
+            raise HTTPException(status_code=409, detail=order_fulfilment.ORDER_CHANGED)
+        if any(line.part_count_adjustments for line in fresh.lines):
+            raise HTTPException(409, "Reverse the order's recount corrections before deleting it")
+        owns = not _consumed_its_stock(fresh.status)
+        if owns or only_if_unsubmitted:
+            # Positions, lines, parts of every line before the first is released (WS-13 E1 BL0).
+            try:
+                await finished_stock.lock_lines_with_parts(session, fresh.lines)
+            except finished_stock.FinishedStockError as e:
+                raise HTTPException(status_code=e.status, detail=str(e)) from e
+        early_state.update(project=fresh, owns=owns)
+
+    async with claim_lanes(db, sorted(lanes), before_db=early):
+        response = await _delete_project_in_lanes(
+            db,
+            project_id,
+            request,
+            current_user,
+            early_state,
+            lanes,
+            autos,
+            only_if_unsubmitted,
+            discard_access if only_if_unsubmitted else None,
+        )
+        await db.commit()
+    return response
+
+
+async def _delete_project_in_lanes(
+    db, project_id, request, current_user, early_state, lanes, autos, only_if_unsubmitted, discard_access
+):
+    """The order deletion's writes, inside its lanes and early locks (G03 B, A22)."""
+    project = early_state["project"]
     # Its lines go with it, so they go through the same two steps a single
     # deleted line does (Ruling 10): the kits come back to the shelf, and the
     # history that named the line stops naming an id that will be reused.
@@ -1769,7 +1839,7 @@ async def delete_project(
     #
     # The same answer decides the un-filing credit below (Ruling 32), which is
     # why it is one variable and not two reads of the status.
-    still_owns_its_stock = not _consumed_its_stock(project.status)
+    still_owns_its_stock = early_state["owns"]
     # An order whose lines received, assembled or issued anything has USED its prints:
     # the parts are finished units on the shelf or with the customer, so un-filing must
     # not credit them to the free parts shelf a second time — Ruling 32's reason, reached
@@ -1777,19 +1847,11 @@ async def delete_project(
     # parts lines' counters go with their lines below.
     prints_are_free = still_owns_its_stock and not await order_fulfilment.moved_line_ids(db, list(project.lines))
     actor = await acting_user(request, db, current_user)
-    if still_owns_its_stock:
-        # Positions, lines, parts of every line before the first is released (WS-13 E1 BL0).
-        try:
-            await finished_stock.lock_lines_with_parts(db, project.lines)
-        except finished_stock.FinishedStockError as e:
-            raise HTTPException(status_code=e.status, detail=str(e)) from e
     if only_if_unsubmitted:
         # The library wizard may discard an unsubmitted draft, not un-file
         # work whose response was lost. Lines precede draft, matching the FK
-        # key-share order of publication; this check is inside that guard.
-        if not still_owns_its_stock:
-            await finished_stock.lock_lines_with_parts(db, project.lines)
-        from backend.app.services import order_plan_submission, order_working_plan
+        # key-share order of publication (taken in the early step); this check is inside that guard.
+        from backend.app.services import order_plan_access, order_plan_submission, order_working_plan
 
         draft = await order_working_plan.lock(db, project_id)
         await order_plan_access.fresh(db, discard_access, edit=False, delete=True)
@@ -1810,7 +1872,15 @@ async def delete_project(
     # Read before the un-filing: after the UPDATE below, no archive names this
     # order any more and there is nothing left to look them up by.
     unfiled = (await db.execute(select(PrintArchive).where(PrintArchive.project_id == project_id))).scalars().all()
-    for model in (PrintArchive, PrintQueueItem, AutoQueueItem):
+    # The job and router rows read again under the guards (A22): one in a lane not held, or a router row not in the
+    # footprint, is a refusal. Then, in L5 order, the archives, the router rows (prelocked, A20), the job rows -- the
+    # two link columns only.
+    await _require_footprint(db, lanes, autos, project_id=project_id)
+    await db.execute(
+        update(PrintArchive).where(PrintArchive.project_id == project_id).values(project_id=None, project_line_id=None)
+    )
+    await lock_auto_rows(db, autos)
+    for model in (AutoQueueItem, PrintQueueItem):
         await db.execute(
             update(model).where(model.project_id == project_id).values(project_id=None, project_line_id=None)
         )
@@ -2419,8 +2489,25 @@ async def delete_line(
     current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
 ):
     line = await _get_line(db, project_id, line_id)
-    # The gate of its product first (WS-13 E1 BL3): the cascade below may delete it.
-    await product_gate(db, [line.product_id])
+    product_id = line.product_id
+    # A plan writer for the job and router rows it unlinks (G03 B, A22): their lanes first, the product gate as the
+    # lanes' early step.
+    lanes, autos = await _order_link_footprint(db, line_id=line_id)
+    await db.commit()
+
+    async def early(session) -> None:
+        # The gate of its product first (WS-13 E1 BL3): the cascade below may delete it.
+        await product_gate(session, [product_id])
+
+    async with claim_lanes(db, sorted(lanes), before_db=early):
+        await _delete_line_in_lanes(db, project_id, line, request, current_user, lanes, autos)
+        await db.commit()
+    return await _response(db, project_id)
+
+
+async def _delete_line_in_lanes(db, project_id, line, request, current_user, lanes, autos) -> None:
+    """The line deletion's writes, inside its lanes and the product gate (G03 B, A22)."""
+    line_id = line.id
     await db.refresh(line)
     if line.part_count_adjustments:
         raise HTTPException(409, "Reverse this line's recount corrections before deleting it")
@@ -2439,7 +2526,11 @@ async def delete_line(
     # NULL these three FKs declare is honoured by PostgreSQL alone. The stock
     # ledger is the fourth table with that FK, and its history survives the
     # line: the parts are on the shelf whatever happened to the paperwork.
-    for model in (PrintArchive, PrintQueueItem, AutoQueueItem):
+    # Read again under the guards; then archives, router rows (prelocked, A20), job rows (A22, L5).
+    await _require_footprint(db, lanes, autos, line_id=line_id)
+    await db.execute(update(PrintArchive).where(PrintArchive.project_line_id == line_id).values(project_line_id=None))
+    await lock_auto_rows(db, autos)
+    for model in (AutoQueueItem, PrintQueueItem):
         await db.execute(update(model).where(model.project_line_id == line_id).values(project_line_id=None))
     await part_stock.detach_line(db, line_id)
     await finished_stock.detach_line(db, line_id)
@@ -2458,7 +2549,6 @@ async def delete_line(
         await product_delete.delete_orphaned_adhoc_products(db, [line.product_id])
     except product_gate_module.ProductBusy as e:
         raise _product_busy() from e
-    return await _response(db, project_id)
 
 
 # ---------- free stock ----------
@@ -3009,26 +3099,61 @@ async def add_queue_items_to_project(
     if any(item.status != "pending" for item in items):
         raise HTTPException(status_code=409, detail="Only pending queue jobs can be filed under an order")
 
+    # A light writer of job rows (G03 B, A7/W3): the rows' queues read here, the order rows as early rows —
+    # the one they join and every one they leave, ascending, before the lanes' guards — then the rows FOR NO KEY
+    # UPDATE ascending under the lanes, each written by a compare-and-set on pending + the queue it was read in.
+    from backend.app.core import database
+    from backend.app.services.order_fulfilment import lock_orders
+    from backend.app.services.queue_ops import claim_lanes, lock_named_rows
+
+    read = {item.id: (item.queue_id, item.project_id) for item in items}
+    orders = sorted({project_id, *(pid for _q, pid in read.values() if pid is not None)})
+    await db.rollback()  # the read ends before the lanes
+
+    async def orders_first(session):
+        await lock_orders(session, orders)
+
     updated = 0
     filed = 0
     left: dict[int, int] = {}
-    for item in items:
-        if item.project_line_id is not None:
-            stale = await db.get(ProjectLine, item.project_line_id)
-            if stale is None or stale.project_id != project_id:
-                item.project_line_id = None
-        # Journaled only when it actually moves here — as ``add-archives`` does.
-        if item.project_id != project_id:
-            filed += 1
-            if item.project_id is not None:
-                left[item.project_id] = left.get(item.project_id, 0) + 1
-        item.project_id = project_id
-        updated += 1
+    async with (
+        database.async_session() as wdb,
+        claim_lanes(wdb, sorted({q for q, _p in read.values()}), before_db=orders_first),
+    ):
+        rows = await lock_named_rows(wdb, {i: q for i, (q, _p) in read.items()})
+        for item_id, (queue_id, old_project) in sorted(read.items()):
+            row = rows.get(item_id)
+            if row is None or row.status != "pending" or row.queue_id != queue_id or row.project_id != old_project:
+                raise HTTPException(status_code=409, detail="Only pending queue jobs can be filed under an order")
+            line_id = row.project_line_id
+            if line_id is not None:
+                stale = await wdb.get(ProjectLine, line_id)
+                if stale is None or stale.project_id != project_id:
+                    line_id = None
+            result = await wdb.execute(
+                update(PrintQueueItem)
+                .where(
+                    PrintQueueItem.id == item_id,
+                    PrintQueueItem.status == "pending",
+                    PrintQueueItem.queue_id == queue_id,
+                )
+                .values(project_id=project_id, project_line_id=line_id)
+                .execution_options(synchronize_session=False)
+            )
+            if not result.rowcount:
+                raise HTTPException(status_code=409, detail="Only pending queue jobs can be filed under an order")
+            # Journaled only when it actually moves here — as ``add-archives`` does.
+            if old_project != project_id:
+                filed += 1
+                if old_project is not None:
+                    left[old_project] = left.get(old_project, 0) + 1
+            updated += 1
 
-    for old_project, count in left.items():
-        await order_journal.record(db, old_project, "queue_items_unfiled", {"count": count}, actor=current_user)
-    if filed:
-        await order_journal.record(db, project_id, "queue_items_filed", {"count": filed}, actor=current_user)
+        for old_project, count in left.items():
+            await order_journal.record(wdb, old_project, "queue_items_unfiled", {"count": count}, actor=current_user)
+        if filed:
+            await order_journal.record(wdb, project_id, "queue_items_filed", {"count": filed}, actor=current_user)
+        await wdb.commit()
     return {"message": f"Added {updated} queue items to project"}
 
 

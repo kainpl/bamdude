@@ -2339,15 +2339,16 @@ async def _claim_row(db: AsyncSession, item: AutoQueueItem, recheck: _Recheck) -
     The order is the router's own (``_assign``): the order's row first
     (:func:`order_resources.policy_for`, taken by the caller), then the job's.
     On SQLite ``take_write_lock`` takes the one write lock before the read; on
-    PostgreSQL ``FOR UPDATE`` waits for a writer that holds the row and then
-    reads what it committed. Nothing long runs under it: the copy and the
+    PostgreSQL ``FOR NO KEY UPDATE`` waits for a writer that holds the row and
+    then reads what it committed (G03 B L6(b): it lets another transaction's
+    foreign-key check pass, as every explicit lock of a queue row does). Nothing long runs under it: the copy and the
     publication are already done.
     """
     await take_write_lock(db, AutoQueueItem.__table__, item.id)
     fresh = await db.scalar(
         select(AutoQueueItem)
         .where(AutoQueueItem.id == item.id)
-        .with_for_update()
+        .with_for_update(key_share=True)
         .execution_options(populate_existing=True)
     )
     return _row_changed(fresh, item.id, recheck)
@@ -2442,6 +2443,9 @@ async def _apply(
         # read, which is the same thing as a source nobody can read.
         result.skipped.append((item.id, "source_unreadable"))
         return
+    # The incarnation the capture below copies from -- the one its snapshot's stamp names (A27.4); the move's
+    # transaction holds exactly that file or writes nothing (G03 B, A28).
+    captured_identity = file.recovery_identity
     staged = await _capture_target(db, item, move, file, result=result)
     if staged is None:
         return
@@ -2493,6 +2497,26 @@ async def _apply(
     async with queue_sources.pin(blob.id):
         from backend.app.services.order_resources import constrained, policy_for
 
+        # The target file before the order and router rows (G03 B, A28): ``FOR KEY SHARE`` and read again -- the
+        # product gate's class order, which the swap refresh keeps too. Gone, trashed, or another incarnation than
+        # the one copied: nothing is written next to the old file's snapshot, the published blob is left to the
+        # collector's grace window. On SQLite the writer is taken first.
+        await take_write_lock(db, LibraryFile.__table__, move.plate.library_file_id)
+        held = await db.scalar(
+            LibraryFile.active()
+            .where(LibraryFile.id == move.plate.library_file_id)
+            .with_for_update(read=True, key_share=True)
+            .execution_options(populate_existing=True)
+        )
+        if held is None or held.recovery_identity != captured_identity:
+            await db.commit()
+            logger.info(
+                "Rebalance: item %s not moved — its target file %s changed during the copy",
+                item_id,
+                move.plate.library_file_id,
+            )
+            result.skipped.append((item_id, "source_unreadable"))
+            return
         # Capturing a source releases the transaction. An operator may have
         # narrowed the order while that copy ran; never convert its queued file
         # using the earlier unrestricted snapshot.

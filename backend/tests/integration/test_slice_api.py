@@ -278,6 +278,43 @@ class TestSliceLibraryFile:
         assert terminal["status"] == "failed"
         assert terminal["error_status"] == 400
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_source_replaced_by_a_row_with_its_id_path_hash_and_time_publishes_nothing(
+        self, async_client: AsyncClient, db_session, slice_test_setup, monkeypatch
+    ):
+        """SQLite: the row deleted and the same file registered again in the same second. The slice's
+        result is published only for the row the caller chose (G03 B, A32; TA42)."""
+        from uuid import uuid4
+
+        from sqlalchemy import func, select, update
+
+        from backend.app.services import library_ingest
+
+        source_id = slice_test_setup["src_file_id"]
+        real = library_ingest.prepare_reuse
+
+        async def the_row_is_replaced_first(db, **kwargs):
+            await db.execute(
+                update(LibraryFile).where(LibraryFile.id == source_id).values(recovery_identity=str(uuid4()))
+            )
+            return await real(db, **kwargs)
+
+        monkeypatch.setattr(library_ingest, "prepare_reuse", the_row_is_replaced_first)
+        _install_mock_sidecar(lambda request: httpx.Response(200, content=_make_3mf_with_settings()))
+        response = await async_client.post(
+            f"/api/v1/library/files/{source_id}/slice",
+            json={
+                "printer_preset_id": slice_test_setup["printer_id"],
+                "process_preset_id": slice_test_setup["process_id"],
+                "filament_preset_id": slice_test_setup["filament_id"],
+            },
+        )
+        assert response.status_code == 202
+        terminal = await _wait_for_job(async_client, response.json()["job_id"])
+        assert terminal["status"] == "failed" and terminal["error_status"] == 409, terminal
+        assert await db_session.scalar(select(func.count()).select_from(LibraryFile)) == 1, "nothing published"
+
 
 # ---------------------------------------------------------------------------
 # 3MF embedded-settings fallback when --load-settings 5xx

@@ -684,15 +684,16 @@ class VirtualPrinterInstance:
         if not patch and not _slicer_choices(data):
             return
 
-        from sqlalchemy import select as sa_select
-
         from backend.app.models.auto_queue import AutoQueueItem
+        from backend.app.services.auto_queue_eligibility import begin_router_write
+        from backend.app.services.queue_counters import lock_auto_rows
 
         async with self._session_factory() as db:
-            result = await db.execute(
-                sa_select(AutoQueueItem).where(AutoQueueItem.id.in_(item_ids), AutoQueueItem.status == "pending")
-            )
-            rows = list(result.scalars().all())
+            # The rows locked ascending and re-read before any write (G03 B, A20); each written as the incarnation
+            # read here, still pending.
+            await begin_router_write(db)
+            locked = await lock_auto_rows(db, item_ids)
+            rows = [row for _id, row in sorted(locked.items()) if row.status == "pending"]
             from sqlalchemy import update
 
             late_choices = _slicer_choices(data)
@@ -709,11 +710,15 @@ class VirtualPrinterInstance:
                     continue
                 await db.execute(
                     update(AutoQueueItem)
-                    .where(AutoQueueItem.id == row.id, AutoQueueItem.status == "pending")
+                    .where(
+                        AutoQueueItem.id == row.id,
+                        AutoQueueItem.recovery_identity == row.recovery_identity,
+                        AutoQueueItem.status == "pending",
+                    )
                     .values(**row_patch)
                 )
+            await db.commit()
             if rows:
-                await db.commit()
                 logger.info(
                     "[VP %s] Retro-stamped slicer options onto %d pending auto-queue item(s) for %r",
                     self.name,
@@ -810,8 +815,12 @@ class VirtualPrinterInstance:
         from sqlalchemy import select, update
 
         from backend.app.models.print_queue import PrintQueueItem
+        from backend.app.services.queue_ops import claim_lanes, lock_named_rows
+        from backend.app.services.queue_row_basis import row_basis
 
         try:
+            # Each row's routing change is computed first, outside any lock — it reads the job's bytes (G03 B, A7).
+            plans: dict[int, tuple[int, str, dict]] = {}
             async with self._session_factory() as db:
                 # Only stamp items still pending; once the scheduler has picked
                 # the row up we can't safely race the dispatcher.
@@ -830,25 +839,52 @@ class VirtualPrinterInstance:
 
                 for iid in eligible_ids:
                     item = await db.get(PrintQueueItem, iid)
+                    if item is None:
+                        continue
+                    basis = row_basis(item)
                     item_patch = dict(patch)
                     if "nozzle_mapping" in item_patch and not self.keeps_slicer_nozzle_mapping(
                         printer_manager.effective_model_for(item.queue_id), item.queue_id
                     ):
                         del item_patch["nozzle_mapping"]
-                    changes = await routing_update(db, item, item_patch)
-                    await db.execute(
+                    plans[iid] = (item.queue_id, basis, await routing_update(db, item, item_patch))
+            # Then one fresh session under the rows' lanes, rows FOR NO KEY UPDATE ascending: each written only if
+            # still pending in its queue with the basis the computation read — an operator's edit made meanwhile
+            # wins, and the stamp, best-effort, leaves that row with a log line.
+            stamped, left = [], []
+            async with self._session_factory() as wdb, claim_lanes(wdb, sorted({q for q, _b, _c in plans.values()})):
+                rows = await lock_named_rows(wdb, {i: q for i, (q, _b, _c) in plans.items()})
+                for iid, (queue_id, basis, changes) in sorted(plans.items()):
+                    row = rows.get(iid)
+                    if row is None or row.status != "pending" or row.queue_id != queue_id or row_basis(row) != basis:
+                        left.append(iid)
+                        continue
+                    await wdb.execute(
                         update(PrintQueueItem)
-                        .where(PrintQueueItem.id == iid, PrintQueueItem.status == "pending")
+                        .where(
+                            PrintQueueItem.id == iid,
+                            PrintQueueItem.status == "pending",
+                            PrintQueueItem.queue_id == queue_id,
+                        )
                         .values(**changes)
+                        .execution_options(synchronize_session=False)
                     )
-                await db.commit()
+                    stamped.append(iid)
+                await wdb.commit()
+            if left:
                 logger.info(
-                    "[VP %s] Late slicer MQTT for %s — retroactively stamped %s onto queue item(s) %s",
+                    "[VP %s] Late slicer MQTT for %s left queue item(s) %s as they are: changed since it was computed",
                     self.name,
                     stash_key,
-                    sorted(patch.keys()),
-                    eligible_ids,
+                    left,
                 )
+            logger.info(
+                "[VP %s] Late slicer MQTT for %s — retroactively stamped %s onto queue item(s) %s",
+                self.name,
+                stash_key,
+                sorted(patch.keys()),
+                stamped,
+            )
         except Exception as e:
             logger.error(
                 "[VP %s] Failed to retroactively stamp queue item(s) %s for %s: %s",
@@ -1240,6 +1276,7 @@ class VirtualPrinterInstance:
                 # transaction (m173), and an ORM attribute reached across the end
                 # of this session would be a lazy load on an async session.
                 queue_id, printer_id = queue.id, queue.printer_id
+                queue_identity = queue.recovery_identity  # the header this insert is validated against (A25)
 
                 # Precedence per flag: slicer value → system fallback → column
                 # default (see ``_resolve_print_option``). Resolved once — only
@@ -1383,6 +1420,10 @@ class VirtualPrinterInstance:
                     from sqlalchemy import func, select
 
                     async with queue_scope_lock(db, queue_id):
+                        from backend.app.services.printer_occupancy import queue_header_holds
+
+                        if not await queue_header_holds(db, queue_id, queue_identity):
+                            raise LookupError("The printer's queue changed; nothing was added")
                         # Append at the tail: MAX(position) for this queue, then hand
                         # consecutive positions to each plate so a Send All keeps
                         # plate-order execution. A hardcoded position=1 stacked every

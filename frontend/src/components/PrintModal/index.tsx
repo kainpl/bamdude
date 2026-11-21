@@ -2334,6 +2334,9 @@ export function PrintModal({
         } catch (error) {
           results.failed++;
           if (isUnknownOutcome(error)) unknownOutcomes++;
+          // The job changed or started while it was being edited and nothing was saved
+          // (`queue_item_changed`): the queue is read again so the operator sees what it is now.
+          if (error instanceof ApiError && error.code === 'queue_item_changed') invalidateQueueViews(queryClient);
           const printerName = printers?.find(p => p.id === printerId)?.name || `Printer ${printerId}`;
           const plateName = plate ? (plate.name || t('printModal.plateNFallback', { index: plate.index })) : '';
           const label = plateName ? `${printerName} (${plateName})` : printerName;

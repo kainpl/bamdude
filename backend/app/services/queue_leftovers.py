@@ -195,7 +195,12 @@ async def find(db, *, printer_ids=None) -> list[Leftover]:
 
 async def _retire_queue(queue_id: int, item_ids: list[int], result: RetireResult) -> int | None:
     """Retire this queue's named rows under its lane; the policy is asked again on the locked state."""
-    from backend.app.services.queue_counters import detach_print_queue_refs, update_queue_counters
+    from backend.app.services.queue_counters import (
+        companion_auto_ids,
+        detach_print_queue_refs,
+        lock_auto_rows,
+        update_queue_counters,
+    )
 
     retired: list[int] = []
     printer_id = None
@@ -208,6 +213,12 @@ async def _retire_queue(queue_id: int, item_ids: list[int], result: RetireResult
                 )
             ).all()
         }
+        # The router rows every detach below writes, locked ascending as one set before the first (G03 B, A20):
+        # one detach per row would ask for a lower id after a higher one.
+        backrefs = await db.scalars(
+            select(AutoQueueItem.id).where(AutoQueueItem.assigned_to_item_id.in_(list(candidates)))
+        )
+        await lock_auto_rows(db, [*await companion_auto_ids(db, list(candidates)), *backrefs])
         for item_id in item_ids:
             if item_id not in candidates:
                 row = await db.get(PrintQueueItem, item_id, populate_existing=True)
@@ -244,7 +255,18 @@ async def _retire_queue(queue_id: int, item_ids: list[int], result: RetireResult
 
 
 async def _retire_orphan(auto_id: int, result: RetireResult) -> None:
-    async with database.async_session() as db:
+    """A plan writer (G03 B, A20): the printer rows its detach will null are read first and their lanes taken;
+    under them they are read again, and one that moved into a lane not held leaves the row for the next sweep."""
+
+    def naming():
+        return select(PrintQueueItem.queue_id).where(PrintQueueItem.source_auto_item_id == auto_id)
+
+    async with database.async_session() as preflight:
+        lanes = set(await preflight.scalars(naming()))
+    async with database.async_session() as db, claim_lanes(db, sorted(lanes)):
+        if not set(await db.scalars(naming())) <= lanes:
+            result.skipped.append(Skipped(ORPHAN_ASSIGNMENT, None, auto_id, SKIP_CHANGED))
+            return
         deleted = await db.execute(
             delete(AutoQueueItem)
             .where(AutoQueueItem.id == auto_id, _orphan_condition())

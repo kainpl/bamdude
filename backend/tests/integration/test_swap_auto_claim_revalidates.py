@@ -117,13 +117,16 @@ async def test_a_refresh_after_the_decision_aborts_the_assignment(
     with pytest.raises(AutoPlacementConflict) as refused:
         await AutoQueueScheduler()._assign(db_session, item, printer)
 
-    assert refused.value.code == "swap_source_changed"
+    # The refresh rewrote the router row itself, so the placement's comparison of the locked row with what the
+    # decision read refuses it first (G03 B, A17: "a source refresh" is item_changed); the swap basis re-read stays
+    # the guard for a change that leaves the row alone (the declaration case below).
+    assert refused.value.code == "item_changed"
     await db_session.commit()
     assert await children(db_session, item_id) == []
     db_session.expire_all()
     assert (await db_session.get(AutoQueueItem, item_id)).status == "pending"
 
-    # The change stood in here for another session's commit, and went with the aborted savepoint; B is that commit.
+    # The change stood in here for another session's commit; B is that commit (made again, idempotent).
     for (module, name), original in originals.items():
         monkeypatch.setattr(module, name, original)
     await refreshed_behind_the_session(db_session, item_id, True)

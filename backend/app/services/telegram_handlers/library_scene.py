@@ -384,6 +384,10 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
     if queue_id is None:
         await callback.answer(t(lang, NS, "library.failed"), show_alert=True)
         return
+    # The header this insert is validated against (G03 B, A25), compared under the lane before the row is added.
+    from backend.app.services.printer_occupancy import queue_header_identity
+
+    queue_identity = await queue_header_identity(queue_id)
 
     staged = None
     try:
@@ -429,6 +433,10 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
             from backend.app.services.queue_ops import queue_scope_lock
 
             async with queue_scope_lock(session, queue_id):
+                from backend.app.services.printer_occupancy import queue_header_holds
+
+                if not await queue_header_holds(session, queue_id, queue_identity):
+                    raise LookupError("The printer's queue changed; nothing was added")
                 principal = await fresh(
                     session, authority, permissions=("queue:create", "library:read"), printer_id=printer_id
                 )

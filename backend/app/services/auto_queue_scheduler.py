@@ -39,6 +39,7 @@ from time import monotonic
 
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from backend.app.core.database import async_session
 from backend.app.core.websocket import ws_manager
@@ -48,18 +49,26 @@ from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
+from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.schemas.calibration_mode import normalize_mode
 from backend.app.services import queue_rebalance, swap_compatibility
 from backend.app.services.auto_queue_eligibility import (
+    RouterRowView,
+    backfills,
+    begin_router_write,
     busy_printer_ids,
     find_eligible_printer,
     offline_candidates_for,
     router_order,
+    router_row_outcome,
+    router_row_revision,
+    router_row_view,
     router_view_conditions,
+    write_router_rows,
 )
-from backend.app.services.auto_queue_waiting import WaitingNotice, freeze, more_issues
+from backend.app.services.auto_queue_waiting import WaitingNotice, more_issues
 from backend.app.services.filament_intake import (
     fail_auto_source,
     item_descriptor,
@@ -83,7 +92,7 @@ from backend.app.services.printer_occupancy import (
     read_queue_occupancy,
     require_auto_placement,
 )
-from backend.app.services.queue_counters import update_queue_counters
+from backend.app.services.queue_counters import lock_auto_rows, update_queue_counters
 from backend.app.services.queue_ops import lane_held_in_process, queue_claim_scope
 from backend.app.services.queue_rebalance import REBALANCE_SETTING_KEY
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable
@@ -95,6 +104,7 @@ logger = logging.getLogger(__name__)
 
 SJF_SETTING_KEY = "queue_shortest_first"
 PREFER_LOWEST_SETTING_KEY = "prefer_lowest_filament"
+_READ_HEADER_IDENTITY = object()
 
 
 class AutoPlacementConflict(RuntimeError):
@@ -241,8 +251,13 @@ class AutoQueueScheduler:
             # 2. Fetch pending auto items in scheduling order
             pending = await self._fetch_pending(db, sjf)
             items = list(pending)
+            # What the pass decides about, taken now -- before any back-fill -- as plain values (G03 B, A17 step 3):
+            # every write of the pass is addressed by one. The pass is a sequence of short transactions; this read
+            # one ends here, and none of them holds a lock across a placement (step 1).
+            views = [router_row_view(item) for item in items]
+            fetched_reasons = {item.id: item.waiting_reason for item in items}
+            await db.commit()
             if not items:
-                await db.commit()
                 if notification_generation == self._notification_generation:
                     self._active_waiting_facts.clear()
                     self._waiting_contributors.clear()
@@ -253,7 +268,8 @@ class AutoQueueScheduler:
 
             # 3. Iterate and assign
             placed = 0
-            changed_queue_printer_ids: set[int] = set()
+            settled: set[int] = set()
+            waiting_writes: dict[int, tuple] = {}
             blocked: list[str] = []
             observations = {}
             complete = True
@@ -261,11 +277,19 @@ class AutoQueueScheduler:
             woken_printer_ids: set[int] = set()
             # At most one printer is woken per pass — see _wake_offline_printer.
             woke_one = False
+            # A placement that refused rolled its transaction back, and a rollback expires every object of the
+            # session (``expire_on_commit=False`` covers commits only): the rows after it are read again (step 6).
+            expired = False
             requirements_cache = PrintRequirementsCache()
             # What each switched-off printer holds, read once per pass: the
             # matcher's reason and the wake step ask about the same printers.
             offline_feeds = OfflineFeedCache()
-            for item in items:
+            for item, view in zip(items, views, strict=True):
+                if expired:
+                    item = await self._current(db, view)
+                    if item is None:
+                        complete = False
+                        continue
                 # Candidates THIS item's swap request was refused on (D2): out of its own
                 # search only -- the printers are not busy, and the next item may print there.
                 swap_refused: set[int] = set()
@@ -298,14 +322,20 @@ class AutoQueueScheduler:
                         # without swap mode could print it: a visible failure with its reason
                         # and Retry -- not a wait that would never end (swap-source-lifecycle
                         # spec r4 §8). With such a printer, busy now, the job waits for it below.
-                        await fail_auto_source(db, item, swap_compatibility.UNKNOWN_SOURCE_REASON)
-                        logger.info("Auto item %s failed: every candidate refused an unknown source", item.id)
+                        if await fail_auto_source(db, view, swap_compatibility.UNKNOWN_SOURCE_REASON) == "written":
+                            settled.add(view.id)
+                            logger.info("Auto item %s failed: every candidate refused an unknown source", view.id)
+                        else:
+                            complete = False
                         break
                     if printer is None:
                         source_reason = getattr(eligible.requirements, "reason", None)
                         if source_reason in SOURCE_FAILURES:
-                            await fail_auto_source(db, item, source_reason)
-                            logger.warning("Auto item %s failed: %s", item.id, source_reason)
+                            if await fail_auto_source(db, view, source_reason) == "written":
+                                settled.add(view.id)
+                                logger.warning("Auto item %s failed: %s", view.id, source_reason)
+                            else:
+                                complete = False
                             break
                         if not woke_one:
                             woke_one = await self._wake_offline_printer(
@@ -319,91 +349,113 @@ class AutoQueueScheduler:
                         facts = self._waiting_facts(eligible.facts)
                         if facts != eligible.facts:
                             reason = " | ".join(f.message for f in facts)
-                        if reason and item.waiting_reason != reason:
-                            logger.info("Auto item %s not placed: %s", item.id, reason)
-                            item.waiting_reason = reason
+                        # The waiting reason and the eligibility's back-fills are written by the pass's end batch,
+                        # addressed by this view (A17 step 3, A23); until then they are the row's memory.
+                        values = backfills(view, item)
+                        if reason and fetched_reasons.get(view.id) != reason:
+                            logger.info("Auto item %s not placed: %s", view.id, reason)
+                            values["waiting_reason"] = reason
+                            set_committed_value(item, "waiting_reason", reason)
+                        if values:
+                            waiting_writes[view.id] = (view, values)
                         blocked.append(reason or "no reason reported")
-                        observations[item.id] = (self._waiting_revision(item), facts)
+                        observations[view.id] = (router_row_revision(item), facts)
                         break
 
+                    # A placement that fails rolls its transaction back, which expires every row the pass's session
+                    # holds -- this Printer too (G03 B, A17): its id is kept as a value for what follows.
+                    printer_id = printer.id
                     try:
                         await self._assign(
                             db,
                             item,
                             printer,
                             prefer_lowest=prefer_lowest,
+                            view=view,
                             plan=eligible.plan,
                             requirements=eligible.requirements,
                             snapshot_signature=eligible.snapshot_signature,
+                            header_identity=eligible.queue_identity,
                         )
                     except SourceUnavailable as exc:
-                        await db.refresh(item)
-                        if exc.reason in SOURCE_FAILURES:
-                            await fail_auto_source(db, item, exc.reason)
+                        expired = True
+                        item = await self._current(db, view)
+                        if item is None:
+                            complete = False
+                        elif exc.reason in SOURCE_FAILURES:
+                            if await fail_auto_source(db, view, exc.reason) == "written":
+                                settled.add(view.id)
+                            else:
+                                complete = False
                         else:
-                            observations[item.id] = (self._waiting_revision(item), ())
+                            observations[view.id] = (router_row_revision(item), ())
                         break
                     except (PrinterOccupancyConflict, AutoPlacementConflict) as exc:
                         # The candidate was lost after its snapshot. Exclude it
                         # and resolve the next one in this same bounded pass. A
                         # concurrently cancelled/assigned router row is not a
                         # printer conflict; leave it to its winning writer.
-                        await db.refresh(item)
-                        if isinstance(exc, AutoPlacementConflict) and exc.code in (
-                            "item_changed",
-                            "swap_source_changed",
+                        expired = True
+                        item = await self._current(db, view)
+                        if item is None or (
+                            isinstance(exc, AutoPlacementConflict)
+                            and exc.code in ("item_changed", "swap_source_changed")
                         ):
+                            # The row the pass decided about is not this row any more: nothing of it is observed
+                            # this pass, and the next pass decides from the fresh row.
+                            complete = False
                             break
                         if (
                             isinstance(exc, AutoPlacementConflict)
                             and exc.code == swap_compatibility.UNKNOWN_SOURCE_REASON
                         ):
-                            swap_refused.add(printer.id)
+                            swap_refused.add(printer_id)
                             logger.info(
                                 "Auto item %s: printer %s refuses its unknown source's swap request",
-                                item.id,
-                                printer.id,
+                                view.id,
+                                printer_id,
                             )
                             continue
-                        busy_printers.add(printer.id)
-                        exclusion_reasons[printer.id] = (
+                        busy_printers.add(printer_id)
+                        exclusion_reasons[printer_id] = (
                             exc.code
                             if exc.code in {"incompatible_target", "compatible_fallback_disabled"}
                             else "placement_conflict"
                         )
                         logger.info(
-                            "Auto item %s lost printer %s (%s); trying another candidate", item.id, printer.id, exc.code
+                            "Auto item %s lost printer %s (%s); trying another candidate", view.id, printer_id, exc.code
                         )
                         continue
                     except Exception:
                         complete = False
-                        logger.exception("Failed to assign auto item %s to printer %s", item.id, printer.id)
+                        expired = True
+                        logger.exception("Failed to assign auto item %s to printer %s", view.id, printer_id)
                         break
 
-                    busy_printers.add(printer.id)
+                    # The placement committed (one transaction, step 2). Tell open Queue pages to refetch that
+                    # printer now instead of waiting for their 15/30-second polling clocks (step 4).
+                    busy_printers.add(printer_id)
                     placed += 1
-                    changed_queue_printer_ids.add(printer.id)
+                    settled.add(view.id)
+                    try:
+                        await ws_manager.send_queue_changed(printer_id)
+                    except Exception:
+                        # A WebSocket failure must never make a durable placement
+                        # look like a failed scheduler tick; REST polling remains
+                        # the fallback for a disconnected browser.
+                        logger.exception("Failed to announce queue change for printer %s", printer_id)
                     if sjf:
                         await self._mark_jumped_peers(db, item)
                     break
 
-            self._log_stall([item for item in items if item.status == "pending"], placed, blocked, busy_printers)
+            # The waiting reasons and back-fills, each written only on a revision match (A17 step 3). A row that
+            # moved on keeps no observation from this pass, and the projection does not resolve its keys.
+            for item_id, outcome in (await write_router_rows(db, waiting_writes)).items():
+                if outcome != "written":
+                    observations.pop(item_id, None)
+                    complete = False
 
-            # Placement must be durable before an optional notification read.
-            # In particular, a PostgreSQL read error poisons only this NEW
-            # transaction, never the queue inserts of the placement pass.
-            await db.commit()
-            # The new PrintQueueItem is durable now. Tell open Queue pages to
-            # refetch the one affected printer immediately instead of waiting
-            # for their independent 15/30-second polling clocks.
-            for printer_id in changed_queue_printer_ids:
-                try:
-                    await ws_manager.send_queue_changed(printer_id)
-                except Exception:
-                    # A WebSocket failure must never make a durable placement
-                    # look like a failed scheduler tick; REST polling remains
-                    # the fallback for a disconnected browser.
-                    logger.exception("Failed to announce queue change for printer %s", printer_id)
+            self._log_stall([view for view in views if view.id not in settled], placed, blocked, busy_printers)
 
             # Cross-model rebalancing (spec 2026-09-10), behind its setting and only
             # when this pass left something pending. It converts and creates ROUTER
@@ -452,7 +504,7 @@ class AutoQueueScheduler:
                     pending_now = await self._fetch_pending(db, sjf)
                     for item in pending_now:
                         observation = observations.get(item.id)
-                        identity = self._waiting_revision(item)
+                        identity = router_row_revision(item)
                         if observation is None or observation[0] != identity:
                             current = None
                             break
@@ -522,15 +574,12 @@ class AutoQueueScheduler:
         return is_new
 
     @staticmethod
-    def _waiting_revision(item):
-        # Only a same-pass freshness check, not incident identity. Names, row
-        # ids and revisions never enter WaitingFact.key().
-        ignored = {"waiting_reason", "position", "been_jumped", "created_at"}
-        return tuple(
-            (column.name, freeze(getattr(item, column.name)))
-            for column in AutoQueueItem.__table__.columns
-            if column.name not in ignored
-        )
+    async def _current(db: AsyncSession, view: RouterRowView) -> AutoQueueItem | None:
+        """The row ``view`` names, read again (``populate_existing``) -- or None when it is not that row any more."""
+        row = await db.get(AutoQueueItem, view.id, populate_existing=True)
+        if row is None or row.recovery_identity != view.recovery_identity or row.status != "pending":
+            return None
+        return row
 
     async def _waiting_notice(self, db, current, new):
         ordered = sorted(new, key=repr)
@@ -758,9 +807,12 @@ class AutoQueueScheduler:
         printer: Printer,
         prefer_lowest: bool = False,
         *,
+        view: RouterRowView | None = None,
+        router_view: bool = True,
         plan=None,
         requirements=None,
         snapshot_signature=None,
+        header_identity: str | None | object = _READ_HEADER_IDENTITY,
     ) -> PrintQueueItem:
         """Copy auto item into the printer's print_queue and mark assigned.
 
@@ -768,114 +820,157 @@ class AutoQueueScheduler:
         eligibility pass) or here, and revalidated below before the row is
         claimed. ``snapshot_signature`` travels with a plan the caller resolved:
         see :func:`_feed_moved` for why the plan's own marker is not that answer.
+
+        G03 B, A17 step 2: one placement is one transaction. What comes before the lane is read without a lock;
+        the session then commits, holding nothing, and the placement's own transaction takes lane P, the router
+        row's library parent ``FOR KEY SHARE``, the order row, its archive parent ``FOR KEY SHARE``, the header
+        ``FOR NO KEY UPDATE`` (the incarnation read before the lane, A25), then the router row ``FOR NO KEY UPDATE``,
+        re-read and compared with ``view`` -- what the decision was made about -- before any write of it. The claim
+        is a compare-and-set that for the automatic pass also carries the router's own admission at this moment
+        (``router_view``; ``assign-now`` passes False, C5a). The copy is built from the re-read row; the eligibility's
+        back-fills are written by the claim (A23). Commit, or rollback on any refusal.
         """
-        async with db.begin_nested():
-            policy = auto_policy(item)
-            requirements = requirements or await read_item_requirements(db, item)
-            if requirements.reason in SOURCE_FAILURES:
-                raise SourceUnavailable(requirements.reason)
-            verdict = model_compatibility(
-                requirements.model, printer_manager.effective_model_for(printer.id, printer.model)
+        # An eligibility that read NULL has no header identity to compare. Only callers that omit the argument
+        # may read their own, before entering the lane.
+        if header_identity is None:
+            raise PrinterOccupancyConflict("queue_missing", queue_id=printer.id)
+        view = view or router_row_view(item)
+        filled = backfills(view, item)
+        policy = auto_policy(item)
+        requirements = requirements or await read_item_requirements(db, item)
+        if requirements.reason in SOURCE_FAILURES:
+            raise SourceUnavailable(requirements.reason)
+        verdict = model_compatibility(
+            requirements.model, printer_manager.effective_model_for(printer.id, printer.model)
+        )
+        if verdict not in ("exact", "compatible"):
+            raise AutoPlacementConflict("incompatible_model")
+        target_verdict = model_compatibility(
+            item.target_model, printer_manager.effective_model_for(printer.id, printer.model)
+        )
+        if target_verdict == "incompatible":
+            raise AutoPlacementConflict("incompatible_target")
+        if target_verdict == "compatible" and not await _get_bool_setting(db, "auto_queue_compatible_models"):
+            raise AutoPlacementConflict("compatible_fallback_disabled")
+        if plan is None:
+            snapshot = printer_manager.get_feed_snapshot(printer.id)
+            plan = resolve_filament_routing(
+                requirements,
+                policy,
+                snapshot,
+                exact_model=verdict == "exact",
+                prefer_lowest=prefer_lowest,
+            ).plan
+            snapshot_signature = feed_signature(policy, snapshot)
+        if plan is None:
+            raise AutoPlacementConflict("routing_unavailable")
+        ams_mapping_json = json.dumps(plan.mapping)
+
+        # The auto queue has no one physical printer to configure.  Resolve
+        # options only now, for the printer that actually won the routing
+        # decision.  In particular this selects the originating operator's
+        # P1S event macros rather than whatever happened to be visible when
+        # the file was put into a mixed-model auto queue.
+        owner = await db.get(User, item.created_by_id) if item.created_by_id is not None else None
+        profile = await preference_options(db, owner, printer.model)
+        try:
+            options = compose_options(profile, item.order_print_options, requirements.model, printer.model)
+        except ValueError as exc:
+            logger.info("Auto item %s: explicit print options do not fit target model %s", item.id, printer.model)
+            raise AutoPlacementConflict("incompatible_target") from exc
+        # What the operator chose in the slicer for THIS job (a Virtual Printer row, m243) outranks
+        # a saved profile, as it does on the printer-queue tier: slicer, then profile, then default.
+        if item.slicer_options:
+            options.update(item.slicer_options)
+
+        # A queued row must retain the full calibration mode, unlike the
+        # model-agnostic auto row which only has bool mirrors.
+        bed_mode = normalize_mode(options.get("bed_levelling", True))
+        flow_mode = normalize_mode(options.get("flow_cali", True))
+        nozzle_mode = normalize_mode(options.get("nozzle_offset_cali", True))
+
+        # Swap macros are an exception to the profile: their applicability
+        # depends on the chosen printer and the source bytes -- the job's OWN
+        # captured declaration, never its library or archive row, which may be
+        # gone or re-declared, and never this router row's inert swap fields
+        # (swap-source-lifecycle spec r4 §8). An unknown source this printer's
+        # profile asks our macros for refuses THIS candidate; the tick tries the
+        # next one.
+        descriptor = await item_descriptor(db, item)
+        # What this decision is taken from: re-read under the claim below, and the assignment is abandoned
+        # when a refresh or a source declaration moved it in between (swap-source-declaration spec r3 §6).
+        basis = swap_basis(item, descriptor)
+        try:
+            execute_swap_macros, swap_macro_events = swap_compatibility.resolve_request(
+                descriptor.swap_fact.value if descriptor is not None else None,
+                execute=options.get("execute_swap_macros", False),
+                events=options.get("swap_macro_events"),
+                printer_swap_mode=bool(printer.swap_mode_enabled),
             )
-            if verdict not in ("exact", "compatible"):
-                raise AutoPlacementConflict("incompatible_model")
-            target_verdict = model_compatibility(
-                item.target_model, printer_manager.effective_model_for(printer.id, printer.model)
+        except swap_compatibility.SwapRequestRefused as exc:
+            raise AutoPlacementConflict(exc.reason) from exc
+
+        # Revalidate the SAME plan after DB awaits and before claiming the row.
+        # ⚠️ Both re-probes below carry ``identity.sha256``, so they ask the same
+        # question the first read asked. For a captured source the identity is
+        # hash-anchored; probing the same path without the label would produce a
+        # stat-anchored identity that can never compare equal to it, and EVERY
+        # snapshot-backed assignment would die on "evidence changed".
+        identity = requirements.source_identity
+        current_identity = await probe_identity(identity)
+        if (
+            _feed_moved(printer.id, policy, plan, snapshot_signature)
+            or policy.fingerprint != plan.policy_fingerprint
+            or identity != current_identity
+        ):
+            raise AutoPlacementConflict("routing_changed")
+        # The re-probe below is small
+        # metadata I/O only; queue-source capture already happened before
+        # Auto Queue reached this assignment transaction.
+        # The promoted row records the router row's declaration in a dict of its own -- the very fact the
+        # swap fields above were decided from, never a second read.
+        promoted_snapshot = await snapshot_for_copy(db, item, descriptor)
+        # The header this placement is validated against (A25): SQLite gives a deleted printer's id, and its
+        # header's, to the next printer. The eligibility that chose the printer hands over the incarnation it read
+        # (``header_identity``); only a caller without one has it read here.
+        if header_identity is _READ_HEADER_IDENTITY:
+            header_identity = await db.scalar(
+                select(PrinterQueue.recovery_identity).where(PrinterQueue.id == printer.id)
             )
-            if target_verdict == "incompatible":
-                raise AutoPlacementConflict("incompatible_target")
-            if target_verdict == "compatible" and not await _get_bool_setting(db, "auto_queue_compatible_models"):
-                raise AutoPlacementConflict("compatible_fallback_disabled")
-            if plan is None:
-                snapshot = printer_manager.get_feed_snapshot(printer.id)
-                plan = resolve_filament_routing(
-                    requirements,
-                    policy,
-                    snapshot,
-                    exact_model=verdict == "exact",
-                    prefer_lowest=prefer_lowest,
-                ).plan
-                snapshot_signature = feed_signature(policy, snapshot)
-            if plan is None:
-                raise AutoPlacementConflict("routing_unavailable")
-            ams_mapping_json = json.dumps(plan.mapping)
-
-            # The auto queue has no one physical printer to configure.  Resolve
-            # options only now, for the printer that actually won the routing
-            # decision.  In particular this selects the originating operator's
-            # P1S event macros rather than whatever happened to be visible when
-            # the file was put into a mixed-model auto queue.
-            owner = await db.get(User, item.created_by_id) if item.created_by_id is not None else None
-            profile = await preference_options(db, owner, printer.model)
+            if header_identity is None:
+                raise PrinterOccupancyConflict("queue_missing", queue_id=printer.id)
+        # The reads end; nothing is held into the placement (A17 step 2).
+        await db.commit()
+        # A lane another writer holds in process is this printer lost for the pass, never a wait
+        # (queue_ops.lane_held_in_process, kept as it is, A17 step 5) -- checked and entered with no await between.
+        if lane_held_in_process(db, printer.id):
+            raise AutoPlacementConflict("lane_busy")
+        async with queue_claim_scope(db, printer.id):
             try:
-                options = compose_options(profile, item.order_print_options, requirements.model, printer.model)
-            except ValueError as exc:
-                logger.info("Auto item %s: explicit print options do not fit target model %s", item.id, printer.model)
-                raise AutoPlacementConflict("incompatible_target") from exc
-            # What the operator chose in the slicer for THIS job (a Virtual Printer row, m243) outranks
-            # a saved profile, as it does on the printer-queue tier: slicer, then profile, then default.
-            if item.slicer_options:
-                options.update(item.slicer_options)
-
-            # A queued row must retain the full calibration mode, unlike the
-            # model-agnostic auto row which only has bool mirrors.
-            bed_mode = normalize_mode(options.get("bed_levelling", True))
-            flow_mode = normalize_mode(options.get("flow_cali", True))
-            nozzle_mode = normalize_mode(options.get("nozzle_offset_cali", True))
-
-            # Swap macros are an exception to the profile: their applicability
-            # depends on the chosen printer and the source bytes -- the job's OWN
-            # captured declaration, never its library or archive row, which may be
-            # gone or re-declared, and never this router row's inert swap fields
-            # (swap-source-lifecycle spec r4 §8). An unknown source this printer's
-            # profile asks our macros for refuses THIS candidate; the tick tries the
-            # next one.
-            descriptor = await item_descriptor(db, item)
-            # What this decision is taken from: re-read under the claim below, and the assignment is abandoned
-            # when a refresh or a source declaration moved it in between (swap-source-declaration spec r3 §6).
-            basis = swap_basis(item, descriptor)
-            try:
-                execute_swap_macros, swap_macro_events = swap_compatibility.resolve_request(
-                    descriptor.swap_fact.value if descriptor is not None else None,
-                    execute=options.get("execute_swap_macros", False),
-                    events=options.get("swap_macro_events"),
-                    printer_swap_mode=bool(printer.swap_mode_enabled),
-                )
-            except swap_compatibility.SwapRequestRefused as exc:
-                raise AutoPlacementConflict(exc.reason) from exc
-
-            # Revalidate the SAME plan after DB awaits and before claiming the row.
-            # ⚠️ Both re-probes below carry ``identity.sha256``, so they ask the same
-            # question the first read asked. For a captured source the identity is
-            # hash-anchored; probing the same path without the label would produce a
-            # stat-anchored identity that can never compare equal to it, and EVERY
-            # snapshot-backed assignment would die on "evidence changed".
-            identity = requirements.source_identity
-            current_identity = await probe_identity(identity)
-            if (
-                _feed_moved(printer.id, policy, plan, snapshot_signature)
-                or policy.fingerprint != plan.policy_fingerprint
-                or identity != current_identity
-            ):
-                raise AutoPlacementConflict("routing_changed")
-            # The re-probe below is small
-            # metadata I/O only; queue-source capture already happened before
-            # Auto Queue reached this assignment transaction.
-            # The promoted row records the router row's declaration in a dict of its own -- the very fact the
-            # swap fields above were decided from, never a second read.
-            promoted_snapshot = await snapshot_for_copy(db, item, descriptor)
-            # The tick's transaction may hold SQLite's writer already; a lane another writer holds in process is
-            # this printer lost for the pass, never a wait (queue_ops.lane_held_in_process).
-            if lane_held_in_process(db, printer.id):
-                raise AutoPlacementConflict("lane_busy")
-            async with queue_claim_scope(db, printer.id):
                 from backend.app.services.order_resources import allowed
 
-                if not await allowed(db, item.project_id, printer.id, lock=True, project_line_id=item.project_line_id):
+                # The router row's source parents -- those its view names -- held FOR KEY SHARE: the library file
+                # before the order row, the archive after it (the Workshop's class order, A17 r6, A24). A purge
+                # since the fetch changed the row itself (its detach, or PostgreSQL's SET NULL), which the
+                # revision check below refuses; a parent missing from an unchanged row is a link SQLite left
+                # dangling, and the copy names nothing in its place (A27.5) -- the job prints its own bytes.
+                library_held = await _parent_held(db, LibraryFile, view.value("library_file_id"))
+                if not await allowed(
+                    db, view.value("project_id"), printer.id, lock=True, project_line_id=view.value("project_line_id")
+                ):
                     raise AutoPlacementConflict("item_changed")
+                archive_held = await _parent_held(db, PrintArchive, view.value("archive_id"))
                 occupancy = await read_queue_occupancy(db, printer.id, for_update=True)
+                if occupancy.queue.recovery_identity != header_identity:
+                    raise PrinterOccupancyConflict("queue_missing", queue_id=printer.id)
                 printer_queue = occupancy.queue
                 require_auto_placement(occupancy)
+                # The router row under its lock, compared with what the decision was made about before any write
+                # of it: a manual-start or schedule edit, a plate or policy edit, an options edit, a source refresh,
+                # a cancel, a delete + id reuse -- each is this refusal, nothing written.
+                item = (await lock_auto_rows(db, [view.id])).get(view.id)
+                if router_row_outcome(item, view) != "written":
+                    raise AutoPlacementConflict("item_changed")
                 # 3. Compute next position in the per-printer queue.
                 max_pos = await db.scalar(
                     select(func.coalesce(func.max(PrintQueueItem.position), 0)).where(
@@ -883,17 +978,27 @@ class AutoQueueScheduler:
                     )
                 )
                 next_pos = (max_pos or 0) + 1
+                admission = (
+                    router_view_conditions(datetime.now(timezone.utc))
+                    if router_view
+                    else (AutoQueueItem.status == "pending", AutoQueueItem.cancelled_at.is_(None))
+                )
                 claimed = await db.execute(
                     update(AutoQueueItem)
                     .where(
-                        AutoQueueItem.id == item.id,
-                        AutoQueueItem.status == "pending",
-                        AutoQueueItem.cancelled_at.is_(None),
+                        AutoQueueItem.id == view.id,
+                        AutoQueueItem.recovery_identity == view.recovery_identity,
+                        *admission,
                     )
-                    .values(status="assigned")
+                    .values(status="assigned", **filled)
+                    # Not evaluated in Python against the session's objects: SQLite hands back a naive
+                    # scheduled_time and the admission compares it with an aware now.
+                    .execution_options(synchronize_session=False)
                 )
                 if not claimed.rowcount:
                     raise AutoPlacementConflict("item_changed")
+                for name, value in filled.items():
+                    set_committed_value(item, name, value)
                 # Under the claim: the row, its blob and its source's fact read fresh, compared with what the swap
                 # decision and the promoted snapshot came from. A difference is no assignment; the next pass
                 # decides everything from the new state.
@@ -905,10 +1010,12 @@ class AutoQueueScheduler:
                     raise AutoPlacementConflict("routing_changed")
 
                 # 4. Build the per-printer item with the target model's profile.
+                archive_id = item.archive_id if archive_held else None
+                library_file_id = item.library_file_id if library_held else None
                 new_item = PrintQueueItem(
                     queue_id=printer_queue.id,
-                    archive_id=item.archive_id,
-                    library_file_id=item.library_file_id,
+                    archive_id=archive_id,
+                    library_file_id=library_file_id,
                     # m173: the promoted row prints the bytes the router row already
                     # captured — never a new read of the original (queue-source-spool
                     # spec §7). Both rows then own the blob until the shared cleanup:
@@ -934,8 +1041,8 @@ class AutoQueueScheduler:
                     ams_mapping=ams_mapping_json,
                     filament_routing=serialize_policy(
                         policy,
-                        archive_id=item.archive_id,
-                        library_file_id=item.library_file_id,
+                        archive_id=archive_id,
+                        library_file_id=library_file_id,
                         requirements=requirements,
                         printer_id=printer.id,
                         exact_model=verdict == "exact",
@@ -994,7 +1101,11 @@ class AutoQueueScheduler:
                     next_pos,
                     new_item.id,
                 )
-                return new_item
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+        return new_item
 
     async def _mark_jumped_peers(self, db: AsyncSession, started_item: AutoQueueItem) -> None:
         """SJF starvation guard — mark peers that were skipped.
@@ -1002,23 +1113,42 @@ class AutoQueueScheduler:
         Same logic as upstream: items in the same target_model group with
         earlier position whose print_time is unknown or longer than the
         just-started one get ``been_jumped=True`` (sticky).
+
+        G03 B, A17 step 3: after the placement's commit, in a transaction of its own -- the peers locked ascending
+        (``lock_auto_rows``), then the UPDATE on the same conditions. A crash between a placement and its marks costs
+        one starvation mark (accepted).
         """
-        if started_item.print_time_seconds is None:
+        started_time = started_item.print_time_seconds
+        if started_time is None:
             return
-        await db.execute(
-            update(AutoQueueItem)
-            .where(AutoQueueItem.status == "pending")
-            .where(AutoQueueItem.target_model == started_item.target_model)
-            .where(AutoQueueItem.position < started_item.position)
-            .where(AutoQueueItem.been_jumped.is_(False))
-            .where(
-                or_(
-                    AutoQueueItem.print_time_seconds.is_(None),
-                    AutoQueueItem.print_time_seconds > started_item.print_time_seconds,
-                )
-            )
-            .values(been_jumped=True)
+        conditions = (
+            AutoQueueItem.status == "pending",
+            AutoQueueItem.target_model == started_item.target_model,
+            AutoQueueItem.position < started_item.position,
+            AutoQueueItem.been_jumped.is_(False),
+            or_(AutoQueueItem.print_time_seconds.is_(None), AutoQueueItem.print_time_seconds > started_time),
         )
+        await begin_router_write(db)
+        peers = list(await db.scalars(select(AutoQueueItem.id).where(*conditions).order_by(AutoQueueItem.id)))
+        if peers:
+            await lock_auto_rows(db, peers)
+            await db.execute(
+                update(AutoQueueItem)
+                .where(AutoQueueItem.id.in_(peers), *conditions)
+                .values(been_jumped=True)
+                .execution_options(synchronize_session=False)
+            )
+        await db.commit()
+
+
+async def _parent_held(db: AsyncSession, model, row_id: int | None) -> bool:
+    """A router row's source parent ``FOR KEY SHARE`` -- the lock its copy's foreign-key check would take, taken in
+    the parent's place before the job row (A24). No parent named: nothing to hold."""
+    if row_id is None:
+        return True
+    return (
+        await db.scalar(select(model.id).where(model.id == row_id).with_for_update(read=True, key_share=True))
+    ) is not None
 
 
 # Module-level singleton, mirroring print_scheduler pattern

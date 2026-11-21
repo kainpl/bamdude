@@ -104,7 +104,8 @@ async def test_the_completion_handler_still_deletes_where_nobody_will_be_asked(d
     import backend.app.main as main_module
 
     printer, queue = await _queue(db_session, printer_factory, require_plate_clear=False)
-    item = PrintQueueItem(queue_id=queue.id, status="printing", position=0, archive_id=1)
+    # The terminal phase has committed the row finished before the clean-up reads it again (G03 B, A21).
+    item = PrintQueueItem(queue_id=queue.id, status="completed", position=0, archive_id=1)
     db_session.add(item)
     await db_session.commit()
     item_id = item.id
@@ -114,7 +115,8 @@ async def test_the_completion_handler_still_deletes_where_nobody_will_be_asked(d
     )
 
     assert deleted is True
-    assert (await db_session.get(PrintQueueItem, item_id)) is None
+    # Deleted by the clean-up's own session (A21): read the database, not this session's identity map.
+    assert (await db_session.get(PrintQueueItem, item_id, populate_existing=True)) is None
 
 
 async def test_a_swap_printer_still_has_its_row_deleted(db_session, printer_factory):
@@ -122,7 +124,7 @@ async def test_a_swap_printer_still_has_its_row_deleted(db_session, printer_fact
     import backend.app.main as main_module
 
     printer, queue = await _queue(db_session, printer_factory, require_plate_clear=True)
-    item = PrintQueueItem(queue_id=queue.id, status="printing", position=0, archive_id=1)
+    item = PrintQueueItem(queue_id=queue.id, status="completed", position=0, archive_id=1)
     db_session.add(item)
     await db_session.commit()
     item_id = item.id
@@ -132,7 +134,8 @@ async def test_a_swap_printer_still_has_its_row_deleted(db_session, printer_fact
     )
 
     assert deleted is True
-    assert (await db_session.get(PrintQueueItem, item_id)) is None
+    # Deleted by the clean-up's own session (A21): read the database, not this session's identity map.
+    assert (await db_session.get(PrintQueueItem, item_id, populate_existing=True)) is None
 
 
 async def test_a_failed_print_is_untouched_as_before(db_session, printer_factory):
@@ -253,7 +256,8 @@ def test_every_place_that_releases_the_gate_answers_the_row():
     import re
 
     root = pathlib.Path(__file__).resolve().parents[3] / "app"
-    allowed = ("answer_by_clearing", "answer_by_repeating", "cleared the plate")
+    # ``clear_held_row`` is ``answer_by_clearing`` under the printer's lanes (G03 B, A21).
+    allowed = ("answer_by_clearing", "answer_by_repeating", "clear_held_row", "cleared the plate")
     offenders = []
     for path in root.rglob("*.py"):
         text = path.read_text(encoding="utf-8")

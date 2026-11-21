@@ -19,11 +19,23 @@ from backend.app.services.plate_hold import answer_by_repeating
 pytestmark = pytest.mark.integration
 
 
+async def _library_file(db_session, file_id: int = 3) -> None:
+    """A real library row under the id the rows name: a restored link names a row that exists (G03 B, A27)."""
+    from backend.app.models.library import LibraryFile
+
+    if await db_session.get(LibraryFile, file_id) is None:
+        db_session.add(
+            LibraryFile(id=file_id, filename="part.3mf", file_path="library/part.3mf", file_type="3mf", file_size=1)
+        )
+        await db_session.flush()
+
+
 async def _finished(db_session, printer_factory):
     printer = await printer_factory(require_plate_clear=True)
     queue = PrinterQueue(id=printer.id, printer_id=printer.id)
     db_session.add(queue)
     await db_session.flush()
+    await _library_file(db_session)
     row = PrintQueueItem(
         queue_id=queue.id,
         status="completed",
@@ -313,6 +325,7 @@ class TestARowWhoseOnlySourceIsItsArchive:
     ):
         """The ordinary case is unchanged: the new run gets its own archive."""
         printer, row = await self._external(db_session, printer_factory, archive_factory, tmp_path, monkeypatch)
+        await _library_file(db_session)
         row.library_file_id = 3
         await db_session.commit()
 

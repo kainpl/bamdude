@@ -386,3 +386,70 @@ class TestFieldParity:
         recovered = await db_session.get(PrintArchive, archive_id)
         assert recovered is not None
         assert (recovered.extra_data or {}).get("no_3mf_available") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_every_row_lock_of_the_attach_precedes_the_file_path_lock(
+    db_session, tmp_path, monkeypatch, printer_factory
+):
+    """G03 B, A29.2 (TA31): the library match, the plate back-fill, the parts seed and the credit all run before the
+    attach enters ``archive_file_reference_scope``; under it only the donor check, the copy and its own row."""
+    from contextlib import asynccontextmanager
+
+    from backend.app.core.config import settings as app_settings
+    from backend.app.services import archive as archive_module, archive_write_scope, part_stock
+
+    monkeypatch.setattr(app_settings, "base_dir", tmp_path)
+    monkeypatch.setattr(app_settings, "archive_dir", tmp_path / "archive")
+    donor_dir = tmp_path / "archive" / "donor"
+    donor_dir.mkdir(parents=True, exist_ok=True)
+    printer = await printer_factory()
+    source = _multi_plate_3mf(tmp_path / "recovered.gcode.3mf")
+    _multi_plate_3mf(donor_dir / "donor.gcode.3mf")
+    content_hash = ArchiveService.compute_file_hash(source)
+    donor = PrintArchive(
+        printer_id=printer.id,
+        filename="donor.gcode.3mf",
+        file_path="archive/donor/donor.gcode.3mf",
+        file_size=1,
+        print_name="Donor",
+        status="completed",
+        content_hash=content_hash,
+        source_content_hash=content_hash,
+    )
+    target = PrintArchive(
+        printer_id=printer.id,
+        filename="recovered.gcode.3mf",
+        file_path="",
+        file_size=0,
+        print_name="Recovered",
+        status="completed",
+    )
+    db_session.add_all([donor, target])
+    await db_session.commit()
+    order: list[str] = []
+
+    def record(name, real):
+        async def wrapped(*args, **kwargs):
+            order.append(name)
+            return await real(*args, **kwargs)
+
+        return wrapped
+
+    monkeypatch.setattr(ArchiveService, "_link_library_file", record("library", ArchiveService._link_library_file))
+    monkeypatch.setattr(ArchiveService, "_backfill_job_plates", record("plates", ArchiveService._backfill_job_plates))
+    monkeypatch.setattr(archive_module, "seed_archive_parts", record("seed", archive_module.seed_archive_parts))
+    monkeypatch.setattr(part_stock, "credit_if_unfiled", record("credit", part_stock.credit_if_unfiled))
+    real_scope = archive_write_scope.archive_file_reference_scope
+
+    @asynccontextmanager
+    async def path_lock(*args, **kwargs):
+        order.append("path_lock")
+        async with real_scope(*args, **kwargs):
+            yield
+
+    monkeypatch.setattr(archive_write_scope, "archive_file_reference_scope", path_lock)
+    assert await ArchiveService(db_session).attach_3mf_to_archive(target.id, source, target.filename)
+    assert "path_lock" in order, "the donor was not reused -- this test proves nothing"
+    assert order.index("path_lock") > max(order.index(step) for step in ("library", "plates", "seed", "credit"))

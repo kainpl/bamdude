@@ -546,7 +546,7 @@ async def test_an_exhausted_budget_that_did_not_commit_tells_nobody(
     row = await db_session.get(PrintQueueItem, item_id)
     row.dispatch_attempts = DISPATCH_MAX_ATTEMPTS
     await db_session.commit()
-    monkeypatch.setattr(counters, "set_queue_error", AsyncMock(side_effect=RuntimeError("database is locked")))
+    monkeypatch.setattr(counters, "halt_lane", AsyncMock(side_effect=RuntimeError("database is locked")))
 
     with pytest.raises(RuntimeError):
         await scheduler.check_queue()

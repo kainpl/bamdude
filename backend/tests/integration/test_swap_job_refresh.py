@@ -665,3 +665,31 @@ async def test_the_refresh_audit_is_named_as_the_spec_names_it(factory, tmp_path
     await apply(archive_id, user, [ref(by_id(seen, "queue", job_id))], seen)
 
     assert [line.action for line in await audits(factory)] == ["declare", "refresh_jobs"]
+
+
+async def test_a_job_moved_between_the_preflight_and_the_lanes_is_changed_and_never_locked(
+    factory, tmp_path, monkeypatch
+):
+    """G03 B, A31: a printer row is locked only inside the lanes the refresh holds; one that moved to another queue
+    after the preflight read its lanes is read unlocked and answered jobs_changed, and nothing is written."""
+    user = await a_user(factory)
+    queue_id = await a_printer_queue(factory)
+    other = await a_printer_queue(factory, "SN2")
+    archive_id = await a_declared_archive(factory, tmp_path, user)
+    job_id = await a_job(factory, archive_id, queue_id=queue_id)
+    seen = await listing(archive_id, user)
+    real = jobs._guard_actor
+
+    async def moved_meanwhile(session, actor):
+        async with factory() as db:
+            (await db.get(PrintQueueItem, job_id)).queue_id = other
+            await db.commit()
+        return await real(session, actor)
+
+    monkeypatch.setattr(jobs, "_guard_actor", moved_meanwhile)
+    with pytest.raises(HTTPException) as moved:
+        await apply(archive_id, user, [ref(by_id(seen, "queue", job_id))], seen)
+    assert moved.value.status_code == 409 and moved.value.detail["error"] == "jobs_changed"
+    current = await row(factory, "queue", job_id)
+    assert current.queue_id == other
+    assert sc.snapshot_fact(current.source_snapshot).value is None

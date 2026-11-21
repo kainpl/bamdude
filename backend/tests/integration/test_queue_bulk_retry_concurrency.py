@@ -14,6 +14,7 @@ from backend.app.services.printer_queues import ensure_printer_queue
 from backend.app.services.queue_bulk_retry import retry_block
 from backend.app.services.swap_source_declarations import Actor
 from backend.tests.auth_helpers import bind_test_key, mint_test_session
+from backend.tests.integration.lane_pairs import hold_until
 from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
 
 
@@ -41,8 +42,7 @@ async def test_final_claim_waits_and_never_sees_half_a_retry_block(
 
     async def barrier(db, queue_id):
         await original(db, queue_id)
-        staged.set()
-        await asyncio.wait_for(release.wait(), 15)
+        await hold_until(staged, release)
 
     monkeypatch.setattr(queue_counters, "update_queue_counters", barrier)
     if test_engine.dialect.name == "postgresql":
@@ -83,14 +83,10 @@ async def test_final_claim_waits_and_never_sees_half_a_retry_block(
         claim_task = asyncio.create_task(claim())
         await asyncio.wait_for(claiming.wait(), 5)
         if test_engine.dialect.name == "postgresql":
-            async with factory() as monitor:
-                async with asyncio.timeout(5):
-                    while not await monitor.scalar(
-                        text(
-                            "SELECT count(*) FROM pg_stat_activity WHERE application_name=current_setting('application_name') AND wait_event_type='Lock'"
-                        )
-                    ):
-                        await asyncio.sleep(0.01)
+            from backend.tests.integration.lane_pairs import LANE_WAIT, postgres_edge
+
+            # The claim's own backend waits on this lane's guard, behind the retry held inside it.
+            await postgres_edge(factory, claim_task, queue_id, on=LANE_WAIT, behind=retry_task)
         else:
             await asyncio.sleep(0.03)
         assert not claim_task.done()

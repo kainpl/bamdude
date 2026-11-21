@@ -817,3 +817,38 @@ async def test_a_path_separator_in_the_operators_own_filename_round_trips(commit
     (entry,) = body["product"]["attachments"]
     assert entry["original_name"] == "foo_bar.png" and entry["category"] == "pictures"
     assert (product_attachments_dir(body["product"]["id"]) / entry["filename"]).read_bytes() == PNG
+
+
+@pytest.mark.asyncio
+async def test_a_source_replaced_by_a_row_with_its_id_path_hash_and_time_publishes_no_product(
+    committing_client, db_session, exported, monkeypatch
+):
+    """SQLite: a row deleted and the same file registered again in the same second — the same id, path,
+    hash and creation time, another row. The library files the import already committed may stay; the card
+    and its links are written only over the rows the import chose (G03 B, A32; TA42)."""
+    from uuid import uuid4
+
+    from sqlalchemy import update
+
+    from backend.app.models.product import product_files
+    from backend.app.services import domain_authority
+
+    data, _manifest, ids = exported
+    products = len((await committing_client.get("/api/v1/products/")).json())
+    real = domain_authority.guard
+
+    async def the_rows_are_replaced_before_the_product(db, authority, **kwargs):
+        if "products:create" in kwargs.get("permissions", ()):
+            await db.execute(
+                update(LibraryFile)
+                .where(LibraryFile.id == ids["shared_file_id"])
+                .values(recovery_identity=str(uuid4()))
+            )
+        return await real(db, authority, **kwargs)
+
+    monkeypatch.setattr(domain_authority, "guard", the_rows_are_replaced_before_the_product)
+    r = await _import(committing_client, data)
+    assert r.status_code == 409, r.text
+    assert len((await committing_client.get("/api/v1/products/")).json()) == products
+    links = await db_session.scalar(select(func.count()).select_from(product_files))
+    assert links == 0, "no product, so no link to any file"

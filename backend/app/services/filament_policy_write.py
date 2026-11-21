@@ -101,8 +101,11 @@ async def prepare_routing(
     ), req.resolved_plate_id
 
 
-async def routing_update(db, item, changes, cache=None):
-    """Return model columns; a schedule-only edit leaves semantic auto intent intact."""
+async def routing_update(db, item, changes, cache=None, *, snapshot=None):
+    """Return model columns; a schedule-only edit leaves semantic auto intent intact.
+
+    ``snapshot`` (``queue_edit_apply.CheckedFacts``): the target's header and printer as the edit's checks read
+    them -- taken from there instead of a later read (G03 B, A6)."""
     changes = dict(changes)
     relevant = CHOICE_FIELDS | {"ams_mapping", "use_ams", "queue_id", "plate_id"}
     if not relevant.intersection(changes):
@@ -133,7 +136,8 @@ async def routing_update(db, item, changes, cache=None):
         raise HTTPException(422, routing_detail("mapping_review_required"))
     if changes.get("use_ams") is not None and "feed_policy" not in changes and previous.mode == "auto":
         choices["feed_policy"] = "auto" if changes["use_ams"] else "external_only"
-    queue = await db.get(PrinterQueue, changes.get("queue_id") or item.queue_id)
+    queue_id = changes.get("queue_id") or item.queue_id
+    queue = snapshot.queue(queue_id) if snapshot is not None else await db.get(PrinterQueue, queue_id)
     descriptor = await item_descriptor(db, item)
     routing, plate = await prepare_routing(
         db,
@@ -158,7 +162,9 @@ async def routing_update(db, item, changes, cache=None):
             requirements = await require_source_requirements(
                 cache, archive, library, plate, allow_raw_gcode=True, descriptor=descriptor
             )
-            target = await db.get(Printer, queue.printer_id) if queue.printer_id is not None else None
+            target = snapshot.printer(queue_id) if snapshot is not None and snapshot.queue(queue_id) else None
+            if target is None:
+                target = await db.get(Printer, queue.printer_id) if queue.printer_id is not None else None
             effective = printer_manager.effective_model_for(queue.printer_id, target.model) if target else None
             verdict = model_compatibility(requirements.model if requirements else None, effective)
             if verdict == "incompatible":

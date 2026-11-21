@@ -947,6 +947,64 @@ class TestRedownloadEndpoint:
         assert meta.title == "New Title"
         assert meta.author_name == "New Author"
 
+    @pytest.mark.asyncio
+    async def test_a_row_replaced_during_the_download_keeps_its_file(self, async_client, db_session, tmp_path):
+        """SQLite: the row deleted and the same file registered again in the same second — the same id,
+        path, hash and creation time, another row. The re-download replaces the file of the row the caller
+        chose only (G03 B, A32; TA42)."""
+        from uuid import uuid4
+
+        from backend.app.api.routes import library as library_routes
+
+        old_bytes = b"OLD-3MF-BYTES"
+        on_disk = tmp_path / "library" / "files" / "old.3mf"
+        on_disk.parent.mkdir(parents=True, exist_ok=True)
+        on_disk.write_bytes(old_bytes)
+        lf = LibraryFile(
+            filename="old.3mf",
+            file_path="library/files/old.3mf",
+            file_type="3mf",
+            file_size=len(old_bytes),
+            source_type="makerworld",
+            source_url="https://makerworld.com/models/3000#profileId-444",
+        )
+        db_session.add(lf)
+        await db_session.commit()
+        svc = _fake_service(
+            get_design={
+                "id": 3000,
+                "modelId": "US3000",
+                "title": "T",
+                "designCreator": {"name": "A"},
+                "instances": [],
+                "coverUrl": None,
+            },
+            get_design_instances={"hits": [{"profileId": 444, "title": "v444", "cover": None}]},
+            get_profile_download={"url": "https://makerworld.bblmw.com/signed", "name": "fresh.3mf"},
+            download_3mf=(_sample_3mf(), "fresh.3mf"),
+            fetch_thumbnail=(b"", "image/jpeg"),
+        )
+        real = library_routes._prepare_library_source
+
+        async def the_row_is_replaced_meanwhile(stage, filename):
+            prepared = await real(stage, filename)
+            row = await db_session.get(LibraryFile, lf.id)
+            row.recovery_identity = str(uuid4())
+            await db_session.commit()
+            return prepared
+
+        with (
+            patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)),
+            patch("backend.app.core.config.settings.base_dir", tmp_path),
+            patch.object(library_routes, "_prepare_library_source", the_row_is_replaced_meanwhile),
+        ):
+            resp = await async_client.post(f"/api/v1/makerworld/imports/{lf.id}/redownload")
+
+        assert resp.status_code == 409, resp.text
+        await db_session.refresh(lf)
+        assert lf.file_path == "library/files/old.3mf" and lf.file_size == len(old_bytes)
+        assert on_disk.read_bytes() == old_bytes
+
 
 class TestImportCoverEndpoints:
     """GET /makerworld/imports/{id}/cover and /cover-variant.

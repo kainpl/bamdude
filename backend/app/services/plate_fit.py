@@ -159,7 +159,7 @@ async def load(
             .execution_options(populate_existing=True)
         )
         if lock_pending:
-            stmt = stmt.with_for_update(nowait=True)
+            stmt = stmt.with_for_update(key_share=True, nowait=True)
         try:
             pending = list((await db.execute(stmt)).scalars())
         except DBAPIError as exc:

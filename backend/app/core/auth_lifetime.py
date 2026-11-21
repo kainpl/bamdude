@@ -168,11 +168,14 @@ async def _guard_accounts(db, captures, *, require_active=True) -> GuardProof:
                 .where(User.account_identity == identity)
                 .values(session_generation=User.session_generation, updated_at=User.updated_at)
             )
+        # FOR NO KEY UPDATE (G03 B, A30): it still conflicts with every other guard of the account and every write
+        # or deletion of its row, but not with the FOR KEY SHARE of a row that merely names the account -- a guard
+        # holder that then waits for a lane or an order row never meets an insert naming the account there.
         user = (
             await db.execute(
                 select(User)
                 .where(User.account_identity == identity)
-                .with_for_update()
+                .with_for_update(key_share=True)
                 .execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()

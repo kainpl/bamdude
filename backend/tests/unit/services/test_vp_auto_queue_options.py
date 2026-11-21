@@ -69,21 +69,32 @@ class TestRetroStampAutoItem:
 
         vp = _instance()
         row = SimpleNamespace(
-            id=7, status="pending", bed_levelling=True, flow_cali=True, timelapse=False, nozzle_mapping=None
+            id=7,
+            status="pending",
+            recovery_identity="r-7",
+            bed_levelling=True,
+            flow_cali=True,
+            timelapse=False,
+            nozzle_mapping=None,
         )
-        result = SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [row]))
         db = AsyncMock()
-        db.execute = AsyncMock(return_value=result)
         db.__aenter__ = AsyncMock(return_value=db)
         db.__aexit__ = AsyncMock(return_value=False)
         vp._session_factory = lambda: db
         vp._recent_auto_items["a.3mf"] = ([7], _time.monotonic())
 
-        await vp._restamp_recent_auto_item(
-            "a.3mf", {"timelapse": True, "bed_leveling": False, "nozzle_mapping": [1, 0]}
-        )
+        # The rows are locked ascending and re-read first (G03 B, A20) -- stood in for here.
+        from unittest.mock import patch
 
-        statement = db.execute.await_args_list[1].args[0]
+        with (
+            patch("backend.app.services.auto_queue_eligibility.begin_router_write", AsyncMock()),
+            patch("backend.app.services.queue_counters.lock_auto_rows", AsyncMock(return_value={7: row})),
+        ):
+            await vp._restamp_recent_auto_item(
+                "a.3mf", {"timelapse": True, "bed_leveling": False, "nozzle_mapping": [1, 0]}
+            )
+
+        statement = db.execute.await_args_list[0].args[0]
         params = statement.compile().params
         assert params["timelapse"] is True
         assert params["bed_levelling"] is False

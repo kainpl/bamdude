@@ -11,7 +11,7 @@ from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.queue_source import STATE_READY, QueueSource
 from backend.app.models.user import User
 from backend.app.services import queue_sources
-from backend.app.services.filament_policy import restore_routing_source
+from backend.app.services.filament_policy import clear_routing_runtime
 from backend.app.services.queue_ops import claim_lanes
 from backend.app.services.swap_source_declarations import fresh_api_key
 
@@ -44,12 +44,24 @@ async def retry_block(db, queue_id, item_ids, *, actor, granted_scope, key_hash,
                     raise HTTPException(403, "Retry authority changed")
             if await db.get(PrinterQueue, queue_id) is None:
                 raise HTTPException(404, "Queue not found")
+            from backend.app.services import queue_source_link
+
+            # Each row's source-link plan from a read under the guards and before its lock, and every planned
+            # parent locked before the job rows (G03 B, A27).
+            preflight = {
+                row.id: row
+                for row in await db.scalars(
+                    select(PrintQueueItem).where(PrintQueueItem.id.in_(ids), PrintQueueItem.queue_id == queue_id)
+                )
+            }
+            plans = {item_id: queue_source_link.plan_link(row) for item_id, row in preflight.items()}
+            await queue_source_link.lock_plans(db, list(plans.values()))
             rows = {
                 row.id: row
                 for row in await db.scalars(
                     select(PrintQueueItem)
                     .where(PrintQueueItem.id.in_(ids), PrintQueueItem.queue_id == queue_id)
-                    .with_for_update()
+                    .with_for_update(key_share=True)
                     .execution_options(populate_existing=True)
                 )
             }
@@ -106,8 +118,12 @@ async def retry_block(db, queue_id, item_ids, *, actor, granted_scope, key_hash,
             )
             retried = []
             for row in sorted(eligible, key=lambda item: (item.position, item.id)):
+                plan = plans.get(row.id)
+                if plan is None or not queue_source_link.apply_link(row, plan):
+                    left.append({"id": row.id, "reason": "changed"})
+                    continue
                 position += 1
-                restore_routing_source(row)
+                clear_routing_runtime(row)
                 row.status = "pending"
                 row.position = position
                 row.error_message = None

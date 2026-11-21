@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import case, func, update
+from sqlalchemy import case, func, select, update
 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
@@ -137,8 +137,23 @@ async def defer_claim(
     swap_start_effect=None,
     published=False,
     failure_code=None,
+    queue_id=None,
+    source_archive_identity=None,
+    source_library_identity=None,
 ):
     """CAS only our active attempt. Cancelled/deleted/reclaimed rows stay untouched.
+
+    G03 B, A10: the attempt's end runs in the caller's session made clean (its read transaction ends here) under
+    ``claim_lanes([claim queue], archive_ids={execution archive, original archive})`` — the archive guards before
+    the lane's, as every archive + queue writer takes them — and locks archives, then the job row. It addresses
+    the header of the CLAIM queue (``queue_id``: the printer the attempt was claimed on; the row's current queue
+    only for a caller that names none), halts through ``halt_lane`` (A9), and when its CAS does not own the row it
+    releases a header that still names it (A11). A return to pending writes the deferral proof
+    (``deferred_claim_token`` = the token it matched, A16); every other end voids it. The source restore names
+    its parents in the plan and writes a link only to a proven incarnation (A24, A27): the original archive
+    ``FOR KEY SHARE`` ascending with the execution archive, the library row ``FOR KEY SHARE`` as an early row,
+    each re-read under its lock; missing or another incarnation (``source_*_identity``, the runner's start read)
+    → that link NULL.
 
     Answers a :class:`DeferResult` — truthy when this attempt's row took the refusal, and
     saying whether it ended the row, so the caller can report it once after its commit.
@@ -158,7 +173,9 @@ async def defer_claim(
       physical ran — while a crash, a failed disposition or an unknown result keeps it spent. A repeated or lost
       CAS returns nothing: the claim token it matches is gone after the first.
     """
-    from backend.app.services.queue_counters import set_queue_error
+    from backend.app.services import queue_source_link
+    from backend.app.services.queue_counters import halt_lane, release_lost_claim
+    from backend.app.services.queue_ops import claim_lanes
     from backend.app.utils.failure_reasons import DISPATCH_SOURCE_UNAVAILABLE, DISPATCH_START_REFUSED
 
     swap_started = await swap_start_may_have_run(db, execution_archive_id, swap_start_effect)
@@ -195,6 +212,7 @@ async def defer_claim(
     if item is None or started_at is None:
         await abort_execution_archive(db, execution_archive_id, detail, failed_code=code if swap_started else None)
         return DeferResult(False)
+    claim_queue = queue_id if queue_id is not None else item.queue_id
     wait_code = SOURCE_CAPTURE_WAIT_CODE if disposition == DISPOSITION_RETRY_LATER else "filament_unavailable"
     if runtime_conflict:
         wait_code = "dispatch_runtime_conflict"
@@ -226,53 +244,105 @@ async def defer_claim(
         # A queued job from here on, and its completion is reported as one. −1 is before every waiting
         # row (theirs start at 0); the renumbering below turns it into the queue's ordinary first place.
         values.update(position=-1, origin="queue")
+    restore = None
     if restore_source:
-        values.update(archive_id=source_archive_id, library_file_id=source_library_file_id)
+        # The runner's start read is the candidate (A10, A27): a non-NULL value is always taken as a parent.
+        if source_archive_id is not None:
+            restore = queue_source_link.Candidate(
+                queue_source_link.ARCHIVE,
+                source_archive_id,
+                source_archive_identity,
+                source_archive_identity is not None,
+            )
+        elif source_library_file_id is not None:
+            restore = queue_source_link.Candidate(
+                queue_source_link.LIBRARY_FILE,
+                source_library_file_id,
+                source_library_identity,
+                source_library_identity is not None,
+            )
     if terminal:
         # This preparation never published a print, so there is no physical
         # failure for the next item's require_previous_success gate.
         values["gate_acknowledged"] = True
-    routing = decode(item.filament_routing)
-    if disposition is None and isinstance(routing, dict):
-        routing["runtime"] = {"reason": reason, "blocked_revision": revision}
-        values["filament_routing"] = json.dumps(routing)
-    result = await db.execute(
-        update(PrintQueueItem)
-        .where(
-            PrintQueueItem.id == item_id,
-            PrintQueueItem.status == "printing",
-            PrintQueueItem.started_at == started_at,
-        )
-        .values(**values)
-        .execution_options(synchronize_session=False)
+    routing_text = item.filament_routing
+    if db.in_transaction():
+        # A10: the lanes are entered by a session holding no transaction (on SQLite a held writer would wait
+        # for an in-process lock).
+        await db.commit()
+    archives = sorted(
+        {
+            *([execution_archive_id] if execution_archive_id is not None else []),
+            *([restore.id] if restore is not None and restore.kind == queue_source_link.ARCHIVE else []),
+        }
     )
-    owned = bool(result.rowcount)
-    # A refusal that ENDED this attempt's row is a «Dispatch errors» attempt (D-R4 row 2):
-    # its archive fails with the row's class; one that sent the row back is aborted.
-    await abort_execution_archive(
-        db, execution_archive_id, detail, failed_code=code if (swap_started or (terminal and owned)) else None
-    )
-    if not owned:
-        return DeferResult(False)
-    if plate_wait:
-        # First, ahead of every job that already waits -- the renumbering «Run next» uses. Unlocked: this
-        # runs inside the attempt's own compare-and-set, which already holds the row.
-        from backend.app.services.queue_ops import _bump_block_to_top_unlocked
+    parents = {}
 
-        await _bump_block_to_top_unlocked(db, item.queue_id, [item_id])
-    if halts_queue:
-        await set_queue_error(db, item.queue_id, failed_item_id=item_id, expected_item_id=item_id)
-    else:
-        # The queue can already belong to a later attempt; do not release that owner.
-        await db.execute(
-            update(PrinterQueue)
+    async def library_first(session):
+        # A library parent is an early row: locked before the database guards and every other row (L5).
+        if restore is not None and restore.kind == queue_source_link.LIBRARY_FILE:
+            parents["library"] = await queue_source_link.lock_parent(session, restore)
+
+    async with claim_lanes(db, [claim_queue], archive_ids=archives, before_db=library_first):
+        # Archives ascending, before the job row (L5): the execution archive in the mode its writes take, the
+        # original FOR KEY SHARE (the link's own check then finds a lock this transaction holds).
+        for archive_id in archives:
+            if archive_id == execution_archive_id:
+                await db.scalar(
+                    select(PrintArchive.id).where(PrintArchive.id == archive_id).with_for_update(key_share=True)
+                )
+            elif restore is not None:
+                parents["archive"] = await queue_source_link.lock_parent(db, restore)
+        if restore_source:
+            kind = "archive" if restore is not None and restore.kind == queue_source_link.ARCHIVE else "library"
+            link = queue_source_link.link_for(restore, parents.get(kind), execution_archive_id=execution_archive_id)
+            values.update(archive_id=link[0], library_file_id=link[1])
+        routing = decode(routing_text)
+        if disposition is None and isinstance(routing, dict):
+            routing["runtime"] = {"reason": reason, "blocked_revision": revision}
+            values["filament_routing"] = json.dumps(routing)
+        # The deferral proof (A16, R11): a return to pending names the attempt it returned; any end voids it.
+        values["deferred_claim_token"] = None if terminal else started_at
+        result = await db.execute(
+            update(PrintQueueItem)
             .where(
-                PrinterQueue.id == item.queue_id,
-                PrinterQueue.current_item_id == item_id,
-                PrinterQueue.status == "printing",
+                PrintQueueItem.id == item_id,
+                PrintQueueItem.status == "printing",
+                PrintQueueItem.started_at == started_at,
             )
-            .values(status="idle", current_item_id=None)
+            .values(**values)
             .execution_options(synchronize_session=False)
         )
-    await update_queue_counters(db, item.queue_id)
+        owned = bool(result.rowcount)
+        # A refusal that ENDED this attempt's row is a «Dispatch errors» attempt (D-R4 row 2):
+        # its archive fails with the row's class; one that sent the row back is aborted.
+        await abort_execution_archive(
+            db, execution_archive_id, detail, failed_code=code if (swap_started or (terminal and owned)) else None
+        )
+        if not owned:
+            await release_lost_claim(db, claim_queue, item_id)
+            await db.commit()
+            return DeferResult(False)
+        if plate_wait:
+            # First, ahead of every job that already waits -- the renumbering «Run next» uses. Unlocked: this
+            # runs inside the attempt's own compare-and-set, which already holds the row.
+            from backend.app.services.queue_ops import _bump_block_to_top_unlocked
+
+            await _bump_block_to_top_unlocked(db, claim_queue, [item_id])
+        if halts_queue:
+            await halt_lane(db, claim_queue, item_id=item_id, kind="error")
+        else:
+            # The queue can already belong to a later attempt; do not release that owner.
+            await db.execute(
+                update(PrinterQueue)
+                .where(
+                    PrinterQueue.id == claim_queue,
+                    PrinterQueue.current_item_id == item_id,
+                    PrinterQueue.status == "printing",
+                )
+                .values(status="idle", current_item_id=None)
+                .execution_options(synchronize_session=False)
+            )
+        await update_queue_counters(db, claim_queue)
+        await db.commit()
     return DeferResult(True, terminal, code if terminal else None, message if terminal else None, swap_started)

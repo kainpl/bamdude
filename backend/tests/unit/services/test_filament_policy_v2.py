@@ -22,8 +22,8 @@ import pytest
 from backend.app.services.filament_policy import (
     SUPPORTED_VERSIONS,
     VERSION,
+    clear_routing_runtime,
     deserialize_policy,
-    restore_routing_source,
     serialize_policy,
 )
 from backend.app.services.filament_preflight import revision_for
@@ -298,7 +298,7 @@ class _Row:
 
 
 @pytest.mark.parametrize("version", [1, 2, 3])
-def test_repeat_restores_the_source_of_a_payload_this_version_understands(version):
+def test_a_rearm_clears_the_runtime_of_a_payload_this_version_understands(version):
     payload = json.loads(
         serialize_policy(
             RoutingPolicy(),
@@ -310,8 +310,10 @@ def test_repeat_restores_the_source_of_a_payload_this_version_understands(versio
     payload["version"] = version
     payload["runtime"] = {"reason": "feed_state_changed", "blocked_revision": "x"}
     row = _Row(json.dumps(payload), archive_id=88, queue_source_id=4)
-    restore_routing_source(row)
-    assert (row.library_file_id, row.archive_id) == (7, None)
+    clear_routing_runtime(row)
+    # The link is not this function's: the one source-link rule writes it, from the job's own record, a proven
+    # incarnation or nothing (G03 B, A27) — the intent's ``source_identity`` is never written back as it is.
+    assert (row.library_file_id, row.archive_id) == (None, 88)
     # The blob reference is the ROW's and is never re-attached from a payload:
     # re-attaching one needs the storage guard and a live ``ready`` check.
     assert row.queue_source_id == 4
@@ -322,8 +324,9 @@ def test_repeat_leaves_a_payload_it_cannot_read_alone():
     payload = json.loads(serialize_policy(RoutingPolicy(), library_file_id=7))
     payload["version"] = 4
     row = _Row(json.dumps(payload), archive_id=88)
-    restore_routing_source(row)
-    assert (row.library_file_id, row.archive_id) == (None, 88)
+    before = row.filament_routing
+    clear_routing_runtime(row)
+    assert (row.library_file_id, row.archive_id, row.filament_routing) == (None, 88, before)
 
 
 def test_a_captured_read_still_refuses_a_file_that_moved_under_the_parse(tmp_path, monkeypatch):

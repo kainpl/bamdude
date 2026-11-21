@@ -196,4 +196,7 @@ class TestTheGuardSitsWhereDispatchIsDecided:
         src = inspect.getsource(print_scheduler.PrintScheduler.check_queue)
         src = chr(10).join(ln for ln in src.splitlines() if not ln.lstrip().startswith("#"))
         assert "_timelapse_storage_full" in src
-        assert "is_paused = True" in src
+        # The pause is a verdict proved under the lane (G03 B, A8 V4), asked of the head only (A14).
+        assert "_verdict_storage_full" in src
+        verdict = inspect.getsource(print_scheduler.PrintScheduler._verdict_storage_full)
+        assert "is_paused=True" in verdict

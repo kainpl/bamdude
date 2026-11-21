@@ -143,7 +143,17 @@ def ledger(db) -> LockLedger:
 
 # The tables whose rows the protocol locks — a row of one of them INSERTed by this
 # transaction is invisible to every other, so its lock can take part in no cycle.
-_TRACKED = {"library_files", "products", "projects", "stock_items", "project_lines", "print_archives", "product_parts"}
+_TRACKED = {
+    "library_files",
+    "products",
+    "projects",
+    "stock_items",
+    "project_lines",
+    "print_archives",
+    "product_parts",
+    # G03 B, A20: a router row this transaction inserted (a rebalance companion) is not ordered by lock_auto_rows.
+    "auto_queue_items",
+}
 
 
 @event.listens_for(Session, "after_flush")

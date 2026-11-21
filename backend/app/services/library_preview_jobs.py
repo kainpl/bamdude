@@ -147,6 +147,8 @@ class StepSource:
     file_hash: str | None
     fs_modified_at: datetime | None
     thumbnail_path: str | None
+    # The row's own identity (m253, G03 B A32): part of the key, so a row that took this one's id is another source.
+    recovery_identity: str | None = None
 
     @classmethod
     def capture(cls, row) -> StepSource:
@@ -161,6 +163,7 @@ class StepSource:
             self.file_hash,
             self.fs_modified_at,
             self.thumbnail_path,
+            self.recovery_identity,
         )
 
 
@@ -645,6 +648,7 @@ class DatabaseChecks:
                         LibraryFile.file_hash,
                         LibraryFile.fs_modified_at,
                         LibraryFile.thumbnail_path,
+                        LibraryFile.recovery_identity,
                     ).where(LibraryFile.id == source.id, LibraryFile.deleted_at.is_(None))
                 )
             ).first()
@@ -794,6 +798,7 @@ async def perform_step(source: StepSource, *, order, wait_seconds, on_admit, on_
             file_hash=source.file_hash,
             thumbnail_path=source.thumbnail_path,
             fs_modified_at=source.fs_modified_at,
+            recovery_identity=source.recovery_identity,
         )
         async with database.async_session() as db:
             attached = await library_preview.attach_result(db, library_source, png, authorize=before_attach)

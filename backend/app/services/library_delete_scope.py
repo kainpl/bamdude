@@ -212,9 +212,18 @@ async def library_delete_scope(
     ):
         for start in range(0, len(plan.archives), 500):
             await lock_prints(db, plan.archives[start : start + 500])
-        for kind, row_id, _identity, _lane, *_details in plan.jobs:
-            model = AutoQueueItem if kind == "auto" else PrintQueueItem
-            await db.execute(select(model.id).where(model.id == row_id).with_for_update())
+        for kind, row_id, _identity, lane, *_details in plan.jobs:
+            if kind == "auto":
+                await db.execute(
+                    select(AutoQueueItem.id).where(AutoQueueItem.id == row_id).with_for_update(key_share=True)
+                )
+            else:
+                # Only the lane the plan holds (L1). A move out of it is refused by the footprint recheck.
+                await db.execute(
+                    select(PrintQueueItem.id)
+                    .where(PrintQueueItem.id == row_id, PrintQueueItem.queue_id == lane)
+                    .with_for_update(key_share=True)
+                )
         try:
             # The early NO KEY UPDATE let existing print writers finish their
             # FK backfill without a print -> library wait cycle. Upgrade only

@@ -570,7 +570,12 @@ async def redownload_import(
     (await read_access(db, authority=authority)).ensure(lib)
     if lib.source_type != _SOURCE_TYPE or not lib.source_url:
         raise HTTPException(400, "This library file is not a MakerWorld import")
-    proof = (lib.file_path, lib.file_hash, lib.created_at, lib.source_url)
+    from backend.app.services.library_identity import LibraryIdentity
+
+    # The row the caller chose (A32) and the MakerWorld address the re-download is about.
+    identity = LibraryIdentity.capture(lib)
+    old_file_path = lib.file_path
+    source_url = lib.source_url
     old_external = lib.is_external
     filename = lib.filename
     try:
@@ -600,7 +605,11 @@ async def redownload_import(
         meta = None
         try:
             meta = await _fetch_makerworld_meta(
-                service, library_file_id=library_file_id, model_id=model_id, profile_id=profile_id, variant_url=proof[3]
+                service,
+                library_file_id=library_file_id,
+                model_id=model_id,
+                profile_id=profile_id,
+                variant_url=source_url,
             )
         except Exception:
             logger.warning("MakerWorld metadata was unavailable during refresh")
@@ -613,7 +622,7 @@ async def redownload_import(
             .with_for_update()
             .execution_options(populate_existing=True)
         )
-        if lib is None or (lib.file_path, lib.file_hash, lib.created_at, lib.source_url) != proof:
+        if not identity.matches(lib) or lib.source_url != source_url:
             raise HTTPException(409, {"code": "source_changed"})
         access = await read_access(db, authority=authority)
         access.ensure(lib)
@@ -651,14 +660,14 @@ async def redownload_import(
             # An uncertain commit may already reference our bytes. Retain them for reconciliation.
 
     if not old_external:
-        old_path = library_routes.to_absolute_path(proof[0])
+        old_path = library_routes.to_absolute_path(old_file_path)
         if old_path is not None and old_path.resolve().is_relative_to(library_routes.get_library_files_dir().resolve()):
             from backend.app.models.archive import PrintArchive
 
-            referenced = await db.scalar(select(LibraryFile.id).where(LibraryFile.file_path == proof[0]).limit(1))
+            referenced = await db.scalar(select(LibraryFile.id).where(LibraryFile.file_path == old_file_path).limit(1))
             archived = await db.scalar(
                 select(PrintArchive.id)
-                .where((PrintArchive.file_path == proof[0]) | (PrintArchive.source_3mf_path == proof[0]))
+                .where((PrintArchive.file_path == old_file_path) | (PrintArchive.source_3mf_path == old_file_path))
                 .limit(1)
             )
             await db.commit()

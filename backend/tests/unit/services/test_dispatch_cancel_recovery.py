@@ -118,6 +118,9 @@ async def test_cancel_item_marks_cancelled_and_pauses_queue(db_session, printer_
     db_session.add(item)
     await db_session.commit()
     await db_session.refresh(item)
+    # As the claim leaves it (G03 B, A9): the header names the row it is printing.
+    queue.current_item_id = item.id
+    await db_session.commit()
 
     await scheduler._cancel_item(db_session, item)
 

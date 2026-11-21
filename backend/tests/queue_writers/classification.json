@@ -1,0 +1,2248 @@
+{
+ "_comment": "Hand classification of every function the scanner reports (G03 B r4; carried into r5 and r6). Keys are file::function. class = lock class per spec r4 section A.3 (lane = lane holder; L2a..L2g lane-less classes; shared = AutoQueue rows only, L3; helper = runs inside its caller's class; startup = L2c; memory = no durable write of a target row; n/a = not a target row). owner = who owns the transaction. rule = the spec r4 requirement that governs it. r3 = whether spec r3's tables named it: listed / listed-wrong (named with a class the code does not have) / missing / n/a.",
+ "_confirmed_candidate_writers": [
+  "backend/app/services/auto_queue_return.py::return_ready",
+  "backend/app/services/filament_policy.py::clear_routing_runtime",
+  "backend/app/services/order_resources.py::replan",
+  "backend/app/services/print_execution.py::close_noncurrent",
+  "backend/app/services/print_state_recovery_store.py::_apply_rows",
+  "backend/app/services/print_state_recovery_store.py::_apply_runtime",
+  "backend/app/services/queue_auto_transfer.py::apply",
+  "backend/app/services/queue_ops.py::_reorder_block_unlocked",
+  "backend/app/services/queue_wait_reason.py::set_wait_reason",
+  "backend/app/services/swap_job_refresh.py::refresh"
+ ],
+ "_machine_fields": "G03 B1 (A13): lock / via / outside / after_commit / candidates are read by backend/tests/queue_writers/guard.py; see its docstring. Added over the r6 classification (research-artifacts/g03-b-spec-r6-2026-11-20/classification.json) by reading each case in the code.",
+ "_r5_changes": [
+  "R21: raw-SQL sites now take their table from the DML verb (UPDATE <t> / DELETE FROM <t> / INSERT INTO <t>); 10 r4 sites were tables only read, DDL or literals (m002 x2, m018 x1, m019 seed x4, m062 x2, m066 x1) and are gone; 3 sites changed table (m002 lines 178/190 -> printer_queues, m066 line 83 -> auto_queue_items).",
+  "r5: recreate_table(conn, '<target>', ...) is a site (raw-sql, verb recreate): m007::upgrade and m019::upgrade are new functions (class migration); m018::upgrade keeps its entry through its recreate_table call.",
+  "m062::upgrade removed: its only r4 sites were CREATE TABLE calibration_session DDL naming print_queue in a REFERENCES clause.",
+  "r5 rule notes appended (\" · r5 ...\") for the functions R17-R20, the FK rule L6(b)/A24/A25 and the file-path lock A26 change; no class changed.",
+  "r5 adds an 'fk' field (A24) to every function that sets a foreign key of a queue table: held / free / null / own per column, from fk_inventory.json plus defer_claim's values(**values) read by hand."
+ ],
+ "_r6_changes": [
+  "r6 appends rule notes (\" · r6 ...\") to the functions R22 (rebalance: target file before the order and AutoQueue rows), R23 (credits after the archive; the attach locks nothing under the file-path lock), R24 (one source-link rule) and the shape findings H1-H7 change; no key added or removed; one class string gains its package target (unskip_item: -> r6 lane:reusing_sources(queue_ids), A27), as r4's '-> lane' notes do.",
+  "r6 rewrites the fk field of _write_group, build_auto_queue_rows, restore_routing_source, _restore_source, _rearm, _copy_item_fields, _as_new_work, start_queue_item, enqueue_calibration_print, _assign and defer_claim (A24 as amended, A27, A28, A30)."
+ ],
+ "backend/app/api/routes/archives.py::refresh_swap_declaration_jobs": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "swap_job_refresh",
+  "r3": "listed",
+  "rule": "unchanged (claim_lanes inside refresh)"
+ },
+ "backend/app/api/routes/auto_queue.py::_apply_item_update": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "missing",
+  "rule": "W5 (ORM setattr of the caller's locked row)"
+ },
+ "backend/app/api/routes/auto_queue.py::_cancel_promoted_rows": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "caller (cancellation_scope)",
+  "r3": "listed",
+  "rule": "Core CAS pending on rows of held lanes; R14 footprint re-check before it"
+ },
+ "backend/app/api/routes/auto_queue.py::assign_now": {
+  "class": "shared (A17 addressed failure / waiting write) + lane (via _assign, C5a)",
+  "lock": "shared",
+  "owner": "request session",
+  "r3": "missing",
+  "rule": "A17 step 2-3, C5a: the revision this request read; an edit before the placement is 409 queue_item_changed"
+ },
+ "backend/app/api/routes/auto_queue.py::cancel_auto_queue_batch": {
+  "class": "lane:cancellation_scope(auto) + A20 prelock (lanes re-derived from the locked rows)",
+  "lock": "lane",
+  "owner": "cancellation_scope's fresh session",
+  "r3": "listed-wrong",
+  "rule": "A20 batch cancel / R14"
+ },
+ "backend/app/api/routes/auto_queue.py::cancel_auto_queue_item": {
+  "after_commit": {
+   "helper-call:auto_queue._cancel_promoted_rows": "branch: the earlier commit (un-routed delete) ends in return",
+   "orm-attr:AutoQueueItem[cancelled_at]": "branch: the earlier commit (un-routed delete) ends in return",
+   "orm-attr:AutoQueueItem[status]": "branch: the earlier commit (un-routed delete) ends in return"
+  },
+  "candidates": {
+   "orm-attr:AutoQueueItem[cancelled_at]@response": "other: the response object",
+   "orm-attr:AutoQueueItem|PrintQueueItem|PrinterQueue[status]@response": "other: the response object"
+  },
+  "class": "lane:cancellation_scope(auto)",
+  "lock": "lane",
+  "owner": "cancellation_scope's fresh session",
+  "r3": "listed",
+  "rule": "unchanged (one AutoQueue row); response fields are memory"
+ },
+ "backend/app/api/routes/auto_queue.py::reorder_auto_queue": {
+  "class": "shared (A20: rows locked ascending, a non-pending row keeps its place)",
+  "lock": "shared",
+  "owner": "request session",
+  "r3": "missing",
+  "rule": "A20 edit door"
+ },
+ "backend/app/api/routes/auto_queue.py::retry_auto_queue_item": {
+  "class": "shared (one row CAS + incarnation, A20)",
+  "lock": "shared",
+  "owner": "request session",
+  "r3": "missing",
+  "rule": "A20 one-row writers"
+ },
+ "backend/app/api/routes/auto_queue.py::update_auto_queue_batch": {
+  "class": "shared (A20: rows locked ascending, all or none)",
+  "lock": "shared",
+  "owner": "request session",
+  "r3": "missing",
+  "rule": "A20 edit door"
+ },
+ "backend/app/api/routes/auto_queue.py::update_auto_queue_item": {
+  "class": "shared (A20: validation outside, the row locked and re-read, 409 queue_item_changed)",
+  "lock": "shared",
+  "owner": "request session (get_db)",
+  "r3": "missing",
+  "rule": "A20 edit door"
+ },
+ "backend/app/api/routes/library.py::refresh_swap_declaration_jobs": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "swap_job_refresh",
+  "r3": "listed",
+  "rule": "unchanged"
+ },
+ "backend/app/api/routes/print_queue.py::_acknowledge_blocking_failure": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "unskip's transaction",
+  "r3": "missing",
+  "rule": "inside unskip's queue_scope_lock"
+ },
+ "backend/app/api/routes/print_queue.py::_claim_still_deletable": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "caller (cancellation_scope)",
+  "r3": "listed",
+  "rule": "no-op UPDATE as row lock, rows of held lanes"
+ },
+ "backend/app/api/routes/print_queue.py::_enrich_response": {
+  "candidates": {
+   "orm-attr:AutoQueueItem[print_time_seconds]@response": "other: the response object"
+  },
+  "class": "n/a",
+  "lock": "n/a",
+  "owner": "-",
+  "r3": "n/a",
+  "rule": "response object, not a row (candidate)"
+ },
+ "backend/app/api/routes/print_queue.py::_set_calibration_mode": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "A6 (part of the edit's value dict)"
+ },
+ "backend/app/api/routes/print_queue.py::_set_item_field": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "apply_edits (its set_field callback)",
+  "r3": "missing",
+  "rule": "A6: one validated value onto the row apply_edits locked under the lanes (queue_id of a move included: its target lane is held)"
+ },
+ "backend/app/api/routes/print_queue.py::_stop_unbound_attempt": {
+  "after_commit": {
+   "core-update:PrintQueueItem[completed_at,deferred_claim_token,error_message,status]": "branch: the first CAS's commit ends in return; this is the deferral-proof branch",
+   "helper-call:queue_counters.halt_lane": "branch: the first CAS's commit ends in return",
+   "helper-call:queue_counters.update_queue_counters": "branch: the first CAS's commit ends in return"
+  },
+  "class": "lane:claim_lanes(archive) (A16)",
+  "lock": "lane",
+  "owner": "fresh session",
+  "r3": "missing",
+  "rule": "A16: CAS on the attempt it read (id, incarnation, printing, queue, token); lost -> by id + incarnation, the deferral proof"
+ },
+ "backend/app/api/routes/print_queue.py::bulk_delete_queue_items": {
+  "class": "lane:cancellation_scope",
+  "lock": "lane",
+  "owner": "request session inside the scope",
+  "r3": "listed",
+  "rule": "unchanged; detach_print_queue_refs gets W6 (AutoQueue prelock)"
+ },
+ "backend/app/api/routes/print_queue.py::bump_batch": {
+  "class": "lane:queue_scope_lock + L2a recount",
+  "lock": "lane",
+  "outside": {
+   "helper-call:queue_counters.update_queue_counters": "L2a: the queue's counters recounted after the lane scope (one header statement)"
+  },
+  "owner": "request session",
+  "r3": "listed",
+  "rule": "unchanged"
+ },
+ "backend/app/api/routes/print_queue.py::bump_batch_bottom": {
+  "class": "lane:queue_scope_lock + L2a recount",
+  "lock": "lane",
+  "outside": {
+   "helper-call:queue_counters.update_queue_counters": "L2a: the queue's counters recounted after the lane scope (one header statement)"
+  },
+  "owner": "request session",
+  "r3": "listed",
+  "rule": "unchanged"
+ },
+ "backend/app/api/routes/print_queue.py::bump_item": {
+  "class": "lane:queue_scope_lock + L2a recount",
+  "lock": "lane",
+  "outside": {
+   "helper-call:queue_counters.update_queue_counters": "L2a: the queue's counters recounted after the lane scope (one header statement)"
+  },
+  "owner": "request session",
+  "r3": "listed",
+  "rule": "unchanged"
+ },
+ "backend/app/api/routes/print_queue.py::bump_item_bottom": {
+  "class": "lane:queue_scope_lock + L2a recount",
+  "lock": "lane",
+  "outside": {
+   "helper-call:queue_counters.update_queue_counters": "L2a: the queue's counters recounted after the lane scope (one header statement)"
+  },
+  "owner": "request session",
+  "r3": "listed",
+  "rule": "unchanged"
+ },
+ "backend/app/api/routes/print_queue.py::cancel_batch": {
+  "class": "lane:cancellation_scope",
+  "lock": "lane",
+  "owner": "scope session",
+  "r3": "listed",
+  "rule": "unchanged"
+ },
+ "backend/app/api/routes/print_queue.py::cancel_queue_item": {
+  "class": "lane:cancellation_scope",
+  "lock": "lane",
+  "owner": "scope session",
+  "r3": "listed",
+  "rule": "unchanged"
+ },
+ "backend/app/api/routes/print_queue.py::clone_batch_endpoint": {
+  "class": "lane:reusing_sources(queue_ids) + L2a recount",
+  "lock": "lane",
+  "outside": {
+   "helper-call:queue_counters.update_queue_counters": "L2a: the queue's counters recounted after the lane scope (one header statement)"
+  },
+  "owner": "request session",
+  "r3": "listed-wrong",
+  "rule": "r4: lane holder (no L2a-tail)",
+  "via": [
+   "queue_ops.clone_item",
+   "queue_ops.clone_batch"
+  ]
+ },
+ "backend/app/api/routes/print_queue.py::clone_item_endpoint": {
+  "class": "lane:reusing_sources(queue_ids) + L2a recount",
+  "lock": "lane",
+  "outside": {
+   "helper-call:queue_counters.update_queue_counters": "L2a: the queue's counters recounted after the lane scope (one header statement)"
+  },
+  "owner": "request session",
+  "r3": "listed-wrong",
+  "rule": "r4: clone is a lane holder (L2a-tail exception withdrawn)",
+  "via": [
+   "queue_ops.clone_item",
+   "queue_ops.clone_batch"
+  ]
+ },
+ "backend/app/api/routes/print_queue.py::delete_queue_item": {
+  "class": "lane:cancellation_scope",
+  "lock": "lane",
+  "owner": "scope session",
+  "r3": "listed",
+  "rule": "unchanged; W6 in detach"
+ },
+ "backend/app/api/routes/print_queue.py::group_items_into_batch": {
+  "class": "lane:lane_session (A7 group, all or nothing)",
+  "lock": "lane",
+  "owner": "fresh session",
+  "r3": "listed",
+  "rule": "A7 group"
+ },
+ "backend/app/api/routes/print_queue.py::move_to_auto": {
+  "class": "lane (queue_auto_transfer)",
+  "lock": "lane",
+  "owner": "transfer's own session",
+  "r3": "listed",
+  "rule": "unchanged",
+  "via": [
+   "queue_auto_transfer.apply"
+  ]
+ },
+ "backend/app/api/routes/print_queue.py::queue_summary": {
+  "candidates": {
+   "setattr:?[f'{status}_count']@group": "other: a summary group"
+  },
+  "class": "n/a",
+  "lock": "n/a",
+  "owner": "-",
+  "r3": "n/a",
+  "rule": "setattr on a response group (candidate)"
+ },
+ "backend/app/api/routes/print_queue.py::reorder_batch": {
+  "class": "lane:queue_scope_lock + L2a recount",
+  "lock": "lane",
+  "outside": {
+   "helper-call:queue_counters.update_queue_counters": "L2a: the queue's counters recounted after the lane scope (one header statement)"
+  },
+  "owner": "request session",
+  "r3": "listed",
+  "rule": "unchanged"
+ },
+ "backend/app/api/routes/print_queue.py::reorder_item": {
+  "class": "lane:queue_scope_lock + L2a recount",
+  "lock": "lane",
+  "outside": {
+   "helper-call:queue_counters.update_queue_counters": "L2a: the queue's counters recounted after the lane scope (one header statement)"
+  },
+  "owner": "request session",
+  "r3": "listed",
+  "rule": "unchanged (reorder_block under queue_scope_lock, counters header-only after)"
+ },
+ "backend/app/api/routes/print_queue.py::reorder_queue": {
+  "class": "lane:lane_session (A7 bulk reorder)",
+  "lock": "lane",
+  "owner": "fresh session",
+  "r3": "listed",
+  "rule": "A7 bulk reorder"
+ },
+ "backend/app/api/routes/print_queue.py::retry_failed_block": {
+  "class": "lane (queue_bulk_retry)",
+  "lock": "lane",
+  "owner": "retry_block",
+  "r3": "listed",
+  "rule": "unchanged · r6 R24/A27 through retry_block",
+  "via": [
+   "queue_bulk_retry.retry_block"
+  ]
+ },
+ "backend/app/api/routes/print_queue.py::retry_failed_item": {
+  "class": "lane:reusing_sources(queue_ids)",
+  "lock": "lane",
+  "owner": "request session",
+  "r3": "listed",
+  "rule": "unchanged; R11: re-arm voids the deferral proof (model validator) · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE · r6 R24/A27: the candidate's parent FOR KEY SHARE before the job row; a different candidate under the lock -> 409 recovery_changed"
+ },
+ "backend/app/api/routes/print_queue.py::skip_batch": {
+  "class": "lane:lane_session (A7 batch skip)",
+  "lock": "lane",
+  "owner": "fresh session",
+  "r3": "listed",
+  "rule": "A7 batch skip"
+ },
+ "backend/app/api/routes/print_queue.py::skip_item": {
+  "class": "lane:lane_session (A7 skip)",
+  "lock": "lane",
+  "owner": "fresh session",
+  "r3": "listed",
+  "rule": "A7 skip"
+ },
+ "backend/app/api/routes/print_queue.py::start_queue_item": {
+  "class": "lane:queue_claim_scope (A7 /start)",
+  "fk": {
+   "print_queue.created_by_id": "free (A30)"
+  },
+  "lock": "lane",
+  "owner": "fresh session",
+  "r3": "listed",
+  "rule": "A7 /start · r6 A30: created_by_id free (lifetime guard FOR NO KEY UPDATE)"
+ },
+ "backend/app/api/routes/print_queue.py::stop_queue_item": {
+  "class": "lane (via _stop_unbound_attempt, A16); stop_not_sent branch L2a",
+  "lock": "lane",
+  "outside": {
+   "orm-attr:PrinterQueue[is_paused]": "L2a: the 503 stop_not_sent branch takes the header's pause only"
+  },
+  "owner": "request session (reads, 503 branch); A16 SQL phase: fresh session",
+  "r3": "listed",
+  "rule": "A16 + R11 attempt proof (A16 step 3); W1 archive row before job row",
+  "via": [
+   "print_queue._stop_unbound_attempt"
+  ]
+ },
+ "backend/app/api/routes/print_queue.py::toggle_manual_start": {
+  "class": "lane:lane_session (A7 manual start)",
+  "lock": "lane",
+  "owner": "fresh session",
+  "r3": "listed",
+  "rule": "A7 manual-start toggle"
+ },
+ "backend/app/api/routes/print_queue.py::ungroup_batch": {
+  "class": "lane:lane_session (A7 ungroup)",
+  "lock": "lane",
+  "owner": "fresh session",
+  "r3": "listed",
+  "rule": "A7 ungroup"
+ },
+ "backend/app/api/routes/print_queue.py::unskip_item": {
+  "class": "lane:queue_scope_lock -> r6 lane:reusing_sources(queue_ids) (A27)",
+  "lock": "lane",
+  "owner": "request session",
+  "r3": "listed",
+  "rule": "unchanged · r6 R24/A27: its lane through reusing_sources(db, [queue_source_id], queue_ids=[queue]) (the storage guard and claim_lanes for every job, a legacy one included) in place of reusing_sources + queue_scope_lock; the row is re-read FOR NO KEY UPDATE under it (today the copy read before the lane is written); the candidate's parent before it; 409 recovery_changed when no longer skipped or the candidate changed"
+ },
+ "backend/app/api/routes/printer_queues.py::acknowledge_failure": {
+  "class": "lane:queue_scope_lock",
+  "lock": "lane",
+  "owner": "request session",
+  "r3": "missing",
+  "rule": "unchanged (phase A)"
+ },
+ "backend/app/api/routes/printer_queues.py::update_queue": {
+  "class": "L2a",
+  "lock": "L2a",
+  "owner": "request session",
+  "r3": "listed",
+  "rule": "header-only operator door (pause/Resume, status idle/paused); r4 note: status idle while printing is an operator override, unchanged"
+ },
+ "backend/app/api/routes/printers.py::_delete_printer_queue_rows": {
+  "class": "lane:claim_lanes (A21 printer deletion step 2, one transaction)",
+  "delete_locks": {
+   "lock-for-update:PrinterQueue": "L6(c): the header it deletes, FOR UPDATE right after the guards, before any job row"
+  },
+  "lock": "lane",
+  "owner": "own clean session",
+  "r3": "missing",
+  "rule": "A21 r5 R20 / F3: printer row first (before_db), headers FOR UPDATE (L6(c)), queues re-read, archives ascending with their links nulled, maintenance, companions (A20), job rows, the printer; one commit"
+ },
+ "backend/app/api/routes/printers.py::_delete_printer_rows": {
+  "class": "lane (via _delete_printer_queue_rows; step 1 archive plans)",
+  "lock": "lane",
+  "owner": "request session -> fresh session for the row phase",
+  "r3": "missing",
+  "rule": "W7: the printer's lanes before its rows; W6 in detach · r5 R20: archive deletions first (A19 transactions); then ONE transaction under the printer's lanes: printer row (early) -> headers FOR UPDATE -> the printer's archive rows ascending (detach printer_id, queue_id) -> maintenance -> AutoQueue prelock -> every job row -> header and printer deleted -> commit",
+  "via": [
+   "printers._delete_printer_queue_rows"
+  ]
+ },
+ "backend/app/api/routes/printers.py::archive_printer": {
+  "class": "lane:lane_session (A7 printer archive)",
+  "lock": "lane",
+  "owner": "fresh session",
+  "r3": "listed",
+  "rule": "A7 printer archive"
+ },
+ "backend/app/api/routes/printers.py::clear_plate": {
+  "class": "-> lane (W4)",
+  "lock": "pending",
+  "owner": "plate_answers",
+  "r3": "missing",
+  "rule": "W4"
+ },
+ "backend/app/api/routes/printers.py::create_printer": {
+  "class": "L2c-runtime",
+  "lock": "L2c-runtime",
+  "owner": "request session",
+  "r3": "missing",
+  "rule": "new printer's own header (no other writer can name the id yet)"
+ },
+ "backend/app/api/routes/printers.py::repeat_print": {
+  "class": "-> lane (W4)",
+  "lock": "pending",
+  "owner": "plate_answers",
+  "r3": "listed-wrong",
+  "rule": "W4"
+ },
+ "backend/app/api/routes/projects.py::_delete_line_in_lanes": {
+  "class": "helper (lane: delete_line's claim_lanes)",
+  "fk": {
+   "auto_queue_items.project_line_id": "null",
+   "print_queue.project_line_id": "null"
+  },
+  "lock": "helper",
+  "owner": "delete_line",
+  "r3": "missing",
+  "rule": "A22 writes in L5 order, the two link columns only"
+ },
+ "backend/app/api/routes/projects.py::_delete_project_in_lanes": {
+  "class": "helper (lane: delete_project's claim_lanes)",
+  "fk": {
+   "auto_queue_items.project_id": "null",
+   "auto_queue_items.project_line_id": "null",
+   "print_queue.project_id": "null",
+   "print_queue.project_line_id": "null"
+  },
+  "lock": "helper",
+  "owner": "delete_project",
+  "r3": "missing",
+  "rule": "A22 writes in L5 order, the two link columns only"
+ },
+ "backend/app/api/routes/projects.py::add_queue_items_to_project": {
+  "class": "lane:claim_lanes (A7/W3, the orders as early rows)",
+  "fk": {
+   "print_queue.project_id": "own (order and line are early rows, A7)",
+   "print_queue.project_line_id": "own (order and line are early rows, A7)"
+  },
+  "lock": "lane",
+  "owner": "fresh session",
+  "r3": "missing",
+  "rule": "W3: filing pending jobs under an order is an A7 light writer (CAS pending + queue)"
+ },
+ "backend/app/api/routes/projects.py::delete_line": {
+  "class": "lane:claim_lanes (A22 line deletion as a plan writer; Workshop early locks as before_db)",
+  "lock": "lane",
+  "owner": "request session (Workshop gate order)",
+  "r3": "missing",
+  "rule": "A22: footprint in a clean session, lanes with the early locks, re-read under the guards, archives -> router rows (A20) -> job rows"
+ },
+ "backend/app/api/routes/projects.py::delete_project": {
+  "class": "lane:claim_lanes (A22 order deletion as a plan writer; Workshop early locks as before_db)",
+  "lock": "lane",
+  "owner": "request session (Workshop gate order)",
+  "r3": "missing",
+  "rule": "A22: footprint in a clean session, lanes with the early locks, re-read under the guards, archives -> router rows (A20) -> job rows"
+ },
+ "backend/app/api/routes/projects.py::replan_order_printer_resources": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "order_resources.replan",
+  "r3": "listed",
+  "rule": "R14"
+ },
+ "backend/app/api/routes/projects.py::update_line": {
+  "class": "shared NOWAIT (plate_fit)",
+  "lock": "shared",
+  "owner": "request session",
+  "r3": "listed",
+  "rule": "unchanged (NOWAIT rows, refuses the edit on contention)"
+ },
+ "backend/app/api/routes/users.py::delete_user": {
+  "class": "lane (library_delete_scope plan)",
+  "lock": "lane",
+  "owner": "user_content_delete",
+  "r3": "missing",
+  "rule": "unchanged (its plan holds every lane its rows name)",
+  "via": [
+   "user_content_delete.delete_content"
+  ]
+ },
+ "backend/app/core/api_key_scope.py::enforce_printer_scope": {
+  "candidates": {
+   "setattr:?[_STATE_ATTR]@request.state": "other: the request state"
+  },
+  "class": "n/a",
+  "lock": "n/a",
+  "owner": "-",
+  "r3": "n/a",
+  "rule": "request.state attribute (candidate)"
+ },
+ "backend/app/main.py::_accept_bound_terminal_run": {
+  "class": "L2d",
+  "lock": "L2d",
+  "owner": "own session",
+  "r3": "listed",
+  "rule": "unchanged · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE · r6 H3: holds its archive and then its printing row; a writer that holds that row and names the archive takes the archive first (A24, A27)"
+ },
+ "backend/app/main.py::_application_lifespan": {
+  "class": "L2c",
+  "lock": "L2c",
+  "owner": "startup session",
+  "r3": "missing",
+  "rule": "startup 'aborted'->cancelled fix and interrupted-claim release, before the scheduler"
+ },
+ "backend/app/main.py::_auto_clean_completed_item": {
+  "class": "lane:claim_lanes (A21 auto-clean, fresh session after the terminal commit)",
+  "lock": "lane",
+  "owner": "completion session -> fresh session",
+  "r3": "missing",
+  "rule": "W2: the finished row's deletion under the lane, after the terminal commit"
+ },
+ "backend/app/main.py::_default_queue_id_for_printer": {
+  "class": "L2c-runtime",
+  "lock": "L2c-runtime",
+  "owner": "caller",
+  "r3": "missing",
+  "rule": "ensure_printer_queue lookup; writes only a missing header"
+ },
+ "backend/app/main.py::_hold_for_owed_swap": {
+  "class": "lane:claim_lanes (A21 swap hold, halt_lane)",
+  "lock": "lane",
+  "owner": "own session",
+  "r3": "missing",
+  "rule": "W2: claim_lanes(printer's queue, archive_id) instead of archive_write_scope (header + job rows)"
+ },
+ "backend/app/main.py::_on_print_complete_impl": {
+  "after_commit": {
+   "helper-call:queue_counters.halt_lane": "the R12 fallback is the elif of the terminal phase: the queue_item branch's commit ends that branch (aclose), the fallback commits only after these",
+   "helper-call:queue_counters.set_queue_idle": "the R12 fallback is the elif of the terminal phase: the queue_item branch's commit ends that branch (aclose), the fallback commits only after these",
+   "lock-for-update:PrinterQueue[key_share]": "the R12 fallback is the elif of the terminal phase: the queue_item branch's commit ends that branch (aclose), the fallback commits only after these"
+  },
+  "class": "lane:claim_lanes (A18 terminal phase; the R12 fallback inside it)",
+  "lock": "lane",
+  "owner": "A18 fresh session",
+  "r3": "listed",
+  "rule": "A18 + R12 addressed fallback · r5 R19: the fallback failure is halt_lane(item_id=None, stale_only=True): a stale header (no printing row) -> error, pointer cleared; a live claim -> is_paused",
+  "via": [
+   "main._hold_for_owed_swap"
+  ]
+ },
+ "backend/app/main.py::_pause_after_swap_failure": {
+  "class": "lane:claim_lanes (A21 swap-macro failure pause, halt_lane)",
+  "lock": "lane",
+  "owner": "own session",
+  "r3": "missing",
+  "rule": "A21/A9: the queue read before the guards and again under them; the next row's reason under the lane"
+ },
+ "backend/app/main.py::_record_unproven_start": {
+  "class": "lane:claim_lanes",
+  "lock": "lane",
+  "owner": "own session",
+  "r3": "missing",
+  "rule": "header is_paused under the lane"
+ },
+ "backend/app/main.py::lifespan": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "-",
+  "r3": "n/a",
+  "rule": "L2c"
+ },
+ "backend/app/main.py::mark_queue_printing_for_printer": {
+  "class": "lane:claim_lanes",
+  "lock": "lane",
+  "owner": "own session",
+  "r3": "listed",
+  "rule": "unchanged (observe_claim) · r5 R20/A25: the target header re-read under the lane; missing or another recovery_identity -> refusal"
+ },
+ "backend/app/main.py::on_print_complete": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "-",
+  "r3": "listed",
+  "rule": "A18"
+ },
+ "backend/app/main.py::on_print_start": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "-",
+  "r3": "missing",
+  "rule": "calls _record_unproven_start"
+ },
+ "backend/app/migrations/m002_bamdude_311.py::upgrade": {
+  "class": "migration",
+  "lock": "migration",
+  "owner": "init_db",
+  "r3": "n/a",
+  "rule": "frozen; startup before any runtime writer"
+ },
+ "backend/app/migrations/m007_drop_vibration_cali.py::upgrade": {
+  "class": "migration",
+  "lock": "migration",
+  "owner": "init_db",
+  "r3": "n/a",
+  "rule": "frozen; recreate_table copies the table (SQLite)"
+ },
+ "backend/app/migrations/m018_queue_library_fk_set_null.py::upgrade": {
+  "class": "migration",
+  "lock": "migration",
+  "owner": "init_db",
+  "r3": "n/a",
+  "rule": "frozen"
+ },
+ "backend/app/migrations/m019_archive_queue_batch_error.py::seed": {
+  "class": "migration",
+  "lock": "migration",
+  "owner": "init_db",
+  "r3": "n/a",
+  "rule": "frozen"
+ },
+ "backend/app/migrations/m019_archive_queue_batch_error.py::upgrade": {
+  "class": "migration",
+  "lock": "migration",
+  "owner": "init_db",
+  "r3": "n/a",
+  "rule": "frozen; recreate_table copies the table (SQLite)"
+ },
+ "backend/app/migrations/m066_auto_queue_archive_flag.py::upgrade": {
+  "class": "migration",
+  "lock": "migration",
+  "owner": "init_db",
+  "r3": "n/a",
+  "rule": "frozen"
+ },
+ "backend/app/migrations/m120_clear_queues.py::upgrade": {
+  "class": "migration",
+  "lock": "migration",
+  "owner": "init_db",
+  "r3": "n/a",
+  "rule": "frozen"
+ },
+ "backend/app/migrations/m160_print_queue_origin.py::upgrade": {
+  "class": "migration",
+  "lock": "migration",
+  "owner": "init_db",
+  "r3": "n/a",
+  "rule": "frozen"
+ },
+ "backend/app/migrations/m169_auto_queue_filament_routing.py::upgrade": {
+  "class": "migration",
+  "lock": "migration",
+  "owner": "init_db",
+  "r3": "n/a",
+  "rule": "frozen"
+ },
+ "backend/app/migrations/m217_job_lineage.py::_give_each_auto_job_an_identity": {
+  "class": "migration",
+  "lock": "migration",
+  "owner": "init_db",
+  "r3": "n/a",
+  "rule": "frozen"
+ },
+ "backend/app/migrations/m217_job_lineage.py::upgrade": {
+  "class": "migration",
+  "lock": "migration",
+  "owner": "init_db",
+  "r3": "n/a",
+  "rule": "frozen"
+ },
+ "backend/app/services/archive.py::ArchiveService._attach_3mf_to_archive_locked": {
+  "class": "L2e (via _backfill_job_plates, before the path lock)",
+  "lock": "L2e",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "plate backfill SKIP LOCKED · r5 A26: takes SQLite's writer (its own archive row) before the file-path lock · r6 R23/A29: every row lock and FK change (library match FOR KEY SHARE, the SKIP LOCKED plate back-fill, the parts seed, the unfiled credit archive -> parts) before archive_file_reference_scope is entered; under it only the donor check, the bounded copy, its own archive row's columns and the commit"
+ },
+ "backend/app/services/archive.py::ArchiveService._backfill_job_plates": {
+  "class": "L2e (SKIP LOCKED plate back-fill)",
+  "lock": "L2e",
+  "owner": "_attach_3mf_to_archive_locked (before the path lock, A29.2)",
+  "r3": "missing",
+  "rule": "A29.2 / L2(e): rows another writer holds are left for that writer"
+ },
+ "backend/app/services/assembly/job.py::_withdraw": {
+  "candidates": {
+   "orm-attr:AutoQueueItem|PrintQueueItem|PrinterQueue[status]@row": "other: an assembly job row"
+  },
+  "class": "n/a",
+  "lock": "n/a",
+  "owner": "-",
+  "r3": "n/a",
+  "rule": "assembly plan row (candidate)"
+ },
+ "backend/app/services/auto_queue_add.py::_publish_items": {
+  "class": "shared-new",
+  "lock": "shared-new",
+  "owner": "publication transaction",
+  "r3": "missing",
+  "rule": "inserts new AutoQueue rows; no lane-owned row"
+ },
+ "backend/app/services/auto_queue_add.py::_publish_items.attach": {
+  "class": "shared-new",
+  "lock": "shared-new",
+  "owner": "publication transaction",
+  "r3": "missing",
+  "rule": "same"
+ },
+ "backend/app/services/auto_queue_add.py::build_auto_queue_rows": {
+  "class": "shared-new",
+  "fk": {
+   "auto_queue_items.archive_id": "free (publication) / null (rebalance companions)",
+   "auto_queue_items.created_by_id": "free (A30: the lifetime guard is FOR NO KEY UPDATE)",
+   "auto_queue_items.library_file_id": "free under a publication (storage guard held) / held under the rebalance (A28)",
+   "auto_queue_items.project_id": "free (publication) / own under the rebalance (order row held)",
+   "auto_queue_items.project_line_id": "free (a line's FOR UPDATE holders took its order row first)",
+   "auto_queue_items.queue_source_id": "free (publication: own blob) / own (rebalance: pinned)",
+   "auto_queue_items.target_location_id": "free (delete_location waits for nothing after its lock)"
+  },
+  "lock": "shared-new",
+  "owner": "caller",
+  "r3": "missing",
+  "rule": "constructor of new AutoQueue rows · r6 per caller: under the rebalance (_write_group) library_file_id is held (A28) and project_id own (order row); under a publication every parent is free (storage guard held, users guard NO KEY, A30)"
+ },
+ "backend/app/services/auto_queue_eligibility.py::find_eligible_printer": {
+  "class": "memory (A23)",
+  "lock": "memory",
+  "owner": "tick / assign-now",
+  "r3": "missing",
+  "rule": "A23: the plate_id / target_model back-fill is set_committed_value -- persisted by the row's own placement (the claim CAS) or the pass's end batch on a revision match"
+ },
+ "backend/app/services/auto_queue_eligibility.py::write_router_rows": {
+  "class": "shared (A17 step 3, L3)",
+  "lock": "shared",
+  "owner": "own short transaction, committed here",
+  "r3": "missing",
+  "rule": "A17 step 3 / R16: router rows written only on a match with their views (identity + revision), locked ascending through lock_auto_rows, CAS on id + identity + pending + not cancelled"
+ },
+ "backend/app/services/auto_queue_return.py::_locked_rows": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "return_ready",
+  "r3": "listed",
+  "rule": "archive -> job -> auto rows FOR UPDATE · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE"
+ },
+ "backend/app/services/auto_queue_return.py::return_ready": {
+  "candidates": {
+   "orm-attr:AutoQueueItem[assigned_at]@auto": "target",
+   "orm-attr:AutoQueueItem[assigned_to_item_id]@auto": "target",
+   "orm-attr:AutoQueueItem[failed_return_count]@auto": "target",
+   "orm-attr:AutoQueueItem[failed_return_proof]@auto": "target",
+   "orm-attr:AutoQueueItem|PrintQueueItem[waiting_reason]@auto": "target",
+   "orm-attr:AutoQueueItem|PrintQueueItem|PrinterQueue[status]@auto": "target",
+   "orm-attr:PrintQueueItem[returned_receipt_identity]@job": "other: a slice job",
+   "orm-attr:PrintQueueItem[source_auto_item_id]@job": "other: a slice job"
+  },
+  "class": "lane:claim_lanes(archive)",
+  "fk": {
+   "auto_queue_items.assigned_to_item_id": "null",
+   "print_queue.source_auto_item_id": "null"
+  },
+  "lock": "lane",
+  "owner": "own session",
+  "r3": "listed",
+  "rule": "unchanged (gh117)"
+ },
+ "backend/app/services/auto_queue_return_runtime.py::AutoQueueReturnRuntime._pass_ready": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "return_ready",
+  "r3": "listed",
+  "rule": "unchanged (gh117)"
+ },
+ "backend/app/services/auto_queue_scheduler.py::AutoQueueScheduler._assign": {
+  "class": "lane:queue_claim_scope",
+  "fk": {
+   "auto_queue_items.assigned_to_item_id": "own",
+   "print_queue.archive_id": "held (A17: after the order row)",
+   "print_queue.created_by_id": "free (A30)",
+   "print_queue.library_file_id": "held (A17 r6: before the order row)",
+   "print_queue.project_id": "own (order row locked first)",
+   "print_queue.project_line_id": "free",
+   "print_queue.queue_id": "own (header P)",
+   "print_queue.queue_source_id": "free",
+   "print_queue.source_auto_item_id": "own"
+  },
+  "lock": "lane",
+  "owner": "A17 placement transaction",
+  "r3": "listed",
+  "rule": "A17; R15 C5a · r5 R18: the frozen router revision re-compared under the AutoQueue row lock before any write of it, router_view_conditions(now) in the CAS, the copy built from the locked row; r5 A24: its source parents FOR KEY SHARE after the order row, before the header and the AutoQueue row · r6 A17 (r6): the router row's library parent FOR KEY SHARE before the order row (the product gate's class order, shared with the rebalance), its archive parent after the order row; created_by_id free (A30)"
+ },
+ "backend/app/services/auto_queue_scheduler.py::AutoQueueScheduler._mark_jumped_peers": {
+  "class": "shared (A17 step 3, L3)",
+  "lock": "shared",
+  "owner": "A17 own transaction",
+  "r3": "listed",
+  "rule": "A17 step 3: after the placement's commit, own transaction, peers locked ascending (lock_auto_rows)"
+ },
+ "backend/app/services/auto_queue_scheduler.py::AutoQueueScheduler.tick": {
+  "class": "shared (A17: addressed writes, each its own short transaction) + lane (via _assign, one transaction per placement)",
+  "lock": "shared",
+  "owner": "tick session, short transactions",
+  "r3": "listed",
+  "rule": "A17; R16 addressed failures, waiting batch and jumped marks; nothing held across a placement"
+ },
+ "backend/app/services/background_dispatch.py::BackgroundDispatchService._enqueue_claimed_job": {
+  "class": "lane (direct claim)",
+  "lock": "lane",
+  "owner": "own session",
+  "r3": "listed",
+  "rule": "unchanged",
+  "via": [
+   "queue_batch.claim_printer_for_direct_print"
+  ]
+ },
+ "backend/app/services/background_dispatch.py::BackgroundDispatchService._handle_routing_deferred": {
+  "class": "lane (via defer_claim)",
+  "lock": "lane",
+  "owner": "A10 clean session",
+  "r3": "listed",
+  "rule": "A10 defer_claim (webhook/direct path)",
+  "via": [
+   "filament_deferred.defer_claim"
+  ]
+ },
+ "backend/app/services/background_dispatch.py::BackgroundDispatchService._process_job": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "-",
+  "r3": "listed",
+  "rule": "runner branches"
+ },
+ "backend/app/services/background_dispatch.py::BackgroundDispatchService._refuse_dispatch": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "-",
+  "r3": "listed",
+  "rule": "_release_direct_claim"
+ },
+ "backend/app/services/background_dispatch.py::BackgroundDispatchService._release_direct_claim": {
+  "class": "lane:queue_claim_scope",
+  "lock": "lane",
+  "owner": "own session",
+  "r3": "listed",
+  "rule": "token + header proven before the write; halts through halt_lane"
+ },
+ "backend/app/services/background_dispatch.py::BackgroundDispatchService._run_active_job": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "-",
+  "r3": "listed",
+  "rule": "_release_direct_claim"
+ },
+ "backend/app/services/background_dispatch.py::BackgroundDispatchService._run_print_library_file": {
+  "candidates": {
+   "orm-attr:AutoQueueItem|PrintQueueItem[batch_id]@archive": "other: a PrintArchive",
+   "orm-attr:PrintQueueItem[queue_id]@archive": "other: a PrintArchive"
+  },
+  "class": "L2b dispatcher-owned",
+  "fk": {
+   "print_queue.archive_id": "own (X inserted here)",
+   "print_queue.queue_id": "free — it is print_archives.queue_id (F1)"
+  },
+  "lock": "L2b",
+  "owner": "runner session",
+  "r3": "listed",
+  "rule": "same"
+ },
+ "backend/app/services/background_dispatch.py::BackgroundDispatchService._run_print_library_file.remove_transient_source": {
+  "class": "L2b dispatcher-owned",
+  "fk": {
+   "print_queue.library_file_id": "null"
+  },
+  "lock": "L2b",
+  "owner": "runner session",
+  "r3": "missing",
+  "rule": "one row FOR UPDATE + claim-change proof, then commit · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE"
+ },
+ "backend/app/services/background_dispatch.py::BackgroundDispatchService._run_reprint_archive": {
+  "candidates": {
+   "orm-attr:AutoQueueItem|PrintQueueItem[batch_id]@archive": "other: a PrintArchive",
+   "orm-attr:PrintQueueItem[queue_id]@archive": "other: a PrintArchive"
+  },
+  "class": "L2b dispatcher-owned",
+  "fk": {
+   "print_queue.archive_id": "own (X inserted here)",
+   "print_queue.queue_id": "free — it is print_archives.queue_id (F1)"
+  },
+  "lock": "L2b",
+  "owner": "runner session",
+  "r3": "listed",
+  "rule": "execution-archive re-point of its printing row (archive_id); archive.* sites are PrintArchive (n/a)"
+ },
+ "backend/app/services/background_dispatch.py::_record_dispatched_mapping": {
+  "class": "L2b",
+  "lock": "L2b",
+  "owner": "own session",
+  "r3": "listed",
+  "rule": "unchanged"
+ },
+ "backend/app/services/background_dispatch.py::enqueue_calibration_print": {
+  "class": "lane:queue_claim_scope (A7 calibration insert, A25, F5)",
+  "fk": {
+   "print_queue.created_by_id": "free (A30)",
+   "print_queue.library_file_id": "free",
+   "print_queue.queue_id": "free"
+  },
+  "header": "A25 inline: the header re-read FOR NO KEY UPDATE under queue_claim_scope, its recovery_identity compared",
+  "lock": "lane",
+  "owner": "fresh session",
+  "r3": "listed",
+  "rule": "A7 calibration insert · r5 R20/A25: the target header re-read under the lane; missing or another recovery_identity -> refusal · r6 A30: created_by_id free (lifetime guard FOR NO KEY UPDATE)"
+ },
+ "backend/app/services/calibration_service.py::CalibrationService._run_calibration_print": {
+  "class": "lane (via enqueue_calibration_print)",
+  "lock": "lane",
+  "owner": "caller session",
+  "r3": "missing",
+  "rule": "header-only recount after the insert",
+  "via": [
+   "background_dispatch.enqueue_calibration_print"
+  ]
+ },
+ "backend/app/services/content_delete_rows.py::archive_rows": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "caller plan",
+  "r3": "listed-wrong",
+  "rule": "W9 (archive hard delete) / library_delete_scope plan · r5 A26: the file-path reference lock is innermost; on SQLite its taker already holds the writer · r6 H7: the printers whose plate gate names the archive are the hard delete's early rows (A19 before_db), held before the file-path lock; part_stock.detach_archive under the path lock writes movement rows only"
+ },
+ "backend/app/services/content_delete_rows.py::library_rows": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "library_delete_scope plan",
+  "r3": "listed",
+  "rule": "unchanged"
+ },
+ "backend/app/services/filament_deferred.py::defer_claim": {
+  "after_commit": {
+   "core-update:PrinterQueue[current_item_id,status]": "branch: the lost-CAS commit (A11 release) ends in return",
+   "helper-call:queue_counters.halt_lane": "branch: the lost-CAS commit (A11 release) ends in return",
+   "helper-call:queue_counters.update_queue_counters": "branch: the lost-CAS commit (A11 release) ends in return",
+   "helper-call:queue_ops._bump_block_to_top_unlocked": "branch: the lost-CAS commit (A11 release) ends in return"
+  },
+  "class": "lane:claim_lanes(archives) (A10)",
+  "fk": {
+   "print_queue.archive_id": "held (A10, A27)",
+   "print_queue.library_file_id": "held (A10, A27; early row)"
+  },
+  "lock": "lane",
+  "owner": "A10 clean session",
+  "r3": "listed",
+  "rule": "A10; R11 writes the deferral proof; W1 execution archive row before the job row · r5 R17/A24: the parents its source restore names locked before the job row (original archive: guard + FOR KEY SHARE, ascending with the execution archive; library row: FOR KEY SHARE as an early row); a gone parent or another incarnation restores NULL; no ORM status write after its CAS · r6 R24/A27: its incarnation test is the shared function (archive recovery_identity; library id + creation time)"
+ },
+ "backend/app/services/filament_intake.py::fail_auto_source": {
+  "class": "shared (one row, A17 step 3)",
+  "lock": "shared",
+  "owner": "own short transaction (A17) / request",
+  "r3": "listed",
+  "rule": "A17 step 3 / R16: addressed by the view, through write_router_rows (identity + revision under the row lock), committed at once"
+ },
+ "backend/app/services/filament_policy.py::clear_routing_runtime": {
+  "candidates": {
+   "orm-attr:PrintQueueItem[filament_routing]@item": "target"
+  },
+  "class": "helper",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "missing",
+  "rule": "A27: a re-arm or copy drops the routing runtime only; the link is queue_source_link's"
+ },
+ "backend/app/services/interrupted_dispatch.py::_settle": {
+  "class": "lane:claim_lanes(archive)",
+  "lock": "lane",
+  "owner": "own session",
+  "r3": "listed",
+  "rule": "unchanged; archive -> header -> job (the W1 order) · r5 R17/A24: the provenance archive (guard + FOR KEY SHARE) and library row (early) before the header and the job row · r6 R24/A27: the candidate read before the guards; its archive joins claim_lanes(archive_ids=) and is locked FOR KEY SHARE ascending with the execution archive, a library candidate as an early row; incarnation from the provenance stamp; a different candidate under the locks -> nothing written (the row stays for the operator)"
+ },
+ "backend/app/services/interrupted_dispatch.py::recover_interrupted_dispatches": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "-",
+  "r3": "listed",
+  "rule": "_settle"
+ },
+ "backend/app/services/library_delete_scope.py::library_delete_scope": {
+  "class": "lane:claim_lanes (plan)",
+  "lock": "lane",
+  "owner": "caller session",
+  "r3": "listed",
+  "rule": "unchanged; its footprint re-check is the model for W9 and R13 · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE"
+ },
+ "backend/app/services/monitor_snapshot.py::build_snapshot": {
+  "candidates": {
+   "orm-attr:PrintQueueItem[queue]@tile": "other: a monitor tile"
+  },
+  "class": "n/a",
+  "lock": "n/a",
+  "owner": "-",
+  "r3": "n/a",
+  "rule": "tile object (candidate)"
+ },
+ "backend/app/services/order_auto_eject.py::dispatch_check": {
+  "class": "-> lane (W4)",
+  "lock": "pending",
+  "owner": "plate_answers",
+  "r3": "missing",
+  "rule": "W4"
+ },
+ "backend/app/services/order_plan_submission.py::cancel": {
+  "candidates": {
+   "orm-attr:AutoQueueItem|PrintQueueItem|PrinterQueue[status]@operation": "other: an order-plan operation"
+  },
+  "class": "n/a",
+  "lock": "n/a",
+  "owner": "-",
+  "r3": "n/a",
+  "rule": "same"
+ },
+ "backend/app/services/order_plan_submission.py::consume": {
+  "candidates": {
+   "orm-attr:AutoQueueItem|PrintQueueItem|PrinterQueue[status]@operation": "other: an order-plan operation"
+  },
+  "class": "n/a",
+  "lock": "n/a",
+  "owner": "-",
+  "r3": "n/a",
+  "rule": "submission operation row (candidate)"
+ },
+ "backend/app/services/order_plan_submission.py::fence": {
+  "candidates": {
+   "orm-attr:AutoQueueItem|PrintQueueItem|PrinterQueue[status]@operation": "other: an order-plan operation"
+  },
+  "class": "n/a",
+  "lock": "n/a",
+  "owner": "-",
+  "r3": "n/a",
+  "rule": "same"
+ },
+ "backend/app/services/order_resources.py::replan": {
+  "candidates": {
+   "session-delete:?@item": "target"
+  },
+  "class": "lane:claim_lanes + A20 prelock after the order row",
+  "lock": "lane",
+  "owner": "request session",
+  "r3": "listed",
+  "rule": "A20 replan / R14"
+ },
+ "backend/app/services/plan_engine.py::_totals": {
+  "candidates": {
+   "orm-attr:AutoQueueItem[print_time_seconds]@totals": "other: a plan total"
+  },
+  "class": "n/a",
+  "lock": "n/a",
+  "owner": "-",
+  "r3": "n/a",
+  "rule": "totals object (candidate)"
+ },
+ "backend/app/services/plan_engine.py::plan_lines": {
+  "candidates": {
+   "orm-attr:AutoQueueItem|PrintQueueItem[auto_eject]@capacity": "other: a plan capacity record"
+  },
+  "class": "n/a",
+  "lock": "n/a",
+  "owner": "-",
+  "r3": "n/a",
+  "rule": "capacity object (candidate)"
+ },
+ "backend/app/services/plate_answers.py::answer_plate_run": {
+  "class": "lane:claim_lanes (A21 plate answers, footprint before the guards)",
+  "fk": {
+   "print_queue.project_id": "free",
+   "print_queue.project_line_id": "free"
+  },
+  "lock": "lane",
+  "owner": "request / Telegram session",
+  "r3": "listed-wrong",
+  "rule": "W4: storage -> claim_lanes(printer's queues, archive_id) replacing archive_write_scope · r5 R17/A24: Repeat takes the restored source archive (guard + FOR KEY SHARE) beside the expected archive, ascending, before the job row · r6 H6: the archive guard (claim_lanes archive_ids) is taken before the printer row on every path; with no expected archive the gate's archive is read unlocked first and the printer row re-checked to name it (StalePlateAnswer otherwise); R24/A27: Repeat's candidate parent joins the plan"
+ },
+ "backend/app/services/plate_fit.py::load": {
+  "class": "shared NOWAIT",
+  "lock": "shared",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "AutoQueue rows FOR UPDATE NOWAIT (never waits) · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE"
+ },
+ "backend/app/services/plate_fit.py::remove_reviewed_pending": {
+  "auto_rows": {
+   "core-delete:AutoQueueItem": "A20: rows locked NOWAIT never wait and keep their shape"
+  },
+  "class": "shared NOWAIT",
+  "lock": "shared",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "deletes only rows locked NOWAIT; detach touches no printer row of an unassigned job"
+ },
+ "backend/app/services/plate_hold.py::_rearm": {
+  "class": "helper",
+  "fk": {
+   "print_queue.archive_id": "held by answer_plate_run (A21, A27)"
+  },
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "listed-wrong",
+  "rule": "W4; head writer (status into pending); voids the deferral proof · r5 A24 through its caller · r6 R24/A27: through the one source-link rule; a legacy row whose only source is its archive keeps it (unchanged key)"
+ },
+ "backend/app/services/plate_hold.py::answer_by_clearing": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "missing",
+  "rule": "W4"
+ },
+ "backend/app/services/plate_hold.py::answer_by_repeating": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "listed-wrong",
+  "rule": "W4 · r5 A24 through its caller · r6 R24/A27: the candidate named to its caller before the guards"
+ },
+ "backend/app/services/plate_hold.py::clean_up_finished_row": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "missing",
+  "rule": "W2 (completion) / A18 (reconciliation) / _swap_settle lane"
+ },
+ "backend/app/services/plate_hold.py::clear_held_row": {
+  "class": "lane:claim_lanes (A21 start-time / recovery clear)",
+  "lock": "lane",
+  "owner": "own session",
+  "r3": "missing",
+  "rule": "A21: the answered archive and the printer's queues read before the guards; the held row cleared only while it is still that print's"
+ },
+ "backend/app/services/previous_print_gate.py::acknowledge_failures_before_success": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "A18: under the completion's / closers' lane"
+ },
+ "backend/app/services/previous_print_gate.py::acknowledge_newest_failure": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "caller (queue_scope_lock)",
+  "r3": "missing",
+  "rule": "unchanged"
+ },
+ "backend/app/services/print_claims.py::observe_claim": {
+  "class": "helper (lane)",
+  "fk": {
+   "print_queue.archive_id": "free"
+  },
+  "lock": "helper",
+  "owner": "caller claim_lanes",
+  "r3": "listed",
+  "rule": "unchanged · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE"
+ },
+ "backend/app/services/print_execution.py::close_noncurrent": {
+  "candidates": {
+   "orm-attr:AutoQueueItem|PrintQueueItem|PrinterQueue[status]@archive": "other: a PrintArchive",
+   "orm-attr:PrintQueueItem[completed_at]@archive": "other: a PrintArchive"
+  },
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "publish_start / _reconcile claim_lanes",
+  "r3": "listed",
+  "rule": "unchanged · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE"
+ },
+ "backend/app/services/print_execution.py::publish_start": {
+  "class": "lane:claim_lanes(archives)",
+  "lock": "lane",
+  "owner": "own session",
+  "r3": "listed",
+  "rule": "unchanged"
+ },
+ "backend/app/services/print_reconciliation.py::_pause_under_the_lanes": {
+  "class": "lane:claim_lanes (A18 duplicate claims)",
+  "lock": "lane",
+  "owner": "the sweep session, after its archive commit",
+  "r3": "missing",
+  "rule": "A18: the printer's queues paused under their lanes and the archive's guard"
+ },
+ "backend/app/services/print_reconciliation.py::_reconcile": {
+  "class": "lane:claim_lanes (noncurrent close); calls the A18 closers outside it",
+  "lock": "lane",
+  "outside": {
+   "helper-call:print_reconciliation._reconcile_complete_archive": "A18: the closer takes its own lanes after its archive commit"
+  },
+  "owner": "sweep session",
+  "r3": "listed",
+  "rule": "unchanged + A18"
+ },
+ "backend/app/services/print_reconciliation.py::_reconcile_complete_archive": {
+  "after_commit": {
+   "helper-call:plate_hold.clean_up_finished_row": "the commits before them inside the lanes end their branch in return (the row changed hands / the queues changed)",
+   "helper-call:previous_print_gate.acknowledge_failures_before_success": "the commits before them inside the lanes end their branch in return (the row changed hands / the queues changed)",
+   "helper-call:queue_counters.halt_lane": "the commits before them inside the lanes end their branch in return (the row changed hands / the queues changed)",
+   "helper-call:queue_counters.set_queue_idle": "the commits before them inside the lanes end their branch in return (the row changed hands / the queues changed)",
+   "helper-call:queue_counters.update_queue_counters": "the commits before them inside the lanes end their branch in return (the row changed hands / the queues changed)",
+   "lock-for-update:PrintQueueItem[key_share]": "the commits before them inside the lanes end their branch in return (the row changed hands / the queues changed)",
+   "orm-attr:PrintQueueItem[completed_at]": "the commits before them inside the lanes end their branch in return (the row changed hands / the queues changed)",
+   "orm-attr:PrintQueueItem[error_code]": "the commits before them inside the lanes end their branch in return (the row changed hands / the queues changed)",
+   "orm-attr:PrintQueueItem[status]": "the commits before them inside the lanes end their branch in return (the row changed hands / the queues changed)",
+   "orm-attr:PrinterQueue[is_paused]": "the commits before them inside the lanes end their branch in return (the row changed hands / the queues changed)"
+  },
+  "class": "lane:claim_lanes (A18 queue phase after the archive commit)",
+  "lock": "lane",
+  "owner": "A18 fresh session",
+  "r3": "listed",
+  "rule": "A18 + addressed idle · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE",
+  "via": [
+   "print_reconciliation._pause_under_the_lanes"
+  ]
+ },
+ "backend/app/services/print_reconciliation.py::_recover_accepted_terminal_checkpoint": {
+  "class": "lane:claim_lanes (A18)",
+  "lock": "lane",
+  "owner": "A18 fresh session",
+  "r3": "listed",
+  "rule": "A18 · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE"
+ },
+ "backend/app/services/print_reconciliation.py::_recover_checkpoint_locked": {
+  "class": "helper (lane: _recover_accepted_terminal_checkpoint's claim_lanes)",
+  "lock": "helper",
+  "owner": "_recover_accepted_terminal_checkpoint",
+  "r3": "missing",
+  "rule": "A18: the checkpoint's close inside the lanes; halt_lane"
+ },
+ "backend/app/services/print_reconciliation.py::_repair_terminal_queue_items": {
+  "class": "lane:claim_lanes(archives)",
+  "lock": "lane",
+  "owner": "sweep session",
+  "r3": "listed",
+  "rule": "unchanged (archives -> header -> rows) · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE"
+ },
+ "backend/app/services/print_reconciliation.py::_resolve_pending_swaps": {
+  "candidates": {
+   "orm-attr:PrintQueueItem[queue_id]@state": "other: the reconciliation state"
+  },
+  "class": "helper",
+  "fk": {
+   "print_queue.queue_id": "n/a (memory: state.queue_id)"
+  },
+  "lock": "helper",
+  "owner": "sweep",
+  "r3": "missing",
+  "rule": "state.queue_id is memory (candidate); _swap_settle lane"
+ },
+ "backend/app/services/print_reconciliation.py::_resolve_pending_swaps.resolve": {
+  "candidates": {
+   "orm-attr:PrintQueueItem[queue_id]@state": "other: the reconciliation state"
+  },
+  "class": "helper",
+  "fk": {
+   "print_queue.queue_id": "n/a (memory: state.queue_id)"
+  },
+  "lock": "helper",
+  "owner": "sweep",
+  "r3": "missing",
+  "rule": "same"
+ },
+ "backend/app/services/print_reconciliation.py::_swap_settle": {
+  "after_commit": {
+   "helper-call:plate_hold.clean_up_finished_row": "pending A21: the clean-up moves before the commit",
+   "helper-call:queue_counters.halt_lane": "branch: the earlier commit ends in return (now halt_lane, A9)",
+   "orm-attr:PrintQueueItem[waiting_reason]": "branch: the earlier commit ends in return"
+  },
+  "class": "lane:queue_claim_scope (clean-up -> before the commit, A21)",
+  "lock": "lane",
+  "owner": "own transaction",
+  "r3": "missing",
+  "rule": "R12 addressed release (expected_item_id or stale_only); A21: clean_up_finished_row moves before the commit (the PG guard ends at it)"
+ },
+ "backend/app/services/print_reconciliation.py::_sweep_printer_prints": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "sweep",
+  "r3": "listed",
+  "rule": "fresh sessions per phase"
+ },
+ "backend/app/services/print_reconciliation.py::release_interrupted_dispatch_claims": {
+  "class": "L2c",
+  "lock": "L2c",
+  "owner": "startup session",
+  "r3": "missing",
+  "rule": "before the scheduler starts"
+ },
+ "backend/app/services/print_scheduler.py::PrintScheduler._cancel_item": {
+  "after_commit": {
+   "helper-call:queue_counters.halt_lane": "branch: the lost-CAS commit (A11 release) ends in return",
+   "helper-call:queue_counters.update_queue_counters": "branch: the lost-CAS commit (A11 release) ends in return"
+  },
+  "class": "lane:claim_lanes(archive) (A10)",
+  "lock": "lane",
+  "owner": "A10 clean session",
+  "r3": "listed",
+  "rule": "A10; W1"
+ },
+ "backend/app/services/print_scheduler.py::PrintScheduler._claim_for_dispatch": {
+  "after_commit": {
+   "core-update:PrintQueueItem[**,dispatch_attempts]": "branch: the earlier commit (budget spent) ends in return",
+   "helper-call:queue_counters.set_queue_printing": "branch: the earlier commit (budget spent) ends in return",
+   "helper-call:queue_counters.update_queue_counters": "branch: the earlier commit (budget spent) ends in return"
+  },
+  "class": "lane:queue_claim_scope",
+  "lock": "lane",
+  "owner": "own session",
+  "r3": "listed",
+  "rule": "A3, A4, R11 (voids the proof), R15 (linearisation point) · B1: basis compared under the row lock (lock_judged_row), CAS names the lane, snapshot returned (A5)"
+ },
+ "backend/app/services/print_scheduler.py::PrintScheduler._dispatch_and_finalize": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "-",
+  "r3": "listed",
+  "rule": "A10"
+ },
+ "backend/app/services/print_scheduler.py::PrintScheduler._fail_attempt": {
+  "after_commit": {
+   "helper-call:queue_counters.halt_lane": "branch: the lost-CAS commit (A11 release) ends in return",
+   "helper-call:queue_counters.update_queue_counters": "branch: the lost-CAS commit (A11 release) ends in return"
+  },
+  "class": "lane:claim_lanes(archive) (A10)",
+  "lock": "lane",
+  "owner": "A10 clean session",
+  "r3": "listed",
+  "rule": "A10, B3, W1"
+ },
+ "backend/app/services/print_scheduler.py::PrintScheduler._fail_item": {
+  "class": "lane:queue_claim_scope (A8 V3)",
+  "lock": "lane",
+  "owner": "verdict session",
+  "r3": "listed",
+  "rule": "A8, A9 halt_lane"
+ },
+ "backend/app/services/print_scheduler.py::PrintScheduler._fail_source_item": {
+  "class": "lane:queue_claim_scope (A8 V2)",
+  "lock": "lane",
+  "owner": "verdict session",
+  "r3": "listed",
+  "rule": "A8"
+ },
+ "backend/app/services/print_scheduler.py::PrintScheduler._get_filament_requirements": {
+  "class": "memory (A23, W8)",
+  "lock": "memory",
+  "owner": "runner",
+  "r3": "missing",
+  "rule": "A23/W8: the warning's plate_id back-fill is set_committed_value; the claim's plan_fields fixed the plate (A5)"
+ },
+ "backend/app/services/print_scheduler.py::PrintScheduler._start_print": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "-",
+  "r3": "listed",
+  "rule": "A5, A8"
+ },
+ "backend/app/services/print_scheduler.py::PrintScheduler._verdict_skip": {
+  "class": "lane:queue_claim_scope (A8 V1)",
+  "lock": "lane",
+  "owner": "verdict session",
+  "r3": "missing",
+  "rule": "A8 V1: proved head + basis + the gate still shut in the verdict's transaction"
+ },
+ "backend/app/services/print_scheduler.py::PrintScheduler._verdict_storage_full": {
+  "class": "lane:queue_claim_scope (A8 V4)",
+  "lock": "lane",
+  "owner": "verdict session",
+  "r3": "missing",
+  "rule": "A8 V4, A14: the head only, a lane not already halted, the medium still full"
+ },
+ "backend/app/services/print_scheduler.py::PrintScheduler._wait": {
+  "class": "L2b",
+  "lock": "L2b",
+  "owner": "tick session",
+  "r3": "missing",
+  "rule": "A8 waiting diagnostic: one Core UPDATE by id + pending + the loaded queue (write_wait_reason)"
+ },
+ "backend/app/services/print_scheduler.py::PrintScheduler._watchdog_print_start": {
+  "class": "lane (via _fail_attempt)",
+  "lock": "lane",
+  "owner": "A10",
+  "r3": "missing",
+  "rule": "_fail_attempt",
+  "via": [
+   "print_scheduler.PrintScheduler._fail_attempt"
+  ]
+ },
+ "backend/app/services/print_scheduler.py::PrintScheduler.check_queue": {
+  "class": "L2b (waiting diagnostics through _wait); its verdicts and the claim in their own lanes (A8)",
+  "lock": "L2b",
+  "owner": "tick session (diagnostics) + verdict and claim sessions",
+  "r3": "listed",
+  "rule": "A2 (basis at load), A8, A14 (head before the timelapse pause and the busy check)"
+ },
+ "backend/app/services/print_scheduler.py::lock_judged_row": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "caller (the claim, every verdict)",
+  "r3": "missing",
+  "rule": "A3 step 3: the judged row FOR NO KEY UPDATE, compared with the basis"
+ },
+ "backend/app/services/print_state_recovery_store.py::_apply_rows": {
+  "candidates": {
+   "orm-attr:AutoQueueItem|PrintQueueItem[waiting_reason]@item": "target",
+   "orm-attr:AutoQueueItem|PrintQueueItem[waiting_reason]@row": "other: an assembly job row",
+   "orm-attr:AutoQueueItem|PrintQueueItem|PrinterQueue[status]@archive": "other: a PrintArchive",
+   "orm-attr:AutoQueueItem|PrintQueueItem|PrinterQueue[status]@item": "target",
+   "orm-attr:AutoQueueItem|PrintQueueItem|PrinterQueue[status]@q": "target",
+   "orm-attr:AutoQueueItem|PrintQueueItem|PrinterQueue[status]@row": "other: an assembly job row",
+   "orm-attr:PrintQueueItem[completed_at]@archive": "other: a PrintArchive",
+   "orm-attr:PrintQueueItem[completed_at]@item": "target",
+   "orm-attr:PrintQueueItem[completed_at]@row": "other: an assembly job row",
+   "orm-attr:PrintQueueItem[error_code]@item": "target",
+   "orm-attr:PrintQueueItem[error_code]@row": "other: an assembly job row",
+   "orm-attr:PrintQueueItem[error_message]@archive": "other: a PrintArchive",
+   "orm-attr:PrintQueueItem[error_message]@item": "target",
+   "orm-attr:PrintQueueItem[error_message]@row": "other: an assembly job row",
+   "orm-attr:PrinterQueue[current_item_id]@q": "target",
+   "orm-attr:PrinterQueue[is_paused]@q": "target",
+   "orm-attr:PrinterQueue[is_paused]@queues[key[0]]": "target",
+   "orm-attr:PrinterQueue[last_activity_at]@q": "target",
+   "session-delete:?@item": "target"
+  },
+  "class": "lane:claim_lanes(archive)",
+  "delete_locks": {
+   "lock-for-update:PrintQueueItem": "L6(c): the job row delete_stale_item deletes, FOR UPDATE before the authoritative dependents read -- a delete needs no dependent record, so the read waits for a just-inserted reference's FK check (TestPrintStateRecovery late_foreign_reference)"
+  },
+  "lock": "lane",
+  "owner": "own session",
+  "r3": "listed",
+  "rule": "unchanged (operator recovery spec) · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE, except the delete lock of the row it deletes (L6(c))"
+ },
+ "backend/app/services/print_state_recovery_store.py::_apply_runtime": {
+  "candidates": {
+   "orm-attr:PrinterQueue[is_paused]@queues[key[0]]": "target"
+  },
+  "class": "lane",
+  "lock": "lane",
+  "outside": {
+   "orm-attr:PrinterQueue[is_paused]": "inside the lane _take_guards enters into this block's AsyncExitStack (a helper the scan does not follow)"
+  },
+  "owner": "recovery",
+  "r3": "listed",
+  "rule": "header is_paused under its guards"
+ },
+ "backend/app/services/print_state_recovery_store.py::_take_guards": {
+  "class": "lane:claim_lanes",
+  "lock": "lane",
+  "owner": "recovery",
+  "r3": "listed",
+  "rule": "unchanged · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE"
+ },
+ "backend/app/services/print_state_recovery_store.py::apply_preview": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "_apply_rows",
+  "r3": "listed",
+  "rule": "unchanged (operator recovery)"
+ },
+ "backend/app/services/print_state_recovery_store.py::read_facts": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "recovery apply",
+  "r3": "listed",
+  "rule": "unchanged · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE"
+ },
+ "backend/app/services/printer_occupancy.py::queue_header_holds": {
+  "class": "helper (A25: header Q FOR NO KEY UPDATE under its lane)",
+  "lock": "helper",
+  "owner": "caller (lane)",
+  "r3": "missing",
+  "rule": "A25"
+ },
+ "backend/app/services/printer_occupancy.py::read_queue_occupancy": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "header FOR UPDATE under the caller's lane · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE"
+ },
+ "backend/app/services/printer_queues.py::_adopt_orphan": {
+  "class": "L2c",
+  "fk": {
+   "printer_queues.printer_id": "startup (L2c)"
+  },
+  "lock": "L2c",
+  "owner": "startup",
+  "r3": "listed",
+  "rule": "startup"
+ },
+ "backend/app/services/printer_queues.py::_detach_queue_children": {
+  "class": "L2c",
+  "lock": "L2c",
+  "owner": "startup",
+  "r3": "listed",
+  "rule": "startup"
+ },
+ "backend/app/services/printer_queues.py::_rekey_queue": {
+  "class": "L2c",
+  "fk": {
+   "print_queue.queue_id": "startup (L2c)"
+  },
+  "lock": "L2c",
+  "owner": "startup",
+  "r3": "listed",
+  "rule": "startup"
+ },
+ "backend/app/services/printer_queues.py::ensure_all_printer_queues": {
+  "class": "L2c",
+  "lock": "L2c",
+  "owner": "startup",
+  "r3": "listed",
+  "rule": "startup sweep"
+ },
+ "backend/app/services/printer_queues.py::ensure_printer_queue": {
+  "class": "L2c / L2c-runtime",
+  "fk": {
+   "printer_queues.printer_id": "free"
+  },
+  "lock": "L2c-runtime",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "re-key and adopt at the startup sweep; at runtime writes only a missing header"
+ },
+ "backend/app/services/product_composition.py::recipe_for": {
+  "candidates": {
+   "orm-attr:AutoQueueItem[print_time_seconds]@recipe": "other: a product recipe"
+  },
+  "class": "n/a",
+  "lock": "n/a",
+  "owner": "-",
+  "r3": "n/a",
+  "rule": "recipe object (candidate)"
+ },
+ "backend/app/services/queue_add.py::_add_items_from_queue_source": {
+  "class": "lane:queue_scope_lock",
+  "fk": {
+   "print_queue.archive_id": "free",
+   "print_queue.created_by_id": "free",
+   "print_queue.library_file_id": "free",
+   "print_queue.project_id": "free",
+   "print_queue.project_line_id": "free",
+   "print_queue.queue_id": "free",
+   "print_queue.queue_source_id": "free"
+  },
+  "lock": "lane",
+  "owner": "request session",
+  "r3": "listed",
+  "rule": "unchanged · r5 R20/A25: the target header re-read under the lane; missing or another recovery_identity -> refusal"
+ },
+ "backend/app/services/queue_add.py::_add_next_block_from_queue_source": {
+  "class": "lane:queue_scope_lock",
+  "lock": "lane",
+  "owner": "request session",
+  "r3": "listed",
+  "rule": "unchanged · r5 R20/A25: the target header re-read under the lane; missing or another recovery_identity -> refusal"
+ },
+ "backend/app/services/queue_add.py::_new_rows_for_data": {
+  "class": "helper",
+  "fk": {
+   "print_queue.archive_id": "free",
+   "print_queue.created_by_id": "free",
+   "print_queue.library_file_id": "free",
+   "print_queue.project_id": "free",
+   "print_queue.project_line_id": "free",
+   "print_queue.queue_id": "free",
+   "print_queue.queue_source_id": "free"
+  },
+  "header": "A25: built inside the publication's attach, which re-read the header under the lane (queue_header_holds)",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "constructor inside the caller's queue_scope_lock"
+ },
+ "backend/app/services/queue_add.py::_publish_items": {
+  "class": "lane:queue_scope_lock",
+  "fk": {
+   "print_queue.archive_id": "free",
+   "print_queue.created_by_id": "free",
+   "print_queue.library_file_id": "free",
+   "print_queue.project_id": "free",
+   "print_queue.project_line_id": "free",
+   "print_queue.queue_id": "free",
+   "print_queue.queue_source_id": "free"
+  },
+  "lock": "lane",
+  "owner": "publication",
+  "r3": "listed",
+  "rule": "unchanged · r5 R20/A25: the target header re-read under the lane; missing or another recovery_identity -> refusal"
+ },
+ "backend/app/services/queue_add.py::_publish_items.attach": {
+  "class": "lane:queue_scope_lock",
+  "fk": {
+   "print_queue.archive_id": "free",
+   "print_queue.created_by_id": "free",
+   "print_queue.library_file_id": "free",
+   "print_queue.project_id": "free",
+   "print_queue.project_line_id": "free",
+   "print_queue.queue_id": "free",
+   "print_queue.queue_source_id": "free"
+  },
+  "lock": "lane",
+  "owner": "publication",
+  "r3": "listed",
+  "rule": "unchanged · r5 R20/A25: the target header re-read under the lane; missing or another recovery_identity -> refusal"
+ },
+ "backend/app/services/queue_add.py::add_items_to_printer_queue": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "-",
+  "r3": "listed",
+  "rule": "queue add"
+ },
+ "backend/app/services/queue_add.py::add_next_block_to_printer_queue": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "-",
+  "r3": "listed",
+  "rule": "queue add next"
+ },
+ "backend/app/services/queue_add.py::add_next_block_to_printer_queue.attach": {
+  "class": "lane:queue_scope_lock",
+  "lock": "lane",
+  "owner": "publication",
+  "r3": "listed",
+  "rule": "unchanged · r5 R20/A25: the target header re-read under the lane; missing or another recovery_identity -> refusal"
+ },
+ "backend/app/services/queue_auto_transfer.py::_facts": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "transfer",
+  "r3": "listed",
+  "rule": "unchanged · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE"
+ },
+ "backend/app/services/queue_auto_transfer.py::apply": {
+  "candidates": {
+   "orm-attr:PrintQueueItem[source_auto_item_id]@item": "target",
+   "session-delete:?@item": "target"
+  },
+  "class": "lane:claim_lanes",
+  "fk": {
+   "auto_queue_items.** (any FK)": "archive_id / library_file_id: SKIP LOCKED (_navigation_links); the rest free",
+   "auto_queue_items.assigned_to_item_id": "null",
+   "auto_queue_items.queue_source_id": "free",
+   "auto_queue_items.target_location_id": "free",
+   "print_queue.source_auto_item_id": "null"
+  },
+  "lock": "lane",
+  "owner": "own session",
+  "r3": "listed",
+  "rule": "unchanged"
+ },
+ "backend/app/services/queue_batch.py::claim_printer_for_direct_print": {
+  "class": "lane:queue_claim_scope",
+  "fk": {
+   "print_queue.** (any FK)": "free",
+   "print_queue.created_by_id": "free",
+   "print_queue.queue_id": "free",
+   "print_queue.queue_source_id": "free"
+  },
+  "lock": "lane",
+  "owner": "caller session",
+  "r3": "listed",
+  "rule": "unchanged (the scope is an IfExp the scanner does not see) · r5 R20/A25: the target header re-read under the lane; missing or another recovery_identity -> refusal",
+  "via": [
+   "queue_batch.claim_printer_for_direct_print.build"
+  ]
+ },
+ "backend/app/services/queue_batch.py::claim_printer_for_direct_print.attach": {
+  "class": "lane",
+  "lock": "lane",
+  "owner": "publication",
+  "r3": "listed",
+  "rule": "unchanged · r5 R20/A25: the target header re-read under the lane; missing or another recovery_identity -> refusal",
+  "via": [
+   "queue_batch.claim_printer_for_direct_print.build"
+  ]
+ },
+ "backend/app/services/queue_batch.py::claim_printer_for_direct_print.build": {
+  "class": "lane:queue_claim_scope",
+  "fk": {
+   "print_queue.** (any FK)": "free",
+   "print_queue.created_by_id": "free",
+   "print_queue.queue_id": "free",
+   "print_queue.queue_source_id": "free"
+  },
+  "lock": "lane",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "unchanged · r5 R20/A25: the target header re-read under the lane; missing or another recovery_identity -> refusal"
+ },
+ "backend/app/services/queue_batch.py::enqueue_batch_copies.attach": {
+  "class": "lane:queue_scope_lock",
+  "fk": {
+   "print_queue.archive_id": "free",
+   "print_queue.created_by_id": "free",
+   "print_queue.library_file_id": "free",
+   "print_queue.project_id": "free",
+   "print_queue.project_line_id": "free",
+   "print_queue.queue_id": "free",
+   "print_queue.queue_source_id": "free"
+  },
+  "lock": "lane",
+  "owner": "publication",
+  "r3": "listed",
+  "rule": "unchanged · r5 R20/A25: the target header re-read under the lane; missing or another recovery_identity -> refusal"
+ },
+ "backend/app/services/queue_bulk_retry.py::retry_block": {
+  "class": "lane:claim_lanes",
+  "lock": "lane",
+  "owner": "request session",
+  "r3": "listed",
+  "rule": "unchanged · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE · r6 R24/A27: every eligible row's candidate parent FOR KEY SHARE ascending before the rows' lock; a row whose candidate changed is left with reason changed"
+ },
+ "backend/app/services/queue_counters.py::detach_auto_queue_refs": {
+  "class": "helper -> r4 W6",
+  "fk": {
+   "print_queue.source_auto_item_id": "null"
+  },
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "missing",
+  "rule": "W6: the printer rows it nulls lie in the caller's lanes (footprint), or are named by a caller with no lane-owned waits"
+ },
+ "backend/app/services/queue_counters.py::detach_print_queue_refs": {
+  "class": "helper (A20: prelocks the companions and back-references it writes)",
+  "fk": {
+   "auto_queue_items.assigned_to_item_id": "null"
+  },
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "missing",
+  "rule": "A20 / W6"
+ },
+ "backend/app/services/queue_counters.py::halt_lane": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "missing",
+  "rule": "A9: the one halting helper, called inside its caller's lane after the header lock"
+ },
+ "backend/app/services/queue_counters.py::lock_auto_rows": {
+  "class": "helper (A20)",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "missing",
+  "rule": "A20: router rows FOR NO KEY UPDATE ascending, recorded in the lock ledger; a lower id after a higher one raises AutoRowOrderError"
+ },
+ "backend/app/services/queue_counters.py::release_lost_claim": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "missing",
+  "rule": "A11: releases the claim queue's header only while it names the item and the row is not printing"
+ },
+ "backend/app/services/queue_counters.py::set_queue_idle": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "R12: every caller addressed (expected_item_id or the no-live-claim CAS)"
+ },
+ "backend/app/services/queue_counters.py::set_queue_printing": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "claims only"
+ },
+ "backend/app/services/queue_counters.py::update_queue_counters": {
+  "class": "helper (L2a when alone)",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "header counters"
+ },
+ "backend/app/services/queue_edit_apply.py::apply_edits": {
+  "class": "lane:claim_lanes (A6)",
+  "lock": "lane",
+  "owner": "fresh session",
+  "r3": "missing",
+  "rule": "A6: single / bulk / batch PATCH apply — rows FOR NO KEY UPDATE ascending, pending + queue + basis + target facts, then the values, counters ascending, one commit"
+ },
+ "backend/app/services/queue_leftovers.py::_retire_orphan": {
+  "class": "lane:claim_lanes (A20 plan: the lanes of the printer rows its detach nulls)",
+  "lock": "lane",
+  "owner": "own session",
+  "r3": "listed",
+  "rule": "A20"
+ },
+ "backend/app/services/queue_leftovers.py::_retire_queue": {
+  "class": "lane:claim_lanes",
+  "lock": "lane",
+  "owner": "own session",
+  "r3": "listed",
+  "rule": "unchanged"
+ },
+ "backend/app/services/queue_leftovers.py::retire": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "-",
+  "r3": "listed",
+  "rule": "leftovers"
+ },
+ "backend/app/services/queue_ops.py::_as_new_work": {
+  "class": "helper",
+  "fk": {
+   "print_queue.created_by_id": "free (A30)",
+   "print_queue.project_id": "free",
+   "print_queue.project_line_id": "free"
+  },
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "unsaved clone · r6 A30: created_by_id is free because the lifetime guard is FOR NO KEY UPDATE"
+ },
+ "backend/app/services/queue_ops.py::_bump_block_to_bottom_unlocked": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "unchanged"
+ },
+ "backend/app/services/queue_ops.py::_bump_block_to_top_unlocked": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "caller (also defer_claim under A10)",
+  "r3": "listed",
+  "rule": "unchanged"
+ },
+ "backend/app/services/queue_ops.py::_copy_item_fields": {
+  "class": "helper",
+  "fk": {
+   "print_queue.archive_id": "held (A27 + H3: the candidate's parent before the source row)",
+   "print_queue.created_by_id": "free (A30)",
+   "print_queue.library_file_id": "held (A27: the candidate's parent before the source row)",
+   "print_queue.project_id": "free",
+   "print_queue.project_line_id": "free",
+   "print_queue.queue_id": "free (the source's own queue, its lane held)",
+   "print_queue.queue_source_id": "free (reusing_sources re-read it ready under the storage guard)"
+  },
+  "header": "A25: clone_item / clone_batch re-read the header under their lanes before building the copies",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "constructor; must not copy deferred_claim_token (R11) · r6 R24/A27 + H3: the copy's link is the clone's candidate (provenance for a job that owns its bytes, never the source row's execution archive; a legacy row's only-source archive is kept), its parent taken FOR KEY SHARE before the source row"
+ },
+ "backend/app/services/queue_ops.py::_reorder_block_unlocked": {
+  "candidates": {
+   "orm-attr:AutoQueueItem|PrintQueueItem[position]@swap_with": "target"
+  },
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "unchanged; W10's Telegram move delegates here"
+ },
+ "backend/app/services/queue_ops.py::bump_block_to_bottom": {
+  "class": "lane:queue_scope_lock",
+  "lock": "lane",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "unchanged"
+ },
+ "backend/app/services/queue_ops.py::bump_block_to_top": {
+  "class": "lane:queue_scope_lock",
+  "lock": "lane",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "unchanged"
+ },
+ "backend/app/services/queue_ops.py::clone_batch": {
+  "class": "lane:reusing_sources(queue_ids)",
+  "lock": "lane",
+  "owner": "request session",
+  "r3": "listed-wrong",
+  "rule": "same · r5 R20/A25: the target header re-read under the lane; missing or another recovery_identity -> refusal · r6 R24/A27: the siblings' candidate parents FOR KEY SHARE ascending before the siblings' re-read"
+ },
+ "backend/app/services/queue_ops.py::clone_item": {
+  "class": "lane:reusing_sources(queue_ids)",
+  "lock": "lane",
+  "owner": "request session",
+  "r3": "listed-wrong",
+  "rule": "r4: lane holder; L2a-tail withdrawn · r5 R20/A25: the target header re-read under the lane; missing or another recovery_identity -> refusal · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE · r6 R24/A27 + H3: the candidate's parent FOR KEY SHARE before the source row; a different candidate under the lock -> SourceUnreadable('clone source changed')"
+ },
+ "backend/app/services/queue_ops.py::lock_named_rows": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "missing",
+  "rule": "A7: the named rows FOR NO KEY UPDATE ascending, inside the caller's lanes"
+ },
+ "backend/app/services/queue_ops.py::place_pending_block": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "caller queue_scope_lock",
+  "r3": "listed",
+  "rule": "unchanged"
+ },
+ "backend/app/services/queue_ops.py::queue_scope_lock": {
+  "class": "helper (the lane's own entry)",
+  "lock": "helper",
+  "owner": "caller: every user of queue_scope_lock is a lane writer",
+  "r3": "missing",
+  "rule": "the lane itself (G03 B, A15, found by TA19): PostgreSQL's advisory guard; on SQLite a no-op UPDATE of its header (take_write_lock) takes the writer BEFORE the body reads -- pysqlite opens a transaction only at the first write, so a body read its positions / header / head beside a lane holder. No body under it waits for an in-process lock"
+ },
+ "backend/app/services/queue_ops.py::reorder_block": {
+  "class": "lane:queue_scope_lock",
+  "lock": "lane",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "unchanged"
+ },
+ "backend/app/services/queue_ops.py::set_status": {
+  "class": "helper -> lane (A7)",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "A7 skip; R11 voids the proof (Core: writes the column NULL)"
+ },
+ "backend/app/services/queue_ops.py::set_status_for_batch": {
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "listed",
+  "rule": "A7 batch skip / cancellation_scope; R11 voids the proof"
+ },
+ "backend/app/services/queue_rebalance.py::_apply": {
+  "class": "shared",
+  "lock": "shared",
+  "owner": "rebalance pass",
+  "r3": "missing",
+  "rule": "savepoint + one commit per move · r6 R22/A28: after the pin and before policy_for, the target file F is locked FOR KEY SHARE and re-read (LibraryFile.active(), populate_existing; gone or trashed -> source_unreadable, nothing written); then the order row, then _claim_row, then _write_group, one transaction; SQLite: the AutoQueue row's take_write_lock first, F re-read under the writer"
+ },
+ "backend/app/services/queue_rebalance.py::_claim_row": {
+  "class": "shared (one existing row, after the order lock)",
+  "lock": "shared",
+  "owner": "rebalance pass",
+  "r3": "missing",
+  "rule": "unchanged (reviewer: one existing AutoQueue lock per move) · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE · r6 R22/A28: taken after the target file's lock and the order row"
+ },
+ "backend/app/services/queue_rebalance.py::_write_group": {
+  "class": "shared + shared-new",
+  "fk": {
+   "auto_queue_items.archive_id": "null (the conversion writes NULL)",
+   "auto_queue_items.library_file_id": "held (A28: F FOR KEY SHARE before the order row and the AutoQueue row, in _apply)",
+   "auto_queue_items.queue_source_id": "own (published by this move, pinned through its commit)"
+  },
+  "lock": "shared",
+  "owner": "rebalance pass",
+  "r3": "missing",
+  "rule": "the converted row (locked by _claim_row) and new companions · r6 R22/A28: the converted row's library_file_id and every companion's name F, which _apply holds before the order row and the AutoQueue row; archive_id written NULL; queue_source_id is the blob this move published and pinned"
+ },
+ "backend/app/services/queue_source_link.py::apply_link": {
+  "class": "helper (lane)",
+  "fk": {
+   "print_queue.archive_id": "held (A27: the caller's lock_plans takes the parent FOR KEY SHARE before the job row) / null",
+   "print_queue.library_file_id": "held (A27: lock_plans, library rows first) / null"
+  },
+  "lock": "helper",
+  "owner": "caller (Retry, bulk Retry, Unskip, Clone, Repeat, _settle)",
+  "r3": "missing",
+  "rule": "A27: the one source-link rule — a proven incarnation or nothing, never the job's own execution archive"
+ },
+ "backend/app/services/queue_source_release.py::_cancel_dependents": {
+  "class": "helper (A19: Core compare-and-sets inside the plan's lanes)",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "listed-wrong",
+  "rule": "A19 step 4"
+ },
+ "backend/app/services/queue_source_release.py::recount_released_queues": {
+  "class": "L2a",
+  "lock": "L2a",
+  "owner": "own short transaction after the root commit",
+  "r3": "listed",
+  "rule": "unchanged (postcommit recount)"
+ },
+ "backend/app/services/queue_source_release.py::source_purged": {
+  "auto_rows": {
+   "core-update:PrintQueueItem|AutoQueueItem[archive_id]": "A19: prelocked by its plan scope -- archive_delete_scope's recheck (lock_auto_rows) or library_delete_scope",
+   "core-update:PrintQueueItem|AutoQueueItem[library_file_id]": "A19: prelocked by its plan scope -- archive_delete_scope's recheck (lock_auto_rows) or library_delete_scope"
+  },
+  "class": "helper",
+  "fk": {
+   "auto_queue_items.archive_id": "null",
+   "auto_queue_items.library_file_id": "null",
+   "print_queue.archive_id": "null",
+   "print_queue.library_file_id": "null"
+  },
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "listed-wrong",
+  "rule": "W9 (archive hard delete) / library_delete_scope plan"
+ },
+ "backend/app/services/queue_source_release.py::source_trashed": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "caller",
+  "r3": "listed-wrong",
+  "rule": "R13 (archive trash) / library_delete_scope (library trash)"
+ },
+ "backend/app/services/queue_wait_reason.py::set_wait_reason": {
+  "candidates": {
+   "orm-attr:AutoQueueItem|PrintQueueItem[waiting_reason]@item": "target",
+   "orm-attr:PrintQueueItem[waiting_reason_checked_at]@item": "target",
+   "orm-attr:PrintQueueItem[waiting_reason_code]@item": "target"
+  },
+  "class": "L2b",
+  "lock": "L2b",
+  "owner": "tick",
+  "r3": "listed",
+  "rule": "A8 waiting diagnostics"
+ },
+ "backend/app/services/queue_wait_reason.py::write_wait_reason": {
+  "class": "L2b",
+  "lock": "L2b",
+  "owner": "caller",
+  "r3": "missing",
+  "rule": "A8 waiting diagnostic: id + pending + loaded queue_id; the copy follows by set_committed_value"
+ },
+ "backend/app/services/slice_dispatch.py::SliceDispatchService._mark_canceled": {
+  "candidates": {
+   "orm-attr:AutoQueueItem|PrintQueueItem|PrinterQueue[status]@job": "other: a slice job"
+  },
+  "class": "n/a",
+  "lock": "n/a",
+  "owner": "-",
+  "r3": "n/a",
+  "rule": "slice job (candidate)"
+ },
+ "backend/app/services/slice_dispatch.py::SliceDispatchService._run_job": {
+  "candidates": {
+   "orm-attr:AutoQueueItem|PrintQueueItem|PrinterQueue[status]@job": "other: a slice job",
+   "orm-attr:PrintQueueItem[completed_at]@job": "other: a slice job",
+   "orm-attr:PrintQueueItem[started_at]@job": "other: a slice job"
+  },
+  "class": "n/a",
+  "lock": "n/a",
+  "owner": "-",
+  "r3": "n/a",
+  "rule": "slice job (candidate)"
+ },
+ "backend/app/services/slice_dispatch.py::SliceDispatchService.cancel": {
+  "candidates": {
+   "orm-attr:PrintQueueItem[completed_at]@job": "other: a slice job"
+  },
+  "class": "n/a",
+  "lock": "n/a",
+  "owner": "-",
+  "r3": "n/a",
+  "rule": "slice job (candidate)"
+ },
+ "backend/app/services/swap_job_refresh.py::refresh": {
+  "candidates": {
+   "orm-attr:AutoQueueItem|PrintQueueItem[source_snapshot]@row": "target"
+  },
+  "class": "lane:claim_lanes(archive)",
+  "lock": "lane",
+  "owner": "own session",
+  "r3": "listed",
+  "rule": "unchanged · r6 H1/A31: its library source FOR UPDATE is taken in before_db (after its in-process lanes, before its PostgreSQL lane guards; r5 A.3 point 1 said after the guards); printer rows are locked only WHERE id AND queue_id IN the lanes it holds (a row moved since the preflight is read unlocked -> jobs_changed); its job and AutoQueue row locks are FOR NO KEY UPDATE (L6(b)); these locks go through _job_model(kind), which neither r5 scanner resolved (A13 blind spot 8)"
+ },
+ "backend/app/services/telegram_handlers/actions.py::cb_clear_plate": {
+  "class": "-> lane (W4)",
+  "lock": "pending",
+  "owner": "plate_answers",
+  "r3": "missing",
+  "rule": "W4"
+ },
+ "backend/app/services/telegram_handlers/actions.py::cb_repeat_print": {
+  "class": "-> lane (W4)",
+  "lock": "pending",
+  "owner": "plate_answers",
+  "r3": "listed-wrong",
+  "rule": "W4"
+ },
+ "backend/app/services/telegram_handlers/library_scene.py::cb_library_add_queue.attach": {
+  "class": "lane:queue_scope_lock",
+  "fk": {
+   "print_queue.created_by_id": "free",
+   "print_queue.library_file_id": "free",
+   "print_queue.queue_id": "free",
+   "print_queue.queue_source_id": "free"
+  },
+  "lock": "lane",
+  "owner": "publication",
+  "r3": "listed",
+  "rule": "unchanged · r5 R20/A25: the target header re-read under the lane; missing or another recovery_identity -> refusal"
+ },
+ "backend/app/services/telegram_handlers/printer_add_scene.py::cb_confirm": {
+  "class": "L2c-runtime",
+  "lock": "L2c-runtime",
+  "owner": "handler session",
+  "r3": "missing",
+  "rule": "new printer's header"
+ },
+ "backend/app/services/telegram_handlers/queue.py::_cancel_pending_item": {
+  "class": "lane:cancellation_scope",
+  "lock": "lane",
+  "owner": "scope session",
+  "r3": "listed",
+  "rule": "unchanged"
+ },
+ "backend/app/services/telegram_handlers/queue.py::cb_queue_cancel": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "-",
+  "r3": "listed",
+  "rule": "cancellation_scope"
+ },
+ "backend/app/services/telegram_handlers/queue.py::cb_queue_move": {
+  "class": "lane (via reorder_block, W10) + L2a recount",
+  "lock": "lane",
+  "outside": {
+   "helper-call:queue_counters.update_queue_counters": "L2a: the queue's counters recounted after the lane scope (one header statement)"
+  },
+  "owner": "handler session",
+  "r3": "missing",
+  "rule": "W10: through queue_ops.reorder_block (queue_scope_lock, the row's own queue)"
+ },
+ "backend/app/services/telegram_handlers/queue_scene.py::cb_qadd_confirm.attach": {
+  "class": "lane:queue_scope_lock",
+  "fk": {
+   "print_queue.created_by_id": "free",
+   "print_queue.library_file_id": "free",
+   "print_queue.queue_id": "free",
+   "print_queue.queue_source_id": "free"
+  },
+  "lock": "lane",
+  "owner": "publication",
+  "r3": "listed",
+  "rule": "unchanged · r5 R20/A25: the target header re-read under the lane; missing or another recovery_identity -> refusal"
+ },
+ "backend/app/services/usage_projection.py::_record_projection": {
+  "candidates": {
+   "setattr:?[outcome]@diagnostics": "other: projection diagnostics"
+  },
+  "class": "n/a",
+  "lock": "n/a",
+  "owner": "-",
+  "r3": "n/a",
+  "rule": "diagnostics counter object (candidate)"
+ },
+ "backend/app/services/user_content_delete.py::delete_content": {
+  "class": "lane:library_delete_scope (plan)",
+  "lock": "lane",
+  "owner": "request session",
+  "r3": "missing",
+  "rule": "unchanged; W6 for its AutoQueue deletes · r5 A26: file-path locks ascending, innermost, writer already held · r6 R23 review: its unfiling credit under the path locks finds parts, archives and the admin's row already held (bounded, TA36); A30: the account row is upgraded FOR UPDATE NOWAIT right before its DELETE; A20: its router rows prelocked as one set before the detach"
+ },
+ "backend/app/services/virtual_printer/manager.py::VirtualPrinterInstance._add_to_auto_queue.attach": {
+  "class": "shared-new",
+  "fk": {
+   "auto_queue_items.archive_id": "free",
+   "auto_queue_items.library_file_id": "free",
+   "auto_queue_items.queue_source_id": "free"
+  },
+  "lock": "shared-new",
+  "owner": "publication",
+  "r3": "missing",
+  "rule": "new AutoQueue row"
+ },
+ "backend/app/services/virtual_printer/manager.py::VirtualPrinterInstance._add_to_print_queue.attach": {
+  "class": "lane:queue_scope_lock",
+  "fk": {
+   "print_queue.archive_id": "free",
+   "print_queue.library_file_id": "free",
+   "print_queue.queue_id": "free",
+   "print_queue.queue_source_id": "free"
+  },
+  "lock": "lane",
+  "owner": "publication",
+  "r3": "listed",
+  "rule": "unchanged · r5 R20/A25: the target header re-read under the lane; missing or another recovery_identity -> refusal"
+ },
+ "backend/app/services/virtual_printer/manager.py::VirtualPrinterInstance._consume_late_slicer_options": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "-",
+  "r3": "listed",
+  "rule": "VP stamp"
+ },
+ "backend/app/services/virtual_printer/manager.py::VirtualPrinterInstance._restamp_recent_auto_item": {
+  "class": "shared (A20: rows locked, CAS names the incarnation)",
+  "lock": "shared",
+  "owner": "own session",
+  "r3": "missing",
+  "rule": "A20 one-row writers"
+ },
+ "backend/app/services/virtual_printer/manager.py::VirtualPrinterInstance._restamp_recent_queue_item": {
+  "class": "lane:claim_lanes (A7 VP stamp)",
+  "lock": "lane",
+  "owner": "fresh session",
+  "r3": "listed",
+  "rule": "A7 VP stamp"
+ },
+ "backend/app/services/virtual_printer/manager.py::VirtualPrinterInstance._stop_owned": {
+  "candidates": {
+   "setattr:?[attr]@self": "other: the virtual printer instance"
+  },
+  "class": "n/a",
+  "lock": "n/a",
+  "owner": "-",
+  "r3": "n/a",
+  "rule": "setattr on the VP instance (candidate)"
+ },
+ "backend/app/services/virtual_printer/manager.py::VirtualPrinterInstance.on_print_command": {
+  "class": "helper",
+  "lock": "helper",
+  "owner": "-",
+  "r3": "listed",
+  "rule": "VP stamp"
+ }
+}

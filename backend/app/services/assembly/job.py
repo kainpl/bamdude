@@ -37,6 +37,7 @@ from backend.app.services.assembly.presets import PresetUnresolved, flatten
 from backend.app.services.assembly.runtime import AssemblyFailed, assembly_staging, run_assembly
 from backend.app.services.assembly.settings import compose_project_settings
 from backend.app.services.assembly.zone import GeometryUnknown, OriginUnsupported, printer_geometry, work_zone
+from backend.app.services.library_identity import LibraryIdentity
 from backend.app.services.preview_artifacts import disk
 from backend.app.utils.filename import safe_path_component
 
@@ -63,7 +64,7 @@ class SourceChanged(Exception):
 class Source:
     """One library file the job reads, with the proof that it is still the file the caller chose."""
 
-    proof: tuple  # (id, file_path, file_hash, created_at)
+    proof: LibraryIdentity  # the row the caller chose (A32)
     path: Path
     fmt: str  # "stl" | "obj" | "step" | "stp" for a new assembly, "3mf" for a re-layout
     name: str
@@ -230,7 +231,7 @@ def _stage(root: Path, plan: Plan, rows: list[Row]) -> None:
                     raise ValueError("source larger than the request allowed")
                 digest.update(block)
                 writer.write(block)
-        if source.proof[2] and digest.hexdigest() != source.proof[2]:
+        if source.proof.sha256 and digest.hexdigest() != source.proof.sha256:
             raise SourceChanged(source.name)
         sources.append(
             {"member": f"step/{index}/mesh.stl", "format": "stl"} if cad else {"member": member, "format": source.fmt}
@@ -405,9 +406,9 @@ async def _check_sources(db, plan: Plan) -> None:
     access = await read_access(db, authority=plan.authority)
     for source in plan.sources:
         row = await db.scalar(
-            LibraryFile.active().where(LibraryFile.id == source.proof[0]).execution_options(populate_existing=True)
+            LibraryFile.active().where(LibraryFile.id == source.proof.id).execution_options(populate_existing=True)
         )
-        if row is None or (row.id, row.file_path, row.file_hash, row.created_at) != source.proof:
+        if not source.proof.matches(row):
             raise HTTPException(409, {"code": "source_changed"})
         access.ensure(row)
 
@@ -506,8 +507,6 @@ async def _publish(plan: Plan, row: Row, outputs: list[tuple[str, int | None]], 
                     "plate": plate,
                     "fallback_reason": saved.fallback_reason or fallback,
                 }
-                from backend.app.services.library_identity import LibraryIdentity
-
                 row.cleanup_proofs[saved.file.id] = LibraryIdentity.capture(saved.file)
                 row.cleanup_authority = plan.authority
         except HTTPException as error:
@@ -569,9 +568,8 @@ async def _trash_previous(plan: Plan) -> tuple[list[int], list[int], list[int]]:
     kept: list[int] = []
     from backend.app.services.library_delete_cleanup import finish
     from backend.app.services.library_delete_scope import library_delete_scope
-    from backend.app.services.library_identity import LibraryIdentity
 
-    proofs = {source.proof[0]: LibraryIdentity.from_proof(source.proof) for source in plan.sources}
+    proofs = {source.proof.id: source.proof for source in plan.sources}
     for file_id in plan.trash_ids:
         proof = proofs.get(file_id)
         if proof is None:

@@ -242,8 +242,11 @@ async def test_final_queue_claim_refuses_a_model_excluded_after_enqueue(
 
     monkeypatch.setattr("backend.app.services.print_scheduler.async_session", session)
     monkeypatch.setattr("backend.app.services.print_scheduler.farm_startup_guard.allowed", lambda: True)
+    from backend.app.services.queue_row_basis import row_basis
+
+    basis = row_basis(await db_session.get(PrintQueueItem, printer.id))
     result = await PrintScheduler()._claim_for_dispatch(
-        item_id=printer.id, queue_id=printer.queue_id, printer_id=s["printer"].id, plan_fields={}
+        item_id=printer.id, queue_id=printer.queue_id, printer_id=s["printer"].id, plan_fields={}, basis=basis
     )
     assert not result.claimed
     assert result.reason == "order_resources_changed"

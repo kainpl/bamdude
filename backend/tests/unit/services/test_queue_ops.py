@@ -624,6 +624,8 @@ class TestACloneCarriesEveryPrintOption:
         "error_code",  # a failed row's class; a clone has not failed
         "waiting_reason",
         "gate_acknowledged",
+        # The deferral proof of the SOURCE's own attempt (G03 B, A16): a clone starts with none.
+        "deferred_claim_token",
         # ⚠️ The retry cap (m108) counts attempts at dispatching THIS row. A
         # fresh row starts at zero, or a clone would inherit a spent budget.
         "dispatch_attempts",

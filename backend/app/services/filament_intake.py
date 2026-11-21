@@ -14,12 +14,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from fastapi import HTTPException
-from sqlalchemy import inspect as sa_inspect, select, update
+from sqlalchemy import inspect as sa_inspect, select
 
 from backend.app.core.config import settings
 from backend.app.i18n import current_language, t
 from backend.app.models.archive import PrintArchive
-from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.library import LibraryFile
 from backend.app.models.queue_source import FORMAT_GCODE, QueueSource
 from backend.app.services import swap_compatibility
@@ -59,13 +58,18 @@ async def enrich_family_filament_types(db, requirements: PrintRequirements) -> P
     return replace(requirements, used_filaments=tuple(filaments))
 
 
-async def fail_auto_source(db, item, reason):
-    """Only fail an unclaimed item; a concurrent assignment/cancel stays authoritative."""
-    await db.execute(
-        update(AutoQueueItem)
-        .where(AutoQueueItem.id == item.id, AutoQueueItem.status == "pending", AutoQueueItem.cancelled_at.is_(None))
-        .values(status="failed", waiting_reason=routing_detail(reason)["message"])
-    )
+async def fail_auto_source(db, view, reason) -> str:
+    """Fail the router row ``view`` decided about -- only while it is still that row (G03 B, A17 step 3).
+
+    One short transaction of its own, committed here (``auto_queue_eligibility.write_router_rows``): the row locked,
+    re-read and compared with the view's incarnation and revision, then a compare-and-set on ``pending`` and not
+    cancelled; a concurrent assignment, cancel, edit or source refresh stays authoritative. Returns ``written``,
+    ``stale`` or ``gone``.
+    """
+    from backend.app.services.auto_queue_eligibility import write_router_rows
+
+    values = {"status": "failed", "waiting_reason": routing_detail(reason)["message"]}
+    return (await write_router_rows(db, {view.id: (view, values)}))[view.id]
 
 
 def resolve_source_path(

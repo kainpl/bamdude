@@ -302,14 +302,14 @@ async def test_scheduler_preserves_the_automatic_predecessors_plate_decision(
     from backend.app.services import print_scheduler as ps
 
     recorded_reasons = []
-    real_set_wait_reason = ps.set_wait_reason
+    real_write_wait_reason = ps.write_wait_reason
 
-    def observe_wait(row, code, message):
+    async def observe_wait(db, row, code, message, **kwargs):
         if row.id == item_id:
             recorded_reasons.append(code)
-        return real_set_wait_reason(row, code, message)
+        return await real_write_wait_reason(db, row, code, message, **kwargs)
 
-    monkeypatch.setattr(ps, "set_wait_reason", observe_wait)
+    monkeypatch.setattr(ps, "write_wait_reason", observe_wait)
 
     await one_tick(scheduler, spawned)
 
@@ -358,14 +358,14 @@ async def test_scheduler_allows_the_next_job_while_completion_consumers_finish(
     started = AsyncMock(return_value=True)
     monkeypatch.setattr(scheduler, "_start_print", started)
     recorded = []
-    real_set_wait_reason = ps.set_wait_reason
+    real_write_wait_reason = ps.write_wait_reason
 
-    def observe_wait(row, code, message):
+    async def observe_wait(db, row, code, message, **kwargs):
         if row.id == item_id:
             recorded.append(code)
-        return real_set_wait_reason(row, code, message)
+        return await real_write_wait_reason(db, row, code, message, **kwargs)
 
-    monkeypatch.setattr(ps, "set_wait_reason", observe_wait)
+    monkeypatch.setattr(ps, "write_wait_reason", observe_wait)
     await one_tick(scheduler, spawned)
 
     item = await reread(db_session, PrintQueueItem, item_id)

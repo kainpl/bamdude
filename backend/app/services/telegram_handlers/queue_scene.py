@@ -532,6 +532,10 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
     if queue_id is None:
         await callback.answer(t(lang, NS, "queue_add.failed"), show_alert=True)
         return
+    # The header this insert is validated against (G03 B, A25), compared under the lane before the row is added.
+    from backend.app.services.printer_occupancy import queue_header_identity
+
+    queue_identity = await queue_header_identity(queue_id)
 
     from backend.app.models.library import LibraryFile
     from backend.app.services import queue_sources
@@ -593,6 +597,10 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
             from backend.app.services.queue_ops import queue_scope_lock
 
             async with queue_scope_lock(session, queue_id):
+                from backend.app.services.printer_occupancy import queue_header_holds
+
+                if not await queue_header_holds(session, queue_id, queue_identity):
+                    raise LookupError("The printer's queue changed; nothing was added")
                 principal = await fresh(
                     session, authority, permissions=("queue:create", "library:read"), printer_id=printer_id
                 )

@@ -78,6 +78,8 @@ async def test_independent_sqlite_cas(publication_db, tmp_path):
         {"thumbnail_path": "newer.png"},
         {"file_path": "replacement.stl"},
         {"purge": True},
+        # G03 B A32 / R28: another row under the same id, path, hash and time (SQLite, a re-registration).
+        {"recovery_identity": "22222222-2222-2222-2222-222222222222"},
     ],
 )
 @pytest.mark.asyncio

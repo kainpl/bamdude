@@ -1444,6 +1444,55 @@ class ArchiveService:
                     await asyncio.to_thread(_discard_prepared_archive_attach, prepared)
         return False
 
+    async def _link_library_file(self, archive: PrintArchive, match_hash: str | None) -> None:
+        """The originating library file by content hash -- oldest matching row wins, as m014's backfill.
+
+        The matched row is held ``FOR KEY SHARE`` and read again before the link is written (G03 B, A29.2, H5): one
+        gone since the lookup leaves ``library_file_id`` NULL.
+        """
+        if archive.library_file_id is not None or not match_hash:
+            return
+        from backend.app.models.library import LibraryFile
+
+        matched_id = await self.db.scalar(
+            select(LibraryFile.id)
+            .where(LibraryFile.file_hash == match_hash)
+            .order_by(LibraryFile.created_at.asc(), LibraryFile.id.asc())
+            .limit(1)
+        )
+        if matched_id is None:
+            return
+        held = await self.db.scalar(
+            select(LibraryFile.id).where(LibraryFile.id == matched_id).with_for_update(read=True, key_share=True)
+        )
+        if held is not None:
+            archive.library_file_id = held
+
+    async def _backfill_job_plates(self, archive: PrintArchive) -> None:
+        """The plate onto this print's queue rows that have none (backfill only, keyed on ``archive_id``).
+
+        A print picked up from a slicer or the printer's screen has no plate at ``on_print_start``; a repeat with no
+        plate prints plate 1 of a multi-plate file. A row another writer holds is left for its writer (SKIP LOCKED,
+        L2(e)).
+        """
+        if archive.plate_index is None:
+            return
+        from backend.app.models.print_queue import PrintQueueItem
+
+        ids = list(
+            await self.db.scalars(
+                select(PrintQueueItem.id)
+                .where(PrintQueueItem.archive_id == archive.id, PrintQueueItem.plate_id.is_(None))
+                .with_for_update(skip_locked=True, key_share=True)
+            )
+        )
+        if ids:
+            await self.db.execute(
+                update(PrintQueueItem)
+                .where(PrintQueueItem.id.in_(ids), PrintQueueItem.plate_id.is_(None))
+                .values(plate_id=archive.plate_index)
+            )
+
     async def _attach_3mf_to_archive_locked(
         self,
         archive_id: int,
@@ -1524,6 +1573,61 @@ class ArchiveService:
                 # any sibling exists, else seed with our own content_hash.
                 archive.source_content_hash = chain_hash or content_hash
 
+            # G03 B, A29.2: every row lock and FK change of this transaction happens HERE -- after the archive row,
+            # before the file-path lock, under which the attach only reuses or copies the file and writes its own
+            # row. Their inputs come from the prepared attach or, on the compatibility path, a parse of the source
+            # bytes (the same bytes the copy below publishes).
+            # Parse 3MF metadata (reuse the same parser as archive_print).
+            # Pass the archive's recorded plate_index so per-plate
+            # thumbnail + slice_info come from the actually-printed
+            # plate, not whatever happened to be plate 1 in the
+            # container. None for legacy/external rows where the index
+            # is unknown — parser falls back to slice_info's first
+            # plate, matching pre-m038 behaviour.
+            if prepared is not None:
+                metadata = dict(prepared.metadata)
+                parser_plate_number = prepared.parser_plate_index
+            else:
+                parser = ThreeMFParser(source_file, plate_number=archive.plate_index)
+                metadata = parser.parse()
+                parser_plate_number = parser.plate_number
+
+            # A row can legitimately arrive here without a plate index: nothing
+            # in ``Metadata/plate_N.gcode`` to parse for a single-plate export.
+            # ``archive_print`` resolves that same case from the parser's own
+            # slice_info fallback, and every plate-scoped reader downstream
+            # (cover, gcode tab, skip-objects, Spoolman) keys off this column —
+            # so leaving it NULL for ever is not neutral, it silently sends
+            # them all back to "whatever plate 1 happens to be".
+            # ⚠️ Backfill only. A value already on the row came from the live
+            # MQTT state — what the printer is actually running — and the
+            # container, which holds several plates, cannot overrule that.
+            if archive.plate_index is None and parser_plate_number is not None:
+                archive.plate_index = parser_plate_number
+
+            # Link to the originating library file by content hash when we didn't know it at fallback-creation
+            # time (on_print_start's FTP miss path has no dispatch context) -- the matched row held FOR KEY SHARE.
+            await self._link_library_file(archive, archive.source_content_hash or content_hash)
+            # The queue row for this print learns the plate the moment the archive does (backfill only, keyed on
+            # ``archive_id``; SKIP LOCKED, L2(e)).
+            await self._backfill_job_plates(archive)
+            # Seed the per-part plate state (m158) -- same contract as archive_print's call. Pass the Path: this
+            # whole method is wrapped in a try/except that returns False on any failure.
+            await seed_archive_parts(
+                self.db,
+                archive,
+                source_file if prepared is None else None,
+                printable_objects=prepared.printable_objects if prepared is not None else None,
+            )
+            # ⚠️ The free-stock credit runs HERE too (Ruling 27), not only in the completion hook: an external
+            # print reaches ``completed`` before its 3MF does. ``credit_if_unfiled`` is the never-fail wrapper and
+            # runs its credit inside a SAVEPOINT of its own -- a failure that reached the database stays inside the
+            # ledger, and the commit below still writes the attach. Archive before parts (A29.1): this row is held.
+            if archive.status == "completed" and archive.project_id is None:
+                from backend.app.services import part_stock
+
+                await part_stock.credit_if_unfiled(self.db, archive)
+
             printer_folder = str(archive.printer_id) if archive.printer_id is not None else "unassigned"
             display_stem = (
                 prepared.display_stem
@@ -1561,6 +1665,12 @@ class ArchiveService:
                 from backend.app.services.archive_write_scope import archive_file_reference_scope
 
                 file_reference_scope = archive_file_reference_scope(self.db, existing_archive.file_path)
+                # On SQLite only a holder of the writer takes the path lock (G03 B, A26): the attach takes its own
+                # archive row's write lock first, so the path lock is never contended between the writer's holder
+                # and a coroutine that will need the writer.
+                from backend.app.core.database import take_write_lock
+
+                await take_write_lock(self.db, PrintArchive.__table__, archive_id)
                 await file_reference_scope.__aenter__()
                 # Reuse existing on-disk file. ``delete_archive`` ref-counts
                 # shared paths so the file stays as long as any row refs it.
@@ -1613,34 +1723,6 @@ class ArchiveService:
                     ):
                         raise ValueError("copied 3MF is not a valid ZIP")
                 thumbnail_reuse = None
-
-            # Parse 3MF metadata (reuse the same parser as archive_print).
-            # Pass the archive's recorded plate_index so per-plate
-            # thumbnail + slice_info come from the actually-printed
-            # plate, not whatever happened to be plate 1 in the
-            # container. None for legacy/external rows where the index
-            # is unknown — parser falls back to slice_info's first
-            # plate, matching pre-m038 behaviour.
-            if prepared is not None:
-                metadata = dict(prepared.metadata)
-                parser_plate_number = prepared.parser_plate_index
-            else:
-                parser = ThreeMFParser(dest_file, plate_number=archive.plate_index)
-                metadata = parser.parse()
-                parser_plate_number = parser.plate_number
-
-            # A row can legitimately arrive here without a plate index: nothing
-            # in ``Metadata/plate_N.gcode`` to parse for a single-plate export.
-            # ``archive_print`` resolves that same case from the parser's own
-            # slice_info fallback, and every plate-scoped reader downstream
-            # (cover, gcode tab, skip-objects, Spoolman) keys off this column —
-            # so leaving it NULL for ever is not neutral, it silently sends
-            # them all back to "whatever plate 1 happens to be".
-            # ⚠️ Backfill only. A value already on the row came from the live
-            # MQTT state — what the printer is actually running — and the
-            # container, which holds several plates, cannot overrule that.
-            if archive.plate_index is None and parser_plate_number is not None:
-                archive.plate_index = parser_plate_number
 
             plates_payload = None
             # Per-plate cache populated alongside the rest of the metadata.
@@ -1766,90 +1848,6 @@ class ArchiveService:
             # legacy row without a record are not re-classified by any name.
             if received_name and swap_compatibility.archive_fact(archive).pending_external:
                 swap_compatibility.write_archive_fact(archive, swap_compatibility.classify_external_name(received_name))
-
-            # Link to the originating library file by content hash when we
-            # didn't know it at fallback-creation time (on_print_start's FTP
-            # miss path has no dispatch context). Mirrors m014's backfill
-            # logic — oldest matching library row wins.
-            if archive.library_file_id is None:
-                from backend.app.models.library import LibraryFile
-
-                match_hash = archive.source_content_hash or content_hash
-                if match_hash:
-                    lib_match = await self.db.execute(
-                        select(LibraryFile.id)
-                        .where(LibraryFile.file_hash == match_hash)
-                        .order_by(LibraryFile.created_at.asc(), LibraryFile.id.asc())
-                        .limit(1)
-                    )
-                    matched_id = lib_match.scalar_one_or_none()
-                    if matched_id is not None:
-                        archive.library_file_id = matched_id
-
-            # The queue row for this print learns the plate the moment the
-            # archive does. A print picked up from a slicer or the printer's
-            # screen has no plate to know at ``on_print_start``: the printer
-            # names the file ``<something>.gcode.3mf``, with no plate in it and
-            # no ``gcode_file`` beside it, so the row is created blank. The
-            # plate exists only once this method has parsed the container.
-            #
-            # It matters because that row is repeatable — and a repeat with no
-            # plate prints plate 1 of a multi-plate file. Reported from a farm.
-            #
-            # ⚠️ Backfill only, mirroring the archive's own rule above: a value
-            # already on the row was chosen by whoever dispatched or queued it,
-            # and a container holding several plates cannot overrule that.
-            # ⚠️ Keyed on ``archive_id`` — the link between this print and its
-            # row. Keying on the printer would reach every row it ever ran.
-            if archive.plate_index is not None:
-                from backend.app.models.print_queue import PrintQueueItem
-
-                await self.db.execute(
-                    update(PrintQueueItem)
-                    .where(PrintQueueItem.archive_id == archive_id)
-                    .where(PrintQueueItem.plate_id.is_(None))
-                    .values(plate_id=archive.plate_index)
-                )
-
-            # Seed the per-part plate state (m158) — same contract as
-            # archive_print's call, now that archive.file_path points at
-            # the freshly attached 3MF. Pass the Path — this whole method is
-            # wrapped in a try/except that returns False on any failure, so
-            # a read error here would otherwise fail the entire attach.
-            await seed_archive_parts(
-                self.db,
-                archive,
-                source_file if prepared is None else None,
-                printable_objects=prepared.printable_objects if prepared is not None else None,
-            )
-
-            # ⚠️ The free-stock credit runs HERE too (Ruling 27), not only in
-            # the completion hook. An external print reaches ``completed``
-            # before its 3MF does — the hook fired against an archive with no
-            # part rows at all and credited nothing, and the four retry triggers
-            # that finally attach the file (startup sweep, reconnect, the
-            # last-chance call in ``on_print_complete``, the manual button) only
-            # seed the rows. Nothing re-ran the credit, so a print that arrived
-            # by that door never reached the shelf.
-            #
-            # ``credit_if_unfiled`` is the never-fail wrapper the hook uses:
-            # this whole method returns False on any exception, and losing an
-            # attached 3MF over a bookkeeping refusal would be the worse trade.
-            # It decides for itself whether this archive qualifies (completed,
-            # order-less, and not already standing per part).
-            #
-            # ⚠️ The wrapper runs that credit inside a SAVEPOINT of its own,
-            # and this call site is why. Swallowing the exception is only half
-            # of "never fails its caller": a failure that reached the DATABASE
-            # rolls the session's transaction back with it, and by the time the
-            # polite empty list came back, the file copy and every field written
-            # above would be gone — lost to bookkeeping that is explicitly
-            # optional. The savepoint keeps the loss inside the ledger; the
-            # ``commit`` below still writes the attach.
-            if archive.status == "completed" and archive.project_id is None:
-                from backend.app.services import part_stock
-
-                await part_stock.credit_if_unfiled(self.db, archive)
 
             await self.db.commit()
             committed = True
@@ -2321,12 +2319,17 @@ class ArchiveService:
         trashed_only: bool = False,
         retention_cutoff: datetime | None = None,
     ) -> bool:
-        """Hard-delete one archive under the shared archive-facts writer guard."""
-        from backend.app.services.archive_write_scope import archive_write_scope
+        """Hard-delete one archive: a plan writer for the jobs and router rows it writes (G03 B, A19) -- their lanes
+        with the archive's guard, the gate printers as early rows, the footprint read again under the row lock."""
+        from backend.app.services.archive_delete_scope import archive_delete_scope
 
-        async with archive_write_scope(self.db, archive_id):
+        async with archive_delete_scope(self.db, archive_id, purge=True) as plan:
             deleted = await self._delete_archive_locked(
-                archive_id, refuse_kept=refuse_kept, trashed_only=trashed_only, retention_cutoff=retention_cutoff
+                archive_id,
+                refuse_kept=refuse_kept,
+                trashed_only=trashed_only,
+                retention_cutoff=retention_cutoff,
+                plan=plan,
             )
         # After the scope (the delete committed inside it): recount the printer queues whose
         # queued jobs of this source the release cancelled. No SQL when there are none.
@@ -2348,6 +2351,7 @@ class ArchiveService:
         refuse_kept: bool = False,
         trashed_only: bool = False,
         retention_cutoff: datetime | None = None,
+        plan=None,
     ) -> bool:
         from backend.app.services.archive_write_scope import archive_file_reference_scope, lock_prints
 
@@ -2367,6 +2371,8 @@ class ArchiveService:
             cutoff = retention_cutoff.replace(tzinfo=retention_cutoff.tzinfo or timezone.utc)
             if deleted_at >= cutoff:
                 return False
+        if plan is not None:
+            await plan.recheck()  # the rows the purge writes, read again under the row lock (A19)
         from backend.app.services.content_delete_keeps import archive_keep_reasons
 
         reasons = await archive_keep_reasons(
