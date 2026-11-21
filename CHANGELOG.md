@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 - **AutoQueue can find another printer after a refused upload.** When BamDude can prove it sent no start command, an unchanged AutoQueue job with portable settings returns to the pool, up to twice. The failed attempt stays in the printer’s Issues with a link to the AutoQueue job. That printer takes no new work until Resume. Returns after a print that started still use the existing setting and their own limit.
+  - Editing an archive’s order during a refusal and observing a second return through Connector now preserve the correct job state. The returned job link also works when the queue page sets its default view while AutoQueue is loading.
 
 - **The Slice dialog, filament calibration and Assemble project choose the slicer, plate and presets with one set of controls.** The preset lists with their search, saved settings, the slicer cards and the bed-plate picker look and behave the same in all three:
   - **A preset source for every list** — *All*, *My Presets* or *Built-in*, one remembered choice for all three places. Your imported profiles, every Orca Cloud profile and the presets you saved in Bambu Cloud are yours; the slicer's standard presets and Bambu's stock cloud presets are built-in. Calibration used to list Orca Cloud profiles under "Built-in".

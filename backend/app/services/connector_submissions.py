@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import or_, select, update
+from sqlalchemy import or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1085,6 +1085,11 @@ async def observations(actor: ConnectorActor, proof: OwnProof, *, cursor: str | 
     )
     offset = _decode_cursor(cursor, operation_id, server_id, epoch) if cursor else 0
     async with database.async_session() as db:
+        # The parent, assignments and receipts must describe the same committed return generation.
+        if db.get_bind().dialect.name == "postgresql":
+            await db.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+        else:
+            await db.execute(text("BEGIN"))
         submission = await _verified(db, proof)
         key = await fresh_key(db, actor, (Permission.QUEUE_CREATE.value,))
         scope = set(key.printer_ids) if key.printer_ids is not None else None
@@ -1282,6 +1287,11 @@ async def observations(actor: ConnectorActor, proof: OwnProof, *, cursor: str | 
                 }
             )
 
-        # A restore between the proof and this answer must not hand back the facts of another database.
+    # A fresh transaction sees a restore or revoked scope that committed during the snapshot.
+    async with database.async_session() as db:
         await _verified(db, proof)
+        key = await fresh_key(db, actor, (Permission.QUEUE_CREATE.value,))
+        current_scope = set(key.printer_ids) if key.printer_ids is not None else None
+        if current_scope != scope:
+            raise ConnectorRefusal(409, "context_changed", CONTEXT_CHANGED)
     return {"jobs": jobs, "next_cursor": next_cursor}

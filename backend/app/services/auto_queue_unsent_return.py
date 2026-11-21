@@ -3,9 +3,12 @@
 import logging
 import uuid
 from dataclasses import dataclass
+from functools import wraps
 
 from fastapi import HTTPException
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from backend.app.core.database import LOCK_NOT_AVAILABLE, sqlstate
 from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.auto_queue_return import AutoQueueUnsentReturn
@@ -21,6 +24,30 @@ logger = logging.getLogger(__name__)
 MAX_UNSENT_RETURNS = 2
 REFUSAL_PREFIX = "unsent_return_refused:"
 RETURNABLE_FAILURES = frozenset({DISPATCH_PRINTER_UNAVAILABLE, DISPATCH_UPLOAD_FAILED})
+
+
+class ReturnOrderBusy(Exception):
+    def __init__(self, project_id: int | None, line_id: int | None):
+        self.project_id = project_id
+        self.line_id = line_id
+
+
+def retry_busy_return_order(write_failure):
+    """Release every guard before waiting for the order alone, then rerun the addressed verdict."""
+
+    @wraps(write_failure)
+    async def retry(scheduler, db, *args, **kwargs):
+        while True:
+            try:
+                return await write_failure(scheduler, db, *args, **kwargs)
+            except ReturnOrderBusy as exc:
+                if db.in_transaction():
+                    await db.rollback()
+                # V3's caller keeps the rows loaded for its pass in db.
+                async with async_sessionmaker(db.bind)() as waiter:
+                    await order_resources.policy_for(waiter, exc.project_id, project_line_id=exc.line_id, lock=True)
+
+    return retry
 
 
 @dataclass(frozen=True)
@@ -63,14 +90,16 @@ def has_auto_ancestor(job) -> bool:
 
 
 async def lock_order_for_return(db, project_id, line_id) -> str | None:
-    """Under the lane and before taking the execution or job row locks."""
+    """Probe under the lane before the execution/job rows. An order writer may already need this archive or lane."""
     try:
         async with db.begin_nested():
-            await order_resources.policy_for(db, project_id, project_line_id=line_id, lock=True)
+            await order_resources.policy_for(db, project_id, project_line_id=line_id, lock=True, nowait=True)
             await order_filing.resolve_link(db, project_id, line_id)
     except HTTPException:
         return "order_changed"
     except Exception as exc:
+        if sqlstate(exc) == LOCK_NOT_AVAILABLE:
+            raise ReturnOrderBusy(project_id, line_id) from exc
         logger.warning("Could not lock order for an unsent return: %s", type(exc).__name__)
         return "return_unavailable"
     return None

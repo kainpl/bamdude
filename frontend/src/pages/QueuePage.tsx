@@ -2,7 +2,7 @@ import { QueueWaitReason } from '../components/QueueWaitReason';
 import { MoveToAutoButton } from '../components/MoveToAutoButton';
 import { QueueDuration } from '../components/QueueDuration';
 import { useEffect, useState, useMemo } from 'react';
-import { useSearchParams } from 'react-router';
+import { useLocation, useNavigate, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Calendar, LayoutGrid } from 'lucide-react';
@@ -62,7 +62,9 @@ function queueGridColumnCount(cardSize: number, viewportWidth: number): number {
 export function QueuePage() {
   useMountedPrinterPriority('queues');
   const { t } = useTranslation();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
+  const { hash } = useLocation();
+  const navigate = useNavigate();
   const [monitorTarget, clearMonitorTarget] = useMonitorTarget();
   const queryClient = useQueryClient();
 
@@ -203,9 +205,9 @@ export function QueuePage() {
     if (current !== viewMode) {
       const next = new URLSearchParams(searchParams);
       next.set('view', viewMode);
-      setSearchParams(next, { replace: true });
+      navigate({ search: next.toString(), hash }, { replace: true });
     }
-  }, [viewMode, searchParams, setSearchParams]);
+  }, [viewMode, searchParams, hash, navigate]);
 
   const handleViewChange = (mode: ViewMode) => {
     setViewMode(mode);

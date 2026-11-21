@@ -31,7 +31,7 @@ from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.schemas.calibration_mode import derive_mode
 from backend.app.services import ams_advertised_overlay as overlay, chamber_history, queue_sources, scheduled_drying
-from backend.app.services.auto_queue_unsent_return import UnsentAttempt
+from backend.app.services.auto_queue_unsent_return import UnsentAttempt, retry_busy_return_order
 from backend.app.services.farm_startup_guard import farm_startup_guard
 from backend.app.services.filament_intake import (
     item_descriptor,
@@ -3046,6 +3046,7 @@ class PrintScheduler:
         logger.warning("Queue item %s failed before dispatch: %s", item.id, reason)
         return VerdictResult(True)
 
+    @retry_busy_return_order
     async def _fail_item(
         self,
         db: AsyncSession,
@@ -3347,6 +3348,7 @@ class PrintScheduler:
             await cdb.commit()
         return ClaimResult(True, started_at=now, snapshot=MappingProxyType(snapshot), storage_epoch=storage_epoch)
 
+    @retry_busy_return_order
     async def _fail_attempt(
         self,
         db: AsyncSession,

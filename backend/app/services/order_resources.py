@@ -49,7 +49,7 @@ def recipe_permitted(policy, model, *, allow_compatible=False):
     )
 
 
-async def policy_for(db, project_id, *, lock=False, project_line_id=None):
+async def policy_for(db, project_id, *, lock=False, project_line_id=None, nowait=False):
     if project_id is None and project_line_id is not None:
         from backend.app.models.project_line import ProjectLine
 
@@ -62,7 +62,7 @@ async def policy_for(db, project_id, *, lock=False, project_line_id=None):
     if lock:
         # NO KEY UPDATE (G03 B L6(b)): it conflicts with every other writer of the order as FOR UPDATE does, and
         # lets a job row that merely names the order pass its foreign-key check.
-        stmt = stmt.with_for_update(key_share=True)
+        stmt = stmt.with_for_update(key_share=True, nowait=nowait)
     project = await db.scalar(stmt)
     return project.printer_resources if project else None
 
