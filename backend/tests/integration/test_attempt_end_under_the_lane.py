@@ -220,7 +220,7 @@ async def test_failure_only_closes_its_current_prepared_execution(db_session, pr
             execution_archive_id=archive_id,
             execution_archive_identity="stale-archive-identity" if archive_state == "other_identity" else identity,
         )
-    assert written is (archive_state != "stale_claim")
+    assert bool(written) is (archive_state != "stale_claim")
     row = await read(PrintQueueItem, item_id)
     assert row.status == ("failed" if written else "printing")
     execution = await read(PrintArchive, archive_id)

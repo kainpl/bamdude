@@ -2,18 +2,25 @@
 
 
 def has_return_history(item):
-    return getattr(item, "failed_return_proof", None) is not None or (getattr(item, "failed_return_count", 0) or 0) > 0
+    return any(
+        getattr(item, f"{kind}_return_proof", None) is not None or (getattr(item, f"{kind}_return_count", 0) or 0) > 0
+        for kind in ("failed", "unsent")
+    )
 
 
-def last_failed_printer(item):
-    proof = getattr(item, "failed_return_proof", None)
-    if not isinstance(proof, dict) or type(proof.get("version")) is not int or proof["version"] != 1:
-        return None
-    identity = proof.get("last_failed_printer_identity")
-    return identity if isinstance(identity, str) and identity else None
+def last_failed_printers(item) -> frozenset[str]:
+    identities = set()
+    for proof, key in (
+        (getattr(item, "failed_return_proof", None), "last_failed_printer_identity"),
+        (getattr(item, "unsent_return_proof", None), "printer_identity"),
+    ):
+        if isinstance(proof, dict) and type(proof.get("version")) is int and proof["version"] == 1:
+            identity = proof.get(key)
+            if isinstance(identity, str) and identity:
+                identities.add(identity)
+    return frozenset(identities)
 
 
-def returned_printer_rank(last_failed_identity, printer_identity, ordinary_rank):
+def returned_printer_rank(last_failed_identities, printer_identity, ordinary_rank):
     """Only rank existing candidates. Busy filtering and dispatch gates stay upstream."""
-    failed = last_failed_identity is not None and last_failed_identity == printer_identity
-    return (not failed, *ordinary_rank)
+    return (printer_identity not in last_failed_identities, *ordinary_rank)

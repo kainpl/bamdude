@@ -501,6 +501,25 @@ def snapshot_with_fact(snapshot: Mapping, fact: SourceFact) -> dict:
     return new
 
 
+def snapshot_without_fact(snapshot):
+    """The snapshot as copied to another job, ignoring only the dispatch declaration."""
+    from backend.app.services.queue_source_descriptor import SOURCE_SNAPSHOT_VERSION
+
+    if isinstance(snapshot, dict) and snapshot.get("version") == SOURCE_SNAPSHOT_VERSION:
+        return {key: value for key, value in snapshot.items() if key not in {SNAPSHOT_FACT_KEY, SNAPSHOT_REASON_KEY}}
+    return snapshot
+
+
+def same_snapshot_for_return(parent, copy) -> bool:
+    normalized = snapshot_without_fact(parent)
+    if normalized != snapshot_without_fact(copy):
+        return False
+    if normalized is parent:
+        return True  # Other payload versions are copied exactly.
+    old_fact, new_fact = snapshot_fact(parent), snapshot_fact(copy)
+    return old_fact.missing or (not new_fact.missing and old_fact.value == new_fact.value)
+
+
 #: Who asks a pre-fix snapshot's legacy fact: a future dispatch of the job (the source readers -- an operator's
 #: declaration, §8's classification), or the completion of a run that already executed (historical evidence only).
 LEGACY_CONTEXTS = frozenset({"source", "execution"})

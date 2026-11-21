@@ -124,11 +124,12 @@ RED = "#FF0000"
 
 
 @pytest.mark.parametrize("sjf", [False, True])
+@pytest.mark.parametrize("history", ["failed", "unsent", "both"])
 async def test_returned_first_wave_matches_actual_router(
-    db_session, tick_scheduler, printer_factory, tmp_path, monkeypatch, sjf
+    db_session, tick_scheduler, printer_factory, tmp_path, monkeypatch, sjf, history
 ):
     await _first_wave_parity(
-        db_session, tick_scheduler, printer_factory, tmp_path, monkeypatch, sjf, True, edge="returned"
+        db_session, tick_scheduler, printer_factory, tmp_path, monkeypatch, sjf, True, edge=history
     )
 
 
@@ -289,11 +290,18 @@ async def _first_wave_parity(
     db_session.add(Settings(key="queue_drying_block", value="true"))
     await db_session.commit()
     monkeypatch.setitem(print_scheduler._drying_in_progress, drying, time.monotonic())
-    if edge == "returned":
+    if edge in {"failed", "unsent", "both"}:
         row = await db_session.scalar(select(AutoQueueItem).where(AutoQueueItem.position == 1))
         first = await db_session.scalar(select(Printer).where(Printer.name == "P2S-A"))
-        row.failed_return_count = 1
-        row.failed_return_proof = {"version": 1, "last_failed_printer_identity": first.connector_identity}
+        if edge in {"failed", "both"}:
+            row.failed_return_count = 1
+            row.failed_return_proof = {"version": 1, "last_failed_printer_identity": first.connector_identity}
+        if edge in {"unsent", "both"}:
+            row.unsent_return_count = 1
+            second = (
+                await db_session.scalar(select(Printer).where(Printer.name == "P2S-B")) if edge == "both" else first
+            )
+            row.unsent_return_proof = {"version": 1, "printer_identity": second.connector_identity}
         await db_session.commit()
     elif edge is not None:
         # Codex r1 T-R2: a stored 0 sorts before every estimate; a row with no model sorts where

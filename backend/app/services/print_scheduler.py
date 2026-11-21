@@ -20,6 +20,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 from backend.app.core.database import async_session
 from backend.app.core.tasks import spawn_background_task
 from backend.app.core.websocket import ws_manager
+from backend.app.i18n import current_language, t
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
@@ -29,7 +30,8 @@ from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.schemas.calibration_mode import derive_mode
-from backend.app.services import ams_advertised_overlay as overlay, chamber_history, scheduled_drying
+from backend.app.services import ams_advertised_overlay as overlay, chamber_history, queue_sources, scheduled_drying
+from backend.app.services.auto_queue_unsent_return import UnsentAttempt
 from backend.app.services.farm_startup_guard import farm_startup_guard
 from backend.app.services.filament_intake import (
     item_descriptor,
@@ -101,6 +103,7 @@ class ClaimResult:
     #: The claimed row as plain values, as it was committed (G03 B, A5): what the dispatch is built from — never
     #: the tick's copy, which may be older than the row the claim locked.
     snapshot: Mapping[str, Any] | None = None
+    storage_epoch: int | None = None
 
 
 @dataclass(frozen=True)
@@ -109,6 +112,10 @@ class VerdictResult:
 
     written: bool
     code: str | None = None
+    returned: bool = False
+
+    def __bool__(self) -> bool:
+        return self.written
 
 
 def first_runnable_query(queue_id: int, now: datetime, cooling: set[int]):
@@ -496,6 +503,7 @@ class PrintScheduler:
             # ``id`` last, as the claim orders: which row of a printer is its first
             # runnable one is decided below from this order (G03 E2), and on
             # PostgreSQL equal positions otherwise come back in heap order.
+            storage_epoch = queue_sources.current_epoch()
             result = await db.execute(
                 select(PrintQueueItem)
                 .options(selectinload(PrintQueueItem.queue))
@@ -934,7 +942,9 @@ class PrintScheduler:
                 # to "printing" + the stagger slot is pre-registered. This lets
                 # the next loop iteration dispatch a different printer in
                 # parallel instead of serialising through one global await.
-                if not await self._start_print(db, item, basis=bases[item.id], requirements_cache=requirements_cache):
+                if not await self._start_print(
+                    db, item, basis=bases[item.id], requirements_cache=requirements_cache, storage_epoch=storage_epoch
+                ):
                     if item.status != "pending":
                         # A refusal that ended the row itself (its source is gone):
                         # the row behind it is next, as it would have been before.
@@ -2857,6 +2867,14 @@ class PrintScheduler:
                 return source_display_filename(descriptor).replace(".gcode.3mf", "").replace(".3mf", "")
         return f"Job #{item.id}"
 
+    @staticmethod
+    def _failed_dispatch_reason(code, message, *, returned: bool) -> str:
+        lang = current_language()
+        reason = failure_reasons.dispatch_reason_text(code, message, lang)
+        if returned:
+            reason = f"{reason} {t(lang, 'queue_return', 'returned')}"
+        return reason
+
     async def _get_printer(self, db: AsyncSession, printer_id: int) -> Printer | None:
         """Get printer by ID."""
         result = await db.execute(select(Printer).where(Printer.id == printer_id))
@@ -2876,7 +2894,7 @@ class PrintScheduler:
         return holds
 
     async def _prove_verdict(
-        self, cdb, item: PrintQueueItem, basis: str, *, admit: bool = True
+        self, cdb, item: PrintQueueItem, basis: str, *, admit: bool = True, before_row=None
     ) -> tuple[PrintQueueItem | None, datetime | None, str | None]:
         """A verdict's proof under its lane (G03 B, A8 steps 1-3), the caller holding ``queue_claim_scope``: the
         lane admits a start (``admit=False``: is not already halted), the row is the head at a ``now`` read
@@ -2886,6 +2904,8 @@ class PrintScheduler:
         )
         if refused:
             return None, now, refused
+        if before_row is not None:
+            await before_row()
         row, refused = await lock_judged_row(cdb, item_id=item.id, queue_id=item.queue_id, basis=basis)
         return row, now, refused
 
@@ -3027,7 +3047,14 @@ class PrintScheduler:
         return VerdictResult(True)
 
     async def _fail_item(
-        self, db: AsyncSession, item: PrintQueueItem, error_message: str, code: str, *, basis: str | None = None
+        self,
+        db: AsyncSession,
+        item: PrintQueueItem,
+        error_message: str,
+        code: str,
+        *,
+        basis: str | None = None,
+        storage_epoch: int | None = None,
     ) -> VerdictResult:
         """V3: mark a row that never reached a claim as failed with its closed class, and halt its queue.
 
@@ -3036,16 +3063,34 @@ class PrintScheduler:
         still the head the pass judged. The halt goes through ``halt_lane`` (A9). An attempt
         that was claimed ends through :meth:`_fail_attempt`, addressed to its claim token.
         """
+        from backend.app.services.auto_queue_unsent_return import (
+            has_auto_ancestor,
+            lock_order_for_return,
+            return_unsent,
+        )
         from backend.app.services.queue_counters import halt_lane, update_queue_counters
 
         basis = basis if basis is not None else await basis_of(db, item)
-        queue_id = item.queue_id
+        item_id, queue_id = item.id, item.queue_id
+        may_return = (
+            storage_epoch is not None
+            and code == failure_reasons.DISPATCH_PRINTER_UNAVAILABLE
+            and has_auto_ancestor(item)
+        )
         await self._end_tick(db)
         async with async_session() as cdb, queue_claim_scope(cdb, queue_id):
-            row, now, refused = await self._prove_verdict(cdb, item, basis)
+            order_refusal = None
+
+            async def check_order():
+                nonlocal order_refusal
+                order_refusal = await lock_order_for_return(cdb, item.project_id, item.project_line_id)
+
+            row, now, refused = await self._prove_verdict(
+                cdb, item, basis, before_row=check_order if may_return else None
+            )
             if refused:
                 return self._verdict_refused(item, refused)
-            await cdb.execute(
+            result = await cdb.execute(
                 update(PrintQueueItem)
                 .where(
                     PrintQueueItem.id == row.id,
@@ -3064,11 +3109,32 @@ class PrintScheduler:
                 )
                 .execution_options(synchronize_session=False)
             )
-            await halt_lane(cdb, queue_id, item_id=row.id, kind="error")
+            if not result.rowcount:
+                return self._verdict_refused(item, "not_pending")
+            returned = may_return and await return_unsent(
+                cdb,
+                row,
+                UnsentAttempt(storage_epoch),
+                code=code,
+                message=error_message,
+                at=now,
+                order_refusal=order_refusal,
+            )
+            await halt_lane(cdb, queue_id, item_id=item_id, kind="error")
             await update_queue_counters(cdb, queue_id)
             await cdb.commit()
         set_committed_value(item, "status", "failed")
-        return VerdictResult(True)
+        if returned:
+            await ws_manager.send_queue_changed(queue_id)
+            printer = await db.get(Printer, queue_id)
+            await notification_service.on_queue_job_failed(
+                job_name=await self._get_job_name(db, item),
+                printer_id=queue_id,
+                printer_name=printer.name if printer else None,
+                reason=self._failed_dispatch_reason(code, error_message, returned=True),
+                db=db,
+            )
+        return VerdictResult(True, returned=returned)
 
     async def _cancel_item(
         self,
@@ -3194,6 +3260,7 @@ class PrintScheduler:
         from backend.app.services.queue_counters import halt_lane, set_queue_printing, update_queue_counters
 
         async with async_session() as cdb, queue_claim_scope(cdb, queue_id):
+            storage_epoch = queue_sources.current_epoch()
             now, refused = await self._prove_next_row(cdb, item_id=item_id, queue_id=queue_id, printer_id=printer_id)
             if refused:
                 return ClaimResult(False, refused)
@@ -3278,7 +3345,7 @@ class PrintScheduler:
             await set_queue_printing(cdb, queue_id, item_id)
             await update_queue_counters(cdb, queue_id)
             await cdb.commit()
-        return ClaimResult(True, started_at=now, snapshot=MappingProxyType(snapshot))
+        return ClaimResult(True, started_at=now, snapshot=MappingProxyType(snapshot), storage_epoch=storage_epoch)
 
     async def _fail_attempt(
         self,
@@ -3292,7 +3359,8 @@ class PrintScheduler:
         queue_id: int | None = None,
         execution_archive_id: int | None = None,
         execution_archive_identity: str | None = None,
-    ) -> bool:
+        unsent_attempt: UnsentAttempt | None = None,
+    ) -> VerdictResult:
         """End THIS claimed attempt as failed with its class, and halt the printer's queue until Resume.
 
         Addressed to the attempt's claim token: a row the operator cancelled, a later
@@ -3312,39 +3380,62 @@ class PrintScheduler:
         through ``halt_lane`` (A9); a lost CAS releases a header that still names the
         row (A11).
         """
+        from backend.app.services.auto_queue_unsent_return import (
+            RETURNABLE_FAILURES,
+            has_auto_ancestor,
+            lock_order_for_return,
+            return_unsent,
+        )
         from backend.app.services.print_execution import dispatch_archive_terminal_values
         from backend.app.services.queue_counters import halt_lane, release_lost_claim, update_queue_counters
         from backend.app.services.queue_ops import claim_lanes
 
         if claim_started_at is None:
-            return False
+            return VerdictResult(False)
         claim_queue = queue_id
         if claim_queue is None:
             claim_queue = await db.scalar(select(PrintQueueItem.queue_id).where(PrintQueueItem.id == item_id))
             if claim_queue is None:
-                return False
+                return VerdictResult(False)
         if db.in_transaction():
             await db.commit()
         async with claim_lanes(db, [claim_queue], archive_id=execution_archive_id):
+            addressed = (
+                PrintQueueItem.id == item_id,
+                PrintQueueItem.queue_id == claim_queue,
+                PrintQueueItem.status == "printing",
+                PrintQueueItem.started_at == claim_started_at,
+            )
+            may_return = False
+            order_refusal = None
+            if (
+                not sent
+                and unsent_attempt is not None
+                and code in RETURNABLE_FAILURES
+                and (unsent_attempt.archive_id, unsent_attempt.archive_identity)
+                == (execution_archive_id, execution_archive_identity)
+            ):
+                candidate = await db.scalar(
+                    select(PrintQueueItem).where(*addressed).execution_options(populate_existing=True)
+                )
+                may_return = candidate is not None and has_auto_ancestor(candidate)
+                if may_return:
+                    order_refusal = await lock_order_for_return(db, candidate.project_id, candidate.project_line_id)
             if execution_archive_id is not None:
                 await db.scalar(
                     select(PrintArchive.id)
                     .where(PrintArchive.id == execution_archive_id)
                     .with_for_update(key_share=True)
                 )
+            at = datetime.now(timezone.utc)
             result = await db.execute(
                 update(PrintQueueItem)
-                .where(
-                    PrintQueueItem.id == item_id,
-                    PrintQueueItem.queue_id == claim_queue,
-                    PrintQueueItem.status == "printing",
-                    PrintQueueItem.started_at == claim_started_at,
-                )
+                .where(*addressed)
                 .values(
                     status="failed",
                     error_message=message,
                     error_code=code,
-                    completed_at=datetime.now(timezone.utc),
+                    completed_at=at,
                     gate_acknowledged=not sent,
                     deferred_claim_token=None,
                 )
@@ -3353,7 +3444,7 @@ class PrintScheduler:
             if not result.rowcount:
                 await release_lost_claim(db, claim_queue, item_id)
                 await db.commit()
-                return False
+                return VerdictResult(False)
             if not sent and execution_archive_id is not None and execution_archive_identity is not None:
                 await db.execute(
                     update(PrintArchive)
@@ -3366,13 +3457,25 @@ class PrintScheduler:
                     .values(**dispatch_archive_terminal_values("failed", message, code))
                     .execution_options(synchronize_session=False)
                 )
+            returned = False
+            if may_return:
+                row = await db.get(PrintQueueItem, item_id, populate_existing=True)
+                returned = await return_unsent(
+                    db, row, unsent_attempt, code=code, message=message, at=at, order_refusal=order_refusal
+                )
             await halt_lane(db, claim_queue, item_id=item_id, kind="error")
             await update_queue_counters(db, claim_queue)
             await db.commit()
-        return True
+        return VerdictResult(True, returned=returned)
 
     async def _start_print(
-        self, db: AsyncSession, item: PrintQueueItem, *, basis: str | None = None, requirements_cache=None
+        self,
+        db: AsyncSession,
+        item: PrintQueueItem,
+        *,
+        basis: str | None = None,
+        requirements_cache=None,
+        storage_epoch: int | None = None,
     ) -> bool:
         """Upload file and start print for a queue item.
 
@@ -3390,6 +3493,8 @@ class PrintScheduler:
         """
         item_id = item.id
         logger.info("Starting queue item %s", item_id)
+        if storage_epoch is None:
+            storage_epoch = queue_sources.current_epoch()
         if basis is None:
             basis = await basis_of(db, item)
 
@@ -3398,7 +3503,12 @@ class PrintScheduler:
         printer = result.scalar_one_or_none()
         if not printer:
             outcome = await self._fail_item(
-                db, item, "Printer not found", failure_reasons.DISPATCH_PRINTER_UNAVAILABLE, basis=basis
+                db,
+                item,
+                "Printer not found",
+                failure_reasons.DISPATCH_PRINTER_UNAVAILABLE,
+                basis=basis,
+                storage_epoch=storage_epoch,
             )
             logger.error("Queue item %s: Printer %s not found", item.id, item.queue_id)
             if outcome.written:
@@ -3408,7 +3518,12 @@ class PrintScheduler:
         # Check printer is connected
         if not printer_manager.is_connected(item.queue_id):
             outcome = await self._fail_item(
-                db, item, "Printer not connected", failure_reasons.DISPATCH_PRINTER_UNAVAILABLE, basis=basis
+                db,
+                item,
+                "Printer not connected",
+                failure_reasons.DISPATCH_PRINTER_UNAVAILABLE,
+                basis=basis,
+                storage_epoch=storage_epoch,
             )
             logger.error("Queue item %s: Printer %s not connected", item.id, item.queue_id)
             if outcome.written:
@@ -3418,7 +3533,12 @@ class PrintScheduler:
         # re-Connect MQTT if stalled
         if not await printer_manager.ensure_fresh_connection_for_printer(printer):
             outcome = await self._fail_item(
-                db, item, "Printer not connected", failure_reasons.DISPATCH_PRINTER_UNAVAILABLE, basis=basis
+                db,
+                item,
+                "Printer not connected",
+                failure_reasons.DISPATCH_PRINTER_UNAVAILABLE,
+                basis=basis,
+                storage_epoch=storage_epoch,
             )
             logger.error("Queue item %s: Printer %s not connected", item.id, item.queue_id)
             if outcome.written:
@@ -3727,6 +3847,7 @@ class PrintScheduler:
                 job_name_short=job_name_short,
                 swap_events=swap_events,
                 claim_started_at=claim.started_at,
+                storage_epoch=claim.storage_epoch,
             ),
             name=f"queue-dispatch-{item.id}",
         )
@@ -3749,6 +3870,7 @@ class PrintScheduler:
         job_name_short: str,
         swap_events: list[str],
         claim_started_at=None,
+        storage_epoch: int | None = None,
     ) -> None:
         """Run the full dispatch pipeline for a queue item as a spawned task.
 
@@ -3897,7 +4019,7 @@ class PrintScheduler:
                 # ⚠️ No busy check here (#2598 moved): a refusal before publish
                 # arrives typed, through ``deferred``. A printer seen busy NOW may
                 # be busy with this very job, and pending would print it twice.
-                if not await self._fail_attempt(
+                failed = await self._fail_attempt(
                     db,
                     item_id=queue_item_id,
                     claim_started_at=claim_started_at,
@@ -3907,15 +4029,19 @@ class PrintScheduler:
                     queue_id=printer_id,
                     execution_archive_id=outcome.get("execution_archive_id"),
                     execution_archive_identity=outcome.get("execution_archive_identity"),
-                ):
+                    unsent_attempt=UnsentAttempt.from_runner(outcome, storage_epoch),
+                )
+                if not failed:
                     return
                 if not published:
                     await self.release_prepared_dispatch(printer_id)
+                if failed.returned:
+                    await ws_manager.send_queue_changed(printer_id)
                 await notification_service.on_queue_job_failed(
                     job_name=job_name_short,
                     printer_id=printer_id,
                     printer_name=printer_name,
-                    reason=failure_reasons.dispatch_reason_text(outcome.get("failure_code"), err),
+                    reason=self._failed_dispatch_reason(outcome.get("failure_code"), err, returned=failed.returned),
                     db=db,
                 )
                 item = await db.get(PrintQueueItem, queue_item_id)

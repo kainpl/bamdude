@@ -194,6 +194,8 @@ class QueueSummaryResponse(BaseModel):
 class PrintQueueItemResponse(BaseModel):
     returned_receipt_identity: str | None = None
     return_ordinal: int | None = None
+    return_kind: Literal["failed_print", "unsent"] | None = None
+    returned_auto_item_id: int | None = None
     return_refusal_code: str | None = None
     auto_eject_settings: AutoEjectSettings = Field(default_factory=AutoEjectSettings)
     auto_eject: bool = False

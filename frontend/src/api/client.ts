@@ -7312,6 +7312,8 @@ export interface PrintQueueItem {
   created_at: string;
   returned_receipt_identity?: string | null;
   return_ordinal?: number | null;
+  return_kind?: 'failed_print' | 'unsent' | null;
+  returned_auto_item_id?: number | null;
   return_refusal_code?: string | null;
   batch_id?: string | null;
   /** Whether this job owns a local copy of the bytes it prints (m173). */
@@ -7870,6 +7872,8 @@ export interface AutoQueueItem {
   been_jumped: boolean;
   batch_id: string | null;
   failed_return_count?: number;
+  unsent_return_count?: number;
+  unsent_return_printer?: string | null;
   return_refusal_code?: string | null;
   /** Whether this row owns a local copy of the bytes its work prints (m173).
    *  Never `exempt` — the external and calibration exceptions only ever reach a

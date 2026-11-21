@@ -291,17 +291,18 @@ async def printers_for_item(
 
     # Filter active printers of the right model + location, with auto-distribute eligible.
     query = (
-        select(Printer, PrinterQueue.status, PrinterQueue.recovery_identity)
+        select(Printer, PrinterQueue.status, PrinterQueue.is_paused, PrinterQueue.recovery_identity)
         .join(PrinterQueue, PrinterQueue.printer_id == Printer.id)
         .where(Printer.is_active.is_(True))
         .where(Printer.archived.is_(False))
         .where(PrinterQueue.auto_distribute_eligible.is_(True))
-        # An operator-paused queue refuses new work — auto-queue included.
-        .where(PrinterQueue.is_paused.is_(False))
     )
     if halted is None:
         # NULL is no halt (as the scheduler's ``status in (...)`` reads it), never filtered out by NOT IN.
-        query = query.where(or_(PrinterQueue.status.is_(None), PrinterQueue.status.not_in(HALTED_QUEUE_STATUSES)))
+        query = query.where(
+            PrinterQueue.is_paused.is_(False),
+            or_(PrinterQueue.status.is_(None), PrinterQueue.status.not_in(HALTED_QUEUE_STATUSES)),
+        )
     location_suffix = ""
     if item.target_location_id:
         # The SUBTREE, by id. Aiming work at a workshop has to reach the
@@ -333,7 +334,7 @@ async def printers_for_item(
     setting = await db.scalar(select(Settings.value).where(Settings.key == "auto_queue_compatible_models"))
     allow_compatible = isinstance(setting, str) and setting.lower() == "true"
     exact, compatible, stopped = [], [], []
-    for printer, queue_status, queue_identity in result.all():
+    for printer, queue_status, is_paused, queue_identity in result.all():
         if headers is not None:
             headers[printer.id] = queue_identity
         if not permits(resources, printer.id, printer_manager.effective_model_for(printer.id, printer.model)):
@@ -341,7 +342,7 @@ async def printers_for_item(
         verdict = model_compatibility(normalized_model, printer_manager.effective_model_for(printer.id, printer.model))
         if verdict not in ("exact", "compatible") or (verdict == "compatible" and not allow_compatible):
             continue
-        if queue_status in HALTED_QUEUE_STATUSES:
+        if is_paused or queue_status in HALTED_QUEUE_STATUSES:
             stopped.append(printer)
         elif verdict == "exact":
             exact.append(printer)
@@ -549,12 +550,12 @@ async def find_eligible_printer(
             (ready, verdict == "exact", result.plan.color_matches, -printer.id, printer, result.plan, snapshot)
         )
     if candidates:
-        from backend.app.services.auto_queue_return_policy import last_failed_printer, returned_printer_rank
+        from backend.app.services.auto_queue_return_policy import last_failed_printers, returned_printer_rank
 
-        failed_identity = last_failed_printer(item)
+        failed_identities = last_failed_printers(item)
         _, _, _, _, printer, plan, snapshot = max(
             candidates,
-            key=lambda c: returned_printer_rank(failed_identity, c[4].connector_identity, c[:4]),
+            key=lambda c: returned_printer_rank(failed_identities, c[4].connector_identity, c[:4]),
         )
         return EligiblePrinter(
             printer,

@@ -75,7 +75,7 @@ from backend.app.schemas.project import RebalanceOut, RebalanceSkipped
 from backend.app.services import queue_sources, swap_compatibility
 from backend.app.services.auto_queue_add import build_auto_queue_rows
 from backend.app.services.auto_queue_eligibility import busy_printer_ids, router_view_conditions
-from backend.app.services.auto_queue_return_policy import has_return_history, last_failed_printer
+from backend.app.services.auto_queue_return_policy import has_return_history, last_failed_printers
 from backend.app.services.farm_forecast import (
     FarmSnapshot,
     StaggerPolicy,
@@ -263,7 +263,7 @@ class MovableItem:
     been_jumped: bool = False
     auto_eject: bool = False
     prep: float = 0.0  # what it pays before its start
-    last_failed_printer_identity: str | None = None
+    last_failed_printer_identities: frozenset[str] = frozenset()
 
 
 Verdict = Literal["yes", "no", "unknown"]
@@ -453,7 +453,7 @@ def _home_job(item: MovableItem, machines: list[Machine], farm: FarmView) -> Job
         been_jumped=item.been_jumped,
         auto_eject=item.auto_eject,
         prep=item.prep,
-        last_failed_printer_identity=item.last_failed_printer_identity,
+        last_failed_printer_identities=item.last_failed_printer_identities,
     )
 
 
@@ -1349,7 +1349,7 @@ def _tail_item(row: AutoQueueItem, home: str, prep: float) -> MovableItem:
         been_jumped=bool(row.been_jumped),
         auto_eject=bool(row.auto_eject),
         prep=float(prep),
-        last_failed_printer_identity=last_failed_printer(row),
+        last_failed_printer_identities=last_failed_printers(row),
     )
 
 

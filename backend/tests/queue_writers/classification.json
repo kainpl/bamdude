@@ -2,6 +2,8 @@
  "_comment": "Hand classification of every function the scanner reports (G03 B r4; carried into r5 and r6). Keys are file::function. class = lock class per spec r4 section A.3 (lane = lane holder; L2a..L2g lane-less classes; shared = AutoQueue rows only, L3; helper = runs inside its caller's class; startup = L2c; memory = no durable write of a target row; n/a = not a target row). owner = who owns the transaction. rule = the spec r4 requirement that governs it. r3 = whether spec r3's tables named it: listed / listed-wrong (named with a class the code does not have) / missing / n/a.",
  "_confirmed_candidate_writers": [
   "backend/app/services/auto_queue_return.py::return_ready",
+  "backend/app/services/auto_queue_unsent_return.py::_build_return",
+  "backend/app/services/auto_queue_unsent_return.py::return_unsent",
   "backend/app/services/filament_policy.py::clear_routing_runtime",
   "backend/app/services/order_resources.py::replan",
   "backend/app/services/print_execution.py::close_noncurrent",
@@ -802,6 +804,31 @@
   "r3": "listed",
   "rule": "unchanged (gh117)"
  },
+ "backend/app/services/auto_queue_unsent_return.py::_build_return": {
+  "candidates": {
+   "orm-attr:PrintQueueItem[returned_receipt_identity]@job": "target",
+   "orm-attr:PrintQueueItem[source_auto_item_id]@job": "target"
+  },
+  "class": "helper (lane)",
+  "fk": {
+   "auto_queue_items.assigned_to_item_id": "null",
+   "print_queue.source_auto_item_id": "null"
+  },
+  "lock": "helper",
+  "owner": "PrintScheduler._fail_attempt or _fail_item",
+  "r3": "missing",
+  "rule": "B2 and B3: the caller holds the lane, order, any execution archive and addressed job; lock the ancestor before retiring the addressed placement"
+ },
+ "backend/app/services/auto_queue_unsent_return.py::return_unsent": {
+  "candidates": {
+   "orm-attr:AutoQueueItem|PrintQueueItem[waiting_reason]@job": "target"
+  },
+  "class": "helper (lane)",
+  "lock": "helper",
+  "owner": "PrintScheduler._fail_attempt or _fail_item",
+  "r3": "missing",
+  "rule": "B3: the failure writer holds the addressed job; the savepoint isolates optional return writes"
+ },
  "backend/app/services/auto_queue_scheduler.py::AutoQueueScheduler._assign": {
   "class": "lane:queue_claim_scope",
   "fk": {
@@ -1350,6 +1377,7 @@
  },
  "backend/app/services/print_scheduler.py::PrintScheduler._fail_attempt": {
   "after_commit": {
+   "helper-call:auto_queue_unsent_return.return_unsent": "branch: the lost-CAS commit (A11 release) ends in return",
    "helper-call:queue_counters.halt_lane": "branch: the lost-CAS commit (A11 release) ends in return",
    "helper-call:queue_counters.update_queue_counters": "branch: the lost-CAS commit (A11 release) ends in return"
   },

@@ -151,6 +151,8 @@ def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
 
     response = AutoQueueItemResponse(
         failed_return_count=item.failed_return_count or 0,
+        unsent_return_count=item.unsent_return_count or 0,
+        unsent_return_printer=getattr(item, "_unsent_return_printer", None),
         return_refusal_code=getattr(item, "_return_refusal_code", None),
         id=item.id,
         archive_id=item.archive_id,

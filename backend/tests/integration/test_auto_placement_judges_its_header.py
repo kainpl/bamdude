@@ -132,7 +132,13 @@ async def test_assign_now_places_only_in_the_header_its_eligibility_judged(
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
 def test_the_eligibility_reads_the_header_with_the_printer():
     """The incarnation comes from the read that chose the printers, not from a read of its own afterwards."""
+    import ast
     import inspect
 
     source = inspect.getsource(auto_queue_eligibility.printers_for_item)
-    assert "select(Printer, PrinterQueue.status, PrinterQueue.recovery_identity)" in source
+    projections = [
+        {ast.unparse(arg) for arg in node.args}
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "select"
+    ]
+    assert any({"Printer", "PrinterQueue.status", "PrinterQueue.recovery_identity"} <= cols for cols in projections)

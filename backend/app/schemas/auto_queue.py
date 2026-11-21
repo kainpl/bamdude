@@ -150,6 +150,8 @@ class AutoQueueItemUpdate(IgnoresNullForRequiredColumns):
 
 class AutoQueueItemResponse(BaseModel):
     failed_return_count: int = 0
+    unsent_return_count: int = 0
+    unsent_return_printer: str | None = None
     return_refusal_code: str | None = None
     auto_eject_settings: AutoEjectSettings = Field(default_factory=AutoEjectSettings)
     auto_eject: bool = False

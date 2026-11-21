@@ -131,6 +131,16 @@ describe('QueueCard collapsed copies', () => {
     expect(screen.getByTitle('Retry')).toBeDisabled();
     expect(screen.getByText(/Filament ran out/)).toBeVisible();
   });
+  it('shows an unsent retirement without any repeat or retry action', async () => {
+    mockQueue({ failed: [{ ...row(1, 'failed'), returned_receipt_identity: 'receipt', return_kind: 'unsent',
+      return_ordinal: 1, returned_auto_item_id: 7, error_code: 'dispatchUploadFailed' }] });
+    renderCard();
+    fireEvent.click(await screen.findByText('Issues (1)'));
+    expect(await screen.findByRole('link', { name: /nothing was sent to this printer/ })).toHaveAttribute('href', '/queue#auto-job-7');
+    expect(screen.queryByTitle('Retry')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('Clone')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('Repeat')).not.toBeInTheDocument();
+  });
   it('keeps editing and cancellation available in the visible action menu', async () => {
     const edit = vi.fn();
     const cancel = vi.spyOn(api, 'cancelQueueItem').mockResolvedValue({ success: true } as never);

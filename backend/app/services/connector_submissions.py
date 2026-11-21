@@ -1145,18 +1145,30 @@ async def observations(actor: ConnectorActor, proof: OwnProof, *, cursor: str | 
         def printer_of(printer_id):
             return None if printer_id is None else {"id": printer_id, "identity": printer_identity.get(printer_id)}
 
-        from backend.app.models.auto_queue_return import AutoQueueReturn
-        from backend.app.services.auto_queue_return_policy import has_return_history
+        from backend.app.models.auto_queue_return import AutoQueueReturn, AutoQueueUnsentReturn
 
         returned = {}
+        unsent = {}
+        latest_unsent = {}
         if auto_ids:
             query = select(AutoQueueReturn).where(
                 AutoQueueReturn.auto_identity.in_(auto_ids), AutoQueueReturn.returned_at.is_not(None)
             )
             returned = {r.id: r for r in (await db.scalars(query)).all()}
+            query = (
+                select(AutoQueueUnsentReturn)
+                .where(AutoQueueUnsentReturn.auto_identity.in_(auto_ids))
+                .order_by(AutoQueueUnsentReturn.ordinal)
+            )
+            for receipt in (await db.scalars(query)).all():
+                unsent[receipt.id] = receipt
+                latest_unsent[receipt.auto_identity] = receipt.id
 
         def retired(row, identity):
-            receipt = returned.get(row.returned_receipt_identity)
+            key = row.returned_receipt_identity
+            if key in unsent and (key in returned or row.source_auto_item_id is not None or row.status != "failed"):
+                return False
+            receipt = returned.get(key) or unsent.get(key)
             return bool(
                 receipt
                 and receipt.auto_identity == identity
@@ -1164,19 +1176,40 @@ async def observations(actor: ConnectorActor, proof: OwnProof, *, cursor: str | 
                 and row.source_auto_identity == identity
             )
 
-        def current_return(auto):
-            proof = auto.failed_return_proof
-            if not isinstance(proof, dict) or type(proof.get("version")) is not int or proof["version"] != 1:
+        def current_return(auto, proof, count, receipts, printer_key):
+            if (
+                not isinstance(proof, dict)
+                or type(proof.get("version")) is not int
+                or proof["version"] != 1
+                or not isinstance(proof.get("receipt_identity"), str)
+            ):
                 return False
-            receipt = returned.get(proof.get("receipt_identity"))
+            receipt = receipts.get(proof["receipt_identity"])
             return bool(
                 receipt
                 and receipt.auto_identity == auto.recovery_identity
-                and receipt.ordinal == auto.failed_return_count
+                and receipt.ordinal == count
                 and receipt.old_job_identity == proof.get("old_job_identity")
                 and receipt.execution_archive_identity == proof.get("execution_archive_identity")
-                and receipt.printer_identity == proof.get("last_failed_printer_identity")
+                and receipt.printer_identity == proof.get(printer_key)
             )
+
+        def return_history(auto):
+            if auto is None:
+                return False, False, True
+            physical = auto.failed_return_proof is not None or auto.failed_return_count > 0
+            refused = auto.unsent_return_proof is not None or auto.unsent_return_count > 0
+            physical_valid = not physical or current_return(
+                auto, auto.failed_return_proof, auto.failed_return_count, returned, "last_failed_printer_identity"
+            )
+            unsent_valid = not refused or (
+                current_return(auto, auto.unsent_return_proof, auto.unsent_return_count, unsent, "printer_identity")
+                and auto.unsent_return_proof["receipt_identity"] == latest_unsent.get(auto.recovery_identity)
+                and auto.unsent_return_proof["receipt_identity"] not in returned
+                and unsent[auto.unsent_return_proof["receipt_identity"]].failure_code
+                == auto.unsent_return_proof.get("failure_code")
+            )
+            return physical, refused, physical_valid and unsent_valid
 
         jobs = []
         for entry_id, job in page:
@@ -1202,10 +1235,11 @@ async def observations(actor: ConnectorActor, proof: OwnProof, *, cursor: str | 
                     continue
                 placed = _newest([row for row in linked if not retired(row, identity)])
                 auto = live_auto.get(identity)
-                if auto is not None and has_return_history(auto) and not current_return(auto):
+                physical, refused, valid_history = return_history(auto)
+                if not valid_history or (refused and auto.status == "pending" and bool(placed)):
                     jobs.append(_unavailable(observed, "chain_broken"))
                     continue
-                if auto is not None and auto.status == "pending" and has_return_history(auto):
+                if (physical or refused) and auto.status == "pending":
                     state = _AUTO_STATE["pending"]
                 elif placed:
                     assignment = placed[0]

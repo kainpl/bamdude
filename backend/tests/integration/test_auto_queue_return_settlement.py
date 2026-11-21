@@ -103,6 +103,42 @@ async def test_real_failed_callback_publishes_ready_without_rearming(failed_auto
         assert len((await db.scalars(select(AutoQueueReturn))).all()) == 1
 
 
+async def test_live_failed_completion_reapplies_the_hold_after_resume(failed_auto_run):
+    from backend.app.api.routes.printer_queues import PrinterQueueUpdate, update_queue
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.queue_counters import set_queue_idle
+    from backend.app.services.queue_ops import claim_lanes
+
+    rig, archive_id, job_id, auto_id, _ = failed_auto_run
+    async with rig.db() as db:
+        queue_id = (await db.get(PrintQueueItem, job_id)).queue_id
+    async with rig.db() as db, claim_lanes(db, [queue_id]):
+        successor = PrintQueueItem(queue_id=queue_id, status="printing", origin="external")
+        db.add(successor)
+        await db.flush()
+        external_id = successor.id
+        queue = await db.get(PrinterQueue, queue_id)
+        queue.current_item_id, queue.is_paused = external_id, True
+        await db.commit()
+    async with rig.db() as db:
+        response = await update_queue(queue_id, PrinterQueueUpdate(is_paused=False), db, None)
+        assert (response.status, response.is_paused) == ("printing", False)
+    await complete(rig, {"status": "failed", "subtask_id": "81"})
+    async with rig.db() as db, claim_lanes(db, [queue_id]):
+        job = await db.get(PrintQueueItem, job_id)
+        archive = await db.get(PrintArchive, archive_id)
+        auto = await db.get(AutoQueueItem, auto_id)
+        queue = await db.get(PrinterQueue, queue_id)
+        assert (job.status, archive.status, auto.unsent_return_count) == ("failed", "failed", 0)
+        assert (queue.status, queue.current_item_id, queue.is_paused) == ("printing", external_id, True)
+        (await db.get(PrintQueueItem, external_id)).status = "completed"
+        assert await set_queue_idle(db, queue_id, expected_item_id=external_id)
+        await db.commit()
+    async with rig.db() as db:
+        queue = await db.get(PrinterQueue, queue_id)
+        assert (queue.status, queue.current_item_id, queue.is_paused) == ("idle", None, True)
+
+
 @pytest.mark.parametrize("mode", ["off", "ownerless", "not_started", "direct", "cancelled", "completed", "limit"])
 async def test_noneligible_completion_never_mints_ready(failed_auto_run, mode):
     rig, _, job_id, auto_id, _ = failed_auto_run

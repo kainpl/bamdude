@@ -105,7 +105,7 @@ class Job:
     #: T-R2): a stored 0 sorts as 0 although its duration is unknown (``seconds`` None, T19).
     #: ``None`` = the same as ``seconds``.
     order_seconds: float | None = None
-    last_failed_printer_identity: str | None = None
+    last_failed_printer_identities: frozenset[str] = frozenset()
 
 
 def _order_seconds(job: Job) -> float | None:
@@ -404,7 +404,7 @@ def replay(
             choice = max(
                 (pid for pid in free if pid in fitted),
                 key=lambda pid: returned_printer_rank(
-                    jobs[best].last_failed_printer_identity,
+                    jobs[best].last_failed_printer_identities,
                     by_pid[pid].printer_identity,
                     (is_ready(pid, t), fitted[pid][0], fitted[pid][1], -pid),
                 ),

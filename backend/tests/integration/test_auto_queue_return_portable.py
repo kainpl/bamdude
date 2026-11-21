@@ -7,15 +7,18 @@ from sqlalchemy import insert, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.app.core import db_portable
+from backend.app.core.config import settings
 from backend.app.core.database import Base, import_all_models
 from backend.app.migrations import _discover_migrations
 from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
-from backend.app.models.auto_queue_return import AutoQueueReturn
+from backend.app.models.auto_queue_return import AutoQueueReturn, AutoQueueUnsentReturn
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.tests.integration.test_auto_queue_return_schema import STAMP, receipt_values
+from backend.tests.integration.test_migration_m253_postgres import live_settings, pg_engine  # noqa: F401
+from backend.tests.unit.test_migration_m254 import assert_receipt_contract
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
@@ -26,6 +29,17 @@ async def seed_file(path):
     returned = receipt_values(returned_at=STAMP, ordinal=1)
     ready = receipt_values(auto_identity=returned["auto_identity"])
     proof = {"receipt_identity": returned["id"], "printer_identity": returned["printer_identity"]}
+    refused = receipt_values(
+        auto_identity=returned["auto_identity"],
+        execution_archive_id=None,
+        execution_archive_identity=None,
+        returned_at=STAMP,
+        ordinal=1,
+        old_job_id=12,
+    )
+    unsent = {key: value for key, value in refused.items() if key in AutoQueueUnsentReturn.__table__.columns}
+    unsent["failure_code"] = "dispatchPrinterUnavailable"
+    unsent_proof = {"version": 1, "receipt_identity": unsent["id"], "old_job_identity": unsent["old_job_identity"]}
     try:
         async with engine.begin() as conn:
             await conn.run_sync(db_portable._portable_metadata(Base.metadata).create_all)
@@ -71,6 +85,8 @@ async def seed_file(path):
                     position=0,
                     failed_return_count=1,
                     failed_return_proof=proof,
+                    unsent_return_count=1,
+                    unsent_return_proof=unsent_proof,
                 )
             )
             await db.flush()
@@ -87,9 +103,21 @@ async def seed_file(path):
                     returned_receipt_identity=returned["id"],
                 )
             )
+            db.add(
+                PrintQueueItem(
+                    id=12,
+                    queue_id=2,
+                    status="failed",
+                    recovery_identity=unsent["old_job_identity"],
+                    placement_basis="v1:" + "a" * 64,
+                    source_auto_identity=returned["auto_identity"],
+                    returned_receipt_identity=unsent["id"],
+                )
+            )
             await db.commit()
         async with engine.begin() as conn:
             await conn.execute(insert(AutoQueueReturn), [returned, ready])
+            await conn.execute(insert(AutoQueueUnsentReturn), unsent)
     finally:
         await engine.dispose()
     return returned, ready, proof
@@ -99,6 +127,18 @@ async def assert_retained(engine, returned, ready, proof):
     async with async_sessionmaker(engine)() as db:
         auto = await db.get(AutoQueueItem, 9)
         assert auto.failed_return_count == 1 and auto.failed_return_proof == proof
+        assert auto.unsent_return_count == 1
+        unsent = await db.get(AutoQueueUnsentReturn, auto.unsent_return_proof["receipt_identity"])
+        assert (unsent.auto_identity, unsent.ordinal, unsent.execution_archive_id, unsent.returned_at) == (
+            auto.recovery_identity,
+            1,
+            None,
+            STAMP,
+        )
+        retired = await db.get(PrintQueueItem, 12)
+        assert retired.placement_basis == "v1:" + "a" * 64
+        assert retired.returned_receipt_identity == unsent.id
+        assert retired.recovery_identity == unsent.old_job_identity
         assert auto.recovery_identity == returned["auto_identity"]
         old = await db.get(PrintQueueItem, 7)
         assert (old.status, old.error_code, old.returned_receipt_identity) == (
@@ -132,3 +172,14 @@ async def test_full_sqlite_snapshot_retains_receipts_and_history(tmp_path):
             assert json.loads(await conn.scalar(text("SELECT failed_return_proof FROM auto_queue_items"))) == proof
     finally:
         await engine.dispose()
+
+
+async def test_sqlite_import_conforms_unsent_receipts_on_postgres(pg_engine, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "database_url", pg_engine.url.render_as_string(hide_password=False))
+    source = tmp_path / "source.db"
+    returned, ready, proof = await seed_file(source)
+    assert await db_portable.import_sqlite_to_postgres(pg_engine, Base.metadata, source) > 0
+    await db_portable.conform_imported_schema(pg_engine, Base.metadata)
+    await assert_retained(pg_engine, returned, ready, proof)
+    async with pg_engine.connect() as conn:
+        await conn.run_sync(assert_receipt_contract)

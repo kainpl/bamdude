@@ -208,16 +208,28 @@ describe('AutoQueuePanel — rebalancing across models', () => {
 describe('AutoQueuePanel — shortest job first', () => {
   it('lists pending jobs in the order the distributor places them', async () => {
     // upstream f5cdc866 (#3043): with SJF on the list kept its position order.
-    vi.spyOn(api, 'getSettings').mockResolvedValue({ queue_shortest_first: true } as never);
+    vi.spyOn(api, 'getUiPreferences').mockResolvedValue({ queue_shortest_first: true } as never);
     vi.mocked(api.getAutoQueue).mockResolvedValue([
       routerRow({ id: 1, position: 1, print_time_seconds: 9000, library_file_name: 'long.3mf', project_id: null }),
       routerRow({ id: 2, position: 2, print_time_seconds: 600, library_file_name: 'short.3mf', project_id: null }),
       routerRow({ id: 3, position: 3, print_time_seconds: null, library_file_name: 'unknown.3mf', project_id: null }),
     ]);
     render(<AutoQueuePanel />);
-    await screen.findByText('long.3mf');
-    const names = screen.getAllByText(/^(long|short|unknown)\.3mf$/).map((el) => el.textContent);
-    expect(names).toEqual(['short.3mf', 'long.3mf', 'unknown.3mf']);
+    await waitFor(() => {
+      const names = screen.getAllByText(/^(long|short|unknown)\.3mf$/).map((el) => el.textContent);
+      expect(names).toEqual(['short.3mf', 'long.3mf', 'unknown.3mf']);
+    });
+  });
+});
+
+describe('AutoQueuePanel — unsent returns', () => {
+  it('provides an anchor and a count with the printer for the returned job', async () => {
+    vi.mocked(api.getAutoQueue).mockResolvedValue([
+      routerRow({ id: 27, unsent_return_count: 1, unsent_return_printer: 'P1P Workshop', library_file_name: 'part.3mf' }),
+    ]);
+    render(<AutoQueuePanel />);
+    const badge = await screen.findByText('Returned after a refused upload on P1P Workshop (1 of 2)');
+    expect(badge.closest('#auto-job-27')).toBeVisible();
   });
 });
 

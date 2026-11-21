@@ -3,7 +3,7 @@ import { AutoQueueReturnInfo } from '../AutoQueueReturnInfo';
 import { QueueDuration } from '../QueueDuration';
 import { sharedSlicerTime } from '../../utils/slicerTime';
 import { AutoEjectBadge } from '../AutoEjectBadge';
-import { useMemo, useRef, useState, type DragEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -160,11 +160,19 @@ export function AutoQueuePanel() {
     () => [...(items ?? [])].sort((a, b) => compareAutoQueueOrder(a, b, sjfActive) || a.id - b.id),
     [items, sjfActive],
   );
+  const followedReturn = useRef(false);
+  useEffect(() => {
+    if (!items || followedReturn.current || !window.location.hash.startsWith('#auto-job-')) return;
+    followedReturn.current = true;
+    const target = document.getElementById(window.location.hash.slice(1)) ?? document.getElementById('auto-queue');
+    target?.scrollIntoView?.();
+  }, [items]);
   const runs = useMemo(() => {
     const out: Array<{ key: string; batchId: string | null; items: AutoQueueItem[] }> = [];
     for (const it of sortedItems) {
       const last = out[out.length - 1];
       if (last && last.batchId !== null && last.batchId === it.batch_id
+          && !it.unsent_return_count && !last.items[0].unsent_return_count
           && last.items[0].status === it.status && last.items[0].waiting_reason === it.waiting_reason
           && last.items[0].failed_return_count === it.failed_return_count
           && last.items[0].return_refusal_code === it.return_refusal_code) last.items.push(it);
@@ -532,6 +540,7 @@ function AutoQueueRow({
   return (
     <div
       ref={setNodeRef}
+      id={`auto-job-${item.id}`}
       style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : undefined }}
       className={`flex items-center gap-2 p-2.5 rounded border transition-colors ${item.status === 'failed'
         ? 'bg-red-500/10 border-red-500/50' : 'bg-bambu-dark border-bambu-dark-tertiary hover:border-bambu-green/50'}`}
@@ -583,7 +592,8 @@ function AutoQueueRow({
               In the meta line it already has, at the size the icons there
               already are — the row keeps its shape. */}
           <AutoEjectBadge mode={item.auto_eject} settings={item.auto_eject_settings} />
-          <AutoQueueReturnInfo count={item.failed_return_count} reason={item.return_refusal_code} />
+          <AutoQueueReturnInfo count={item.failed_return_count} reason={item.return_refusal_code}
+            unsentCount={item.unsent_return_count} printer={item.unsent_return_printer} />
           <QueueSourceIndicator
             state={item.source_storage}
             held={item.status === 'failed' || item.status === 'cancelled'}

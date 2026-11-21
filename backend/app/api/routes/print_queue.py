@@ -284,6 +284,8 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
     item_dict = {
         "returned_receipt_identity": item.returned_receipt_identity,
         "return_ordinal": getattr(item, "_return_ordinal", None),
+        "return_kind": getattr(item, "_return_kind", None),
+        "returned_auto_item_id": getattr(item, "_returned_auto_item_id", None),
         "return_refusal_code": getattr(item, "_return_refusal_code", None),
         "auto_eject": item.auto_eject,
         "auto_eject_settings": item.auto_eject_settings or {},

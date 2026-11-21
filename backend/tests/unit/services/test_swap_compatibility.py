@@ -17,6 +17,18 @@ from backend.app.services import swap_compatibility as sc
 START, TABLE = "swap_mode_start", "swap_mode_change_table"
 
 
+@pytest.mark.parametrize("snapshot", [{"version": 1, "provenance": "a"}, {"version": 20}, ["legacy"], None])
+def test_normalizing_a_snapshot_only_removes_the_current_swap_fact(snapshot):
+    for fact in (sc.SourceFact(True), sc.SourceFact(False), *(sc.SourceFact(None, r) for r in sc.UNKNOWN_REASONS)):
+        copy = (
+            sc.snapshot_with_fact(snapshot, fact)
+            if isinstance(snapshot, dict) and snapshot.get("version") == 1
+            else snapshot
+        )
+        assert sc.snapshot_without_fact(copy) == sc.snapshot_without_fact(snapshot)
+        assert sc.same_snapshot_for_return(snapshot, copy)
+
+
 def _archive(column=False, extra=None):
     return SimpleNamespace(swap_compatible=column, extra_data=extra)
 

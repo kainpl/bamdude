@@ -175,7 +175,9 @@ def _refusal(
         ):
             return "not_before_dispatch"
     else:
-        if getattr(row, "failed_return_proof", None) is not None or (getattr(row, "failed_return_count", 0) or 0) > 0:
+        from backend.app.services.auto_queue_return_policy import has_return_history
+
+        if has_return_history(row):
             return "not_before_dispatch"
         if row.cancelled_at is not None:
             return "cancelled"

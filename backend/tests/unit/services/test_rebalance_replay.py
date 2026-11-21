@@ -91,7 +91,7 @@ def test_the_router_ranks_ready_then_exact_then_colour_then_the_lower_id():
 
 
 def test_returned_job_ranks_last_failed_last_without_waiting_for_busy_peers():
-    job = replace(_job(1, 1, 2), last_failed_printer_identity="failed")
+    job = replace(_job(1, 1, 2), last_failed_printer_identities=frozenset({"failed"}))
     failed = _free(1, printer_identity="failed")
     alternative = _free(2, ready=False, printer_identity="other")
     assert replay([failed, alternative], [job]).lane_of[1] == 2

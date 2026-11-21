@@ -1818,17 +1818,17 @@ function IssuesSection({
                       {failureText(t, item.error_code, item.error_message, item.archive_id)}
                     </p>
                   )}
-                  <AutoQueueReturnInfo returned={item.returned_receipt_identity != null} ordinal={item.return_ordinal} reason={item.return_refusal_code} />
+                  <AutoQueueReturnInfo returned={item.returned_receipt_identity != null} ordinal={item.return_ordinal} reason={item.return_refusal_code} kind={item.return_kind} autoItemId={item.returned_auto_item_id} />
                 </div>
                 <div className="flex items-center gap-0.5 flex-shrink-0">
-                  <button
+                  {item.return_kind !== 'unsent' && <button
                     onClick={() => retryMutation.mutate(item.id)}
                     disabled={retryMutation.isPending || retryRowsBusy || !canUpdate || isStaleClaim(item.error_code) || item.returned_receipt_identity != null || !!item.plate_answer_required}
                     className="p-0.5 rounded hover:bg-bambu-green/20 text-bambu-green disabled:opacity-50"
                     title={item.plate_answer_required ? t('queueCard.actions.answerPlateFirst') : t('queueCard.actions.retry')}
                   >
                     <Play className="w-3.5 h-3.5" />
-                  </button>
+                  </button>}
                   <button
                     onClick={() => removeMutation.mutate(item.id)}
                     disabled={removeMutation.isPending || retryRowsBusy}

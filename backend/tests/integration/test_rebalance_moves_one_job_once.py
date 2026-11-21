@@ -30,15 +30,18 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 @pytest.mark.parametrize("force", [False, True])
 @pytest.mark.parametrize("hooks", [2, 6])
+@pytest.mark.parametrize("history", ["failed", "unsent"])
 async def test_returned_work_never_rebalances_but_shared_refusal_remains_open(
-    db_session, test_engine, printer_factory, tmp_path, monkeypatch, clean_spool, force, hooks
+    db_session, test_engine, printer_factory, tmp_path, monkeypatch, clean_spool, force, hooks, history
 ):
     farm = await petg_farm(db_session, printer_factory, tmp_path, targets=1, alt_hooks=hooks)
-    farm.item.failed_return_count = 1
-    farm.item.failed_return_proof = {"version": 1, "last_failed_printer_identity": farm.home.connector_identity}
+    count_column = f"{history}_return_count"
+    key = "printer_identity" if history == "unsent" else "last_failed_printer_identity"
+    setattr(farm.item, count_column, 1)
+    setattr(farm.item, f"{history}_return_proof", {"version": 1, key: farm.home.connector_identity})
     await db_session.commit()
     assert queue_rebalance.refusal(farm.item) is None
-    before = (farm.item.library_file_id, farm.item.target_model, farm.item.plate_id, farm.item.failed_return_count)
+    before = (farm.item.library_file_id, farm.item.target_model, farm.item.plate_id, getattr(farm.item, count_column))
     p_elig, p_sched = _live(farm)
     with p_elig, p_sched:
         result = await queue_rebalance.rebalance(db_session, item_ids=[farm.item.id], force=force)
@@ -46,7 +49,7 @@ async def test_returned_work_never_rebalances_but_shared_refusal_remains_open(
     assert (result.converted, result.created, result.skipped) == (0, 0, [(farm.item.id, "already_returned")])
     rows = await _rows(test_engine)
     assert len(rows) == 1
-    assert (rows[0].library_file_id, rows[0].target_model, rows[0].plate_id, rows[0].failed_return_count) == before
+    assert (rows[0].library_file_id, rows[0].target_model, rows[0].plate_id, getattr(rows[0], count_column)) == before
 
 
 @pytest.fixture

@@ -21,4 +21,17 @@ describe('automatic failed return facts', () => {
     render(<AutoQueueReturnInfo returned />);
     expect(screen.getByRole('link', { name: 'Returned to Auto Queue' })).toBeVisible();
   });
+
+  it('links the unsent receipt to its Auto Queue job', () => {
+    render(<AutoQueueReturnInfo returned kind="unsent" ordinal={1} autoItemId={27} />);
+    const link = screen.getByRole('link', { name: 'Returned to Auto Queue — nothing was sent to this printer' });
+    expect(link).toHaveAttribute('href', '/queue#auto-job-27');
+    expect(link).toHaveClass('min-h-11');
+  });
+
+  it('shows the unsent count and printer independently of failed print history', () => {
+    render(<AutoQueueReturnInfo count={1} unsentCount={2} printer="P1S Workshop" />);
+    expect(screen.getByText('Automatic returns: 1/2')).toBeVisible();
+    expect(screen.getByText('Returned after a refused upload on P1S Workshop (2 of 2)')).toBeVisible();
+  });
 });
