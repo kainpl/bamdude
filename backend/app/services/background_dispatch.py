@@ -1035,6 +1035,9 @@ class DispatchEnqueueRejected(Exception):
         return {"code": self.code, "message": str(self), "printer_id": self.printer_id}
 
 
+ArchiveTerminalWrite = Literal["written", "not_printing", "failed"]
+
+
 class DispatchOutcome(TypedDict):
     success: bool
     archive_id: int | None
@@ -1044,6 +1047,8 @@ class DispatchOutcome(TypedDict):
     reason: NotRequired[dict]
     #: The closed class of a failed attempt (``utils/failure_reasons``).
     failure_code: NotRequired[str]
+    #: The runner's cleanup result, for diagnostics. A finalizer must prove durable closure itself.
+    archive_terminal: NotRequired[ArchiveTerminalWrite]
     #: The start may have been published and nothing decided what it became: an
     #: exit that is neither a print nor a failure — no release, no pending, no report.
     uncertain: NotRequired[bool]
@@ -1114,6 +1119,7 @@ class PrintDispatchJob:
     original_archive_identity: str | None = None
     original_library_identity: str | None = None
     execution_archive_id: int | None = None
+    execution_archive_identity: str | None = None
     # Generated once at the execution boundary and threaded unchanged to the
     # archive intent, run binding and Bambu ``project_file`` payload.
     submission_id: str | None = None
@@ -1702,6 +1708,7 @@ class BackgroundDispatchService:
             "send_fact": job.send_fact,
             "claim_started_at": job.claim_started_at,
             "execution_archive_id": job.execution_archive_id,
+            "execution_archive_identity": job.execution_archive_identity,
         }
 
     async def dispatch_print_library_file(
@@ -2985,6 +2992,7 @@ class BackgroundDispatchService:
                 if not archive:
                     raise RuntimeError("Failed to create reprint archive")
                 job.execution_archive_id = archive.id
+                job.execution_archive_identity = archive.recovery_identity
                 _unobserved_attempts.discard(archive.id)  # a reused id names this attempt now
                 # The durable half of the send fact, in the transaction that inserts the row (D-R3).
                 job.dispatch_boot_id = dispatch_phase.stamp_prepared(archive)
@@ -3632,7 +3640,9 @@ class BackgroundDispatchService:
             return
         code = dispatch_failure_code(exc, stage=job.stage)
         await self._end_own_transaction(db)
-        await self._mark_dispatch_archive_terminal(job.execution_archive_id, "failed", message, failure_reason=code)
+        archive_terminal = await self._mark_dispatch_archive_terminal(
+            job.execution_archive_id, "failed", message, failure_reason=code
+        )
         job.outcome = {
             "success": False,
             "archive_id": job.execution_archive_id,
@@ -3640,6 +3650,7 @@ class BackgroundDispatchService:
             "cancelled": False,
             "deferred": False,
             "failure_code": code,
+            "archive_terminal": archive_terminal,
         }
 
     async def _secondary(self, db, job: PrintDispatchJob, label: str, action: Callable[[], Any]) -> None:
@@ -4005,6 +4016,7 @@ class BackgroundDispatchService:
                 if not archive:
                     raise RuntimeError("Failed to create archive")
                 job.execution_archive_id = archive.id
+                job.execution_archive_identity = archive.recovery_identity
                 _unobserved_attempts.discard(archive.id)  # a reused id names this attempt now
                 archive_file_path = archive.file_path
                 # The durable half of the send fact, in the transaction that inserts the row (D-R3).
@@ -5029,7 +5041,7 @@ class BackgroundDispatchService:
     @staticmethod
     async def _mark_dispatch_archive_terminal(
         archive_id: int | None, status: str, error_message: str, *, failure_reason: str | None = None
-    ) -> None:
+    ) -> ArchiveTerminalWrite:
         """Flip a dispatch-time archive to a terminal state on error.
 
         ``archive_print`` commits the row before the upload/start block runs,
@@ -5040,35 +5052,30 @@ class BackgroundDispatchService:
         on_print_complete that raced with us nor a repeated cleanup writes twice.
         The caller has ended its own transaction first (``_end_own_transaction``).
         """
-        from datetime import datetime, timezone
-
         from backend.app.models.archive import PrintArchive
+        from backend.app.services.print_execution import dispatch_archive_terminal_values
 
         if archive_id is None:
-            return
-        values: dict[str, Any] = {
-            "status": status,
-            "error_message": error_message,
-            "completed_at": datetime.now(timezone.utc),
-        }
-        if failure_reason:
-            values["failure_reason"] = failure_reason
+            return "not_printing"
+        values = dispatch_archive_terminal_values(status, error_message, failure_reason)
         try:
             async with async_session() as fdb:
-                await fdb.execute(
+                result = await fdb.execute(
                     update(PrintArchive)
                     .where(PrintArchive.id == archive_id, PrintArchive.status == "printing")
                     .values(**values)
                     .execution_options(synchronize_session=False)
                 )
                 await fdb.commit()
+                return "written" if result.rowcount else "not_printing"
         except Exception as cleanup_err:
             logger.warning(
                 "Failed to mark dispatch archive %s as %s: %s",
                 archive_id,
                 status,
-                cleanup_err,
+                type(cleanup_err).__name__,
             )
+            return "failed"
 
     @staticmethod
     def _resolve_plate_id(file_path: Path, requested_plate_id: int | None) -> int:

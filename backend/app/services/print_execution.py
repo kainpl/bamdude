@@ -17,6 +17,15 @@ NONCURRENT = "noncurrent_execution"
 STALE_CLAIM_CODES = frozenset({"operator_cancelled_stale_claim", "noncurrent_execution_claim"})
 
 
+def dispatch_archive_terminal_values(
+    status: str, error_message: str, failure_reason: str | None = None
+) -> dict[str, str | datetime]:
+    values = {"status": status, "error_message": error_message, "completed_at": datetime.now(timezone.utc)}
+    if failure_reason:
+        values["failure_reason"] = failure_reason
+    return values
+
+
 class StaleClaimRepeat(queue_sources.QueueSourceError):
     reason = "stale_execution_claim"
     http_status = 409

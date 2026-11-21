@@ -64,6 +64,15 @@ async def test_a_negative_answer_fails_the_attempt_with_its_class_and_halts_the_
         db_session, test_engine, tmp_path, printer_factory, monkeypatch, kind
     )
     monkeypatch.setattr(service, "_await_print_response", AsyncMock(return_value=answer))
+    run = service.run_from_queue_item
+    outcomes = []
+
+    async def record_outcome(**kwargs):
+        outcome = await run(**kwargs)
+        outcomes.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(service, "run_from_queue_item", record_outcome)
 
     await one_tick(scheduler, spawned)
 
@@ -73,10 +82,12 @@ async def test_a_negative_answer_fails_the_attempt_with_its_class_and_halts_the_
     assert row.dispatch_attempts == 1  # the claim spent it; a published start gives nothing back
     status, _message, _extra = await execution_archive(db_session)
     assert status == "failed"
-    failure = (
-        await db_session.execute(select(PrintArchive.failure_reason).where(PrintArchive.status == "failed"))
-    ).scalar_one()
-    assert failure == code
+    archive = (await db_session.scalars(select(PrintArchive).where(PrintArchive.status == "failed"))).one()
+    assert archive.failure_reason == code
+    assert len(outcomes) == 1
+    assert outcomes[0]["archive_terminal"] == "written"
+    assert outcomes[0]["execution_archive_id"] == archive.id
+    assert outcomes[0]["execution_archive_identity"] == archive.recovery_identity
     assert (await db_session.get(PrinterQueue, queue_id)).status == "error"
 
     # Never sent twice by itself: the halted queue waits for the operator.

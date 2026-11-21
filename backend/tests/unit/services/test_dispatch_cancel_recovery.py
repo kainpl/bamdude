@@ -39,10 +39,11 @@ async def test_mark_dispatch_archive_terminal_flips_printing_to_cancelled(db_ses
 
     with patch("backend.app.services.background_dispatch.async_session") as mock_session_factory:
         mock_session_factory.return_value.__aenter__.return_value = db_session
-        await BackgroundDispatchService._mark_dispatch_archive_terminal(
+        outcome = await BackgroundDispatchService._mark_dispatch_archive_terminal(
             archive_id, "cancelled", "Cancelled before start"
         )
 
+    assert outcome == "written"
     await db_session.refresh(archive)
     assert archive.status == "cancelled"
     assert archive.error_message == "Cancelled before start"
@@ -67,15 +68,27 @@ async def test_mark_dispatch_archive_terminal_idempotent_on_non_printing(db_sess
 
     with patch("backend.app.services.background_dispatch.async_session") as mock_session_factory:
         mock_session_factory.return_value.__aenter__.return_value = db_session
-        await BackgroundDispatchService._mark_dispatch_archive_terminal(
+        outcome = await BackgroundDispatchService._mark_dispatch_archive_terminal(
             archive_id, "cancelled", "Cancelled before start"
         )
 
+    assert outcome == "not_printing"
     await db_session.refresh(archive)
     # Race-protection: terminal state was 'completed', not 'printing', so the
     # helper should have left it alone.
     assert archive.status == "completed"
     assert archive.error_message is None
+
+
+@pytest.mark.asyncio
+async def test_archive_terminal_write_reports_commit_failure(caplog):
+    session = AsyncMock()
+    session.commit.side_effect = RuntimeError("injected commit failure")
+    with patch("backend.app.services.background_dispatch.async_session") as factory:
+        factory.return_value.__aenter__.return_value = session
+        outcome = await BackgroundDispatchService._mark_dispatch_archive_terminal(1, "failed", "Upload refused")
+    assert outcome == "failed"
+    assert "Failed to mark dispatch archive 1 as failed: RuntimeError" in caplog.text
 
 
 @pytest.mark.asyncio
