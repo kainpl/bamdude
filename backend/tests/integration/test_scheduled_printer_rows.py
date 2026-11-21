@@ -336,8 +336,17 @@ async def test_claim_keeps_its_head_query_instant_across_order_wait(
 
 
 @pytest.mark.parametrize("running", [False, True])
-async def test_due_row_loses_scheduled_reason_behind_a_head_or_running_print(
-    db_session, printer_factory, dispatcher, clock, monkeypatch, running
+@pytest.mark.parametrize(
+    "code,message,cleared",
+    [
+        pytest.param("scheduled", "Scheduled start", True, id="typed"),
+        pytest.param(None, "Scheduled start", True, id="legacy-scheduled"),
+        pytest.param(None, "Printer offline", False, id="legacy-other"),
+        pytest.param("printer_offline", "Scheduled start", False, id="other-code"),
+    ],
+)
+async def test_due_row_only_loses_scheduled_reason_behind_a_head_or_running_print(
+    db_session, printer_factory, dispatcher, clock, monkeypatch, running, code, message, cleared
 ):
     printer, _ = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
     head = PrintQueueItem(queue_id=printer.id, position=1, status="printing" if running else "pending")
@@ -345,9 +354,9 @@ async def test_due_row_loses_scheduled_reason_behind_a_head_or_running_print(
         queue_id=printer.id,
         position=2,
         scheduled_time=T,
-        waiting_reason="Scheduled start",
-        waiting_reason_code="scheduled",
-        waiting_reason_checked_at=BEFORE,
+        waiting_reason=message,
+        waiting_reason_code=code,
+        waiting_reason_checked_at=BEFORE if code is not None else None,
     )
     db_session.add_all([head, later])
     await db_session.commit()
@@ -361,7 +370,9 @@ async def test_due_row_loses_scheduled_reason_behind_a_head_or_running_print(
         assert await dispatcher.check_queue() is not running
     assert start.await_count == (0 if running else 1)
     await db_session.refresh(later)
-    assert (later.waiting_reason, later.waiting_reason_code, later.waiting_reason_checked_at) == (None, None, None)
+    assert later.status == "pending"
+    expected = (None, None, None) if cleared else (message, code, BEFORE.replace(tzinfo=None) if code else None)
+    assert (later.waiting_reason, later.waiting_reason_code, later.waiting_reason_checked_at) == expected
 
 
 @pytest.mark.parametrize(

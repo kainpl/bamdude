@@ -326,6 +326,8 @@ def replay(
             next_start[pid] = at
             heapq.heappush(heap, (at, 1, pid))
 
+    staged_peers: set[int] = set()
+    after_snapshot = nextafter(0.0, inf)
     for lane in lanes:
         pid = lane.printer_id
         held = [h for h in lane.held if h.seconds is None or h.seconds > 0]
@@ -343,8 +345,10 @@ def replay(
         if lane.has_staged_rows:
             # The first placement wave has the router's snapshot. A stage makes
             # later waves uncertain, and any start on this lane uncertain now.
-            taint(pid, nextafter(0.0, inf))
+            taint(pid, after_snapshot)
             tainted[pid] = 0.0
+            if not lane.stuck:
+                staged_peers.update(peers.get(pid, ()))
         holding = any(h.not_before <= 0 for h in held)
         if not holding and lane.routable:
             ready_at[pid] = inf if lane.hold_unknown else lane.waiting
@@ -357,6 +361,11 @@ def replay(
                 freeze(pid, 0.0)
             else:
                 schedule_start(pid, max(lane.waiting, min(h.not_before for h in held)))
+
+    # Releasing a staged row can take a shared stagger slot before another
+    # printer starts, even for jobs placed in the known first routing wave.
+    for pid in staged_peers:
+        taint(pid, after_snapshot)
 
     def is_ready(pid: int, t: float) -> bool:
         if t == 0.0 and pid in initially_free:
@@ -466,7 +475,7 @@ def replay(
                 return
             windows[pid] = t + (run.prep if stagger.wait_for_bed else 0.0) + (lane.interval or stagger.interval_seconds)
         del queue[pid][position]
-        doubtful = tainted.get(pid, inf) <= t
+        doubtful = tainted.get(pid, inf) <= t or (not run.started and pid in staged_peers)
         if doubtful and not run.started:
             taint_groups(pid, t)
         if run.seconds is None:

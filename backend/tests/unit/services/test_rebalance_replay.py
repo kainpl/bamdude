@@ -518,3 +518,33 @@ def test_deferred_lanes_are_free_to_route_to_but_rank_last(staged):
     assert result.routed_at == {1: 0, 2: 0}
     assert result.outcome(1) == ("known", 100)
     assert result.outcome(2) == (("unknown", None) if staged else ("known", 100))
+
+
+@pytest.mark.parametrize("waiting", [0, 10])
+def test_manual_release_can_delay_stagger_peers_after_the_first_placement(waiting):
+    staged = _free(1, has_staged_rows=True)
+    receiver = _free(2, ready=False, waiting=waiting)
+    job = _job(41, 2, seconds=20)
+    shared = _one_bucket(interval=60)
+    split = StaggerGroupResolver(
+        StaggerSplit(by_tags=True, tag_ids=frozenset({10, 20})),
+        tags_by_printer={1: frozenset({10}), 2: frozenset({20})},
+        tag_names={10: "A", 20: "B"},
+        location_by_printer={},
+        parent_by_location={},
+        location_names={},
+    )
+
+    uncertain = replay([staged, receiver], [job], stagger=shared)
+    assert (uncertain.lane_of, uncertain.routed_at) == ({41: 2}, {41: 0})
+    assert replay([staged, receiver], [job]).outcome(41) == ("known", waiting + 20)
+    assert replay([staged, receiver], [job], stagger=replace(shared, resolver=split)).outcome(41) == (
+        "known",
+        waiting + 20,
+    )
+    halted = replace(staged, stuck=True, routable=False)
+    assert replay([halted, receiver], [job], stagger=shared).outcome(41) == ("known", waiting + 20)
+    if waiting:
+        released = replace(staged, has_staged_rows=False, held=(Held(15, not_before=1),))
+        assert replay([released, receiver], [job], stagger=shared).outcome(41) == ("known", 81)
+    assert uncertain.outcome(41) == ("unknown", None)

@@ -10,6 +10,7 @@ is free» or «a receiver can take it» is always backed by a positive answer he
 never by the printer's model alone.
 """
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -32,7 +33,7 @@ from backend.app.services.queue_rebalance import (
     start_projection,
 )
 from backend.app.services.rebalance_replay import Held, ReplayBudget
-from backend.app.services.stagger_groups import StaggerGroupResolver
+from backend.app.services.stagger_groups import StaggerGroupResolver, StaggerSplit
 
 H = 3600
 YES = Fit("yes")
@@ -969,3 +970,32 @@ def test_a_saved_profile_sets_no_preparation():
 
     keys = set(SharedQueueOptions.__annotations__) | set(PrinterOnlyQueueOptions.__annotations__)
     assert not {key for key in keys if "preheat" in key}
+
+
+def test_rebalance_refuses_a_move_when_a_manual_release_can_take_its_stagger_slot():
+    resolver = StaggerGroupResolver(
+        StaggerSplit(by_tags=True, tag_ids=frozenset({10, 20})),
+        tags_by_printer={pid: frozenset({20 if pid == 3 else 10}) for pid in range(1, 5)},
+        tag_names={10: "A", 20: "B"},
+        location_by_printer={},
+        parent_by_location={},
+        location_names={},
+    )
+    staged = Machine(1, "x1c", True, has_staged_rows=True)
+    farm = FarmView(
+        machines={1: staged, 2: Machine(2, "p1s", True), 3: Machine(3, "p2s", False, held=(Held(30, started=True),))},
+        fits=_Fits(home={(41, 1): Fit("no"), (41, 2): Fit("no")}),
+        stagger=StaggerPolicy(1, 60, False, resolver, live={4: 10}),
+    )
+    items = [_item(41, 7, "p2s", 1, 20)]
+    alternatives = {7: [_opt(5, "p1s", 1, 20)]}
+    actual = plan_moves(items, alternatives, farm)
+
+    unstaged = replace(staged, has_staged_rows=False)
+    control = plan_moves(items, alternatives, replace(farm, machines={**farm.machines, 1: unstaged}))
+    released = replace(unstaged, held=(Held(15, not_before=1),))
+    delayed = plan_moves(items, alternatives, replace(farm, machines={**farm.machines, 1: released}))
+    assert actual.home == delayed.home == control.home == {41: ("known", 50)}
+    assert len(control.moves) == 1 and control.moves[0].finish == 30
+    assert not delayed.moves and delayed.skipped == [(41, "no_faster_model")]
+    assert not actual.moves and actual.skipped == [(41, "forecast_incomplete")]

@@ -327,6 +327,7 @@ CAPTURE_RETRY_COOLDOWN_SECONDS = 60
 _POWER_ON_COOLOFF_SECONDS = 600.0
 #: The row's waiting reason while a printer this tier switched on boots.
 _POWERING_ON_REASON = "Printer powering on"
+_SCHEDULED_WAIT_MESSAGE = "Scheduled start"
 
 
 @dataclass
@@ -634,7 +635,11 @@ class PrintScheduler:
             cooling = self._cooling_item_ids()
             for item in items:
                 future = scheduled_for_later(item.scheduled_time, datetime.now(timezone.utc))
-                if not future and item.waiting_reason_code == "scheduled":
+                wait_code = item.waiting_reason_code
+                # m170 retained old wait text without assigning it a code.
+                if not future and (
+                    wait_code == "scheduled" or (wait_code is None and item.waiting_reason == _SCHEDULED_WAIT_MESSAGE)
+                ):
                     if not await self._wait(db, item, None, None):
                         continue
 
@@ -671,7 +676,7 @@ class PrintScheduler:
 
                 # Check scheduled time first (scheduled_time is stored in UTC from ISO string)
                 if future:
-                    await self._wait(db, item, "scheduled", "Scheduled start")
+                    await self._wait(db, item, "scheduled", _SCHEDULED_WAIT_MESSAGE)
                     skip_reasons["scheduled_future"] = skip_reasons.get("scheduled_future", 0) + 1
                     continue
 
