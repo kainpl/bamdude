@@ -11,7 +11,9 @@ next row, and a link written because an id happened to exist names somebody else
    routing intent's ``{kind, id}``, else the row's live link.
 2. *An unchanged live link needs nothing* (:func:`live_link_names`): a live link is current — every purge nulls the
    rows that name its source — so it names the incarnation it was set to, and an unchanged key takes no
-   foreign-key check. A clone's copy is an insert and always checks its key: its parent is locked even then.
+   foreign-key check. A clone's copy is an insert and always checks its key: its parent is locked even then, and
+   the copy carries the source row's live link when that parent is still there (and, for a stamped capture, is
+   its incarnation).
 3. *Otherwise the parent is locked first and re-read* (:func:`lock_parent`, ``FOR KEY SHARE``, in its class's place
    — always before the job row), and the candidate is derived again under the row's lock by the caller.
 4. *The incarnation* (:func:`incarnation_of`): an archive's or a library row's ``recovery_identity`` (m204, m250),
@@ -214,7 +216,25 @@ def apply_link(target: PrintQueueItem, plan: LinkPlan, *, source=None, execution
         ):
             target.archive_id = None
         return True
+    if live_link_names(row, plan.candidate) and _live_parent(plan.candidate, plan.parent):
+        # Only an insert (a clone) gets here with a live link: its key is always checked, so its parent was taken
+        # although the source row's live link names it (rule 2). The live link is current and the parent under its
+        # lock is the row it names -- copied as it is, never as the job's own execution archive.
+        if plan.candidate.kind == LIBRARY_FILE:
+            target.archive_id, target.library_file_id = None, plan.candidate.id
+        elif plan.candidate.id != execution_archive_id:
+            target.archive_id, target.library_file_id = plan.candidate.id, None
+        else:
+            target.archive_id, target.library_file_id = None, None
+        return True
     target.archive_id, target.library_file_id = link_for(
         plan.candidate, plan.parent, execution_archive_id=execution_archive_id
     )
     return True
+
+
+def _live_parent(candidate: Candidate, parent) -> bool:
+    """The parent a live link names, found under its lock; a stamped capture must also be its incarnation."""
+    if parent is None:
+        return False
+    return candidate.incarnation is None or incarnation_of(parent) == candidate.incarnation

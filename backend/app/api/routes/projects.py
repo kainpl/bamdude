@@ -3120,7 +3120,7 @@ async def add_queue_items_to_project(
         database.async_session() as wdb,
         claim_lanes(wdb, sorted({q for q, _p in read.values()}), before_db=orders_first),
     ):
-        rows = await lock_named_rows(wdb, read)
+        rows = await lock_named_rows(wdb, {i: q for i, (q, _p) in read.items()})
         for item_id, (queue_id, old_project) in sorted(read.items()):
             row = rows.get(item_id)
             if row is None or row.status != "pending" or row.queue_id != queue_id or row.project_id != old_project:

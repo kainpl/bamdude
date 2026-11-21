@@ -187,7 +187,7 @@ async def _settle(printer_id: int, queue_id: int, item_id: int, archive_id: int,
         )
         item = await db.scalar(
             select(PrintQueueItem)
-            .where(PrintQueueItem.id == item_id)
+            .where(PrintQueueItem.id == item_id, PrintQueueItem.queue_id == queue_id)
             .with_for_update(key_share=True)
             .execution_options(populate_existing=True)
         )

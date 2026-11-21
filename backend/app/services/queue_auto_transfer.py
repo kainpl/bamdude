@@ -159,10 +159,15 @@ async def _navigation_links(db, item):
     return links
 
 
-async def _facts(db, item_id, actor, *, lock=False):
+async def _facts(db, item_id, actor, *, lock=False, queue_id=None):
     query = select(PrintQueueItem).where(PrintQueueItem.id == item_id).execution_options(populate_existing=True)
-    item = await db.scalar(query.with_for_update(key_share=True) if lock else query)
+    if lock:
+        # Only in the queue the preview read, whose lane is held (L1): a job moved since is not locked.
+        query = query.where(PrintQueueItem.queue_id == queue_id).with_for_update(key_share=True)
+    item = await db.scalar(query)
     if item is None:
+        if lock and await db.scalar(select(PrintQueueItem.id).where(PrintQueueItem.id == item_id)):
+            raise refusal("transfer_stale")
         raise refusal("transfer_gone", 404)
     await _rights(db, actor, item)
     queue = await db.get(PrinterQueue, item.queue_id, populate_existing=True)
@@ -369,7 +374,7 @@ async def apply(item_id, actor, payload):
     req = pre["requirements"]
     async with queue_sources.storage_mutation(), database.async_session() as db, claim_lanes(db, [pre["queue_id"]]):
         await order_resources.policy_for(db, pre["project_id"], project_line_id=pre["project_line_id"], lock=True)
-        facts = await _facts(db, item_id, actor, lock=True)
+        facts = await _facts(db, item_id, actor, lock=True, queue_id=pre["queue_id"])
         item, queue, printer, source, descriptor, ancestor, policy = facts
         printer_id = printer.id
         if (item.queue_id, item.project_id, item.project_line_id) != (

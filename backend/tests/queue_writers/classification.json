@@ -1198,6 +1198,10 @@
   "owner": "publish_start / _reconcile claim_lanes",
   "r3": "listed",
   "rule": "unchanged · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE"
+,
+  "unaddressed_locks": {
+   "lock-for-update:PrintQueueItem[key_share]": "a printing row of this archive: a printing row never changes queue (edits, moves and transfers take only pending rows), so its archive and status address it under the lanes held (review B1-02)"
+  }
  },
  "backend/app/services/print_execution.py::publish_start": {
   "class": "lane:claim_lanes(archives)",
@@ -1241,6 +1245,9 @@
   "owner": "A18 fresh session",
   "r3": "listed",
   "rule": "A18 + addressed idle · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE",
+  "unaddressed_locks": {
+   "lock-for-update:PrintQueueItem[key_share]": "a printing row of this archive: a printing row never changes queue (edits, moves and transfers take only pending rows), so its archive and status address it under the lanes held (review B1-02)"
+  },
   "via": [
    "print_reconciliation._pause_under_the_lanes"
   ]

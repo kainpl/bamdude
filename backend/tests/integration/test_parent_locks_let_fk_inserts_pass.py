@@ -16,13 +16,14 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.project import Project
 from backend.app.services.printer_queues import ensure_printer_queue
+from backend.tests.integration.lane_pairs import ROW_WAIT, postgres_edge
 from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -62,14 +63,8 @@ async def an_execution_archive(factory, queue_id) -> None:
 
 
 async def waits(factory, task) -> None:
-    async with factory() as monitor, asyncio.timeout(10):
-        while not await monitor.scalar(
-            text(
-                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
-                "AND pid <> pg_backend_pid() AND wait_event_type = 'Lock'"
-            )
-        ):
-            await asyncio.sleep(0.02)
+    """The insert's own backend waits on a row lock, and the edge leads to the holder -- this test's own session."""
+    await postgres_edge(factory, task, on=ROW_WAIT, behind=asyncio.current_task())
     assert not task.done()
 
 

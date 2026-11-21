@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from fastapi import HTTPException
-from sqlalchemy import select, text
+from sqlalchemy import select, text, true
 
 from backend.app.core.lock_ledger import LIBRARY_FILE, before_lock, ledger
 from backend.app.models.archive import PrintArchive
@@ -212,9 +212,15 @@ async def library_delete_scope(
     ):
         for start in range(0, len(plan.archives), 500):
             await lock_prints(db, plan.archives[start : start + 500])
-        for kind, row_id, _identity, _lane, *_details in plan.jobs:
+        for kind, row_id, _identity, lane, *_details in plan.jobs:
             model = AutoQueueItem if kind == "auto" else PrintQueueItem
-            await db.execute(select(model.id).where(model.id == row_id).with_for_update(key_share=True))
+            # A job only in the lane the plan read it in, which is held (L1); one moved since is the plan's refusal
+            # when its footprint is read again.
+            await db.execute(
+                select(model.id)
+                .where(model.id == row_id, true() if kind == "auto" else PrintQueueItem.queue_id == lane)
+                .with_for_update(key_share=True)
+            )
         try:
             # The early NO KEY UPDATE let existing print writers finish their
             # FK backfill without a print -> library wait cycle. Upgrade only

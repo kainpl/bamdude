@@ -258,7 +258,13 @@ async def answer_by_repeating(
 
         raise PlateAnswerBusy("This print changed before it could be repeated. Refresh and answer again.")
     await queue_source_link.lock_plans(db, [link_plan])
-    row = await db.get(PrintQueueItem, row.id, populate_existing=True, with_for_update={"key_share": True})
+    # Only in the queue it was read in, whose lane the answer holds (L1).
+    row = await db.scalar(
+        select(PrintQueueItem)
+        .where(PrintQueueItem.id == row.id, PrintQueueItem.queue_id == row.queue_id)
+        .with_for_update(key_share=True)
+        .execution_options(populate_existing=True)
+    )
     if row is None or row.status not in ("completed", "failed", "cancelled"):
         from backend.app.services.plate_answers import PlateAnswerBusy
 

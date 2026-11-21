@@ -141,3 +141,114 @@ async def test_plate_repeat(db_session, printer_factory, archive_factory, replac
         again = await answer_by_repeating(db, printer_id)
         assert again is not None and again.id == item_id
     assert await link(item_id) == ((None, None) if replaced else (original, None))
+
+
+async def a_pending_job_with_a_live_link(db_session, printer_factory, archive_factory, *, kind, stamped, batch):
+    """A pending job captured from an archive or a library file whose live link still names that original; with
+    ``batch`` a second member of the same batch beside it."""
+    from backend.app.models.library import LibraryFile
+
+    printer = await printer_factory()
+    queue = PrinterQueue(id=printer.id, printer_id=printer.id, status="idle")
+    db_session.add(queue)
+    if kind == "archive":
+        original = await archive_factory(printer.id, status="completed")
+    else:
+        original = LibraryFile(
+            filename="lib.3mf", file_path="/library/lib.3mf", file_type="3mf", file_size=9, file_hash="e" * 64
+        )
+        db_session.add(original)
+    blob = QueueSource(sha256="e" * 64, size_bytes=1, relative_path="objects/ee/job.3mf", format="3mf", state="ready")
+    db_session.add(blob)
+    await db_session.flush()
+    provenance = {"kind": "archive" if kind == "archive" else "library_file", "id": original.id}
+    if stamped:
+        provenance["incarnation"] = original.recovery_identity
+    live = {"archive_id": original.id} if kind == "archive" else {"library_file_id": original.id}
+    ids = []
+    for position in range(2 if batch else 1):
+        item = PrintQueueItem(
+            queue_id=queue.id,
+            queue_source_id=blob.id,
+            source_snapshot={"version": 1, "provenance": provenance},
+            status="pending",
+            position=position,
+            batch_id="live-batch" if batch else None,
+            **live,
+        )
+        db_session.add(item)
+        await db_session.flush()
+        ids.append(item.id)
+    await db_session.commit()
+    return queue.id, original.id, ids
+
+
+async def clones_of(queue_id, item_id, *, batch):
+    from backend.app.services.queue_ops import clone_batch, clone_item
+
+    async with database.async_session() as db:
+        copies = await clone_batch(db, "live-batch", queue_id=queue_id) if batch else [await clone_item(db, item_id)]
+        return [copy.id for copy in copies]
+
+
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("stamped", [True, False])
+@pytest.mark.parametrize("kind", ["archive", "library"])
+async def test_clone_carries_the_live_link_of_a_pending_job(
+    db_session, printer_factory, archive_factory, kind, stamped, batch
+):
+    """TA37 (e), Codex B1-03: Clone and Clone batch keep the live link of a job whose original is still there --
+    captured before the stamp or after it, from an archive or a library file."""
+    queue_id, original, (item_id, *_rest) = await a_pending_job_with_a_live_link(
+        db_session, printer_factory, archive_factory, kind=kind, stamped=stamped, batch=batch
+    )
+    copies = await clones_of(queue_id, item_id, batch=batch)
+    assert len(copies) == (2 if batch else 1)
+    expected = (original, None) if kind == "archive" else (None, original)
+    assert [await link(copy) for copy in copies] == [expected] * len(copies)
+
+
+@pytest.mark.parametrize("kind", ["archive", "library"])
+async def test_clone_after_the_original_was_purged_and_its_id_reused_keeps_no_link(
+    db_session, printer_factory, archive_factory, kind
+):
+    """The original deleted the way every purge deletes it (the job's link nulled), and another row inserted under
+    its id: the copy names nothing -- an unstamped capture has no incarnation to prove the new row by."""
+    from backend.app.models.library import LibraryFile
+
+    queue_id, original, (item_id,) = await a_pending_job_with_a_live_link(
+        db_session, printer_factory, archive_factory, kind=kind, stamped=False, batch=False
+    )
+    async with database.async_session() as db:
+        await db.execute(update(PrintQueueItem).values(archive_id=None, library_file_id=None))
+        if kind == "archive":
+            await db.execute(PrintArchive.__table__.delete().where(PrintArchive.id == original))
+            db.add(PrintArchive(id=original, filename="other.3mf", file_path="", file_size=0, status="completed"))
+        else:
+            await db.execute(LibraryFile.__table__.delete().where(LibraryFile.id == original))
+            db.add(
+                LibraryFile(
+                    id=original,
+                    filename="other.3mf",
+                    file_path="/library/other.3mf",
+                    file_type="3mf",
+                    file_size=1,
+                    file_hash="f" * 64,
+                )
+            )
+        await db.commit()
+    (copy,) = await clones_of(queue_id, item_id, batch=False)
+    assert await link(copy) == (None, None)
+
+
+async def test_clone_of_a_job_re_pointed_to_its_attempt_archive_keeps_no_link(
+    db_session, printer_factory, archive_factory
+):
+    """An unstamped capture whose link names the attempt's execution archive, not the original: nothing proves the
+    original, so the copy prints its own bytes with no link (TA37 (e))."""
+    _printer, queue_id, _original, execution, item_id = await a_finished_job(
+        db_session, printer_factory, archive_factory, status="pending", stamped=False
+    )
+    assert await link(item_id) == (execution, None)
+    (copy,) = await clones_of(queue_id, item_id, batch=False)
+    assert await link(copy) == (None, None)

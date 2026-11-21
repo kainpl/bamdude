@@ -83,17 +83,10 @@ async def test_final_claim_waits_and_never_sees_half_a_retry_block(
         claim_task = asyncio.create_task(claim())
         await asyncio.wait_for(claiming.wait(), 5)
         if test_engine.dialect.name == "postgresql":
-            # By database, not application_name: behind a pooler a server connection does not reliably carry the
-            # client's name (see lane_pairs.a_waiter_appears); the disposable database serves one test at a time.
-            async with factory() as monitor:
-                async with asyncio.timeout(10):
-                    while not await monitor.scalar(
-                        text(
-                            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
-                            "AND pid <> pg_backend_pid() AND wait_event_type='Lock'"
-                        )
-                    ):
-                        await asyncio.sleep(0.01)
+            from backend.tests.integration.lane_pairs import LANE_WAIT, postgres_edge
+
+            # The claim's own backend waits on this lane's guard, behind the retry held inside it.
+            await postgres_edge(factory, claim_task, queue_id, on=LANE_WAIT, behind=retry_task)
         else:
             await asyncio.sleep(0.03)
         assert not claim_task.done()

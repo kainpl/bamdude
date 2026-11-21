@@ -80,6 +80,11 @@ def test_every_explicit_lock_of_a_queue_row_lets_a_foreign_key_check_pass(tree):
     assert guard.order_lock_is_no_key_update() == []
 
 
+def test_a_lane_holder_locks_a_job_row_only_in_the_queue_it_holds(tree, data):
+    """L1 (review B1-02): the queue the row was read in is in the statement before ``FOR …``."""
+    assert guard.unaddressed_job_locks(tree, data) == []
+
+
 @pytest.mark.parametrize("case", wi.SELFTEST_CASES, ids=lambda case: case[0][:60])
 def test_a_raw_statement_is_attributed_to_the_table_its_verb_names(case):
     sql, dml, lock = case
@@ -218,6 +223,21 @@ DEMO = """
         await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == 1).with_for_update(key_share=True))
         await db.get(PrintQueueItem, 1, with_for_update={"key_share": True})
         await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == 1).with_for_update(key_share=False))
+
+
+    async def addressed_lock(db, queue_id):
+        from sqlalchemy import select, tuple_
+
+        await db.execute(
+            select(PrintQueueItem)
+            .where(PrintQueueItem.id == 1, PrintQueueItem.queue_id == queue_id)
+            .with_for_update(key_share=True)
+        )
+        await db.execute(
+            select(PrintQueueItem)
+            .where(tuple_(PrintQueueItem.id, PrintQueueItem.queue_id).in_([(1, queue_id)]))
+            .with_for_update(key_share=True)
+        )
 """
 
 QUEUE_OPS = """
@@ -257,6 +277,7 @@ def synthetic(tmp_path_factory):
             "untyped": "n/a",
             "plain_lock": "helper",
             "no_key_lock": "helper",
+            "addressed_lock": "helper",
         }.items()
     }
     return app, entries
@@ -361,6 +382,23 @@ def test_negative_control_a_plain_row_lock(synthetic):
     assert sorted(_function(v) for v in found) == ["no_key_lock", "plain_lock", "plain_lock"], (
         "a plain FOR UPDATE, a db.get(with_for_update=True) and key_share=False are refused; the two NO KEY forms pass"
     )
+
+
+def test_negative_control_a_job_lock_without_its_queue(synthetic):
+    scan_, data = _check(synthetic)
+    found = guard.unaddressed_job_locks(scan_, data)
+    assert sorted(_function(v) for v in found) == ["no_key_lock"] * 3 + ["plain_lock"] * 2, (
+        "a lock by id alone and db.get(with_for_update=...) are refused; the queue in the condition passes"
+    )
+
+    signatures = {guard.signature(s) for s in scan_.functions()[D + "no_key_lock"] if s.kind == "lock-for-update"}
+
+    def exempt(data):
+        data[D + "no_key_lock"]["unaddressed_locks"] = dict.fromkeys(signatures, "a reason")
+
+    scan_, data = _check(synthetic, exempt)
+    assert "no_key_lock" not in {_function(v) for v in guard.unaddressed_job_locks(scan_, data)}
+    assert guard.stale_exemptions(scan_, data) == []
 
 
 def test_negative_control_a_plain_order_lock(tmp_path):

@@ -853,7 +853,7 @@ class VirtualPrinterInstance:
             # wins, and the stamp, best-effort, leaves that row with a log line.
             stamped, left = [], []
             async with self._session_factory() as wdb, claim_lanes(wdb, sorted({q for q, _b, _c in plans.values()})):
-                rows = await lock_named_rows(wdb, plans)
+                rows = await lock_named_rows(wdb, {i: q for i, (q, _b, _c) in plans.items()})
                 for iid, (queue_id, basis, changes) in sorted(plans.items()):
                     row = rows.get(iid)
                     if row is None or row.status != "pending" or row.queue_id != queue_id or row_basis(row) != basis:

@@ -129,15 +129,21 @@ def first_runnable_query(queue_id: int, now: datetime, cooling: set[int]):
 async def lock_judged_row(cdb, *, item_id: int, queue_id: int, basis: str) -> tuple[PrintQueueItem | None, str | None]:
     """The row the pass judged, locked under its lane (G03 B, A3 step 3): still pending, in the queue the pass
     loaded it in, with the basis the pass recorded. Anything else is a refusal — the next pass reads it fresh."""
+    # Only in the queue the pass loaded it in, whose lane the claim holds (L1): a row moved since is never
+    # locked -- its lane belongs to someone else.
     row = await cdb.scalar(
         select(PrintQueueItem)
-        .where(PrintQueueItem.id == item_id)
+        .where(PrintQueueItem.id == item_id, PrintQueueItem.queue_id == queue_id)
         .with_for_update(key_share=True)
         .execution_options(populate_existing=True)
     )
-    if row is None or row.status != "pending":
+    if row is None:
+        # Why it is not here, read without a lock (a plain read waits for no row lock).
+        status = await cdb.scalar(select(PrintQueueItem.status).where(PrintQueueItem.id == item_id))
+        return None, "item_changed" if status == "pending" else "not_pending"
+    if row.status != "pending":
         return None, "not_pending"
-    if row.queue_id != queue_id or row_basis(row) != basis:
+    if row_basis(row) != basis:
         return None, "item_changed"
     return row, None
 

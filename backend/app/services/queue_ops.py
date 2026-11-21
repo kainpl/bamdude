@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import func, select, text, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.print_queue import PrintQueueItem
@@ -581,7 +581,8 @@ async def clone_item(
         source_access=queue_item_access([src]),
     ):
         await queue_source_link.lock_plans(db, [link_plan])
-        src = await db.get(PrintQueueItem, item_id, populate_existing=True, with_for_update={"key_share": True})
+        # Only in the queue it was read in, whose lane is held (L1).
+        src = (await lock_named_rows(db, {item_id: pin[1]})).get(item_id)
         if src is None or (src.recovery_identity, src.queue_id, src.queue_source_id, src.batch_id) != pin:
             raise SourceUnreadable("clone source changed")
         if not await queue_header_holds(db, src.queue_id, queue_identity):  # A25
@@ -729,11 +730,19 @@ async def lane_session(queue_ids):
         yield db
 
 
-async def lock_named_rows(db: AsyncSession, item_ids) -> dict[int, PrintQueueItem]:
-    """The named rows ``FOR NO KEY UPDATE`` in ascending id, re-read — inside the writer's lanes."""
+async def lock_named_rows(db: AsyncSession, planned) -> dict[int, PrintQueueItem]:
+    """The named rows ``FOR NO KEY UPDATE`` in ascending id, re-read — inside the writer's lanes.
+
+    ``planned`` maps each row's id to the queue the writer read it in, whose lane it holds: a row is addressed by
+    that pair, so one that has since moved to a queue whose lane is not held is never locked (L1) — its absence
+    from the answer is the writer's refusal.
+    """
+    pairs = sorted({(int(item_id), int(queue_id)) for item_id, queue_id in dict(planned).items()})
+    if not pairs:
+        return {}
     rows = await db.scalars(
         select(PrintQueueItem)
-        .where(PrintQueueItem.id.in_(sorted(set(item_ids))))
+        .where(tuple_(PrintQueueItem.id, PrintQueueItem.queue_id).in_(pairs))
         .order_by(PrintQueueItem.id)
         .with_for_update(key_share=True)
         .execution_options(populate_existing=True)

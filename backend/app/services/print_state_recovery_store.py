@@ -375,8 +375,18 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
     needed = group_ids | set(target_ids) | {q.current_item_id for q in queues if q.current_item_id}
     item_stmt = select(PrintQueueItem).where(PrintQueueItem.id.in_(needed)).execution_options(populate_existing=True)
     if locked:
-        item_stmt = item_stmt.order_by(PrintQueueItem.id).with_for_update(key_share=True)
-    items = {i.id: i for i in (await db.scalars(item_stmt)).all()}
+        # Rows are locked only under the lanes held (L1); a named row in another queue -- a header pointing
+        # elsewhere, a target that moved -- is read without a lock and judged as it is.
+        held = (
+            item_stmt.where(PrintQueueItem.queue_id.in_(qids))
+            .order_by(PrintQueueItem.id)
+            .with_for_update(key_share=True)
+        )
+        items = {i.id: i for i in (await db.scalars(held)).all()}
+        elsewhere = item_stmt.where(PrintQueueItem.queue_id.notin_(qids))
+        items.update({i.id: i for i in (await db.scalars(elsewhere)).all()})
+    else:
+        items = {i.id: i for i in (await db.scalars(item_stmt)).all()}
     counts = dict(
         (
             await db.execute(
@@ -1284,7 +1294,11 @@ async def _apply_rows(session_factory, payload, actor, actor_label, recheck):
                 # taken FOR UPDATE before the authoritative read below -- that waits for the foreign-key check of a
                 # reference another transaction has just inserted, and the read then sees it. Under NO KEY UPDATE the
                 # read ran first and the DELETE nulled the new reference.
-                await db.scalar(select(PrintQueueItem.id).where(PrintQueueItem.id == doomed).with_for_update())
+                await db.scalar(
+                    select(PrintQueueItem.id)
+                    .where(PrintQueueItem.id == doomed, PrintQueueItem.queue_id == queue_id)
+                    .with_for_update()
+                )
             facts, queues, (items, archives) = await read_facts(db, [key[0]], [key], locked=True)
             f = facts.get(key)
             if f is None or revision(f) != payload["revision"] or queue_sources.current_epoch() != payload["epoch"]:

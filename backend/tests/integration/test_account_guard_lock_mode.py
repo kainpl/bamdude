@@ -12,18 +12,17 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from backend.app.core.auth_lifetime import _guard_accounts, capture_account
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.user import User
 from backend.app.services.printer_queues import ensure_printer_queue
+from backend.tests.integration.lane_pairs import ROW_WAIT, postgres_edge
 from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
-
-ROW_WAIT = ("transactionid", "tuple")
 
 
 @pytest.fixture
@@ -40,19 +39,6 @@ async def account_and_queue(db_session, printer_factory) -> tuple[User, int]:
     await db_session.commit()
     await db_session.refresh(user)
     return user, printer.id
-
-
-async def waiters(factory) -> int:
-    async with factory() as monitor:
-        return await monitor.scalar(
-            text(
-                # By database, not application_name: a pooler does not reliably carry the client's name (see
-                # test_lane_writers_concurrency.a_waiter_appears); the disposable database serves one test at a time.
-                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
-                "AND pid <> pg_backend_pid() AND wait_event_type='Lock' AND wait_event = ANY(:events)"
-            ),
-            {"events": list(ROW_WAIT)},
-        )
 
 
 async def insert_naming(factory, user_id: int, queue_id: int) -> int:
@@ -86,9 +72,8 @@ async def test_the_former_for_update_made_that_insert_wait(postgres_only, test_e
         await holder.execute(select(User.id).where(User.account_identity == user.account_identity).with_for_update())
         inserting = asyncio.create_task(insert_naming(factory, user.id, queue_id))
         try:
-            async with asyncio.timeout(10):
-                while not await waiters(factory):
-                    await asyncio.sleep(0.02)
+            # The insert's own backend waits on a row lock behind this test's holder (its FK check on FOR UPDATE).
+            await postgres_edge(factory, inserting, on=ROW_WAIT, behind=asyncio.current_task())
             assert not inserting.done(), "the FK check waited on FOR UPDATE"
         finally:
             await holder.rollback()
@@ -109,9 +94,7 @@ async def test_two_guards_of_one_account_still_serialise(postgres_only, test_eng
         await _guard_accounts(first, [capture])
         second = asyncio.create_task(second_guard())
         try:
-            async with asyncio.timeout(10):
-                while not await waiters(factory):
-                    await asyncio.sleep(0.02)
+            await postgres_edge(factory, second, on=ROW_WAIT, behind=asyncio.current_task())
             assert not second.done(), "a second guard of the account waits for the first"
         finally:
             await first.rollback()

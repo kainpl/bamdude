@@ -72,7 +72,7 @@ from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.queue_add import add_items_to_printer_queue, add_next_block_to_printer_queue
 from backend.app.services.queue_add_effects import announce_printer_queue_add
-from backend.app.services.queue_edit_apply import apply_edits, plan_edit
+from backend.app.services.queue_edit_apply import apply_edits, checked_facts, plan_edit
 from backend.app.services.queue_row_basis import row_basis
 from backend.app.services.queue_source_capture import refusal, reusing_sources, swap_request
 from backend.app.services.queue_source_descriptor import source_storage_state
@@ -812,26 +812,26 @@ async def bulk_update_queue_items(
     if not update_data:
         raise HTTPException(400, "No fields to update")
 
-    # Validate queue_id if being changed
-    new_queue = None
-    if "queue_id" in update_data and update_data["queue_id"] is not None:
-        result = await db.execute(select(PrinterQueue).where(PrinterQueue.id == update_data["queue_id"]))
-        new_queue = result.scalar_one_or_none()
-        if not new_queue:
-            raise HTTPException(400, "Queue not found")
-
     # Fetch all items
     result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id.in_(data.item_ids)))
     items = result.scalars().all()
     bases = {item.id: row_basis(item) for item in items}  # what each row's edit is validated against (A6)
 
+    # Validate queue_id if being changed. Every queue the rows land in is read once, before
+    # the checks (A6, A25): they reach the rows that read refreshed, and the plans carry it.
+    moving_to = update_data.get("queue_id")
+    facts = await checked_facts(db, [moving_to] if moving_to is not None else [item.queue_id for item in items])
+    new_queue = None
+    if moving_to is not None:
+        if facts[moving_to] is None:
+            raise HTTPException(400, "Queue not found")
+        new_queue = await db.get(PrinterQueue, moving_to)
+
     # Check every row that will really move before the first mutation. A row
     # skipped for status/ownership cannot veto the entire operator action.
     printer_model = None
     if new_queue and new_queue.printer_id is not None:
-        printer_model = (
-            await db.execute(select(Printer.model).where(Printer.id == new_queue.printer_id))
-        ).scalar_one_or_none()
+        printer_model = facts[new_queue.id][3]
         cache = PrintRequirementsCache()
         for item in items:
             if item.status != "pending" or item.queue_id == new_queue.id:
@@ -868,8 +868,12 @@ async def bulk_update_queue_items(
         if isinstance(item_update.get("ams_mapping"), list):
             item_update["ams_mapping"] = json.dumps(item_update["ams_mapping"])
         plans.append(
-            await plan_edit(
-                db, item, item_update, basis=bases[item.id], target_queue_id=new_queue.id if new_queue else None
+            plan_edit(
+                item,
+                item_update,
+                basis=bases[item.id],
+                target_queue_id=new_queue.id if new_queue else None,
+                facts=facts,
             )
         )
 
@@ -1287,35 +1291,32 @@ async def update_queue_item(
     update_data = data.model_dump(exclude_unset=True)
 
     # Validate the destination and any newly selected plate before routing_update
-    # rewrites the row. The source of a captured job is its snapshot.
+    # rewrites the row. The source of a captured job is its snapshot. The target is
+    # read once, before every check (A6, A25): the checks reach the header and printer
+    # rows that read refreshed, and the plan carries what they judged.
+    moving_to = update_data.get("queue_id")
+    facts = await checked_facts(db, [moving_to if moving_to is not None else item.queue_id])
     new_queue = None
-    if "queue_id" in update_data and update_data["queue_id"] is not None:
-        new_queue = (
-            await db.execute(select(PrinterQueue).where(PrinterQueue.id == update_data["queue_id"]))
-        ).scalar_one_or_none()
-        if not new_queue:
+    if moving_to is not None:
+        if facts[moving_to] is None:
             raise HTTPException(400, "Queue not found")
+        new_queue = await db.get(PrinterQueue, moving_to)
     if "plate_id" in update_data or (new_queue and new_queue.id != item.queue_id):
         target_queue = new_queue or await db.get(PrinterQueue, item.queue_id)
         if target_queue and target_queue.printer_id is not None:
-            printer_model = (
-                await db.execute(select(Printer.model).where(Printer.id == target_queue.printer_id))
-            ).scalar_one_or_none()
             await _check_item_model_for_queue(
                 db,
                 item,
                 target_queue,
                 update_data.get("plate_id", item.plate_id),
                 PrintRequirementsCache(),
-                printer_model,
+                facts[target_queue.id][3],
             )
 
     swap_columns = await _swap_update(db, item, update_data, new_queue)
     moved_to_model = None
     if new_queue is not None and new_queue.id != item.queue_id and new_queue.printer_id is not None:
-        moved_to_model = (
-            await db.execute(select(Printer.model).where(Printer.id == new_queue.printer_id))
-        ).scalar_one_or_none()
+        moved_to_model = facts[new_queue.id][3]
     update_data = await routing_update(db, item, update_data)
     update_data.pop("swap_macro_events", None)  # decided above, stored as its JSON
     update_data.update(swap_columns)
@@ -1345,7 +1346,7 @@ async def update_queue_item(
 
     # Apply under the lanes of the row's queue and the target (A6): the row still pending, in the queue and with
     # the basis this validation read, the target printer as it was checked — or nothing is saved.
-    plan = await plan_edit(db, item, update_data, basis=basis, target_queue_id=update_data.get("queue_id"))
+    plan = plan_edit(item, update_data, basis=basis, target_queue_id=update_data.get("queue_id"), facts=facts)
     await db.rollback()  # the validation's reads end before the lanes
     outcome = await apply_edits([plan], set_field=_set_item_field, all_or_nothing=True)
     if outcome.changed:
@@ -1853,7 +1854,12 @@ async def start_queue_item(
         values["created_by_id"] = func.coalesce(PrintQueueItem.created_by_id, user.id)
     await db.rollback()  # the read ends before the lane
     async with database.async_session() as wdb, queue_claim_scope(wdb, queue):
-        await wdb.scalar(select(PrintQueueItem.id).where(PrintQueueItem.id == item_id).with_for_update(key_share=True))
+        # Only in the queue it was read in, whose lane is held (L1): a row moved since is never locked.
+        await wdb.scalar(
+            select(PrintQueueItem.id)
+            .where(PrintQueueItem.id == item_id, PrintQueueItem.queue_id == queue)
+            .with_for_update(key_share=True)
+        )
         result = await wdb.execute(
             update(PrintQueueItem)
             .where(PrintQueueItem.id == item_id, PrintQueueItem.status == "pending", PrintQueueItem.queue_id == queue)
@@ -1864,6 +1870,14 @@ async def start_queue_item(
             current = await wdb.scalar(select(PrintQueueItem.status).where(PrintQueueItem.id == item_id))
             if current is None:
                 raise HTTPException(404, "Queue item not found")
+            if current == "pending":  # moved to another queue meanwhile
+                raise HTTPException(
+                    409,
+                    detail={
+                        "error": "queue_item_changed",
+                        "message": "This job changed or started while it was being edited. Nothing was saved; refresh and try again.",
+                    },
+                )
             raise HTTPException(400, f"Can only start pending items, current status: '{current}'")
         await wdb.commit()
 
@@ -2152,7 +2166,13 @@ async def unskip_item(
     try:
         async with reusing_sources(db, [item.queue_source_id], queue_ids=[read_queue]):
             await queue_source_link.lock_plans(db, [link_plan])
-            item = await db.get(PrintQueueItem, item_id, populate_existing=True, with_for_update={"key_share": True})
+            # Only in the queue it was read in, whose lane is held (L1).
+            item = await db.scalar(
+                select(PrintQueueItem)
+                .where(PrintQueueItem.id == item_id, PrintQueueItem.queue_id == read_queue)
+                .with_for_update(key_share=True)
+                .execution_options(populate_existing=True)
+            )
             if item is None or item.status != "skipped" or item.queue_id != read_queue:
                 raise HTTPException(409, detail=unchanged)
             if not queue_source_link.apply_link(item, link_plan):
@@ -2197,20 +2217,30 @@ async def toggle_manual_start(
         raise HTTPException(400, f"Only pending items can be toggled, current status: '{item.status}'")
 
     new_value = not item.manual_start
-    queue, batch = item.queue_id, item.batch_id
+    queue, batch, incarnation = item.queue_id, item.batch_id, item.recovery_identity
     from backend.app.services.queue_ops import lane_session, lock_named_rows
 
     await db.rollback()  # the read ends before the lane (A7)
+    changed = HTTPException(
+        409,
+        detail={
+            "error": "queue_item_changed",
+            "message": "This job changed or started while it was being edited. Nothing was saved; refresh and try again.",
+        },
+    )
     async with lane_session([queue]) as wdb:
-        row = (await lock_named_rows(wdb, [item_id])).get(item_id)
-        if row is None or row.status != "pending" or row.queue_id != queue or row.manual_start == new_value:
-            raise HTTPException(
-                409,
-                detail={
-                    "error": "queue_item_changed",
-                    "message": "This job changed or started while it was being edited. Nothing was saved; refresh and try again.",
-                },
-            )
+        # The clicked row as it was read (A7): the same incarnation, still pending in this queue, in the same
+        # group, the value not flipped yet. Group membership changes only under this lane, so a group that changed
+        # since the read is refused whole -- its former members are never touched.
+        row = (await lock_named_rows(wdb, {item_id: queue})).get(item_id)
+        if (
+            row is None
+            or row.status != "pending"
+            or row.recovery_identity != incarnation
+            or row.batch_id != batch
+            or row.manual_start == new_value
+        ):
+            raise changed
         target = PrintQueueItem.batch_id == batch if batch else PrintQueueItem.id == item_id
         # The batch's pending siblings in ITS queue follow (G03 D1), compare-and-set on pending + the lane.
         await wdb.execute(
@@ -2219,6 +2249,10 @@ async def toggle_manual_start(
             .values(manual_start=new_value)
             .execution_options(synchronize_session=False)
         )
+        # The answer is the clicked row's value, read back in the transaction that wrote it.
+        if await wdb.scalar(select(PrintQueueItem.manual_start).where(PrintQueueItem.id == item_id)) != new_value:
+            await wdb.rollback()
+            raise changed
         await wdb.commit()
     return {"manual_start": new_value, "item_id": item_id}
 
@@ -2282,13 +2316,20 @@ async def retry_failed_item(
 
     # The source link this Retry may write, from the row as read before the guards (G03 B, A27).
     link_plan = queue_source_link.plan_link(item)
+    read_queue = item.queue_id
     try:
-        async with reusing_sources(db, [item.queue_source_id], queue_ids=[item.queue_id]):
+        async with reusing_sources(db, [item.queue_source_id], queue_ids=[read_queue]):
             from backend.app.services.print_execution import require_repeatable
 
-            # The candidate's parent before the job row (L5, L6(d)).
+            # The candidate's parent before the job row (L5, L6(d)); the row only in the queue it was read in,
+            # whose lane is held (L1).
             await queue_source_link.lock_plans(db, [link_plan])
-            item = await db.get(PrintQueueItem, item_id, populate_existing=True, with_for_update={"key_share": True})
+            item = await db.scalar(
+                select(PrintQueueItem)
+                .where(PrintQueueItem.id == item_id, PrintQueueItem.queue_id == read_queue)
+                .with_for_update(key_share=True)
+                .execution_options(populate_existing=True)
+            )
             if item is None or item.status not in ("failed", "cancelled"):
                 raise HTTPException(
                     409,
@@ -2428,7 +2469,7 @@ async def group_items_into_batch(
     ids = sorted(set(data.item_ids))
     await db.rollback()  # the read ends before the lane (A7)
     async with lane_session([queue]) as wdb:
-        await lock_named_rows(wdb, ids)
+        await lock_named_rows(wdb, dict.fromkeys(ids, queue))
         # All or nothing: every named row still pending in this queue, or none is grouped.
         result = await wdb.execute(
             update(PrintQueueItem)
@@ -2675,26 +2716,22 @@ async def update_batch(
     # member's own bytes must fit the target printer -- or the queue it stays in, for a new plate -- and
     # the target's swap rule decides the swap columns. All of it before the first write: the batch is
     # refused whole, or written whole (swap-source-lifecycle spec r4 §8).
+    # The queue the copies land in is read once, before the checks (A6, A25): they reach the rows that read
+    # refreshed, and the plans carry what they judged.
+    moving_to = update_data.get("queue_id")
+    facts = await checked_facts(db, [moving_to if moving_to is not None else target])
     batch_queue, batch_model = None, None
-    if update_data.get("queue_id") is not None:
-        batch_queue = await db.get(PrinterQueue, update_data["queue_id"])
-        if batch_queue is None:
+    if moving_to is not None:
+        if facts[moving_to] is None:
             raise HTTPException(400, "Queue not found")
+        batch_queue = await db.get(PrinterQueue, moving_to)
         if batch_queue.printer_id is not None:
-            batch_model = (
-                await db.execute(select(Printer.model).where(Printer.id == batch_queue.printer_id))
-            ).scalar_one_or_none()
+            batch_model = facts[moving_to][3]
     moves = batch_queue is not None and batch_queue.id != target
     if "plate_id" in update_data or moves:
         check_queue = batch_queue if moves else await db.get(PrinterQueue, target)
         if check_queue is not None and check_queue.printer_id is not None:
-            check_model = (
-                batch_model
-                if moves
-                else (
-                    await db.execute(select(Printer.model).where(Printer.id == check_queue.printer_id))
-                ).scalar_one_or_none()
-            )
+            check_model = batch_model if moves else facts[target][3]
             cache = PrintRequirementsCache()
             for item in pending:
                 await _check_item_model_for_queue(
@@ -2712,12 +2749,12 @@ async def update_batch(
         if isinstance(item_update.get("ams_mapping"), list):
             item_update["ams_mapping"] = json.dumps(item_update["ams_mapping"])
         plans.append(
-            await plan_edit(
-                db,
+            plan_edit(
                 item,
                 item_update,
                 basis=bases[item.id],
                 target_queue_id=batch_queue.id if batch_queue is not None else None,
+                facts=facts,
             )
         )
     # The batch moves whole or not at all (A6): applied under its lanes, refused when any copy changed.

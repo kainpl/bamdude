@@ -8542,7 +8542,12 @@ async def _auto_clean_completed_item(db, queue_item, *, queue_status: str, plate
     await db.commit()  # the completion's transaction ends: no writer of ours waits for itself
     factory = async_sessionmaker(db.bind, expire_on_commit=False)
     async with factory() as clean, claim_lanes(clean, [queue_id], archive_id=archive_id):
-        row = await clean.get(PrintQueueItem, item_id, populate_existing=True, with_for_update={"key_share": True})
+        row = await clean.scalar(
+            select(PrintQueueItem)
+            .where(PrintQueueItem.id == item_id, PrintQueueItem.queue_id == queue_id)
+            .with_for_update(key_share=True)
+            .execution_options(populate_existing=True)
+        )
         if (
             row is None
             or row.recovery_identity != identity

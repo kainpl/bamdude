@@ -787,6 +787,7 @@ async def _recover_checkpoint_locked(db: AsyncSession, archive: PrintArchive, ma
             PrintQueueItem.id == marker["queue_item_id"],
             PrintQueueItem.archive_id == archive.id,
             PrintQueueItem.status == "printing",
+            PrintQueueItem.queue_id.in_(queues),  # only under a lane this recovery holds (L1)
         )
         .with_for_update(key_share=True)
         .execution_options(populate_existing=True)

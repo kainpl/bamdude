@@ -324,7 +324,13 @@ async def _locked_rows(db, candidate):
     except HTTPException as exc:
         raise ReturnRefused("order_changed") from exc
     archive = await db.get(PrintArchive, candidate.archive_id, with_for_update=True, populate_existing=True)
-    job = await db.get(PrintQueueItem, candidate.job_id, with_for_update={"key_share": True}, populate_existing=True)
+    # Only in the queue the candidate names, whose lane is held (L1).
+    job = await db.scalar(
+        select(PrintQueueItem)
+        .where(PrintQueueItem.id == candidate.job_id, PrintQueueItem.queue_id == candidate.queue_id)
+        .with_for_update(key_share=True)
+        .execution_options(populate_existing=True)
+    )
     auto = await db.get(AutoQueueItem, candidate.auto_id, with_for_update={"key_share": True}, populate_existing=True)
     queue = await db.get(PrinterQueue, candidate.queue_id, populate_existing=True)
     printer = await db.get(Printer, candidate.printer_id, populate_existing=True)

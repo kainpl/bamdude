@@ -308,7 +308,7 @@ def stale_exemptions(scan_: Scan, data: dict) -> list[str]:
         sigs = {signature(s) for s in functions.get(name, [])}
         helpers = {s.helper for s in functions.get(name, []) if s.kind == "helper-call"}
         cands = {candidate_key(s) for s in functions.get(name, []) if s.confidence == "candidate"}
-        for field in ("outside", "after_commit"):
+        for field in ("outside", "after_commit", "unaddressed_locks"):
             out += [f"{name}: {field} {sig}" for sig in entry.get(field, {}) if sig not in sigs]
         out += [f"{name}: via {h}" for h in entry.get("via", []) if h not in helpers]
         out += [f"{name}: candidates {c}" for c in entry.get("candidates", {}) if c not in cands]
@@ -495,6 +495,39 @@ def plain_row_locks(scan_: Scan, data: dict | None = None) -> list[str]:
             out.append(f"{key(site)}:{site.line} raw FOR UPDATE of {site.model}")
         elif site.kind in {"lock-lock_nowait", "lock-lock_nowait_where"}:
             out.append(f"{key(site)}:{site.line} lock_nowait of {site.model} (FOR UPDATE NOWAIT)")
+    return out
+
+
+def _names_the_queue(statement) -> bool:
+    """``PrintQueueItem.queue_id`` appears in the statement: its condition (or a ``tuple_`` pair) addresses the row's
+    queue."""
+    return any(
+        isinstance(node, ast.Attribute)
+        and node.attr == "queue_id"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "PrintQueueItem"
+        for node in ast.walk(statement)
+    )
+
+
+def unaddressed_job_locks(scan_: Scan, data: dict | None = None) -> list[str]:
+    """L1 (review B1-02): a lane holder locks a job row only in the queue whose lane it holds -- ``queue_id`` in the
+    statement before ``FOR …``, never the id alone (a row that moved meanwhile would be waited for behind another
+    lane's holder) and never ``db.get(…, with_for_update=…)``, which cannot say it. A lock that needs no queue (a
+    ``printing`` row, which no writer moves) is listed in its entry's ``unaddressed_locks`` with the reason."""
+    out = []
+    known = entries(data)
+    for site in scan_.sites:
+        if site.kind != "lock-for-update" or "PrintQueueItem" not in (site.model or "").split("|"):
+            continue
+        entry = known.get(key(site), {})
+        if entry.get("lock") not in {"lane", "helper"} or signature(site) in entry.get("unaddressed_locks", {}):
+            continue
+        fn = scan_.function_node(site.file, site.func)
+        calls = _lock_calls(fn, site.line)
+        statement = _statement_at(fn, site.line)
+        if any(call.func.attr == "get" for call in calls) or statement is None or not _names_the_queue(statement):
+            out.append(f"{key(site)}:{site.line} job row locked without its queue")
     return out
 
 

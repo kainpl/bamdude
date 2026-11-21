@@ -5,6 +5,7 @@ An explicit PostgreSQL target uses a unique schema; default is temporary SQLite.
 
 import asyncio
 import os
+import weakref
 from uuid import uuid4
 
 import pytest
@@ -15,6 +16,25 @@ from sqlalchemy.orm import Session
 from backend.app.core.config import settings
 from backend.app.core.credential_config import initialize_credential_config_anchor
 from backend.app.core.database import Base, _strip_tz_from_params, configure_sqlite_connection, import_all_models
+
+# PostgreSQL: server backend pid -> the asyncio task whose transaction began on it last (see ``patient`` below).
+BACKENDS: dict[int, asyncio.Task] = {}
+# PostgreSQL: each task -> the task that created it. A writer called through the HTTP client runs its route in a task
+# of the middleware's, so the session's task is a descendant of the one the test started.
+PARENTS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def lineage(task) -> list:
+    """``task`` and the tasks that created it, nearest first."""
+    chain = []
+    while task is not None and all(task is not seen for seen in chain):
+        chain.append(task)
+        task = PARENTS.get(task)
+    return chain
+
+
+def descends_from(task, ancestor) -> bool:
+    return any(each is ancestor for each in lineage(task))
 
 
 @pytest.fixture
@@ -47,12 +67,38 @@ async def test_engine(monkeypatch, tmp_path, request):
         # fresh connection got there. Per transaction (SET LOCAL), so a pooler in transaction mode keeps it to this
         # client; PgBouncer refuses it as a startup parameter. A deadlock is still the server's detector's, a hang the
         # test's own timeout.
+        #
+        # The same hook names each transaction's server backend after the asyncio task that runs it (BACKENDS), so a
+        # pair's monitor can tell ITS waiter and ITS holder from any other backend: a pooler hands a server
+        # connection to one transaction at a time, so the task of the latest begin on a pid is the one using it.
         def patient(_session, _transaction, connection):
             if connection.engine is engine.sync_engine:
                 connection.exec_driver_sql("SET LOCAL lock_timeout = '60s'")
+                pid = connection.exec_driver_sql("SELECT pg_backend_pid()").scalar()
+                try:
+                    task = asyncio.current_task()
+                except RuntimeError:
+                    task = None
+                if task is not None:
+                    BACKENDS[pid] = task
 
+        BACKENDS.clear()
         event.listen(Session, "after_begin", patient)
         request.addfinalizer(lambda: event.remove(Session, "after_begin", patient))
+        request.addfinalizer(BACKENDS.clear)
+
+        loop = asyncio.get_running_loop()
+        previous = loop.get_task_factory()
+
+        def remembering_parents(loop_, coro, **kwargs):
+            task = previous(loop_, coro, **kwargs) if previous is not None else asyncio.Task(coro, loop=loop_, **kwargs)
+            creator = asyncio.current_task(loop_)
+            if creator is not None:
+                PARENTS[task] = creator
+            return task
+
+        loop.set_task_factory(remembering_parents)
+        request.addfinalizer(lambda: loop.set_task_factory(previous))
     import_all_models()
     async with engine.begin() as connection:
         if schema:

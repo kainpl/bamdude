@@ -402,7 +402,8 @@ async def test_a_stop_meeting_the_next_claim_waits_on_the_lane_then_refuses(
     stopping = asyncio.create_task(async_client.post(f"/api/v1/queue/{item_id}/stop"))
     try:
         await asyncio.wait_for(reached.wait(), 10)
-        await a_waiter_appears(test_engine, factory, stopping, queue_id)
+        # The claim is started from inside the Stop's own flow (the reconnect it waits on), so it is named.
+        await a_waiter_appears(test_engine, factory, stopping, queue_id, behind=claim[0])
         release.set()
         assert await asyncio.wait_for(claim[0], 20) == 1
         response = await asyncio.wait_for(stopping, 20)
