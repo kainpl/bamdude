@@ -199,6 +199,34 @@ async def test_a_failed_attempt_while_another_run_holds_the_header_only_pauses(d
     assert (header.status, header.current_item_id, header.is_paused) == ("printing", theirs_id, True)
 
 
+@pytest.mark.parametrize("archive_state", ["sending", "other_identity", "already_closed", "stale_claim"])
+async def test_failure_only_closes_its_current_prepared_execution(db_session, printer_factory, archive_state):
+    _printer, queue_id, item_id = await claimed(db_session, printer_factory)
+    archive = await archive_row(db_session)
+    archive_id, identity = archive.id, archive.recovery_identity
+    status = "failed" if archive_state == "already_closed" else "printing"
+    phase = "sending" if archive_state == "sending" else "prepared"
+    await write(PrintArchive, archive_id, status=status, dispatch_phase=phase, error_message="original")
+    token = T0 - timedelta(minutes=1) if archive_state == "stale_claim" else T0
+    async with database.async_session() as db:
+        written = await PrintScheduler()._fail_attempt(
+            db,
+            item_id=item_id,
+            claim_started_at=token,
+            message="Upload refused",
+            code="dispatchUploadFailed",
+            sent=False,
+            queue_id=queue_id,
+            execution_archive_id=archive_id,
+            execution_archive_identity="stale-archive-identity" if archive_state == "other_identity" else identity,
+        )
+    assert written is (archive_state != "stale_claim")
+    row = await read(PrintQueueItem, item_id)
+    assert row.status == ("failed" if written else "printing")
+    execution = await read(PrintArchive, archive_id)
+    assert (execution.status, execution.dispatch_phase, execution.error_message) == (status, phase, "original")
+
+
 # ---------------------------------------------------------------- A16: Stop acts only on the attempt it read
 
 

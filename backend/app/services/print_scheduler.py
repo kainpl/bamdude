@@ -3291,12 +3291,14 @@ class PrintScheduler:
         sent: bool = True,
         queue_id: int | None = None,
         execution_archive_id: int | None = None,
+        execution_archive_identity: str | None = None,
     ) -> bool:
         """End THIS claimed attempt as failed with its class, and halt the printer's queue until Resume.
 
         Addressed to the attempt's claim token: a row the operator cancelled, a later
-        attempt, or a completion that already closed it is left exactly as it is. The
-        execution archive is closed by the dispatcher; this is the queue's half.
+        attempt, or a completion that already closed it is left exactly as it is.
+        For an unsent attempt, close its prepared archive in this same commit if
+        the dispatcher's own close did not land (G03 B.3).
 
         ``sent=False`` — the attempt published no start — writes the row
         ``gate_acknowledged``: nothing reached the printer, so the next job's "only
@@ -3310,7 +3312,7 @@ class PrintScheduler:
         through ``halt_lane`` (A9); a lost CAS releases a header that still names the
         row (A11).
         """
-        from backend.app.models.archive import PrintArchive
+        from backend.app.services.print_execution import dispatch_archive_terminal_values
         from backend.app.services.queue_counters import halt_lane, release_lost_claim, update_queue_counters
         from backend.app.services.queue_ops import claim_lanes
 
@@ -3334,6 +3336,7 @@ class PrintScheduler:
                 update(PrintQueueItem)
                 .where(
                     PrintQueueItem.id == item_id,
+                    PrintQueueItem.queue_id == claim_queue,
                     PrintQueueItem.status == "printing",
                     PrintQueueItem.started_at == claim_started_at,
                 )
@@ -3351,6 +3354,18 @@ class PrintScheduler:
                 await release_lost_claim(db, claim_queue, item_id)
                 await db.commit()
                 return False
+            if not sent and execution_archive_id is not None and execution_archive_identity is not None:
+                await db.execute(
+                    update(PrintArchive)
+                    .where(
+                        PrintArchive.id == execution_archive_id,
+                        PrintArchive.recovery_identity == execution_archive_identity,
+                        PrintArchive.status == "printing",
+                        PrintArchive.dispatch_phase == "prepared",
+                    )
+                    .values(**dispatch_archive_terminal_values("failed", message, code))
+                    .execution_options(synchronize_session=False)
+                )
             await halt_lane(db, claim_queue, item_id=item_id, kind="error")
             await update_queue_counters(db, claim_queue)
             await db.commit()
@@ -3890,7 +3905,8 @@ class PrintScheduler:
                     code=outcome.get("failure_code") or failure_reasons.DISPATCH_INTERNAL_ERROR,
                     sent=published,
                     queue_id=printer_id,
-                    execution_archive_id=outcome.get("archive_id"),
+                    execution_archive_id=outcome.get("execution_archive_id"),
+                    execution_archive_identity=outcome.get("execution_archive_identity"),
                 ):
                     return
                 if not published:

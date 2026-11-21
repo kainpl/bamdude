@@ -16,10 +16,11 @@ The two defects these pin:
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from backend.app.core.config import settings
@@ -205,6 +206,60 @@ async def test_a_refused_upload_fails_with_its_own_reason(
     assert "greenlet" not in (message or "").lower()
     queue_row = await db_session.get(PrinterQueue, queue_id)
     assert queue_row.status == "error"
+
+
+@pytest.mark.parametrize("kind", ["library", "archive"])
+async def test_attempt_end_closes_a_prepared_archive_after_the_runner_commit_fails(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, caplog, kind
+):
+    import backend.app.services.background_dispatch as bd
+    from backend.app.utils.failure_reasons import DISPATCH_UPLOAD_FAILED
+
+    printer_id, queue_id, mqtt, item_id = await a_queued_job(db_session, tmp_path, printer_factory, monkeypatch, kind)
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    dispatch_mocks(monkeypatch, factory, upload=AsyncMock(return_value=False))
+    scheduler, spawned = scheduler_with_captured_dispatch(monkeypatch)
+    mark_terminal = bd.BackgroundDispatchService._mark_dispatch_archive_terminal
+    failed_closes = set()
+
+    @asynccontextmanager
+    async def reject_commit_session():
+        async with factory() as db:
+
+            def reject_commit(_session):
+                raise RuntimeError("runner archive close could not commit")
+
+            event.listen(db.sync_session, "before_commit", reject_commit, once=True)
+            yield db
+
+    async def fail_runner_close(archive_id, *args, **kwargs):
+        with monkeypatch.context() as cleanup:
+            cleanup.setattr(bd, "async_session", reject_commit_session)
+            result = await mark_terminal(archive_id, *args, **kwargs)
+        async with factory() as db:
+            archive = await db.get(PrintArchive, archive_id)
+            failed_closes.add((archive_id, result, archive.status, archive.dispatch_phase))
+        return result
+
+    monkeypatch.setattr(
+        bd.BackgroundDispatchService, "_mark_dispatch_archive_terminal", staticmethod(fail_runner_close)
+    )
+    assert await scheduler.check_queue() is True
+    await drain(spawned)
+
+    [(archive_id, result, status, phase)] = failed_closes
+    assert (result, status, phase) == ("failed", "printing", "prepared")
+    assert "Failed to mark dispatch archive" in caplog.text
+    mqtt._client.publish.assert_not_called()
+    async with factory() as db:
+        row = await db.get(PrintQueueItem, item_id)
+        archive = await db.get(PrintArchive, archive_id)
+        header = await db.get(PrinterQueue, queue_id)
+        assert (row.status, row.error_code, row.gate_acknowledged) == ("failed", DISPATCH_UPLOAD_FAILED, True)
+        assert row.returned_receipt_identity is None
+        assert (archive.status, archive.failure_reason) == ("failed", DISPATCH_UPLOAD_FAILED)
+        assert archive.completed_at is not None
+        assert header.status == "error"
 
 
 async def test_a_lost_final_claim_does_not_break_the_tick_for_the_next_printer(
