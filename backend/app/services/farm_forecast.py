@@ -41,6 +41,7 @@ from backend.app.services.order_filing import priority_rank
 from backend.app.services.order_queue import awaiting_auto_row_conditions
 from backend.app.services.plan_engine import FleetCapacity, FleetMachine, OrderPlan, plan_for_orders
 from backend.app.services.printer_manager import printer_manager
+from backend.app.services.printer_occupancy import row_holds_printer
 from backend.app.services.queue_times import print_time_for_row
 from backend.app.services.stagger_groups import StaggerGroupResolver
 from backend.app.utils.model_compatibility import model_compatibility
@@ -71,6 +72,9 @@ class QueuedRow:
     #: walk never opens a second window for it.
     started: bool = False
     auto_eject: bool = False
+    holds: bool = True
+    # Seconds from the snapshot's clock. A staged row has no automatic release.
+    not_before: float | None = None
 
 
 @dataclass
@@ -1124,9 +1128,17 @@ async def load_snapshot(
             plate_id=item.plate_id,
             descriptor=loaded_descriptor(item),
         )
+        holds = row_holds_printer(item, now)
+        scheduled = item.scheduled_time
         machine.queued.append(
             QueuedRow(
                 order_id=item.project_id,
+                holds=holds,
+                not_before=(
+                    (scheduled.replace(tzinfo=None) - now.replace(tzinfo=None)).total_seconds()
+                    if not holds and not item.manual_start and scheduled is not None
+                    else None
+                ),
                 seconds=seconds,
                 prep_seconds=gates.prep_for(item.preheat_override),
                 auto_eject=bool(item.auto_eject),

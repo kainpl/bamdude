@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import Row, and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.print_queue import PrintQueueItem
@@ -30,11 +30,48 @@ class PrinterOccupancyConflict(RuntimeError):
 class QueueOccupancy:
     queue: PrinterQueue
     printing_item_ids: tuple[int, ...]
-    pending_item_ids: tuple[int, ...]
+    pending_rows: tuple[Row[tuple[int, str, bool, datetime | None]], ...]
+
+    @property
+    def pending_item_ids(self) -> tuple[int, ...]:
+        return tuple(row.id for row in self.pending_rows)
+
+    @property
+    def holding_item_ids(self) -> tuple[int, ...]:
+        # Read the clock at placement admission, while the lane still owns
+        # these rows. A dispatch claim takes its own instant at the head query.
+        now = datetime.now(timezone.utc)
+        return tuple(row.id for row in self.pending_rows if row_holds_printer(row, now))
 
     @property
     def has_active_claim(self) -> bool:
         return self.queue.status == "printing" or bool(self.printing_item_ids)
+
+
+def holding_condition(now: datetime):
+    """A pending row holds the lane once the scheduler could start it on its own."""
+    return and_(
+        PrintQueueItem.status == "pending",
+        PrintQueueItem.manual_start.is_(False),
+        or_(PrintQueueItem.scheduled_time.is_(None), PrintQueueItem.scheduled_time <= now),
+    )
+
+
+def scheduled_for_later(scheduled: datetime | None, now: datetime) -> bool:
+    """The database stores scheduled times in UTC, sometimes without tzinfo."""
+    if scheduled is None:
+        return False
+    scheduled = scheduled.replace(tzinfo=timezone.utc) if scheduled.tzinfo is None else scheduled
+    now = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now
+    return scheduled > now
+
+
+def row_holds_printer(row: PrintQueueItem | Row[tuple[int, str, bool, datetime | None]], now: datetime) -> bool:
+    return row.status == "pending" and row.manual_start is False and not scheduled_for_later(row.scheduled_time, now)
+
+
+def placement_rank(ready: bool, exact: bool, colours: int, has_deferred_rows: bool, printer_id: int):
+    return ready, exact, colours, not has_deferred_rows, -printer_id
 
 
 def claim_token_matches(actual: datetime | None, expected: datetime | None) -> bool:
@@ -83,7 +120,12 @@ async def read_queue_occupancy(db: AsyncSession, queue_id: int, *, for_update: b
         raise PrinterOccupancyConflict("queue_missing", queue_id=queue_id)
     rows = (
         await db.execute(
-            select(PrintQueueItem.id, PrintQueueItem.status).where(
+            select(
+                PrintQueueItem.id,
+                PrintQueueItem.status,
+                PrintQueueItem.manual_start,
+                PrintQueueItem.scheduled_time,
+            ).where(
                 PrintQueueItem.queue_id == queue_id,
                 PrintQueueItem.status.in_(("pending", "printing")),
             )
@@ -91,8 +133,8 @@ async def read_queue_occupancy(db: AsyncSession, queue_id: int, *, for_update: b
     ).all()
     return QueueOccupancy(
         queue=queue,
-        printing_item_ids=tuple(item_id for item_id, status in rows if status == "printing"),
-        pending_item_ids=tuple(item_id for item_id, status in rows if status == "pending"),
+        printing_item_ids=tuple(row.id for row in rows if row.status == "printing"),
+        pending_rows=tuple(row for row in rows if row.status == "pending"),
     )
 
 
@@ -118,7 +160,7 @@ def require_direct_admission(occupancy: QueueOccupancy) -> None:
 
 
 def require_auto_placement(occupancy: QueueOccupancy) -> None:
-    """Auto queue needs an empty lane; pending work is its own backlog fact.
+    """AutoQueue needs a lane with no claim or due, unstaged backlog.
 
     A queue halted after a failed or cancelled print (``status`` ``paused`` / ``error``) refuses new work as an
     operator-paused one does (owner, G03 E-3) — the same rule as the direct and the scheduler admissions, read
@@ -129,7 +171,7 @@ def require_auto_placement(occupancy: QueueOccupancy) -> None:
         raise PrinterOccupancyConflict("queue_paused", queue_id=queue.id)
     if occupancy.has_active_claim:
         raise PrinterOccupancyConflict("active_claim", queue_id=queue.id)
-    if occupancy.pending_item_ids:
+    if occupancy.holding_item_ids:
         raise PrinterOccupancyConflict("pending_backlog", queue_id=queue.id)
 
 

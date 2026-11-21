@@ -760,7 +760,7 @@ async def assign_now(
             "message": "This job changed or started while it was being edited. Nothing was saved; refresh and try again.",
         },
     )
-    busy_printers = await busy_printer_ids(db)
+    busy_printers = await busy_printer_ids(db, datetime.now(timezone.utc))
     while True:
         eligible = await find_eligible_printer(db, item, busy_printers)
         printer, reason = eligible

@@ -74,6 +74,7 @@ class _SwapProfile:
 async def _forecast(db_session):
     ctx = await queue_rebalance._pass_context(
         db_session,
+        queue_rebalance._utcnow(),
         resources=await queue_rebalance._order_resources(db_session),
         busy=None,
         interlocked=set(),

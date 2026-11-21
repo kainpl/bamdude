@@ -158,6 +158,14 @@ async def _parity_farm(db_session, printer_factory, tmp_path, *, compatible=Fals
     dry = await printer("P2S-Dry", "P2S")
     a, b, c = [await printer(f"P2S-{x}", "P2S") for x in "ABC"]
     d, e, f, g, h, i, j, k, fresh = [await printer(f"P1S-{x}", "P1S") for x in "DEFGHIJKL"]
+    # TC8: both can take a first-wave placement. The scheduled row stays dated
+    # in replay; the staged row gives no reliable finish time on its lane.
+    db_session.add_all(
+        [
+            PrintQueueItem(queue_id=dry.id, position=1, scheduled_time=datetime.now(timezone.utc) + timedelta(days=1)),
+            PrintQueueItem(queue_id=b.id, position=1, manual_start=True),
+        ]
+    )
     status = {
         dry.id: _idle_status(["PETG"]),
         a.id: _idle_status(["PETG"]),
@@ -324,6 +332,7 @@ async def _first_wave_parity(
     with p_elig, p_sched:
         ctx = await queue_rebalance._pass_context(
             db_session,
+            queue_rebalance._utcnow(),
             resources=await queue_rebalance._order_resources(db_session),
             busy=None,
             interlocked=None,
@@ -675,6 +684,7 @@ async def test_companions_are_filed_after_every_pending_row_the_replay_does_not_
     with p_elig, p_sched:
         ctx = await queue_rebalance._pass_context(
             db_session,
+            queue_rebalance._utcnow(),
             resources=await queue_rebalance._order_resources(db_session),
             busy=None,
             interlocked=set(),

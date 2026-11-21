@@ -1,5 +1,7 @@
 """Persistent claim facts must survive a stale/missing queue header."""
 
+from datetime import datetime, timezone
+
 import pytest
 
 from backend.app.models.print_queue import PrintQueueItem
@@ -23,7 +25,7 @@ async def test_a_printing_child_blocks_scheduler_and_auto_router_with_an_idle_he
     occupancy = await read_queue_occupancy(db_session, queue.id)
     with pytest.raises(PrinterOccupancyConflict, match="active_claim"):
         require_scheduler_claim(occupancy)
-    assert printer.id in await busy_printer_ids(db_session)
+    assert printer.id in await busy_printer_ids(db_session, datetime.now(timezone.utc))
 
 
 @pytest.mark.asyncio

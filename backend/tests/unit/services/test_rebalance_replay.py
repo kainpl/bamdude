@@ -488,3 +488,33 @@ def test_a_replay_stopped_early_answers_what_it_watched_as_the_whole_one_does(se
             assert until is not None
             full_state, full_finish = whole.outcome(job_id)
             assert full_state != "known" or full_finish > until, (job_id, full_finish, until)
+
+
+@pytest.mark.parametrize("waiting, finish", [(0, 20), (10, 50), (15, 55)])
+def test_a_scheduled_row_keeps_its_position_once_due(waiting, finish):
+    # Routed at zero. If the printer cannot start until the scheduled time,
+    # the ten seconds of preparation for the anchored row take the lane first.
+    lane = _free(1, waiting=waiting, held=(Held(10, prep=10, not_before=10),))
+    result = replay([lane], [_job(1, 1, seconds=20)])
+    assert result.routed_at == {1: 0}
+    assert result.finish == {1: finish}
+
+
+def test_a_scheduled_row_waits_for_the_running_print_and_never_starts_early():
+    scheduled = Held(30, not_before=60)
+    running = _busy(1, 75)
+    job = _job(1, 1, seconds=20)
+    after = replay([replace(running, held=(*running.held, scheduled))], [job])
+    assert (after.routed_at[1], after.finish[1]) == (105, 125)
+    early = replay([_free(1, waiting=60, held=(scheduled,))], [job])
+    assert (early.routed_at[1], early.finish[1]) == (0, 110)
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_deferred_lanes_are_free_to_route_to_but_rank_last(staged):
+    deferred = _free(1, has_staged_rows=staged, held=() if staged else (Held(10, not_before=300),))
+    result = replay([deferred, _free(2)], [_job(1, 1, 2), _job(2, 1, 2, position=1)])
+    assert result.lane_of == {1: 2, 2: 1}
+    assert result.routed_at == {1: 0, 2: 0}
+    assert result.outcome(1) == ("known", 100)
+    assert result.outcome(2) == (("unknown", None) if staged else ("known", 100))

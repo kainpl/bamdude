@@ -109,6 +109,7 @@ from backend.app.services.print_option_defaults import preference_options
 from backend.app.services.print_scheduler import scheduler
 from backend.app.services.printer_location_service import load_tree, subtree_ids
 from backend.app.services.printer_manager import printer_manager
+from backend.app.services.printer_occupancy import placement_rank
 from backend.app.services.product_composition import PlateRecipe, estimate_seconds, recipes_for_products
 from backend.app.services.queue_source_capture import (
     StagedSource,
@@ -318,6 +319,7 @@ class Machine:
     interval: float = 0.0
     dispatchable: bool = True
     printer_identity: str | None = None
+    has_staged_rows: bool = False
 
 
 class FitSource(Protocol):
@@ -425,6 +427,7 @@ def _lane(machine: Machine) -> Lane:
         requires_operator=machine.requires_operator,
         interval=machine.interval,
         printer_identity=machine.printer_identity,
+        has_staged_rows=machine.has_staged_rows,
     )
 
 
@@ -591,11 +594,12 @@ def _receivers(
             continue
         fit = farm.fits.target(item.item_id, plate, machine.printer_id, companion=companion)
         if fit.verdict == "yes":
-            ranked.append((verdict == "exact", fit.color_matches, -machine.printer_id))
+            deferred = machine.has_staged_rows or any(h.not_before > 0 for h in machine.held or ())
+            ranked.append(placement_rank(True, verdict == "exact", fit.color_matches, deferred, machine.printer_id))
         elif fit.verdict == "unknown":
             unknown.add(fit.reason)
     ranked.sort(reverse=True)
-    return [(-pid, exact, colour) for exact, colour, pid in ranked]
+    return [(-pid, exact, colour) for _, exact, colour, _, pid in ranked]
 
 
 def _target_fits(
@@ -680,7 +684,7 @@ def plan_moves(
     """
     machines = sorted(farm.machines.values(), key=lambda m: m.printer_id)
     lanes = [_lane(m) for m in machines]
-    idle = {lane.printer_id for lane in lanes if lane.routable and not lane.held}
+    idle = {lane.printer_id for lane in lanes if lane.routable and all(h.not_before > 0 for h in lane.held)}
     if projection is not None:
         jobs = projection.jobs
     else:
@@ -1391,8 +1395,16 @@ def _machines(
         claimed = passing is not None and pid in busy
         held: list[Held] = []
         blocked = False
+        has_staged_rows = False
         for row in state.queued:
+            if not row.holds and row.not_before is None:
+                has_staged_rows = True
+                continue
+            not_before = row.not_before or 0.0
             if not (row.started or permits(snapshot.order_resources.get(row.order_id), pid, state.model)):
+                if not row.holds:
+                    held.append(Held(None, blocked=True, not_before=not_before))
+                    continue
                 # A row of an order that may not use this printer is never dispatched here.
                 blocked = True
                 continue
@@ -1402,7 +1414,15 @@ def _machines(
                     continue  # past its estimate, and the router already counts the printer free
                 # Past its estimate: over, a second after now; estimated at nothing: no estimate.
                 seconds = OVERDUE_SECONDS if row.started else None
-            held.append(Held(seconds, prep=float(row.prep_seconds), started=row.started, auto_eject=row.auto_eject))
+            held.append(
+                Held(
+                    seconds,
+                    prep=float(row.prep_seconds),
+                    started=row.started,
+                    auto_eject=row.auto_eject,
+                    not_before=not_before,
+                )
+            )
         if claimed and pid in dispatching and not any(h.started for h in held):
             seconds = dispatching[pid]
             head = None if seconds is None else float(snapshot.prep_seconds) + float(seconds)
@@ -1410,9 +1430,10 @@ def _machines(
         if claimed and blocked:
             held.append(Held(None, blocked=True))
         hold_unknown = pid in interlocked
-        if claimed and not held:
-            held = [Held(None, started=True)]
-        elif passing is not None and held and pid not in busy:
+        has_holding_work = any(h.not_before <= 0 for h in held)
+        if claimed and not has_holding_work:
+            held.insert(0, Held(None, started=True))
+        elif passing is not None and has_holding_work and pid not in busy:
             held = []
             hold_unknown = True
         gap = max(0.0, float(state.plate_clear_seconds))
@@ -1435,6 +1456,7 @@ def _machines(
             interval=float(state.stagger_interval_seconds or 0),
             dispatchable=bool(passing is None or passing.dispatchable),
             printer_identity=passing.printer_identity if passing is not None else None,
+            has_staged_rows=has_staged_rows,
         )
     return machines
 
@@ -1503,6 +1525,7 @@ async def _line_orders(db: AsyncSession) -> dict[int, int]:
 
 async def _pass_context(
     db: AsyncSession,
+    now: datetime,
     *,
     resources: dict[int, object],
     busy: set[int] | None,
@@ -1515,7 +1538,7 @@ async def _pass_context(
     freshly otherwise: the interlocks once, a failed read the caller's error, never «nothing is
     interlocked»."""
     if busy is None:
-        busy = await busy_printer_ids(db)
+        busy = await busy_printer_ids(db, now)
     if interlocked is None:
         from backend.app.services.ha_sensor_manager import ha_sensor_manager
 
@@ -1883,6 +1906,7 @@ async def rebalance(
 
     ctx = await _pass_context(
         db,
+        now,
         resources=resources,
         busy=busy_printers,
         interlocked=interlocked_printers,
@@ -2245,7 +2269,7 @@ async def _still_holds(
     }
     models = {printer_id: printer_manager.effective_model_for(printer_id, row[0]) for printer_id, row in rows.items()}
     allow_compatible = await _compatible_models_allowed(db)
-    busy = await busy_printer_ids(db)
+    busy = await busy_printer_ids(db, datetime.now(timezone.utc))
     # Read again, unlike the interlocks: it is the scheduler's own memory and one setting.
     drying_held = await scheduler.drying_held_printer_ids(db)
     policy = auto_policy(fresh)

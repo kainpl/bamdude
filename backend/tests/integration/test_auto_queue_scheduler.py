@@ -772,7 +772,7 @@ class TestAHaltedQueueGetsNoWork:
             occupancy = QueueOccupancy(
                 queue=PrinterQueue(id=1, printer_id=1, status=status, is_paused=False),
                 printing_item_ids=(),
-                pending_item_ids=(),
+                pending_rows=(),
             )
             with pytest.raises(PrinterOccupancyConflict):
                 require_auto_placement(occupancy)
@@ -780,7 +780,7 @@ class TestAHaltedQueueGetsNoWork:
             QueueOccupancy(
                 queue=PrinterQueue(id=1, printer_id=1, status="idle", is_paused=False),
                 printing_item_ids=(),
-                pending_item_ids=(),
+                pending_rows=(),
             )
         )
 

@@ -22,9 +22,10 @@ interface PrinterQueueWidgetProps {
   // `repeat_available`. Absent (older backend) means "don't hide it".
   repeatAvailable?: boolean;
   requirePlateClear?: boolean;
+  acceptsAutoQueue?: boolean;
 }
 
-export function PrinterQueueWidget({ printerId, printerModel, printerState, awaitingPlateClear, repeatAvailable }: PrinterQueueWidgetProps) {
+export function PrinterQueueWidget({ printerId, printerModel, printerState, awaitingPlateClear, repeatAvailable, acceptsAutoQueue }: PrinterQueueWidgetProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const { hasPermission } = useAuth();
@@ -96,11 +97,11 @@ export function PrinterQueueWidget({ printerId, printerModel, printerState, awai
   const nextItem = startable ?? laterAuto ?? queue?.[0];
   const heading = startable ? t('queue.nextInQueue')
     : laterAuto?.scheduled_time
-      ? t('queue.nextScheduled', {
+      ? t(acceptsAutoQueue ? 'queue.nextScheduledWithAutoQueue' : 'queue.nextScheduled', {
           time: formatDateTime(laterAuto.scheduled_time, 'system', 'system',
             { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
         })
-      : t('queue.nextStaged');
+      : t(acceptsAutoQueue ? 'queue.nextStagedWithAutoQueue' : 'queue.nextStaged');
   // Only prompt "Clear Plate & Start Next" when there are auto-dispatchable items
   const needsClearPlate = gateArmed && autoDispatchQueue.length > 0;
 

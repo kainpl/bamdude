@@ -2360,6 +2360,8 @@ export default {
     // When nothing in the queue can start by itself now: the job due first, or only staged ones.
     nextScheduled: 'Scheduled for {{time}}',
     nextStaged: 'Staged — starts only by hand',
+    nextScheduledWithAutoQueue: 'Scheduled for {{time}} — AutoQueue jobs may print first',
+    nextStagedWithAutoQueue: 'Staged — AutoQueue jobs may print before it is started',
     // The printer's last print failed and "only if the previous print succeeded" jobs wait for it.
     previousFailure: {
       note: 'The last print on this printer failed. Jobs set to run only if the previous print succeeded are held until the failure is acknowledged.',

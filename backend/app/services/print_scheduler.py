@@ -12,7 +12,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal
 
-from sqlalchemy import func, inspect, or_, select, update
+from sqlalchemy import func, inspect, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import set_committed_value
@@ -52,8 +52,11 @@ from backend.app.services.printer_manager import (
 from backend.app.services.printer_occupancy import (
     PrinterOccupancyConflict,
     active_claim_printer_ids,
+    holding_condition,
     read_queue_occupancy,
     require_scheduler_claim,
+    row_holds_printer,
+    scheduled_for_later,
 )
 from backend.app.services.queue_ops import queue_claim_scope
 from backend.app.services.queue_row_basis import row_basis
@@ -121,13 +124,7 @@ class VerdictResult:
 def first_runnable_query(queue_id: int, now: datetime, cooling: set[int]):
     """The row the claim and every verdict take for a queue's next one (G03 B, A3): pending, not staged, due at
     ``now``, not cooling, by position then id — one definition, so the two cannot disagree on which row is next."""
-    query = (
-        select(PrintQueueItem.id)
-        .where(PrintQueueItem.queue_id == queue_id)
-        .where(PrintQueueItem.status == "pending")
-        .where(PrintQueueItem.manual_start.is_(False))
-        .where(or_(PrintQueueItem.scheduled_time.is_(None), PrintQueueItem.scheduled_time <= now))
-    )
+    query = select(PrintQueueItem.id).where(PrintQueueItem.queue_id == queue_id).where(holding_condition(now))
     if cooling:
         query = query.where(PrintQueueItem.id.notin_(cooling))
     return query.order_by(PrintQueueItem.position, PrintQueueItem.id).limit(1)
@@ -636,6 +633,11 @@ class PrintScheduler:
 
             cooling = self._cooling_item_ids()
             for item in items:
+                future = scheduled_for_later(item.scheduled_time, datetime.now(timezone.utc))
+                if not future and item.waiting_reason_code == "scheduled":
+                    if not await self._wait(db, item, None, None):
+                        continue
+
                 # A busy spool refused this job's source copy moments ago: it waits out its cooldown while the
                 # rest of the queue moves on (swap-source-lifecycle spec r4 §6).
                 if item.id in cooling:
@@ -668,14 +670,10 @@ class PrintScheduler:
                     continue
 
                 # Check scheduled time first (scheduled_time is stored in UTC from ISO string)
-                if item.scheduled_time:
-                    sched = item.scheduled_time
-                    if sched.tzinfo is None:
-                        sched = sched.replace(tzinfo=timezone.utc)
-                    if sched > datetime.now(timezone.utc):
-                        await self._wait(db, item, "scheduled", "Scheduled start")
-                        skip_reasons["scheduled_future"] = skip_reasons.get("scheduled_future", 0) + 1
-                        continue
+                if future:
+                    await self._wait(db, item, "scheduled", "Scheduled start")
+                    skip_reasons["scheduled_future"] = skip_reasons.get("scheduled_future", 0) + 1
+                    continue
 
                 # Skip items that require manual start
                 if item.manual_start:
@@ -1962,7 +1960,7 @@ class PrintScheduler:
                 sched = sched.replace(tzinfo=timezone.utc)
             if sched is not None and not item.manual_start and sched <= horizon:
                 printers_with_scheduled.add(item.queue_id)
-            if self._row_could_start_now(item, sched, now_utc):
+            if self._row_could_start_now(item, now_utc):
                 printers_with_ready_items.add(item.queue_id)
         # A scheduled «any printer of model X» job stands in no printer's queue
         # until its time, so it counts for every printer it could run on. Only
@@ -2386,7 +2384,7 @@ class PrintScheduler:
                     armed["running"] = True
 
     @staticmethod
-    def _row_could_start_now(item: PrintQueueItem, scheduled: datetime | None, now: datetime) -> bool:
+    def _row_could_start_now(item: PrintQueueItem, now: datetime) -> bool:
         """Whether nothing but the printer stands between this pending row and its start.
 
         The standing holds ``check_queue`` skips a row for without looking at
@@ -2394,9 +2392,7 @@ class PrintScheduler:
         by the operator or by an error. None of them ends by itself within a
         tick, so a drying cycle started meanwhile takes nothing from the row.
         """
-        if item.manual_start:
-            return False
-        if scheduled is not None and scheduled > now:
+        if not row_holds_printer(item, now):
             return False
         queue = getattr(item, "queue", None)
         return not (queue is not None and (queue.is_paused or queue.status in ("paused", "error")))

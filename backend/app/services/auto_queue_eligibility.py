@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -74,6 +75,7 @@ from backend.app.services.offline_feed import offline_shortfall
 from backend.app.services.print_scheduler import scheduler
 from backend.app.services.printer_location_service import load_tree, path_of, subtree_ids
 from backend.app.services.printer_manager import printer_manager
+from backend.app.services.printer_occupancy import active_claim_printer_ids, holding_condition, placement_rank
 from backend.app.utils.model_compatibility import model_compatibility
 from backend.app.utils.printer_models import normalize_model_name
 
@@ -215,35 +217,34 @@ def router_order(sjf: bool) -> tuple:
     return (AutoQueueItem.position, AutoQueueItem.id)
 
 
-async def busy_printer_ids(db: AsyncSession) -> set[int]:
-    """The printers the router may not place on this tick.
+async def busy_printer_ids(db: AsyncSession, now: datetime) -> set[int]:
+    """Active claims and printers with pending work that would start on its own.
 
-    A printer is off-limits when EITHER its queue is printing OR its queue
-    already holds a pending item, however that item got there — manual queue,
-    scheduled, a prior auto-route. The ``status='printing'`` clause alone is not
-    enough: between auto-queue tick N (which assigns items 1..K to K printers as
-    pending rows) and the per-printer scheduler's next tick (which flips
-    ``PrinterQueue.status`` as its synchronous prep walks the items in queue_id
-    order) there is a window where some printers have flipped and the lagging
-    ones have not. A tick that fires inside it sees the laggards as free and
-    double-stacks the next items onto them — every new auto item landing on the
-    same lagging printer. "Has any pending row" closes the gap: each tick places
-    at most one new item per printer, and the next placement waits until the
-    queue actually drains.
-
-    One function, so the rebalancer (``services/queue_rebalance.py``) reads the
-    same definition the tick does.
+    Before the per-printer scheduler claims an automatic placement, its due,
+    unstaged copy already holds the lane. This keeps consecutive ticks from
+    stacking placements on a printer. Future or staged rows leave the lane
+    open. The placement writer rechecks under the lane with a fresh clock.
     """
-    from backend.app.services.printer_occupancy import active_claim_printer_ids
-
     printing = await active_claim_printer_ids(db)
-    holding = await db.execute(
+    holding = await db.scalars(
         select(PrinterQueue.printer_id)
         .join(PrintQueueItem, PrintQueueItem.queue_id == PrinterQueue.id)
-        .where(PrintQueueItem.status == "pending")
+        .where(holding_condition(now))
         .distinct()
     )
-    return printing | {pid for (pid,) in holding.all()}
+    return printing | set(holding)
+
+
+async def deferred_printer_ids(db: AsyncSession, now: datetime) -> set[int]:
+    """Printers that should rank lower because they have staged or future work."""
+    return set(
+        await db.scalars(
+            select(PrinterQueue.printer_id)
+            .join(PrintQueueItem, PrintQueueItem.queue_id == PrinterQueue.id)
+            .where(PrintQueueItem.status == "pending", ~holding_condition(now))
+            .distinct()
+        )
+    )
 
 
 #: A printer queue in one of these states dispatches nothing until the operator resumes it (after a failed or
@@ -413,6 +414,7 @@ async def find_eligible_printer(
     offline_feeds=None,
     interlocked_printers: set[int] | None = None,
     exclusion_reasons: dict[int, str] | None = None,
+    deferred_printers: set[int] | None = None,
 ) -> EligiblePrinter:
     """The best printer for ``item`` now, or why there is none.
 
@@ -546,17 +548,22 @@ async def find_eligible_printer(
             and printer.id not in (interlocked_printers or ())
             and printer.id not in drying_held
         )
-        candidates.append(
-            (ready, verdict == "exact", result.plan.color_matches, -printer.id, printer, result.plan, snapshot)
-        )
+        candidates.append((ready, verdict == "exact", result.plan.color_matches, printer, result.plan, snapshot))
     if candidates:
         from backend.app.services.auto_queue_return_policy import last_failed_printers, returned_printer_rank
 
+        if deferred_printers is None:
+            deferred_printers = (
+                await deferred_printer_ids(db, datetime.now(timezone.utc)) if len(candidates) > 1 else set()
+            )
         failed_identities = last_failed_printers(item)
-        _, _, _, _, printer, plan, snapshot = max(
-            candidates,
-            key=lambda c: returned_printer_rank(failed_identities, c[4].connector_identity, c[:4]),
-        )
+
+        def rank(candidate):
+            ready, exact, colours, printer, _, _ = candidate
+            ordinary = placement_rank(ready, exact, colours, printer.id in deferred_printers, printer.id)
+            return returned_printer_rank(failed_identities, printer.connector_identity, ordinary)
+
+        _, _, _, printer, plan, snapshot = max(candidates, key=rank)
         return EligiblePrinter(
             printer,
             plan=plan,

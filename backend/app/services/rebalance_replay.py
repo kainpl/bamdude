@@ -12,7 +12,7 @@ busy only while it holds a running print or a queued row), so routing happens in
 moments printers free. In a wave the jobs are taken in the router's order (:func:`router_key`:
 position, or SJF's model / ``been_jumped`` / time / position — with the id as the last key,
 which ``_fetch_pending`` carries too) and each takes the best free printer it fits, ranked as
-``find_eligible_printer`` ranks: ready, exact model, colour matches, the lower id. A job that
+``find_eligible_printer`` ranks: ready, exact model, colour matches, no deferred rows, the lower id. A job that
 fits no free printer does not block the next one. With SJF a placement marks its peers
 ``been_jumped`` (``_mark_jumped_peers``), and the next wave — never the open one — sees it.
 
@@ -35,10 +35,12 @@ from __future__ import annotations
 import heapq
 from collections import deque
 from dataclasses import dataclass, field
-from math import inf
+from math import inf, nextafter
 from typing import TYPE_CHECKING
 
+from backend.app.services.auto_queue_return_policy import returned_printer_rank
 from backend.app.services.farm_forecast import _admit
+from backend.app.services.printer_occupancy import placement_rank
 
 if TYPE_CHECKING:
     from backend.app.services.farm_forecast import StaggerPolicy
@@ -56,6 +58,7 @@ class Held:
     #: Never starts here: a row of an order that may not use this printer keeps it busy for the
     #: router for good, and nothing behind it starts either.
     blocked: bool = False
+    not_before: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,7 @@ class Lane:
     #: Its own stagger interval; 0 = the farm's (``farm_forecast``: ``stagger_interval_seconds or`` the policy's).
     interval: float = 0.0
     printer_identity: str | None = None
+    has_staged_rows: bool = False
 
 
 @dataclass(frozen=True)
@@ -174,6 +178,7 @@ class _Run:
     started: bool = False
     job: int | None = None
     blocked: bool = False
+    not_before: float = 0.0
 
 
 def replay(
@@ -270,6 +275,7 @@ def replay(
     initially_free: set[int] = set()
     heap: list[tuple[float, int, int]] = []
     free: set[int] = set()
+    next_start: dict[int, float] = {}
 
     def spend(units: int = 1) -> None:
         out.work += units
@@ -315,24 +321,42 @@ def replay(
             return operator_hours.service_finish(finish, gap)
         return finish + gap
 
+    def schedule_start(pid: int, at: float) -> None:
+        if at < next_start.get(pid, inf):
+            next_start[pid] = at
+            heapq.heappush(heap, (at, 1, pid))
+
     for lane in lanes:
         pid = lane.printer_id
         held = [h for h in lane.held if h.seconds is None or h.seconds > 0]
         for h in held:
             queue[pid].append(
-                _Run(h.seconds, 0.0 if h.started else h.prep, h.auto_eject, started=h.started, blocked=h.blocked)
+                _Run(
+                    h.seconds,
+                    0.0 if h.started else h.prep,
+                    h.auto_eject,
+                    started=h.started,
+                    blocked=h.blocked,
+                    not_before=h.not_before,
+                )
             )
-        if held:
-            if held[0].started:
-                heapq.heappush(heap, (0.0, 1, pid))
-            elif lane.hold_unknown:
-                freeze(pid, 0.0)
-            else:
-                heapq.heappush(heap, (lane.waiting, 1, pid))
-        elif lane.routable:
+        if lane.has_staged_rows:
+            # The first placement wave has the router's snapshot. A stage makes
+            # later waves uncertain, and any start on this lane uncertain now.
+            taint(pid, nextafter(0.0, inf))
+            tainted[pid] = 0.0
+        holding = any(h.not_before <= 0 for h in held)
+        if not holding and lane.routable:
             ready_at[pid] = inf if lane.hold_unknown else lane.waiting
             initially_free.add(pid)
             heapq.heappush(heap, (0.0, 0, pid))
+        if held:
+            if held[0].started:
+                schedule_start(pid, 0.0)
+            elif holding and lane.hold_unknown:
+                freeze(pid, 0.0)
+            else:
+                schedule_start(pid, max(lane.waiting, min(h.not_before for h in held)))
 
     def is_ready(pid: int, t: float) -> bool:
         if t == 0.0 and pid in initially_free:
@@ -354,7 +378,7 @@ def replay(
         out.lane_of[job.job_id] = pid
         out.routed_at[job.job_id] = t
         out.ready_when_routed[job.job_id] = is_ready(pid, t)
-        doubtful = uncertain(j, t)
+        doubtful = uncertain(j, t) or tainted.get(pid, inf) <= t
         if doubtful:
             out.unknown.add(job.job_id)
             taint(pid, t)
@@ -366,7 +390,7 @@ def replay(
         elif ready_at[pid] == inf:
             freeze(pid, t)
         else:
-            heapq.heappush(heap, (max(t, ready_at[pid]), 1, pid))
+            schedule_start(pid, max(t, ready_at[pid]))
         if sjf and _order_seconds(job) is not None and job.group is not None:
             for k in group_jobs[job.group]:
                 if not done[k] and jumps(job, jobs[k], peer_jumped=jumped[k]):
@@ -399,14 +423,18 @@ def replay(
                 free.clear()  # nothing pending fits a free printer, now or later
                 return
             fitted = fit[cls[best]]
-            from backend.app.services.auto_queue_return_policy import returned_printer_rank
-
             choice = max(
                 (pid for pid in free if pid in fitted),
                 key=lambda pid: returned_printer_rank(
                     jobs[best].last_failed_printer_identities,
                     by_pid[pid].printer_identity,
-                    (is_ready(pid, t), fitted[pid][0], fitted[pid][1], -pid),
+                    placement_rank(
+                        is_ready(pid, t),
+                        fitted[pid][0],
+                        fitted[pid][1],
+                        by_pid[pid].has_staged_rows or any(run.not_before > t for run in queue[pid]),
+                        pid,
+                    ),
                 ),
             )
             assign(best, choice, t)
@@ -415,7 +443,17 @@ def replay(
         lane = by_pid[pid]
         if not queue[pid]:
             return
-        run = queue[pid][0]
+        # Future work keeps its position but yields until due. At the actual
+        # start time a newly due row ahead of the placement takes precedence.
+        for index, candidate in enumerate(queue[pid]):
+            if candidate.not_before <= t:
+                position, run = index, candidate
+                break
+            spend()
+        else:
+            schedule_start(pid, min(run.not_before for run in queue[pid]))
+            return
+        free.discard(pid)
         if not run.started and (lane.stuck or run.blocked):
             return  # starts nothing, for good: the printer stays held, with no window
         if not run.started and lane.hold_unknown:
@@ -424,10 +462,10 @@ def replay(
         if not run.started and stagger is not None:
             admit = _admit(t, lane, windows, stagger)
             if admit > t:
-                heapq.heappush(heap, (admit, 1, pid))
+                schedule_start(pid, admit)
                 return
             windows[pid] = t + (run.prep if stagger.wait_for_bed else 0.0) + (lane.interval or stagger.interval_seconds)
-        queue[pid].popleft()
+        del queue[pid][position]
         doubtful = tainted.get(pid, inf) <= t
         if doubtful and not run.started:
             taint_groups(pid, t)
@@ -445,9 +483,15 @@ def replay(
         ready = service(lane, finish, run.auto_eject)
         if run.started:
             ready = max(ready, lane.waiting)
-        if queue[pid]:
-            heapq.heappush(heap, (ready, 1, pid))
-        elif lane.routable:
+        remaining = queue[pid]
+        next_due = (
+            0.0
+            if remaining and remaining[0].not_before <= finish
+            else min((row.not_before for row in remaining), default=inf)
+        )
+        if next_due < inf:
+            schedule_start(pid, max(ready, next_due))
+        if lane.routable and next_due > finish:
             ready_at[pid] = inf if lane.hold_unknown else ready
             heapq.heappush(heap, (finish, 0, pid))
 
@@ -468,7 +512,9 @@ def replay(
         while heap and heap[0][0] == t and heap[0][1] == 1:
             _, _, pid = heapq.heappop(heap)
             spend()
-            start(pid, t)
+            if next_start.get(pid) == t:
+                del next_start[pid]
+                start(pid, t)
 
     for j, job in enumerate(jobs):
         if not done[j] and class_taint[cls[j]] < inf:

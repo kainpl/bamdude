@@ -59,6 +59,7 @@ from backend.app.services.auto_queue_eligibility import (
     backfills,
     begin_router_write,
     busy_printer_ids,
+    deferred_printer_ids,
     find_eligible_printer,
     offline_candidates_for,
     router_order,
@@ -243,8 +244,9 @@ class AutoQueueScheduler:
             sjf = await _get_bool_setting(db, SJF_SETTING_KEY)
             prefer_lowest = await _get_bool_setting(db, PREFER_LOWEST_SETTING_KEY, default=True)
 
-            # 1. Busy set — see ``busy_printer_ids`` for why "any pending row" is part of it.
-            busy_printers = await busy_printer_ids(db)
+            # One routing snapshot; _assign proves the lane again before writing.
+            now = datetime.now(timezone.utc)
+            busy_printers = await busy_printer_ids(db, now)
             from backend.app.services.ha_sensor_manager import ha_sensor_manager
 
             interlocked_printers = set(await ha_sensor_manager.blocked_printers(db))
@@ -252,6 +254,7 @@ class AutoQueueScheduler:
             # 2. Fetch pending auto items in scheduling order
             pending = await self._fetch_pending(db, sjf)
             items = list(pending)
+            deferred_printers = await deferred_printer_ids(db, now) if items else set()
             # What the pass decides about, taken now -- before any back-fill -- as plain values (G03 B, A17 step 3):
             # every write of the pass is addressed by one. The pass is a sequence of short transactions; this read
             # one ends here, and none of them holds a lock across a placement (step 1).
@@ -304,6 +307,7 @@ class AutoQueueScheduler:
                         prefer_lowest=prefer_lowest,
                         offline_feeds=offline_feeds,
                         interlocked_printers=interlocked_printers,
+                        deferred_printers=deferred_printers,
                     )
                     printer, reason = eligible
                     if (
@@ -472,6 +476,7 @@ class AutoQueueScheduler:
                     # cannot disagree with the ranking it mirrors (C3-1).
                     moved = await queue_rebalance.rebalance(
                         db,
+                        now=now.replace(tzinfo=None),
                         busy_printers=busy_printers,
                         interlocked_printers=interlocked_printers,
                         requirements_cache=requirements_cache,

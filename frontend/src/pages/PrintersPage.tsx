@@ -4598,7 +4598,9 @@ const PrinterCard = memo(function PrinterCard({
                 </div>
 
                 {/* Queue Widget - always visible when there are pending items */}
-                <PrinterQueueWidget printerId={printer.id} printerModel={status.effective_model || printer.model} printerState={status.state} awaitingPlateClear={status.awaiting_plate_clear} repeatAvailable={repeatAvailable} requirePlateClear={printer.require_plate_clear} />
+                <PrinterQueueWidget printerId={printer.id} printerModel={status.effective_model || printer.model} printerState={status.state} awaitingPlateClear={status.awaiting_plate_clear} repeatAvailable={repeatAvailable} requirePlateClear={printer.require_plate_clear}
+                  acceptsAutoQueue={!!printerQueue?.auto_distribute_eligible && !printerQueue.is_paused &&
+                    printerQueue.status !== 'paused' && printerQueue.status !== 'error'} />
                 {/* Jobs held for a failed last print — AutoQueue work too, which has no row here. */}
                 <PreviousFailureHold queue={printerQueue} />
               </>

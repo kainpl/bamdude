@@ -133,6 +133,19 @@ describe('PrinterQueueWidget', () => {
     });
   });
 
+  it.each([
+    { scheduled_time: '2039-06-28T12:00:00Z', manual_start: false, expected: /Scheduled for .*AutoQueue jobs may print first/ },
+    { scheduled_time: null, manual_start: true, expected: /Staged .*AutoQueue jobs may print before it is started/ },
+  ])('explains AutoQueue precedence for a deferred row', async ({ expected, ...row }) => {
+    server.use(http.get('/api/v1/queue/', () => HttpResponse.json([{ ...mockQueueItems[0], ...row }])));
+    const { rerender } = render(<PrinterQueueWidget printerId={1} />);
+    await screen.findByText('First Print');
+    expect(screen.queryByText(expected)).not.toBeInTheDocument();
+
+    rerender(<PrinterQueueWidget printerId={1} acceptsAutoQueue />);
+    expect(await screen.findByText(expected)).toBeInTheDocument();
+  });
+
   describe('single item', () => {
     it('does not show badge when only one item', async () => {
       server.use(
