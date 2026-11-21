@@ -52,6 +52,29 @@ async def conn():
     await engine.dispose()
 
 
+async def test_notification_permission_backfill_default_is_removed_without_changing_keys(conn):
+    from backend.app.core.pg_schema_contract import default_key
+    from backend.app.migrations import m255_notification_permission_default as migration
+
+    await conn.exec_driver_sql(
+        "CREATE TABLE api_keys (id integer PRIMARY KEY, can_send_notifications boolean NOT NULL DEFAULT false)"
+    )
+    await conn.exec_driver_sql("INSERT INTO api_keys VALUES (1, false), (2, true)")
+    column_default = text(
+        "SELECT column_default FROM information_schema.columns WHERE table_schema='public' "
+        "AND table_name='api_keys' AND column_name='can_send_notifications'"
+    )
+    await migration.upgrade(conn)
+    await migration.replay(conn)
+    assert await conn.scalar(column_default) is None
+    values = await conn.execute(text("SELECT can_send_notifications FROM api_keys ORDER BY id"))
+    assert values.scalars().all() == [False, True]
+
+    await conn.exec_driver_sql("ALTER TABLE api_keys ALTER COLUMN can_send_notifications SET DEFAULT true")
+    await migration.replay(conn)
+    assert default_key(await conn.scalar(column_default)) == ["boolean", "true"]
+
+
 @pytest.mark.parametrize(
     "model_change",
     [
@@ -59,6 +82,7 @@ async def conn():
         "unrelated",
         "same-table-unrelated",
         "legacy-record",
+        "legacy-reflected-index",
         "changed-check",
         "changed-check-satisfied",
         "unknown-contract",
@@ -114,6 +138,10 @@ async def test_r5_proves_missing_guards_preserves_rows_and_targeted_retry_enforc
                 proof.pop("definition", None)
         await put_record(conn, RESIDUALS, {"version": 1, "entries": {p["object"]: p for p in proofs}})
         Table("later_release", models, Column("id", Integer, primary_key=True))
+    elif model_change == "legacy-reflected-index":
+        index = next(p["definition"] for p in proofs if p["object"] == "d4_probe.indexes.ix_d4_unique")
+        index["include_columns"] = index["dialect_options"]["postgresql_include"]
+        await put_record(conn, RESIDUALS, {"version": 1, "entries": {p["object"]: p for p in proofs}})
     elif model_change in ("changed-check", "changed-check-satisfied"):
         con = next(c for c in probe.constraints if isinstance(c, CheckConstraint))
         probe.constraints.remove(con)
@@ -284,6 +312,8 @@ def canonical_check_cases():
             {"returned_at": datetime(2026, 1, 1), "ordinal": None},
             {"returned_at": None, "ordinal": None},
         ),
+        "ck_aq_unsent_return_ordinal": ({"ordinal": 0}, {"ordinal": 1}),
+        "ck_energy_price_history_source": ({"source": "unknown"}, {"source": "manual"}),
         "ck_stock_items_reserved_le_on_hand": ({"reserved": 1, "on_hand": 0}, {"reserved": 0, "on_hand": 0}),
         "ck_ha_history_one_owner": (
             {"printer_sensor_id": None, "location_sensor_id": None},

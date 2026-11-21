@@ -6,6 +6,7 @@ import io
 import json
 import re
 from pathlib import Path
+from unittest.mock import patch
 
 from sqlalchemy import event, text
 from sqlalchemy.exc import DBAPIError
@@ -267,12 +268,17 @@ async def run(case):
             from backend.app.migrations._pg_schema_228_fts import ensure_archive_fts
 
             await ensure_archive_fts(conn)
-        from backend.app.migrations import _run_pending
+        from backend.app import migrations
 
         previous_debug = settings.debug
         settings.debug = True
         try:
-            await _run_pending(database.engine, database.async_session)
+            # Exercise the historical repair's DEBUG path regardless of newer migrations.
+            repair_entry = next(
+                entry for entry in migrations._discover_migrations() if entry["version"] == repair.version
+            )
+            with patch.object(migrations, "_discover_migrations", return_value=[repair_entry]):
+                await migrations._run_pending(database.engine, database.async_session)
         finally:
             settings.debug = previous_debug
         assert not writes, writes

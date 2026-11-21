@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- The time margin in the archive media download dialog uses the same selector style as other dialogs.
+
+- Older SQLite databases can complete PostgreSQL import when index metadata is reported by SQLAlchemy 2.0. The import also reconciles the temporary default for the notification permission, preserving each API key's saved choice.
+
 - Printers with only future or manual-start jobs can take AutoQueue work. When a scheduled job is due, it keeps its place among jobs that can start and waits for any print already running to finish.
   - Rebalancing accounts for manual starts that may take a shared stagger slot and honours queue pauses even on printers excluded from AutoQueue. Older jobs also clear their scheduled wait once due.
 

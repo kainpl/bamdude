@@ -55,19 +55,21 @@ def _later(path: Path) -> None:
 async def _user():
     from backend.app.core.database import async_session
     from backend.app.models.user import User
+    from backend.tests.auth_helpers import mint_test_session
 
     async with async_session() as db:
         name = f"op-{uuid.uuid4().hex[:6]}"
         user = User(username=name, email=f"{name}@example.com", password_hash="x", role="admin", is_active=True)
         db.add(user)
-        await db.commit()
+        await db.flush()
+        await mint_test_session(db, user=user)
         return user
 
 
 def _actor(user):
     from backend.app.services import swap_source_declarations as decl
 
-    return decl.Actor(kind="user", user_id=user.id, label=user.username)
+    return decl.Actor(kind="user", user_id=user.id, label=user.username, capture=user._auth_capture)
 
 
 def _rights():
@@ -982,10 +984,12 @@ def _storage_guard_off() -> None:
 
 async def _key_for(farm, *, permissions: list[str]):
     """A non-admin owner whose group grants ``permissions``, and its API key limited to the farm's printer."""
+    from backend.app.core.auth_lifetime import capture_key
     from backend.app.core.database import async_session
     from backend.app.models.api_key import APIKey
     from backend.app.models.group import Group
     from backend.app.models.user import User
+    from backend.tests.auth_helpers import bind_test_key
 
     async with async_session() as db:
         name = f"key-{uuid.uuid4().hex[:6]}"
@@ -1005,9 +1009,9 @@ async def _key_for(farm, *, permissions: list[str]):
             can_read_status=True,
             can_manage_archives=True,
         )
-        db.add(key)
+        db.add(await bind_test_key(db, key, owner))
         await db.commit()
-        return SimpleNamespace(owner_id=owner.id, key_id=key.id, group_id=group.id)
+        return SimpleNamespace(owner_id=owner.id, key_id=key.id, group_id=group.id, capture=capture_key(key))
 
 
 async def _key_revoked_while_waiting(revocation: str) -> dict:
@@ -1021,7 +1025,7 @@ async def _key_revoked_while_waiting(revocation: str) -> dict:
     farm = await _archive_farm(user)
     full = ["archives:read_all", "archives:update_all", "queue:read_all", "queue:update_all"]
     key = await _key_for(farm, permissions=full)
-    actor = decl.Actor("api_key", key.owner_id, "review key", key.key_id)
+    actor = decl.Actor("api_key", key.owner_id, "review key", key.key_id, capture=key.capture)
     listing = await jobs.candidates("archive", farm.archive_id, actor=actor, rights=_rights(), job_rights=_job_rights())
     picked = [jobs.JobRef(entry["kind"], entry["id"], entry["revision"]) for entry in listing["jobs"]]
 
@@ -1209,14 +1213,16 @@ async def scenario_one_operation_sent_twice() -> dict:
         "facts": await _facts(farm.jobs),
     }
 
-    # One operation id, two DIFFERENT archives: no guard is shared, so both pass their locked re-read of the
-    # operation and race to commit; the UNIQUE index decides.
+    # Different operators and archives leave both the account and archive guards independent.
+    # Both pass their locked re-read of the operation and race to commit; the UNIQUE index decides.
+    race_users = (user, await _user())
     sources = []
-    for _ in range(2):
+    for operator in race_users:
         path = _data_dir() / "archive" / f"race-{uuid.uuid4().hex[:6]}.gcode.3mf"
         _bytes(path, path.name)
-        source_id = await _archive(path, user)
-        sources.append((source_id, await decl.inspect("archive", source_id, actor=_actor(user), rights=_rights())))
+        source_id = await _archive(path, operator)
+        seen = await decl.inspect("archive", source_id, actor=_actor(operator), rights=_rights())
+        sources.append((operator, source_id, seen))
     real_fresh, both_locked = decl._fresh_rights, _barrier()
 
     async def locked_then_meet(*args, **kwargs):
@@ -1228,20 +1234,25 @@ async def scenario_one_operation_sent_twice() -> dict:
     operation = str(uuid.uuid4())
     try:
         outcomes = await asyncio.gather(
-            *(_declare_with("archive", source_id, seen, user, True, operation) for source_id, seen in sources)
+            *(
+                _declare_with("archive", source_id, seen, operator, True, operation)
+                for operator, source_id, seen in sources
+            )
         )
     finally:
         decl._fresh_rights = real_fresh
     out["declare_race"] = {
         "outcomes": sorted(outcomes),
         "lines": await _operation_lines(operation),
-        "origins": sorted([str((await _source_state("archive", source_id))["origin"]) for source_id, _ in sources]),
+        "origins": sorted([str((await _source_state("archive", source_id))["origin"]) for _, source_id, _ in sources]),
     }
 
-    farms = [await _archive_farm(user) for _ in range(2)]
+    farms = [await _archive_farm(operator) for operator in race_users]
     listings = [
-        await jobs.candidates("archive", f.archive_id, actor=_actor(user), rights=_rights(), job_rights=_job_rights())
-        for f in farms
+        await jobs.candidates(
+            "archive", f.archive_id, actor=_actor(operator), rights=_rights(), job_rights=_job_rights()
+        )
+        for f, operator in zip(farms, race_users, strict=True)
     ]
 
     async def rights_then_meet(*args, **kwargs):
@@ -1253,7 +1264,10 @@ async def scenario_one_operation_sent_twice() -> dict:
     operation = str(uuid.uuid4())
     try:
         outcomes = await asyncio.gather(
-            *(_refresh_with(f, user, listed, operation) for f, listed in zip(farms, listings, strict=True))
+            *(
+                _refresh_with(f, operator, listed, operation)
+                for f, operator, listed in zip(farms, race_users, listings, strict=True)
+            )
         )
     finally:
         jobs._fresh_job_rights = real_rights

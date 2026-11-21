@@ -72,7 +72,7 @@ describe('PWA assets', () => {
     const pushIcons = [...sw.matchAll(/(?:icon|badge): '(\/[^']+)'/g)].map((m) => m[1]);
     expect([cacheName, ...precache, ...pushIcons]).toMatchInlineSnapshot(`
       [
-        "bamdude-v4",
+        "bamdude-v5",
         "/",
         "/manifest.json",
         "/img/brand/favicon.ico",

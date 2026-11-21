@@ -124,7 +124,7 @@ def _age(scheduler, seconds: float, *, unseen_for: float = 0.0) -> None:
 
 def _scheduled_item(*, hours_ahead: float = 2) -> SimpleNamespace:
     when = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=hours_ahead)
-    return SimpleNamespace(queue_id=1, scheduled_time=when, manual_start=False)
+    return SimpleNamespace(queue_id=1, status="pending", scheduled_time=when, manual_start=False)
 
 
 class TestTheWait:

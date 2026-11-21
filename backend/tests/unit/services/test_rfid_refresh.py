@@ -161,7 +161,9 @@ class TestTheAnswerIsRead:
         with caplog.at_level("INFO", logger="backend.app.services.bambu_mqtt"):
             await _refresh(client, 0, 1, ("ams_get_rfid", "fail", "tray is busy"))
 
-        assert any("ams_get_rfid response" in r.message and "tray is busy" in r.message for r in caplog.records)
+        assert any(
+            "ams_get_rfid response" in r.getMessage() and "tray is busy" in r.getMessage() for r in caplog.records
+        )
 
 
 @pytest.mark.asyncio

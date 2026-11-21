@@ -932,6 +932,7 @@ class TestBlockForDryingBugFix(_DryingTestBase):
         # THAT exit stopping the cycle - the block-mode branch never ran.
         item = SimpleNamespace(
             queue_id=1,
+            status="pending",
             scheduled_time=_a_minute_ago(),
             manual_start=False,
             queue=SimpleNamespace(is_paused=False, status="idle"),
@@ -995,6 +996,7 @@ class TestBlockForDryingBugFix(_DryingTestBase):
         def due_row():
             return SimpleNamespace(
                 queue_id=1,
+                status="pending",
                 scheduled_time=_a_minute_ago(),
                 manual_start=False,
                 queue=SimpleNamespace(is_paused=False, status="idle"),

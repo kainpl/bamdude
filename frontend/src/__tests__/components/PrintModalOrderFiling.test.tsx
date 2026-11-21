@@ -208,7 +208,8 @@ describe('PrintModal — the order this print is filed under', () => {
 
     render(<PrintModal mode="add-to-queue" libraryFileId={5} archiveName="lamp.gcode.3mf" onClose={() => {}} />);
 
-    const field = (await screen.findByLabelText('Order')) as HTMLSelectElement;
+    // The first dialog in this file loads permissions and the candidates before mounting the field.
+    const field = (await screen.findByLabelText('Order', undefined, { timeout: 3000 })) as HTMLSelectElement;
     await waitFor(() => expect(field.value).toBe('4:9'));
 
     await user.click(screen.getByText('X1 Carbon'));

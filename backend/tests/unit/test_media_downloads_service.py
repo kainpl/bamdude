@@ -987,7 +987,12 @@ class TestTheOrderHoldsToTheSlot:
         try:
             await asyncio.sleep(0)
             gates[ready_first].set()
-            await asyncio.sleep(0.1)  # the other account's directories are still being made
+            ready_requests = [
+                request for account, request in zip(accounts, requests, strict=True) if account == ready_first
+            ]
+            await asyncio.gather(*ready_requests)
+            if ready_first == "A":
+                await asyncio.wait_for(full.wait(), 3)
             running = [j.capture.account_identity for j in runtime.jobs.values() if j.phase == md.PHASE_PREPARING]
             assert running == (["A", "A"] if ready_first == "A" else [])  # B waits behind A's admissions
             for gate in gates.values():

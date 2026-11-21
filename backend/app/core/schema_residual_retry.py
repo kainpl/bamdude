@@ -6,7 +6,7 @@ import logging
 from sqlalchemy import CheckConstraint, UniqueConstraint, inspect, text
 from sqlalchemy.schema import AddConstraint
 
-from backend.app.core.pg_schema_contract import canonical
+from backend.app.core.pg_schema_contract import canonical, index_definition
 from backend.app.core.schema_conform_repair import _check_sql, _duplicates, _sql, add_check
 from backend.app.core.schema_index_repair import manifest, quote
 from backend.app.core.schema_model_plan import expected_model_plan
@@ -43,6 +43,8 @@ async def _guard_state(conn, table, kind, target, expected):
             if collision is not None:
                 return "unknown"
         return "missing"
+    if kind == "indexes":
+        actual = index_definition(actual)
     if json.loads(json.dumps(actual, default=str)) != expected:
         return "unknown"
     if kind == "indexes":
@@ -99,6 +101,8 @@ async def retry_data_residuals(conn, metadata):
             and entry.get("contract") is None
         ):
             definition = False
+        if isinstance(definition, dict) and ".indexes." in key:
+            definition = index_definition(definition)
         if key not in expected or json.dumps(definition, sort_keys=True) != json.dumps(expected[key], sort_keys=True):
             logger.warning("Schema residual object contract changed; retained without mutation")
             continue
@@ -107,7 +111,7 @@ async def retry_data_residuals(conn, metadata):
         if table is None:
             continue
         if kind in ("unique", "check", "indexes", "foreign_keys"):
-            shape = await _guard_state(conn, name, kind, target, entry.get("definition"))
+            shape = await _guard_state(conn, name, kind, target, definition)
             if shape == "correct":
                 updated.pop(key)
                 continue
@@ -187,7 +191,7 @@ async def retry_data_residuals(conn, metadata):
         if repaired:
             if (
                 kind in ("unique", "check", "indexes", "foreign_keys")
-                and await _guard_state(conn, name, kind, target, entry.get("definition")) != "correct"
+                and await _guard_state(conn, name, kind, target, definition) != "correct"
             ):
                 raise SchemaRepairPending("unverified_residual_repair")
             updated.pop(key)

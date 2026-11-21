@@ -636,6 +636,8 @@ class TestACloneCarriesEveryPrintOption:
         # ⚠️ The lineage of the row that was promoted (m217). A clone is a new job, not a descendant of that
         # AutoQueue job: inheriting it would make an old connector receipt follow a print it never queued.
         "source_auto_identity",
+        # The original AutoQueue promotion proved this placement. A clone has its own placement.
+        "placement_basis",
         # The receipt of THIS row's return to AutoQueue (m226). A clone is a new job that was never
         # returned; carrying the mark would make it unrepeatable and count it as already returned.
         "returned_receipt_identity",
@@ -697,6 +699,7 @@ class TestACloneCarriesEveryPrintOption:
         assert clone.error_message is None
         assert clone.dispatch_attempts in (0, None), "a clone must not inherit a spent retry budget"
         assert clone.source_auto_item_id is None
+        assert clone.placement_basis is None
         assert clone.is_calibration in (False, None)
 
     def test_the_captured_bytes_travel_with_the_clone(self):

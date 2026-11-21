@@ -525,7 +525,7 @@ describe('ModelViewerModal', () => {
   describe('slicer split button', () => {
     it('shows both slicers in the dropdown when BamDude is the default slicer', async () => {
       server.use(
-        http.get('/api/v1/settings/', () => {
+        http.get('/api/v1/settings/ui-preferences', () => {
           return HttpResponse.json({ use_slicer_api: true });
         }),
         http.get('/api/v1/library/files/:id/plates', () => {
@@ -557,7 +557,7 @@ describe('ModelViewerModal', () => {
 
     it('opens the selected local slicer from the BamDude dropdown', async () => {
       server.use(
-        http.get('/api/v1/settings/', () => {
+        http.get('/api/v1/settings/ui-preferences', () => {
           return HttpResponse.json({ use_slicer_api: true });
         }),
         http.get('/api/v1/library/files/:id/plates', () => {
@@ -612,7 +612,7 @@ describe('ModelViewerModal', () => {
 
     it('offers Bambu Studio when the preferred desktop slicer is OrcaSlicer', async () => {
       server.use(
-        http.get('/api/v1/settings/', () => {
+        http.get('/api/v1/settings/ui-preferences', () => {
           return HttpResponse.json({ preferred_slicer: 'orcaslicer' });
         })
       );
@@ -657,7 +657,7 @@ describe('ModelViewerModal', () => {
     it('offers only OrcaSlicer beside the server slice for an STL', async () => {
       // Bambu Studio would refuse the STL over its link (upstream e2493132).
       server.use(
-        http.get('/api/v1/settings/', () => {
+        http.get('/api/v1/settings/ui-preferences', () => {
           return HttpResponse.json({ use_slicer_api: true });
         })
       );

@@ -97,7 +97,7 @@ function setupHandlers(
         totals: { weight_used: 42.5, cost: 3.25 },
       });
     }),
-    http.get('/api/v1/settings/', () => HttpResponse.json({ language: 'en', currency: 'USD' })),
+    http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({ language: 'en', currency: 'USD' })),
   );
 }
 
@@ -234,7 +234,7 @@ describe('SpoolUsageHistoryPanel — a renderer of a server-driven ledger', () =
 
   it('names a spool with the display-name template the rest of the page uses', async () => {
     server.use(
-      http.get('/api/v1/settings/', () =>
+      http.get('/api/v1/settings/ui-preferences', () =>
         HttpResponse.json({ language: 'en', currency: 'USD', spool_display_template: '{material} · {id}' }),
       ),
     );

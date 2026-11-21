@@ -439,7 +439,7 @@ class TestGitHubBackendRobustness:
             result = await self.backend.push_files(self.repo_url, self.token, self.branch, {"a.json": {}}, client)
 
         assert result["status"] == "success"
-        assert any("Re-entering push_files" in r.message for r in caplog.records)
+        assert any("Re-entering push_files" in r.getMessage() for r in caplog.records)
 
 
 class TestGiteaBackendApiBase:
@@ -894,7 +894,7 @@ class TestGiteaBackendPushFiles:
             result = await self.backend.push_files(self.repo_url, self.token, self.branch, {"a.json": {}}, client)
 
         assert result["status"] == "success"
-        assert any("Re-entering push_files" in r.message for r in caplog.records)
+        assert any("Re-entering push_files" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.asyncio
     async def test_creates_missing_branch_via_branches_api(self):

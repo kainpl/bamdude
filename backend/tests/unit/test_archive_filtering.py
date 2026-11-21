@@ -69,7 +69,7 @@ class TestCalibrationPrintFiltering:
                 mock_notif_send.assert_not_called()
 
         # Verify the skip was logged
-        info_messages = [r.message for r in capture_logs.records if r.levelno >= 20]
+        info_messages = [r.getMessage() for r in capture_logs.records if r.levelno >= 20]
         skip_msgs = [m for m in info_messages if "internal printer job" in str(m)]
         assert skip_msgs, "Should log that the internal printer job was skipped"
 
@@ -119,7 +119,7 @@ class TestCalibrationPrintFiltering:
 
                 await on_print_start(1, {"filename": path, "subtask_name": "test"})
 
-            skip_msgs = [r for r in capture_logs.records if "internal printer job" in str(r.message)]
+            skip_msgs = [r for r in capture_logs.records if "internal printer job" in str(r.getMessage())]
             assert skip_msgs, f"Path {path} should be skipped"
             capture_logs.clear()
 
@@ -178,7 +178,7 @@ class TestCalibrationPrintFiltering:
         decide.stop()
         record.stop()
         # Should NOT see "internal printer job" skip message
-        skip_msgs = [r for r in capture_logs.records if "internal printer job" in str(r.message)]
+        skip_msgs = [r for r in capture_logs.records if "internal printer job" in str(r.getMessage())]
         assert not skip_msgs, "User gcode should not be skipped"
 
 

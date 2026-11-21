@@ -7,6 +7,7 @@ import { api, type CsvImportPreview } from '../../api/client';
 vi.mock('../../api/client', () => ({
   // setAuthToken is pulled in by our shared test `render` util (../utils).
   setAuthToken: vi.fn(),
+  getAuthToken: vi.fn(() => null),
   api: {
     importSpoolsCsvPreview: vi.fn(),
     importSpoolsCsv: vi.fn(),

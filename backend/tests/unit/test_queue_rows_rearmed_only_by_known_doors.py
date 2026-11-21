@@ -29,6 +29,8 @@ KNOWN = {
     ("services/queue_auto_transfer.py", "apply"),
     # Re-arms only the AutoQueue ancestor; retains the old printer row and its plate gate.
     ("services/auto_queue_return.py", "return_ready"),
+    # A proven unsent return re-arms the AutoQueue ancestor only.
+    ("services/auto_queue_unsent_return.py", "_build_return"),
 }
 
 

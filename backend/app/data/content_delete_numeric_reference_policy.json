@@ -67,6 +67,26 @@
     "policy": "preserve immutable historical hint; never current authority without existing immutable execution/input proof",
     "nullable": false
   },
+  "auto_queue_unsent_returns.old_job_id": {
+    "policy": "preserve historical hint; resolve the receipt by immutable job identity",
+    "nullable": false
+  },
+  "auto_queue_unsent_returns.old_queue_id": {
+    "policy": "preserve historical hint; the receipt has no authority over the current queue",
+    "nullable": false
+  },
+  "auto_queue_unsent_returns.execution_archive_id": {
+    "policy": "preserve historical hint; resolve the archive by immutable execution identity",
+    "nullable": true
+  },
+  "auto_queue_unsent_returns.auto_item_id": {
+    "policy": "preserve historical hint; resolve the ancestor by immutable AutoQueue identity",
+    "nullable": false
+  },
+  "auto_queue_unsent_returns.printer_id": {
+    "policy": "preserve historical hint; resolve the printer by immutable connector identity",
+    "nullable": false
+  },
   "calibration_session.extruder_id": {
     "policy": "outside C parent set: hardware/protocol, spool/catalog, label, preset, provider, location, variant option or remote model identifier; existing owner unchanged",
     "nullable": false

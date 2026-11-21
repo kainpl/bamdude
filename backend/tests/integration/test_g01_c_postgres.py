@@ -89,6 +89,7 @@ async def test_sqlite_move_preserves_rollout_and_cannot_replay_delivery(
 
     from backend.app.core import database
     from backend.app.core.db_portable import import_sqlite_to_postgres
+    from backend.app.migrations import _ensure_migrations_table, _record_migration
     from backend.app.models.credential_rollout import CredentialRolloutEpisode
     from backend.app.models.user_notification import UserNotification
     from backend.app.services import credential_rollout as cr
@@ -98,10 +99,14 @@ async def test_sqlite_move_preserves_rollout_and_cannot_replay_delivery(
     sqlite = create_async_engine(f"sqlite+aiosqlite:///{path}")
     source = async_sessionmaker(sqlite, expire_on_commit=False)
     try:
-        async with sqlite.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
         with monkeypatch.context() as source_context:
+            source_context.setattr(settings, "database_url", str(sqlite.url))
             source_context.setattr(database, "async_session", source)
+            async with sqlite.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+                await schema.upgrade(conn)
+            await _ensure_migrations_table(sqlite)
+            await _record_migration(sqlite, schema.version, schema.name)
             async with source() as db:
                 user, episode = await seed(db)
                 identity, episode_id = user.account_identity, episode.id

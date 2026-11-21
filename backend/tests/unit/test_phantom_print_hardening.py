@@ -129,7 +129,7 @@ class TestMultiplePrintingQueueItemsWarning:
 
         assert queue_item is not None
         assert queue_item.id == 1
-        bug_warnings = [r for r in caplog.records if "BUG: Multiple queue items" in r.message]
+        bug_warnings = [r for r in caplog.records if "BUG: Multiple queue items" in r.getMessage()]
         assert len(bug_warnings) == 0
 
     def test_multiple_items_warns_and_returns_first(self, caplog):
@@ -156,12 +156,12 @@ class TestMultiplePrintingQueueItemsWarning:
 
         assert queue_item is not None
         assert queue_item.id == 1  # First item is used
-        bug_warnings = [r for r in caplog.records if "BUG: Multiple queue items" in r.message]
+        bug_warnings = [r for r in caplog.records if "BUG: Multiple queue items" in r.getMessage()]
         assert len(bug_warnings) == 1
-        assert "printer 1" in bug_warnings[0].message
+        assert "printer 1" in bug_warnings[0].getMessage()
         # Warning should include item details
-        assert "10" in bug_warnings[0].message  # archive_id of item 1
-        assert "20" in bug_warnings[0].message  # archive_id of item 2
+        assert "10" in bug_warnings[0].getMessage()  # archive_id of item 1
+        assert "20" in bug_warnings[0].getMessage()  # archive_id of item 2
 
     def test_empty_list_returns_none_no_warning(self, caplog):
         """Verify None is returned and no warning when no items exist."""
@@ -179,7 +179,7 @@ class TestMultiplePrintingQueueItemsWarning:
             queue_item = printing_items[0] if printing_items else None
 
         assert queue_item is None
-        bug_warnings = [r for r in caplog.records if "BUG: Multiple queue items" in r.message]
+        bug_warnings = [r for r in caplog.records if "BUG: Multiple queue items" in r.getMessage()]
         assert len(bug_warnings) == 0
 
     def test_three_items_warns_with_all_details(self, caplog):
@@ -206,9 +206,9 @@ class TestMultiplePrintingQueueItemsWarning:
             queue_item = printing_items[0] if printing_items else None
 
         assert queue_item.id == 1
-        bug_warnings = [r for r in caplog.records if "BUG: Multiple queue items" in r.message]
+        bug_warnings = [r for r in caplog.records if "BUG: Multiple queue items" in r.getMessage()]
         assert len(bug_warnings) == 1
-        assert "printer 7" in bug_warnings[0].message
+        assert "printer 7" in bug_warnings[0].getMessage()
 
 
 class TestBusyPrinterSeedingFromPrintingItems:

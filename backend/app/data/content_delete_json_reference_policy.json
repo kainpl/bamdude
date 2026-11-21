@@ -269,6 +269,11 @@
     "column": "failed_return_proof",
     "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
   },
+  "auto_queue_items.unsent_return_proof": {
+    "table": "auto_queue_items",
+    "column": "unsent_return_proof",
+    "policy": "Preserve the unsent return proof and its immutable receipt, job, execution and printer identities. No numeric parent IDs to detach."
+  },
   "auto_queue_items.auto_eject_settings": {
     "table": "auto_queue_items",
     "column": "auto_eject_settings",

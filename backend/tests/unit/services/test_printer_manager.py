@@ -513,9 +513,9 @@ class TestPrinterManager:
         with caplog.at_level(logging.INFO, logger="backend.app.services.printer_manager"):
             manager.start_print(1, "benchy.3mf")
 
-        print_cmd_logs = [r for r in caplog.records if "PRINT COMMAND" in r.message]
+        print_cmd_logs = [r for r in caplog.records if "PRINT COMMAND" in r.getMessage()]
         assert len(print_cmd_logs) == 1
-        log_msg = print_cmd_logs[0].message
+        log_msg = print_cmd_logs[0].getMessage()
         assert "printer=1" in log_msg
         assert "file=benchy.3mf" in log_msg
         assert "caller=" in log_msg
@@ -526,7 +526,7 @@ class TestPrinterManager:
             result = manager.start_print(999, "ghost.3mf")
 
         assert result is False
-        print_cmd_logs = [r for r in caplog.records if "PRINT COMMAND" in r.message]
+        print_cmd_logs = [r for r in caplog.records if "PRINT COMMAND" in r.getMessage()]
         assert len(print_cmd_logs) == 1
 
     # ========================================================================

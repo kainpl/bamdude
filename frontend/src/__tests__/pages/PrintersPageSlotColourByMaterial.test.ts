@@ -12,15 +12,15 @@ const flat = (s: string) => s.replace(/\s+/g, ' ');
 describe('slot colour names ask with the material', () => {
   it('on the three slot kinds of the printer card', () => {
     const src = flat(printersPage);
-    expect(src).toContain("getColorName((trayActual?.tray_color ?? tray.tray_color) || '', tray.tray_sub_brands)");
-    expect(src).toContain("getColorName((htTrayActual?.tray_color ?? tray.tray_color) || '', tray.tray_sub_brands)");
-    expect(src).toContain("getColorName(extTray.tray_color || '', extTray.tray_sub_brands)");
+    expect(src).toContain("getColorName((trayActual?.tray_color ?? tray.tray_color) || '', tray.tray_sub_brands, trayActual?.tray_info_idx ?? tray.tray_info_idx)");
+    expect(src).toContain("getColorName((htTrayActual?.tray_color ?? tray.tray_color) || '', tray.tray_sub_brands, htTrayActual?.tray_info_idx ?? tray.tray_info_idx)");
+    expect(src).toContain("getColorName(extTray.tray_color || '', extTray.tray_sub_brands, extTray.tray_info_idx)");
   });
 
   it('on the loaded filaments the print dialog matches', () => {
     const src = flat(filamentMapping);
-    expect(src).toContain('getColorName(color, tray.tray_sub_brands)');
-    expect(src).toContain('getColorName(color, extTray.tray_sub_brands)');
+    expect(src).toContain('getColorName(color, tray.tray_sub_brands, actual?.tray_info_idx ?? tray.tray_info_idx)');
+    expect(src).toContain('getColorName(color, extTray.tray_sub_brands, extTray.tray_info_idx)');
   });
 
   it('never passes a synthesized Spoolman subtype as the assigned spool\'s colour', () => {

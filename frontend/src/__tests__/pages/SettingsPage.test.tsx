@@ -1096,9 +1096,10 @@ describe('SettingsPage', () => {
     const user = userEvent.setup();
     render(<SettingsPage />);
     await user.click(await screen.findByText('Printing'));
-    const checkbox = await screen.findByRole('checkbox', { name: /Automatically return failed AutoQueue jobs/ });
+    const checkbox = await screen.findByRole('checkbox', { name: /^Automatically return failed AutoQueue prints/ });
     expect(checkbox).not.toBeChecked();
-    expect(screen.getByText(/Failures recovered only by reconciliation after a disconnect or restart/)).toBeVisible();
+    expect(checkbox).toHaveAccessibleDescription(/up to twice after a confirmed print failure and a two-minute cooldown/);
+    expect(checkbox).toHaveAccessibleDescription(/job refused before sending can return immediately under its own limit/);
     await user.click(checkbox);
     await waitFor(() => expect(receivedBody).toMatchObject({ auto_queue_return_failed: true }));
   });

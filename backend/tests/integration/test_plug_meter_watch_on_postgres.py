@@ -20,6 +20,7 @@ from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.app.core.config import settings
+from backend.app.core.credential_config import initialize_credential_config_anchor
 from backend.app.core.database import Base, _strip_tz_from_params, import_all_models
 from backend.tests.integration.test_plug_meter_watch import *  # noqa: F403
 from backend.tests.integration.test_plug_meter_watch import _clean_buffer  # noqa: F401 -- autouse, not star-exported
@@ -52,6 +53,7 @@ async def test_engine(request, monkeypatch):
     async with engine.begin() as connection:
         await connection.execute(text(f'CREATE SCHEMA "{schema}"'))
         await connection.run_sync(Base.metadata.create_all)
+        await initialize_credential_config_anchor(connection)
     monkeypatch.setattr("backend.app.core.database.async_session", async_sessionmaker(engine, expire_on_commit=False))
     yield engine
     async with engine.begin() as connection:

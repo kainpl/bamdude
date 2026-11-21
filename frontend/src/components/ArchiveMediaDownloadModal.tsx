@@ -17,6 +17,7 @@ import { clickSelection } from '../utils/rangeSelection';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
 import { Modal } from './Modal';
+import { Select } from './Select';
 import { SelectionBox } from './SelectionBox';
 import { DownloadCloseChoice } from './downloads/DownloadCloseChoice';
 import { DownloadJobPanel } from './downloads/DownloadJobPanel';
@@ -293,17 +294,13 @@ export function ArchiveMediaDownloadModal({ archiveId, archiveName, onClose }: A
                 </label>
                 <label className="flex flex-col gap-1">
                   <span className="text-xs text-bambu-gray">{t('archives.media.marginLabel')}</span>
-                  <select
-                    value={margin}
-                    onChange={(event) => setMargin(Number(event.target.value))}
-                    className="rounded-md border border-bambu-dark-tertiary bg-bambu-dark px-2 py-1 text-white"
-                  >
+                  <Select size="sm" value={margin} onChange={(event) => setMargin(Number(event.target.value))}>
                     {MARGINS.map((minutes) => (
                       <option key={minutes} value={minutes}>
                         {t('archives.media.marginMinutes', { count: minutes })}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </label>
                 <Button
                   variant="secondary"

@@ -98,21 +98,19 @@ describe('auto-drying sustained-humidity wait', () => {
     expect(minutesInput()).toHaveValue(15);
   });
 
-  it('clamps the minutes to 5..240 when the field is left, not while typing', async () => {
+  it.each([
+    [2, 5],
+    [999, 240],
+  ])('clamps %i minutes to %i when the field loses focus', async (typed, expected) => {
     await openFilamentTabWith({});
     const input = minutesInput()!;
 
     await userEvent.clear(input);
-    await userEvent.type(input, '2');
-    expect(input).toHaveValue(2);
+    await userEvent.type(input, String(typed));
+    expect(input).toHaveValue(typed);
     await userEvent.tab();
-    await waitFor(() => expect(saved?.auto_drying_sustained_minutes).toBe(5), { timeout: 3000 });
-    expect(minutesInput()).toHaveValue(5);
-
-    await userEvent.clear(minutesInput()!);
-    await userEvent.type(minutesInput()!, '999');
-    await userEvent.tab();
-    await waitFor(() => expect(saved?.auto_drying_sustained_minutes).toBe(240), { timeout: 3000 });
+    await waitFor(() => expect(saved?.auto_drying_sustained_minutes).toBe(expected), { timeout: 3000 });
+    expect(minutesInput()).toHaveValue(expected);
   });
 
   it('an emptied field goes back to the saved minutes', async () => {

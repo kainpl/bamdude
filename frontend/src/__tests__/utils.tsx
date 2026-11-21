@@ -52,7 +52,8 @@ function AllProviders({ children }: AllProvidersProps) {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <ThemeProvider>
+        {/* Tests that exercise server theme synchronization mount their own provider. */}
+        <ThemeProvider syncServer={false}>
           <AuthProvider>
             {/* In the app the floating camera window is the shell's (Layout).
                 A page rendered on its own gets the same owner here, so its

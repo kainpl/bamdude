@@ -94,7 +94,13 @@ async def _farm(*, current: str = "run") -> Farm:
         await db.flush()
         queue.current_item_id = item.id if current == "run" else None
         await db.commit()
-        return Farm(printer_id=printer.id, queue_id=queue.id, archive_id=archive.id, item_id=item.id)
+        return Farm(
+            printer_id=printer.id,
+            queue_id=queue.id,
+            archive_id=archive.id,
+            archive_identity=archive.recovery_identity,
+            item_id=item.id,
+        )
 
 
 def _count_effects(farm: Farm) -> None:
@@ -489,7 +495,11 @@ async def scenario_no_deadlock() -> dict:
     )
     await asyncio.wait_for(in_claim.wait(), 20)
     writer = asyncio.ensure_future(
-        _outcome(main._record_terminal_effect_stage(farm.archive_id, "finish_photo", "attempted"))
+        _outcome(
+            main._record_terminal_effect_stage(
+                farm.archive_id, "finish_photo", "attempted", expected_identity=farm.archive_identity
+            )
+        )
     )
     door = asyncio.ensure_future(_outcome(admission()))
     waited = 0

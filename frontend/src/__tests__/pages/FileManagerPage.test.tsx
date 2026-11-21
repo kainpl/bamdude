@@ -132,7 +132,7 @@ describe('FileManagerPage', () => {
       http.get('/api/v1/library/stats', () => {
         return HttpResponse.json(mockStats);
       }),
-      http.get('/api/v1/settings/', () => {
+      http.get('/api/v1/settings/ui-preferences', () => {
         return HttpResponse.json({
           check_updates: false,
           check_printer_firmware: false,
@@ -184,7 +184,7 @@ describe('FileManagerPage', () => {
     it('requests include_root=false and shows nested files when the recursive setting is on', async () => {
       let capturedIncludeRoot: string | null = null;
       server.use(
-        http.get('/api/v1/settings/', () =>
+        http.get('/api/v1/settings/ui-preferences', () =>
           HttpResponse.json({
             check_updates: false,
             check_printer_firmware: false,
@@ -1251,7 +1251,7 @@ describe('FileManagerPage', () => {
 
     it('hands the file to the desktop slicer when the sidecar is off', async () => {
       // OrcaSlicer takes an STL over its link; Bambu Studio would not.
-      server.use(http.get('/api/v1/settings/', () => HttpResponse.json({ preferred_slicer: 'orcaslicer' })));
+      server.use(http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({ preferred_slicer: 'orcaslicer' })));
       const user = userEvent.setup();
       render(<FileManagerPage />);
 
@@ -1284,7 +1284,7 @@ describe('FileManagerPage', () => {
     });
 
     it('offers the server slice when the sidecar is on', async () => {
-      server.use(http.get('/api/v1/settings/', () => HttpResponse.json({ use_slicer_api: true })));
+      server.use(http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({ use_slicer_api: true })));
       const user = userEvent.setup();
       render(<FileManagerPage />);
 

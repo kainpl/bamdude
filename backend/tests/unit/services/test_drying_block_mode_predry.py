@@ -100,6 +100,7 @@ def _row(
         when = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=hours)
     return SimpleNamespace(
         queue_id=1,
+        status="pending",
         scheduled_time=when,
         manual_start=manual_start,
         queue=SimpleNamespace(is_paused=is_paused, status=status),

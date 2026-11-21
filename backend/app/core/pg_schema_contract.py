@@ -80,6 +80,19 @@ def snapshot(sync, namespace=None):
     return out
 
 
+def index_definition(index):
+    """Drop SQLAlchemy 2.0's duplicate INCLUDE field when both lists agree."""
+    options = index.get("dialect_options", {})
+    if (
+        "include_columns" in index
+        and isinstance(options, dict)
+        and "postgresql_include" in options
+        and index["include_columns"] == options["postgresql_include"]
+    ):
+        return {key: value for key, value in index.items() if key != "include_columns"}
+    return index
+
+
 def canonical(snapshot):
     out = {}
     for table, schema in snapshot["schema"].items():
@@ -93,6 +106,8 @@ def canonical(snapshot):
         out[f"{table}.primary_key"] = schema["pk"]
         for field in ("foreign_keys", "unique", "check", "indexes"):
             for obj in schema[field]:
+                if field == "indexes":
+                    obj = index_definition(obj)
                 key = obj.get("name")
                 if not key:
                     key = "unnamed:" + json.dumps(obj, sort_keys=True)
