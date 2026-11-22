@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import anyio
 import pytest
 from fastapi import HTTPException, UploadFile
 
@@ -213,6 +214,109 @@ async def test_staging_cleanup_stays_off_loop_and_owns_the_lock_until_finished(t
     assert all(not path.exists() for path in output_zips)
     async with backup_files.exclusive_operation():
         pass
+
+
+@pytest.mark.parametrize("asgi_spec", ["2.0", "2.4"])
+@pytest.mark.parametrize(
+    ("mode", "status"),
+    [
+        ("success", 200),
+        ("range", 206),
+        ("invalid-range", 416),
+        ("send-error", 200),
+        ("cancel", 200),
+        ("cancel-again-in-close", 200),
+        ("cancel-scope", 200),
+    ],
+)
+async def test_backup_response_releases_temporary_zip(tmp_path, monkeypatch, mode, status, asgi_spec):
+    from backend.app.core import db_portable
+
+    async def dump(_engine, _metadata, path):
+        with closing(sqlite3.connect(path)) as db:
+            db.execute("CREATE TABLE fixture(id INTEGER)")
+
+    monkeypatch.setattr(db_portable, "dump_to_sqlite", dump)
+    monkeypatch.setattr(route, "_stage_files_and_pictures", AsyncMock())
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "empty"))
+    response = await route.create_backup(db=None, _=None)
+    path = Path(response.path)
+    with zipfile.ZipFile(path) as archive:
+        assert "bamdude.db" in archive.namelist()
+
+    headers = {
+        "range": [(b"range", b"bytes=0-3")],
+        "invalid-range": [(b"range", b"bytes=999999-")],
+    }.get(mode, [])
+    scope = {"type": "http", "method": "GET", "headers": headers, "asgi": {"spec_version": asgi_spec}}
+    if mode == "success":
+        scope["extensions"] = {"http.response.pathsend": {}}
+    messages = []
+    sending_body = asyncio.Event()
+    closing_reader = asyncio.Event()
+    finish_close = asyncio.Event()
+    cancel_task = mode in {"cancel", "cancel-again-in-close"}
+
+    if mode == "cancel-again-in-close":
+        aclose = anyio.AsyncFile.aclose
+
+        async def pause_close(reader):
+            closing_reader.set()
+            await finish_close.wait()
+            await aclose(reader)
+
+        monkeypatch.setattr(anyio.AsyncFile, "aclose", pause_close)
+
+    async def receive():
+        await anyio.sleep_forever()
+
+    async def send(message):
+        assert path.is_file()
+        messages.append(message)
+        if message["type"] == "http.response.body":
+            if mode == "send-error":
+                raise OSError("closed transport")
+            if cancel_task:
+                sending_body.set()
+                await asyncio.Future()
+            if mode == "cancel-scope":
+                cancel_scope.cancel()
+                await anyio.sleep_forever()
+
+    with anyio.CancelScope() as cancel_scope:
+        if cancel_task:
+            task = asyncio.create_task(response(scope, receive, send))
+            try:
+                await asyncio.wait_for(sending_body.wait(), 5)
+                task.cancel()
+                if mode == "cancel-again-in-close":
+                    await asyncio.wait_for(closing_reader.wait(), 5)
+                    task.cancel()
+                    await asyncio.sleep(0)
+                    assert path.is_file()
+                    assert not task.done()
+            finally:
+                finish_close.set()
+                if not task.cancelling():
+                    task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+        elif mode == "send-error":
+            with pytest.raises(OSError, match="closed transport"):
+                await response(scope, receive, send)
+        else:
+            await response(scope, receive, send)
+
+    assert not path.exists()
+    assert messages[0]["type"] == "http.response.start"
+    assert messages[0]["status"] == status
+    if status in (200, 206):
+        assert dict(messages[0]["headers"])[b"x-bamdude-schema-residual-objects"] == b"0"
+        assert messages[1]["type"] == "http.response.body"
+        assert messages[1]["body"].startswith(b"PK\x03\x04")
+    if mode == "range":
+        assert messages[1]["body"] == b"PK\x03\x04"
 
 
 async def test_part_render_refusal_keeps_vps_retired_until_restart(tmp_path, monkeypatch):

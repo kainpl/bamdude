@@ -7,11 +7,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
+from anyio import CancelScope
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.types import Message, Receive, Scope, Send
 
 from backend.app.core import query_timing
 from backend.app.core.auth import (
@@ -1301,6 +1303,64 @@ async def _create_backup_zip(output_path: Path | None) -> tuple[Path, str]:
         raise
 
 
+async def _remove_backup_download(path: Path) -> None:
+    from backend.app.core.db_portable import _file_work
+
+    with CancelScope(shield=True):
+        try:
+            await _file_work(path.unlink, missing_ok=True)
+        except OSError:
+            logger.exception("Could not remove the temporary backup download")
+
+
+class _BackupDeliveryStopped(Exception):
+    """Unwind FileResponse's disconnect listener as well as its sender."""
+
+
+class _BackupZipResponse(FileResponse):
+    """Own the temporary ZIP until its reader has closed."""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        extensions = scope.get("extensions", {})
+        if "http.response.pathsend" in extensions:
+            # A server may defer reading a delegated path until after send returns.
+            local_extensions = {key: value for key, value in extensions.items() if key != "http.response.pathsend"}
+            scope = {**scope, "extensions": local_extensions}
+
+        stopping = False
+        send_scope: CancelScope | None = None
+
+        async def send_chunk(message: Message) -> None:
+            nonlocal send_scope
+            if stopping:
+                raise _BackupDeliveryStopped
+            with CancelScope() as active_send:
+                send_scope = active_send
+                await send(message)
+            if active_send.cancel_called:
+                raise _BackupDeliveryStopped
+
+        # Interrupt the transport only. A cancelled open, read or close can
+        # still hold a file handle in a worker thread when Windows tries unlink.
+        delivery = asyncio.create_task(super().__call__(scope, receive, send_chunk))
+        try:
+            await asyncio.shield(delivery)
+        except asyncio.CancelledError:
+            stopping = True
+            if send_scope is not None:
+                send_scope.cancel()
+            with CancelScope(shield=True):
+                joined = asyncio.gather(delivery, return_exceptions=True)
+                while not joined.done():
+                    try:
+                        await asyncio.shield(joined)
+                    except asyncio.CancelledError:
+                        pass
+            raise
+        finally:
+            await _remove_backup_download(Path(self.path))
+
+
 @router.get("/backup", dependencies=[RequireAdmin()])
 async def create_backup(
     db: AsyncSession = Depends(get_db),
@@ -1311,35 +1371,23 @@ async def create_backup(
     Streams from a temp file rather than loading the whole ZIP into memory,
     so multi-gigabyte backups don't OOM the process.
     """
-    import os as _os
-
-    from fastapi import BackgroundTasks
-
+    from backend.app.core.db_portable import _file_work
+    from backend.app.core.schema_portable_residuals import zip_warning_count
     from backend.app.services.backup_files import BackupBusyError
 
     try:
         zip_file, filename = await create_backup_zip()
-
-        # Schedule cleanup once the response has been sent
-        bg = BackgroundTasks()
-        bg.add_task(lambda p=zip_file: _os.unlink(p) if p.exists() else None)
-
-        from backend.app.core.db_portable import _file_work
-        from backend.app.core.schema_portable_residuals import zip_warning_count
-
         try:
             count = await _file_work(zip_warning_count, zip_file)
+            return _BackupZipResponse(
+                path=zip_file,
+                media_type="application/zip",
+                filename=filename,
+                headers={"X-BamDude-Schema-Residual-Objects": str(count)},
+            )
         except BaseException:
-            await _file_work(zip_file.unlink, missing_ok=True)
+            await _remove_backup_download(zip_file)
             raise
-
-        return FileResponse(
-            path=str(zip_file),
-            media_type="application/zip",
-            filename=filename,
-            background=bg,
-            headers={"X-BamDude-Schema-Residual-Objects": str(count)},
-        )
     except BackupBusyError as exc:
         raise HTTPException(409, "A backup or restore is already running") from exc
     except Exception as e:
