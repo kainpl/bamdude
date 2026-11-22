@@ -95,7 +95,7 @@ describe('long layout search', () => {
   it('offers the visible opt-in and sends any-angle search explicitly', async () => {
     open();
     const dialog = await screen.findByRole('dialog', { name: 'Assemble project' });
-    const checkbox = within(dialog).getByRole('checkbox', { name: 'Search for a denser layout — up to 5 minutes' });
+    const checkbox = await within(dialog).findByRole('checkbox', { name: 'Search for a denser layout — up to 5 minutes' });
     expect(checkbox).not.toBeChecked();
     fireEvent.click(checkbox);
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Assemble' })).toBeEnabled());
