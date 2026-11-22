@@ -1110,6 +1110,10 @@ def _spool_groups_subquery(filters: list):
             member_ids.label("member_ids"),
             func.sum(remaining).label("remaining_total"),
             func.sum(Spool.weight_used).label("weight_used_total"),
+            func.sum(Spool.core_weight).label("core_weight_total"),
+            case(
+                (func.count(Spool.last_scale_weight) == func.count(), func.sum(Spool.last_scale_weight)),
+            ).label("scale_weight_total"),
         )
         .where(*filters)
         .group_by(*keys.values(), _spool_group_single_id_expr())
@@ -1207,6 +1211,8 @@ async def list_spool_groups(
             sub.c.member_ids,
             sub.c.remaining_total,
             sub.c.weight_used_total,
+            sub.c.core_weight_total,
+            sub.c.scale_weight_total,
         )
         .join(sub, Spool.id == sub.c.rep_id)
         .options(selectinload(Spool.k_profiles))
@@ -1232,6 +1238,8 @@ async def list_spool_groups(
             "ids": _parse_member_ids(row.member_ids),
             "remaining_total": float(row.remaining_total or 0),
             "weight_used_total": float(row.weight_used_total or 0),
+            "core_weight_total": int(row.core_weight_total or 0),
+            "scale_weight_total": row.scale_weight_total,
             "representative": row.Spool,
         }
         for row in rows

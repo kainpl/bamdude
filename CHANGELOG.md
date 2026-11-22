@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- **Grouped spool weights use all measured members.** Weight Check compares the group's measured and calculated totals when every spool has a scale reading. Expand the group to inspect individual readings.
+- **Git backup can start with an empty GitHub repository.** BamDude adds a small initialization marker to its default branch and saves the backup files to the configured branch.
+- **Failed and cancelled prints can keep the printer's timelapse.** When the printer was recording, BamDude uses the same archive and storage checks that protect the scan after a successful print.
+
 - **AutoQueue shows filament types and exact colours for the channels the selected plate uses.** With **Drain the emptiest spool first** enabled, the lower known filament level breaks a tie between otherwise equally ranked printers.
 - **Queue Job Added notifications follow the operator's action.** A committed add or repeat announces once for the copies added together. Later automatic assignment or return leaves that notification alone.
 - **Archives show when dispatch started with a different filament colour.** The edit window lists the requested and loaded colours for each changed channel after the printer confirms the start. A change to that evidence during preparation defers the start.

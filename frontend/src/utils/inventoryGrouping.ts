@@ -11,15 +11,19 @@ export function aggregateGroupSpool(spools: InventorySpool[]): InventorySpool {
   let labelWeight = 0;
   let weightUsed = 0;
   let coreWeight = 0;
+  let scaleWeight: number | null = 0;
   for (const s of spools) {
     labelWeight += s.label_weight;
     weightUsed += s.weight_used;
     coreWeight += s.core_weight;
+    scaleWeight = scaleWeight == null || s.last_scale_weight == null ? null : scaleWeight + s.last_scale_weight;
   }
   return {
     ...base,
     label_weight: labelWeight,
     weight_used: weightUsed,
     core_weight: coreWeight,
+    last_scale_weight: scaleWeight,
+    last_weighed_at: null,
   };
 }

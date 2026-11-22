@@ -132,7 +132,7 @@ class GitHubBackend(GitProviderBackend):
 
             ref_response = await client.get(f"{api_base}/repos/{owner}/{repo}/git/refs/heads/{branch}", headers=headers)
 
-            if ref_response.status_code == 404:
+            if ref_response.status_code == 404 or (_allow_branch_create and self._is_empty_repository(ref_response)):
                 if not _allow_branch_create:
                     return {
                         "status": "failed",
@@ -289,6 +289,20 @@ class GitHubBackend(GitProviderBackend):
             logger.exception("push_files failed for %s branch=%s", repo_url, branch)
             return {"status": "failed", "message": str(e), "error": str(e)}
 
+    @staticmethod
+    def _is_empty_repository(response: httpx.Response) -> bool:
+        if response.status_code != 409:
+            return False
+        try:
+            body = response.json()
+        except ValueError:
+            return False
+        message = body.get("message") if isinstance(body, dict) else None
+        return isinstance(message, str) and message.strip().casefold().removesuffix(".") in {
+            "git repository is empty",
+            "repository is empty",
+        }
+
     async def _create_branch_and_push(
         self,
         client: httpx.AsyncClient,
@@ -319,24 +333,51 @@ class GitHubBackend(GitProviderBackend):
             ref_response = await client.get(
                 f"{api_base}/repos/{owner}/{repo}/git/refs/heads/{default_branch}", headers=headers
             )
-            if ref_response.status_code != 200:
+            if self._is_empty_repository(ref_response):
+                if not files:
+                    return {
+                        "status": "skipped",
+                        "message": "No changes to commit",
+                        "commit_sha": None,
+                        "files_changed": 0,
+                    }
+                # Git Data cannot create the first ref. Contents initializes the default
+                # branch with a marker, so only the configured branch gets backup data.
+                seed = await client.put(
+                    f"{api_base}/repos/{owner}/{repo}/contents/.bamdude-backup",
+                    headers=headers,
+                    json={
+                        "message": "Initialize BamDude backup repository",
+                        "content": base64.b64encode(b"BamDude Git backup repository.\n").decode("ascii"),
+                    },
+                )
+                if seed.status_code != 201:
+                    msg = f"Failed to initialize empty repository (HTTP {seed.status_code}): {self._truncated_response_text(seed)}"
+                    return {"status": "failed", "message": msg}
+                base_sha, err = self._read_sha(seed, "commit", "sha")
+            elif ref_response.status_code == 404:
                 return await self._create_initial_commit(client, headers, api_base, owner, repo, branch, files)
+            elif ref_response.status_code != 200:
+                msg = f"Failed to get default branch ref (HTTP {ref_response.status_code}): {self._truncated_response_text(ref_response)}"
+                return {"status": "failed", "message": msg}
+            else:
+                base_sha, err = self._read_sha(ref_response, "object", "sha")
 
-            base_sha, err = self._read_sha(ref_response, "object", "sha")
             if err:
-                msg = f"Malformed default-branch ref response ({err}): {self._truncated_response_text(ref_response)}"
+                msg = f"Cannot establish the default branch commit ({err})"
                 logger.warning("_create_branch_and_push %s/%s: %s", owner, repo, msg)
                 return {"status": "failed", "message": msg}
 
-            create_ref = await client.post(
-                f"{api_base}/repos/{owner}/{repo}/git/refs",
-                headers=headers,
-                json={"ref": f"refs/heads/{branch}", "sha": base_sha},
-            )
-            if create_ref.status_code != 201:
-                msg = f"Failed to create branch '{branch}' (HTTP {create_ref.status_code}): {self._truncated_response_text(create_ref)}"
-                logger.warning("_create_branch_and_push %s/%s: %s", owner, repo, msg)
-                return {"status": "failed", "message": msg}
+            if branch != default_branch:
+                create_ref = await client.post(
+                    f"{api_base}/repos/{owner}/{repo}/git/refs",
+                    headers=headers,
+                    json={"ref": f"refs/heads/{branch}", "sha": base_sha},
+                )
+                if create_ref.status_code != 201:
+                    msg = f"Failed to create branch '{branch}' (HTTP {create_ref.status_code}): {self._truncated_response_text(create_ref)}"
+                    logger.warning("_create_branch_and_push %s/%s: %s", owner, repo, msg)
+                    return {"status": "failed", "message": msg}
 
             logger.info("Re-entering push_files after branch create %s/%s -> %s", owner, repo, branch)
             return await self.push_files(repo_url, token, branch, files, client, _allow_branch_create=False)

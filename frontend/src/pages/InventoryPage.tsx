@@ -91,6 +91,8 @@ type DisplayItem =
       spools?: InventorySpool[];
       remainingTotal?: number;
       weightUsedTotal?: number;
+      coreWeightTotal?: number;
+      scaleWeightTotal?: number | null;
     };
 
 /**
@@ -618,12 +620,12 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
       </span>
     );
   },
-  weight_check: ({ spool, onSyncWeight }) => {
+  weight_check: ({ spool, remaining, onSyncWeight }) => {
     const scaleWeight = spool.last_scale_weight;
     if (scaleWeight == null) return <span className="text-sm text-bambu-gray/50" title="No scale measurement">-</span>;
 
     const coreWeight = spool.core_weight || 0;
-    const calculatedWeight = Math.max(0, spool.label_weight - spool.weight_used) + coreWeight;
+    const calculatedWeight = remaining + coreWeight;
 
     // Edge case: scale < core_weight means spool is empty or not on scale - treat as match
     let difference: number;
@@ -2104,6 +2106,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
           representative: g.representative,
           remainingTotal: g.remaining_total,
           weightUsedTotal: g.weight_used_total,
+          coreWeightTotal: g.core_weight_total,
+          scaleWeightTotal: g.scale_weight_total,
         };
       });
     }
@@ -3776,17 +3780,17 @@ function SpoolTableGroupContainer({
 }) {
   const members = useGroupMembers(item.ids, item.spools, isExpanded);
   const sortedMembers = useMemo(() => members ? [...members].sort(compareSpools) : undefined, [members, compareSpools]);
-  // label_weight is a key field, so count × representative is exact; the used
-  // weight is the server's sum (members may be started), and core_weight is
-  // the one approximation left (not a key field — divergence within a group
-  // is rare and only shifts the net figure).
+  // Label weight is a group key. The other weights are sums over the same
+  // members, and the scale total is available only with complete readings.
   const headerSpool = item.spools
     ? aggregateGroupSpool(item.spools)
     : {
         ...item.representative,
         label_weight: item.representative.label_weight * item.ids.length,
         weight_used: item.weightUsedTotal ?? item.representative.weight_used * item.ids.length,
-        core_weight: item.representative.core_weight * item.ids.length,
+        core_weight: item.coreWeightTotal ?? item.representative.core_weight * item.ids.length,
+        last_scale_weight: item.scaleWeightTotal ?? null,
+        last_weighed_at: null,
       };
   const remaining = item.spools
     ? item.spools.reduce((sum, s) => sum + Math.max(0, s.label_weight - s.weight_used), 0)

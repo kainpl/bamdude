@@ -5,6 +5,7 @@ import hashlib
 import json
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from backend.app.services.git_providers.factory import get_provider_backend
@@ -207,6 +208,105 @@ class TestGitHubBackendPushFiles:
 
         assert result["status"] == "failed"
         assert "a.json" in result["message"]
+
+
+@pytest.mark.parametrize("branch", ["main", "snapshots/bamdude"])
+@pytest.mark.parametrize("finish_push", [True, False])
+async def test_github_first_backup_to_empty_repository(branch, finish_push):
+    files = {"config.json": {"printer": "local fixture"}, "nested/spools.json": [{"id": 12}]}
+    base = "/repos/owner/repo"
+    branch_ref = f"{base}/git/refs/heads/{branch}"
+    default_ref = f"{base}/git/refs/heads/main"
+    empty = (409, {"message": "Git Repository is empty."})
+    replies = [
+        ("GET", branch_ref, *empty),
+        ("GET", base, 200, {"default_branch": "main"}),
+        ("GET", default_ref, *empty),
+        ("PUT", f"{base}/contents/.bamdude-backup", 201, {"commit": {"sha": "seed"}}),
+    ]
+    if branch != "main":
+        replies.append(("POST", f"{base}/git/refs", 201, {}))
+    replies += [
+        ("GET", branch_ref, 200, {"object": {"sha": "seed"}}),
+        ("GET", f"{base}/git/commits/seed", 200, {"tree": {"sha": "seed-tree"}}),
+        ("GET", f"{base}/git/trees/seed-tree", 200, {"tree": []}),
+        ("POST", f"{base}/git/blobs", 201, {"sha": "config-blob"}),
+        ("POST", f"{base}/git/blobs", 201, {"sha": "spools-blob"}),
+        ("POST", f"{base}/git/trees", 201, {"sha": "backup-tree"}),
+        ("POST", f"{base}/git/commits", 201, {"sha": "backup"}),
+        ("PATCH", branch_ref, 200 if finish_push else 409, {}),
+    ]
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        method, path, status, content = replies[len(requests) - 1]
+        assert (request.method, request.url.path) == (method, path)
+        return httpx.Response(status, json=content)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await GitHubBackend().push_files("https://github.com/owner/repo", "fixture", branch, files, client)
+
+    assert len(requests) == len(replies), result
+    seed = json.loads(requests[3].content)
+    assert "branch" not in seed
+    marker_content = base64.b64decode(seed["content"])
+    assert all(name.encode() not in marker_content for name in ("config.json", "spools.json", "local fixture"))
+    if branch != "main":
+        assert json.loads(requests[4].content) == {"ref": f"refs/heads/{branch}", "sha": "seed"}
+    blobs = [request for request in requests if request.url.path.endswith("/git/blobs")]
+    assert [json.loads(base64.b64decode(json.loads(req.content)["content"])) for req in blobs] == list(files.values())
+    if finish_push:
+        assert result["status"] == "success"
+        assert result["commit_sha"] == "backup"
+        assert result["files_changed"] == 2
+    else:
+        assert result["status"] == "failed"
+        assert "409" in result["message"]
+
+
+@pytest.mark.parametrize("at_default", [False, True])
+async def test_github_general_409_does_not_bootstrap(at_default):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        assert request.method == "GET"
+        if at_default and len(calls) == 1:
+            return httpx.Response(404)
+        if at_default and len(calls) == 2:
+            return httpx.Response(200, json={"default_branch": "main"})
+        return httpx.Response(409, json={"message": "Repository is empty but temporarily unavailable"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await GitHubBackend().push_files(
+            "https://github.com/owner/repo", "fixture", "backup", {"config.json": {}}, client
+        )
+
+    assert result["status"] == "failed"
+    assert "409" in result["message"]
+    assert len(calls) == (3 if at_default else 1)
+
+
+async def test_github_confirmed_empty_ref_is_not_bootstrapped_twice():
+    writes = []
+
+    def respond(request):
+        if request.method == "PUT":
+            writes.append(request)
+            return httpx.Response(201, json={"commit": {"sha": "seed"}})
+        if request.url.path == "/repos/owner/repo":
+            return httpx.Response(200, json={"default_branch": "main"})
+        return httpx.Response(409, json={"message": "Git repository is empty"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await GitHubBackend().push_files(
+            "https://github.com/owner/repo", "fixture", "main", {"config.json": {}}, client
+        )
+
+    assert result["status"] == "failed"
+    assert "409" in result["message"]
+    assert len(writes) == 1
 
 
 class TestGitHubBackendRobustness:

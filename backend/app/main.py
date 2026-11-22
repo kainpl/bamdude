@@ -11256,8 +11256,15 @@ async def _on_print_complete_impl(
 
     log_timing("All background tasks scheduled")
 
-    # Auto-scan for timelapse if recording was active during the print
-    if archive_id and data.get("timelapse_was_active") and data.get("status") == "completed":
+    # The printer can finalize a partial recording after a failure or cancellation.
+    # A superseded terminal must leave the next run's in-memory baseline alone.
+    if (
+        archive_id
+        and terminal_archive_identity
+        and data.get("timelapse_was_active")
+        and data.get("status") in {"completed", "failed", "cancelled", "aborted"}
+        and _owns_printer_effect()
+    ):
         logger.info("[TIMELAPSE] Timelapse was active during print, scheduling auto-scan for archive %s", archive_id)
         # Schedule timelapse scan as background task with retries
         # The printer needs time to encode the video after print completion

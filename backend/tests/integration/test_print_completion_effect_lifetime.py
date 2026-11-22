@@ -10,6 +10,7 @@ from sqlalchemy.orm import make_transient
 from backend.app import main
 from backend.app.services.print_run_binding import bind_prepared_print_run
 from backend.app.services.printer_manager import PrinterManager
+from backend.tests.integration.swap_terminal_support import an_execution, make_rig  # noqa: F401
 
 
 async def test_actual_completion_backgrounds_run_after_callback(
@@ -220,3 +221,73 @@ async def test_unarchived_successor_can_finish_while_old_archive_consumers_remai
     assert not getattr(manager, "_print_terminal_generations", {})
     await main.on_print_complete(1, {"status": "completed", "subtask_id": "81"})
     assert manager._print_terminal_generations[1] == start.generation
+
+
+@pytest.mark.parametrize(
+    ("status", "recording", "superseded", "expected_status", "should_scan"),
+    [
+        ("completed", True, False, "completed", True),
+        ("failed", True, False, "failed", True),
+        ("aborted", True, False, "cancelled", True),
+        ("cancelled", False, False, "cancelled", False),
+        ("completed", True, True, "completed", False),
+    ],
+)
+async def test_terminal_scan_owns_the_device_recording(
+    make_rig, monkeypatch, status, recording, superseded, expected_status, should_scan
+):
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.services import queue_sources
+    from backend.app.services.print_run_binding import claim_print_start
+
+    rig = await make_rig(require_plate_clear=False, swap_mode=False)
+    archive_id, item_id = await an_execution(rig, fact=False)
+    async with rig.db() as db:
+        archive = await db.get(PrintArchive, archive_id)
+        identity = archive.recovery_identity
+
+    media = {"external": "answered"}
+    prior_recordings = {"old.mp4"}
+    epoch = queue_sources.current_epoch()
+    monkeypatch.setattr(main, "_timelapse_baselines", {rig.printer_id: prior_recordings})
+    monkeypatch.setattr(main, "_timelapse_baseline_owners", {rig.printer_id: (identity, epoch, media)})
+    monkeypatch.setattr(main, "_untrusted_timelapse_baselines", set())
+    scan = AsyncMock()
+    monkeypatch.setattr(main, "_scan_for_timelapse_with_retries", scan)
+
+    async def start_successor(*args, **kwargs):
+        start = claim_print_start(rig.manager, rig.printer_id, {"subtask_id": "9999"})
+        assert start is not None
+        main._timelapse_baselines[rig.printer_id] = {"successor.mp4"}
+        main._timelapse_baseline_owners[rig.printer_id] = ("successor-archive", epoch, media)
+
+    if superseded:
+        main.ws_manager.send_print_complete.side_effect = start_successor
+    await main.on_print_complete(
+        rig.printer_id, {"status": status, "filename": "job.gcode.3mf", "timelapse_was_active": recording}
+    )
+    await asyncio.gather(*rig.tasks)
+    async with rig.db() as db:
+        archive = await db.get(PrintArchive, archive_id)
+        item = await db.get(PrintQueueItem, item_id)
+        assert archive.status == expected_status
+        if expected_status == "completed" and not superseded:
+            assert item is None  # successful rows are cleaned up when plate clearance is disabled
+        elif expected_status != "completed":
+            assert item.status == expected_status
+    if should_scan:
+        scan.assert_awaited_once()
+        assert scan.await_args.args == (archive_id, prior_recordings)
+        options = scan.await_args.kwargs
+        assert options["baseline_media"] == media
+        assert options["baseline_trusted"] is True
+        assert options["expected_identity"] == identity
+        assert options["expected_epoch"] == epoch
+        assert options["may_run"]()
+        await start_successor()
+        assert not options["may_run"]()
+    else:
+        scan.assert_not_called()
+        if superseded:
+            assert main._timelapse_baselines[rig.printer_id] == {"successor.mp4"}

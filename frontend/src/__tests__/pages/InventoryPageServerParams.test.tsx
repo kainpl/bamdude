@@ -527,6 +527,40 @@ describe('InventoryPage — server-driven params (task 4)', () => {
     },
   );
 
+  it.each([1250, null])('uses the complete group weight for Weight Check (%s)', async (scaleWeight) => {
+    localStorage.setItem('bamdude-inventory-group', 'true');
+    localStorage.setItem('bamdude-inventory-columns', JSON.stringify([
+      { id: 'weight_check', label: 'Weight Check', visible: true },
+    ]));
+    const members = [
+      { ...SPOOLS[0], id: 10, core_weight: 100, last_scale_weight: 1100 },
+      { ...SPOOLS[0], id: 20, core_weight: 150, weight_used: 1200, last_scale_weight: scaleWeight === null ? null : 150 },
+    ];
+    server.use(
+      http.get('/api/v1/inventory/spools', () => HttpResponse.json({
+        items: [{
+          ...members[0], group_count: 2, ids: [10, 20], representative: members[0],
+          remaining_total: 1000, weight_used_total: 1200, core_weight_total: 250, scale_weight_total: scaleWeight,
+        }],
+        meta: { total: 1, current_page: 1, per_page: 50, last_page: 1 },
+      })),
+      http.get('/api/v1/inventory/spools/:id', ({ params }) =>
+        HttpResponse.json(members.find((spool) => spool.id === Number(params.id))),
+      ),
+    );
+    render(<InventoryPageRouter />);
+    const open = await screen.findByTitle('#10, #20');
+    const group = open.closest('tr')!;
+    expect(within(group).queryByText('1100g')).toBeNull();
+    if (scaleWeight === null) {
+      expect(within(group).getByTitle('No scale measurement')).toBeInTheDocument();
+    } else {
+      expect(within(group).getByTitle(/Calculated: 1250g.*within tolerance/s)).toHaveTextContent('1250g');
+    }
+    fireEvent.click(open);
+    expect(await screen.findByText('1100g')).toBeInTheDocument();
+  });
+
   it('orders Spoolman groups by total net weight rather than the first member weight', async () => {
     localStorage.setItem('bamdude-inventory-group', 'true');
     localStorage.setItem('bamdude-inventory-sort', JSON.stringify({ column: 'net', direction: 'asc' }));

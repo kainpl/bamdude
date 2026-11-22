@@ -1377,6 +1377,8 @@ class SpoolGroupItem(BaseModel):
     ids: list[int]
     remaining_total: float
     weight_used_total: float
+    core_weight_total: int
+    scale_weight_total: int | None
     representative: SpoolListItem
 
 
@@ -1543,6 +1545,8 @@ async def list_spools(
                     ids=g["ids"],
                     remaining_total=g["remaining_total"],
                     weight_used_total=g["weight_used_total"],
+                    core_weight_total=g["core_weight_total"],
+                    scale_weight_total=g["scale_weight_total"],
                     representative=_spool_to_list_item(
                         g["representative"],
                         include_k_profiles=include_k_profiles,

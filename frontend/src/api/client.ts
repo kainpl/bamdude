@@ -8825,6 +8825,9 @@ export interface SpoolGroupItem {
    */
   remaining_total: number;
   weight_used_total: number;
+  core_weight_total?: number;
+  /** The sum of scale readings when every member was weighed. */
+  scale_weight_total?: number | null;
   /** The min(id) member, in the slim list projection. */
   representative: SpoolListItem;
 }

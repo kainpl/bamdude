@@ -1360,6 +1360,23 @@ class TestGroupedModeRoute:
         assert "k_profile_count" in group["representative"]
         assert group["representative"]["k_profiles"] is None
 
+    @pytest.mark.parametrize("second_reading", [150, None])
+    async def test_group_scale_total_uses_the_same_members(self, async_client, db_session, second_reading):
+        await _spool(db_session, core_weight=100, last_scale_weight=1100)
+        await _spool(db_session, core_weight=150, weight_used=1200, last_scale_weight=second_reading)
+        await _spool(db_session, material="PETG", core_weight=1, last_scale_weight=50)
+
+        response = await async_client.get(
+            "/api/v1/inventory/spools", params={"page": 1, "group_similar": "true", "material": "PLA"}
+        )
+        assert response.status_code == 200
+        (group,) = response.json()["items"]
+        assert group["group_count"] == 2
+        assert group["remaining_total"] == 1000
+        assert group["core_weight_total"] == 250
+        assert group["scale_weight_total"] == (1250 if second_reading is not None else None)
+        assert group["representative"]["last_scale_weight"] == 1100
+
     async def test_grouped_mode_rides_the_same_filters(self, async_client, db_session):
         pla = await _spool(db_session, material="PLA")
         await _spool(db_session, material="PETG")

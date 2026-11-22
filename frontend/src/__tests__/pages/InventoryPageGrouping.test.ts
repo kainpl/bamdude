@@ -14,6 +14,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { InventorySpool, SpoolAssignment } from '../../api/client';
+import { aggregateGroupSpool } from '../../utils/inventoryGrouping';
 
 // Replicate the grouping key function from InventoryPage (not exported)
 function spoolGroupKey(s: InventorySpool): string {
@@ -103,6 +104,21 @@ function makeSpool(overrides: Partial<InventorySpool> & { id: number }): Invento
     ...overrides,
   };
 }
+
+describe('aggregateGroupSpool', () => {
+  it('adds actual readings only when every member has a scale reading', () => {
+    const first = makeSpool({ id: 1, core_weight: 100, last_scale_weight: 1100 });
+    const second = makeSpool({ id: 2, core_weight: 150, last_scale_weight: 1150 });
+    expect(aggregateGroupSpool([second, first])).toMatchObject({
+      id: first.id,
+      label_weight: 2000,
+      core_weight: 250,
+      last_scale_weight: 2250,
+    });
+    expect(aggregateGroupSpool([first, { ...second, last_scale_weight: null }]).last_scale_weight).toBeNull();
+    expect(first.last_scale_weight).toBe(1100);
+  });
+});
 
 describe('spoolGroupKey', () => {
   it('generates same key for identical spools', () => {
