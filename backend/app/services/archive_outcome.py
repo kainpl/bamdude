@@ -87,6 +87,23 @@ async def mark_checked(db, archive: PrintArchive, *, by: int | None = None) -> b
     return True
 
 
+async def mark_checked_by_swap(db, archive: PrintArchive) -> bool:
+    """The plate was changed by the swap itself: our change_table answered, or the file's own sequence cleared it.
+
+    Nobody takes such a print off the plate, so nobody is asked to grade it (owner, 2026-11-20). A swap that
+    failed or was held leaves the print on the plate, and the person who comes to it grades it there — that is
+    why the swap, not the printer's swap-mode setting, decides. No status check: the live completion runs the
+    macro BEFORE it writes the archive's terminal status, so the mark is in place before the print could read
+    as unchecked. First mark wins; flushes, the caller commits.
+    """
+    if archive.outcome_checked_at is not None:
+        return False
+    archive.outcome_checked_at = _now()
+    await db.flush()
+    logger.info("archive %s: result counted as checked — the plate was swapped automatically", archive.id)
+    return True
+
+
 def forget(archive: PrintArchive) -> None:
     """A row taken back as the print now running keeps nothing of the check its earlier end got."""
     archive.outcome_checked_at = None

@@ -56,6 +56,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { KProfilesView } from '../components/KProfilesView';
 import { CreateFilamentFamilyModal } from '../components/CreateFilamentFamilyModal';
 import { canonicalPrinterModel } from '../utils/slicerPrinterMatch';
+// R1 (spec slicing-setup): one "my preset" predicate; a user-created cloud preset is the editable one.
+import { isOwnBambuCloudId } from '../utils/presetPickerUtils';
 import { LocalProfilesView } from '../components/LocalProfilesView';
 import { OrcaCloudView } from '../components/OrcaCloudView';
 
@@ -92,10 +94,6 @@ function extractMetadata(name: string, inherits?: string): {
   return { printer, nozzle, layerHeight, filamentType };
 }
 
-// Check if preset is user-created (editable)
-function isUserPreset(settingId: string): boolean {
-  return /^(P[FPM]US|PF\d|PP\d)/.test(settingId);
-}
 
 // ============================================================================
 // LOGIN FORM
@@ -390,7 +388,7 @@ function PresetListItem({
   t: TFunction;
 }) {
   const metadata = extractMetadata(setting.name);
-  const isEditable = isUserPreset(setting.setting_id);
+  const isEditable = isOwnBambuCloudId(setting.setting_id);
 
   return (
     <div className="flex items-center gap-2 group">
@@ -532,7 +530,7 @@ function PresetDetailModal({
     onError: (error: Error) => showToast(error.message, 'error'),
   });
 
-  const isEditable = isUserPreset(setting.setting_id);
+  const isEditable = isOwnBambuCloudId(setting.setting_id);
   const metadata = extractMetadata(setting.name, detail?.setting?.inherits as string);
 
   return (
@@ -1271,7 +1269,7 @@ function CreatePresetModal({
 
   // Only fetch details for USER presets (not Bambu's built-in ones which return 500)
   const userPresetsOfType = useMemo(() => {
-    return presetsOfType.filter(p => isUserPreset(p.setting_id));
+    return presetsOfType.filter(p => isOwnBambuCloudId(p.setting_id));
   }, [presetsOfType]);
 
   // Fetch field definitions from API (cached, only loaded once per type)

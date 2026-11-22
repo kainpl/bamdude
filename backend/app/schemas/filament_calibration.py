@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from backend.app.schemas.slicer import PresetRef
+from backend.app.schemas.slicer import BedType, PresetRef
 from backend.app.services.calibration_constants import CaliMethod, CaliMode
 
 # ---------- Capabilities ----------
@@ -132,17 +132,9 @@ class StartSessionIn(BaseModel):
 
     # Optional per-job slicer override — matches SliceRequest.slicer.
     slicer: Literal["orcaslicer", "bambu_studio"] | None = None
-    # Bed plate override — SliceRequest.bed_type values.
-    bed_type: (
-        Literal[
-            "Cool Plate",
-            "Engineering Plate",
-            "High Temp Plate",
-            "Textured PEI Plate",
-            "Supertack Plate",
-        ]
-        | None
-    ) = None
+    # Bed plate override — SliceRequest.bed_type values (the six plates; the
+    # OrcaSlicer-only one is refused for Bambu Studio once the slicer is known).
+    bed_type: BedType | None = None
 
     # Per-job dispatcher toggles — reuse the PrintModal panels so a
     # calibration print runs swap macros / bed-levelling / etc. the
@@ -201,17 +193,9 @@ class CalibSliceOnlyIn(BaseModel):
 
     # Optional per-job slicer override — matches SliceRequest.slicer.
     slicer: Literal["orcaslicer", "bambu_studio"] | None = None
-    # Bed plate override — SliceRequest.bed_type values.
-    bed_type: (
-        Literal[
-            "Cool Plate",
-            "Engineering Plate",
-            "High Temp Plate",
-            "Textured PEI Plate",
-            "Supertack Plate",
-        ]
-        | None
-    ) = None
+    # Bed plate override — SliceRequest.bed_type values (the six plates; the
+    # OrcaSlicer-only one is refused for Bambu Studio once the slicer is known).
+    bed_type: BedType | None = None
 
     @model_validator(mode="after")
     def _require_one_preset_shape(self) -> CalibSliceOnlyIn:
@@ -242,16 +226,10 @@ class CalibBakeOnlyIn(BaseModel):
     spec: dict[str, float | int | bool | str] | None = None
     extruder_count: int = 1
     pass_n: int = 1
-    bed_type: (
-        Literal[
-            "Cool Plate",
-            "Engineering Plate",
-            "High Temp Plate",
-            "Textured PEI Plate",
-            "Supertack Plate",
-        ]
-        | None
-    ) = None
+    # The slicer the plate is checked against (the bake itself is not sliced);
+    # none = the preferred slicer, as for the other two doors.
+    slicer: Literal["orcaslicer", "bambu_studio"] | None = None
+    bed_type: BedType | None = None
 
 
 # ---------- Submit ----------

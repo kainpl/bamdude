@@ -16,11 +16,14 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
-import type { CreateFamilyResponse, UnifiedPreset } from '../api/client';
+import type { CreateFamilyResponse, PresetRef } from '../api/client';
 import { Button } from './Button';
 import { Modal } from './Modal';
 import { useToast } from '../contexts/ToastContext';
 import { Select } from './Select';
+import { PresetSelect } from './slicing-setup/PresetSelect';
+import { buildPresetField } from './slicing-setup/presetSets';
+import { usePresetCatalogue } from './slicing-setup/usePresetCatalogue';
 
 interface CreateFilamentFamilyModalProps {
   open: boolean;
@@ -42,7 +45,7 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
   const [checkedNames, setCheckedNames] = useState<string[] | null>(null); // null = defaults not applied yet
   const [printerQuery, setPrinterQuery] = useState('');
   const [sourceMode, setSourceMode] = useState<'type' | 'preset'>('type');
-  const [sourceKey, setSourceKey] = useState(''); // "<source>:<id>"
+  const [sourceRef, setSourceRef] = useState<PresetRef | null>(null);
   const [secondaryChecked, setSecondaryChecked] = useState(false); // local: push bambu / cloud tabs: keep locally too
   const [orcaChecked, setOrcaChecked] = useState(false); // local variant: also push to Orca Cloud
   const [resultNotes, setResultNotes] = useState<string[]>([]);
@@ -76,12 +79,9 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
     enabled: open,
     staleTime: 60_000,
   });
-  const { data: presets } = useQuery({
-    queryKey: ['slicer-presets'],
-    queryFn: () => api.getSlicerPresets(),
-    enabled: open && sourceMode === 'preset',
-    staleTime: 60_000,
-  });
+  // The shared catalogue (spec slicing-setup §7.4), read only while "From an
+  // existing preset" is the open choice.
+  const presets = usePresetCatalogue({ enabled: open && sourceMode === 'preset' }).data;
 
   const allPrinterNames = useMemo(() => options?.printer_names || [], [options]);
 
@@ -106,19 +106,22 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
     return q ? allPrinterNames.filter((n) => n.toLowerCase().includes(q)) : allPrinterNames;
   }, [allPrinterNames, printerQuery]);
 
-  // "From an existing preset" candidates: local + both clouds. The standard
-  // tier is deliberately absent — "from type" IS the bundled-generic path.
-  const presetChoices = useMemo(() => {
-    if (!presets) return [] as Array<{ key: string; label: string }>;
-    const tiers: Array<{ source: string; label: string; rows: UnifiedPreset[] }> = [
-      { source: 'local', label: t('authoring.tierLocal'), rows: presets.local?.filament || [] },
-      { source: 'cloud', label: t('authoring.tierBambu'), rows: presets.cloud?.filament || [] },
-      { source: 'orca_cloud', label: t('authoring.tierOrca'), rows: presets.orca_cloud?.filament || [] },
-    ];
-    return tiers.flatMap((tier) =>
-      tier.rows.map((p) => ({ key: `${tier.source}:${p.id}`, label: `${p.name} (${tier.label})` })),
-    );
-  }, [presets, t]);
+  // "From an existing preset": local + both clouds. The standard tier is
+  // deliberately out of the bound — "from type" IS the bundled-generic path.
+  // No printer context and no source segment (spec slicing-setup §7.4).
+  const presetField = useMemo(
+    () =>
+      presets
+        ? buildPresetField({
+            listing: presets,
+            slot: 'filament',
+            bound: { keep: (p) => p.source !== 'standard', whenEmpty: 'disable' },
+            filters: [],
+            pinned: sourceRef,
+          })
+        : null,
+    [presets, sourceRef],
+  );
 
   const vendorError = useMemo(() => {
     const v = vendor.trim();
@@ -142,9 +145,8 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
 
   const createMutation = useMutation({
     mutationFn: () => {
-      const [source, sourceId] = sourceKey.includes(':')
-        ? [sourceKey.slice(0, sourceKey.indexOf(':')), sourceKey.slice(sourceKey.indexOf(':') + 1)]
-        : [null, null];
+      const source = sourceRef?.source ?? null;
+      const sourceId = sourceRef?.id ?? null;
       return api.createFilamentFamily({
         vendor: vendor.trim(),
         filament_type: filamentType,
@@ -255,20 +257,15 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
               {t('authoring.sourceModePreset')}
             </label>
           </div>
-          {sourceMode === 'preset' && (
-            <Select
-              tone="raised"
-              className="accent-bambu-green mt-2 w-full"
-              value={sourceKey}
-              onChange={(e) => setSourceKey(e.target.value)}
-            >
-              <option value="">{t('authoring.pickPreset')}</option>
-              {presetChoices.map((c) => (
-                <option key={c.key} value={c.key}>
-                  {c.label}
-                </option>
-              ))}
-            </Select>
+          {sourceMode === 'preset' && presetField && (
+            <div className="mt-2">
+              <PresetSelect
+                label={t('slicingSetup.fromPreset')}
+                field={presetField}
+                value={sourceRef}
+                onChange={setSourceRef}
+              />
+            </div>
           )}
         </div>
 

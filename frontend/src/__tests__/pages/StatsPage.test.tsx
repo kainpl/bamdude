@@ -2,12 +2,13 @@
  * Tests for the StatsPage component.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import { render } from '../utils';
 import { StatsPage } from '../../pages/StatsPage';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
+import i18n from '../../i18n';
 
 // Complete mock stats matching ArchiveStats interface
 const mockStats = {
@@ -602,5 +603,56 @@ describe('while the numbers are still loading', () => {
     render(<StatsPage />);
 
     expect(await screen.findByText('Loading statistics...')).toBeInTheDocument();
+  });
+});
+
+describe('in Ukrainian', () => {
+  /**
+   * The page wrote English units and names into a Ukrainian interface:
+   * "500.5h", "5.5kg", "kWh", "Hide widget", "colors", "N avg". Each figure now
+   * carries the UI language's unit, kept beside its number by a no-break space.
+   */
+  beforeEach(async () => {
+    await i18n.changeLanguage('uk');
+    server.use(
+      http.get('/api/v1/statistics/overview', () => HttpResponse.json(mockStats)),
+      http.get('/api/v1/printers/', () => HttpResponse.json(mockPrinters)),
+      http.get('/api/v1/statistics/aggregate', () => HttpResponse.json(mockAggregate)),
+      http.get('/api/v1/settings/', () => HttpResponse.json(mockSettings)),
+      http.get('/api/v1/statistics/failures', () => HttpResponse.json(mockFailureAnalysis)),
+    );
+  });
+
+  afterEach(async () => {
+    await i18n.changeLanguage('en');
+  });
+
+  it('writes the quick stats and energy in Ukrainian units', async () => {
+    render(<StatsPage />);
+
+    const hours = await screen.findByText('500.5 год');
+    expect(hours.textContent).toBe('500.5 год');
+    expect(screen.getByText('5.5 кг')).toBeInTheDocument();
+    expect(screen.getByText('45.500 кВт·год')).toBeInTheDocument();
+    expect(screen.queryByText(/kWh|\d+(\.\d+)?h$/)).toBeNull();
+  });
+
+  it('writes the records and trends in Ukrainian', async () => {
+    render(<StatsPage />);
+
+    expect(await screen.findByText('8 год 0 хв')).toBeInTheDocument();
+    expect(screen.getByText('180 г')).toBeInTheDocument();
+    expect(screen.getByText('послідовні друки')).toBeInTheDocument();
+    expect(screen.getByText('3 кольори')).toBeInTheDocument();
+    expect(screen.getAllByText('$1.95 у середньому').length).toBeGreaterThan(0);
+    expect(screen.queryByText(/ avg$|colors$/)).toBeNull();
+  });
+
+  it('labels the widget controls in Ukrainian', async () => {
+    render(<StatsPage />);
+
+    expect((await screen.findAllByTitle('Сховати віджет')).length).toBeGreaterThan(0);
+    expect(screen.getAllByTitle('Перетягніть, щоб змінити порядок').length).toBeGreaterThan(0);
+    expect(screen.queryAllByTitle('Hide widget')).toHaveLength(0);
   });
 });

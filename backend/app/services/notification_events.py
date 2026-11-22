@@ -35,6 +35,9 @@ def _e(severity: str, group: str) -> EventMeta:
 EVENT_CATALOG: dict[str, EventMeta] = {
     "git_backup_not_admitted": _e("warning", "system"),
     "credentials_reissue_required": _e("warning", "system"),
+    # Another program of the farm speaking (spec external-app-messages-spec). ``warning`` so the inbox
+    # shows it to everybody by default; each message's own level colours its row.
+    "external_app_message": _e("warning", "system"),
     # print
     "print_start": _e("info", "print"),
     "print_complete": _e("info", "print"),

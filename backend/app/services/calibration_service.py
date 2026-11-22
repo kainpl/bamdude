@@ -298,6 +298,27 @@ async def _persist_calibration_slice_to_library(
         return new_file.id
 
 
+def effective_bed_type(spec: dict | None, top_level: str | None) -> str | None:
+    """The bed plate a calibration slices with (spec slicing-setup r5 §8.2).
+
+    The per-mode ``spec`` may carry its own ``bed_type``; when it is set it is
+    THE plate — the builder pins it into the 3MF's ``curr_bed_type`` and the CLI
+    gets the same value, so the two never disagree. Missing, ``None`` or ``""``
+    falls back to the request's top-level plate (already validated as a
+    ``BedType``). Any other nested value must be one of the six plates.
+    """
+    from fastapi import HTTPException
+
+    from backend.app.schemas.slicer import BED_TYPES
+
+    nested = (spec or {}).get("bed_type")
+    if nested is None or nested == "":
+        return top_level
+    if not isinstance(nested, str) or nested not in BED_TYPES:
+        raise HTTPException(status_code=422, detail="Unknown bed plate")
+    return nested
+
+
 def _hydrate_preset_ref(value):
     """Turn a PresetRef-shaped dict / Pydantic model back into a PresetRef.
 
@@ -425,11 +446,24 @@ class CalibrationService:
         if printer_preset is None or process_preset is None or not filament_presets:
             raise ValueError("Manual calibration needs all of 'printer_preset' + 'process_preset' + 'filament_presets'")
 
+        # The slicer is resolved BEFORE anything is built: the plate is checked
+        # against it, and the builder's slicer-specific overrides (PA Tower's
+        # brim) read the slicer that will actually slice.
+        from backend.app.services.slicer_routing import refuse_bed_type_for_slicer
+
+        effective = effective_bed_type(spec, bed_type)
+        kind, api_url = await resolve_sidecar_url(db, slicer_override=slicer)
+        refuse_bed_type_for_slicer(effective, kind)
+        if not api_url:
+            raise SlicerSidecarRequiredError("No slicer sidecar configured")
+
         spec_with_bed = dict(spec or {})
-        if bed_type and "bed_type" not in spec_with_bed:
-            spec_with_bed["bed_type"] = bed_type
-        if slicer and "slicer" not in spec_with_bed:
-            spec_with_bed["slicer"] = slicer
+        if effective:
+            spec_with_bed["bed_type"] = effective
+        if kind:
+            spec_with_bed["slicer"] = kind
+        # Stored for the fine pass: the plate it re-slices with is this one.
+        dispatch_args = {**dispatch_args, "bed_type": effective}
 
         from backend.app.services.calib_3mf_builder import build_calibration_3mf
         from backend.app.services.preset_resolver import resolve_preset_ref
@@ -473,10 +507,6 @@ class CalibrationService:
             raise CalibModeNotImplementedError(
                 f"Calibration builder not registered for '{cali_mode.value}': {exc}"
             ) from exc
-
-        _, api_url = await resolve_sidecar_url(db, slicer_override=slicer)
-        if not api_url:
-            raise SlicerSidecarRequiredError("No slicer sidecar configured")
 
         from backend.app.services.slicer_api import (
             SlicerApiError,
@@ -560,7 +590,7 @@ class CalibrationService:
                     process_profile_json=process_json,
                     filament_profile_jsons=filament_jsons,
                     export_3mf=True,
-                    bed_type=bed_type,
+                    bed_type=effective,
                 )
         except (SlicerInputError, SlicerApiUnavailableError, SlicerApiError) as exc:
             raise ValueError(f"Slicer sidecar failed for calibration slice: {exc}") from exc

@@ -27,10 +27,11 @@ describe('SliceModal — filament colour per slot', () => {
   it('gives every filament row its colour control, single-slot sources included', () => {
     // An STL is exactly the source with no colour anywhere else to inherit.
     const rows = modalSource.slice(modalSource.indexOf('filamentSlots.map((slot, idx) =>'));
-    const dropdown = rows.slice(0, rows.indexOf('/>'));
-    expect(dropdown).toContain('onSwatchColorChange=');
-    expect(dropdown).toContain("swatchColorLabel={t('slice.filamentColour')}");
-    expect(dropdown).not.toContain('filamentSlots.length > 1 ? slot.color');
+    // The row is the family's PresetSelect with its colour control (R12).
+    const row = rows.slice(0, rows.indexOf('/>'));
+    expect(row).toContain('<PresetSelect');
+    expect(row).toContain("label: t('slice.filamentColour')");
+    expect(row).not.toContain('filamentSlots.length > 1 ? slot.color');
   });
 
   it('names the control in both locales', () => {

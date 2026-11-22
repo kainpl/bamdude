@@ -284,7 +284,9 @@ class TestTheDeliberateBehaviorChanges:
         archived_at)`` — the panel's rule. The OLD service selected live spools
         only, so archiving the empty spool silenced the alert at the exact
         moment the colour most needed reordering. Inverted deliberately: the
-        archived-only SKU now IS a stock break (zero stock, real rate)."""
+        archived-only SKU still alerts (zero stock, real rate) — since
+        2026-11-20 as "ran out", not as a break that is still coming
+        (``TestAColourThatRanOut``)."""
         db_session.add(Settings(key="forecast_global_lead_time_days", value="7"))
         spool = await _spool(
             db_session,
@@ -294,10 +296,10 @@ class TestTheDeliberateBehaviorChanges:
         for days_ago in (10, 9, 8, 7, 6):  # burned 100 g/day, then ran out and was archived
             await _usage(db_session, spool.id, days_ago, 100)
 
-        breaks = await _breaks(db_session, NOW)
-        assert len(breaks) == 1, "the old immediate-drop would have found nothing here"
-        assert breaks[0].stock_g == pytest.approx(0.0), "archived grams are history, never stock"
-        assert breaks[0].days_left == 0
+        alerts = await find_stock_alerts(db_session, NOW)
+        assert [a.kind for a in alerts] == ["depleted"], "the old immediate-drop would have found nothing here"
+        assert alerts[0].stock_g == pytest.approx(0.0), "archived grams are history, never stock"
+        assert alerts[0].days_left == 0
 
     @pytest.mark.asyncio
     async def test_an_archived_only_sku_goes_quiet_after_ninety_days(self, db_session) -> None:
@@ -382,6 +384,111 @@ class TestTheDeliberateBehaviorChanges:
 
         rows = (await db_session.execute(select(FilamentSkuSettings))).scalars().all()
         assert rows == [], "the guarded tick must not have created or stamped any settings row"
+
+
+async def _ran_out(db_session) -> Spool:
+    """PLA / Bambu / Black: burned 100 g a day, emptied and archived five days ago."""
+    db_session.add(Settings(key="forecast_global_lead_time_days", value="7"))
+    spool = await _spool(db_session, weight_used=1000.0, archived_at=(NOW - timedelta(days=5)).replace(tzinfo=None))
+    for days_ago in (10, 9, 8, 7, 6):
+        await _usage(db_session, spool.id, days_ago, 100)
+    return spool
+
+
+class TestAColourThatRanOut:
+    """A SKU whose every spool is archived (owner, 2026-11-20): the forecast row
+    stays, but the farm is told at most once that the colour ran out — and not
+    at all while the same material, subtype and colour is on the shelf under
+    another brand. A daily "will run out before replenishment, 0 g" for every
+    brand a farm stopped buying was the complaint."""
+
+    @pytest.fixture(autouse=True)
+    def _tick_uses_the_history_clock(self):
+        with patch("backend.app.services.stock_forecast_alerts.datetime", wraps=datetime) as clock:
+            clock.now.return_value = NOW
+            yield
+
+    @pytest.mark.asyncio
+    async def test_a_colour_with_no_stock_anywhere_ran_out(self, db_session) -> None:
+        await _ran_out(db_session)
+
+        alerts = await find_stock_alerts(db_session, NOW)
+
+        assert [(a.kind, a.key) for a in alerts] == [("depleted", ("PLA", "", "Bambu", "Black"))]
+
+    @pytest.mark.asyncio
+    async def test_the_same_colour_of_another_brand_on_the_shelf_says_nothing(self, db_session) -> None:
+        await _ran_out(db_session)
+        await _spool(db_session, brand="Sunlu", color_name=" black ", weight_used=200.0)
+
+        assert await find_stock_alerts(db_session, NOW) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "other",
+        [
+            {"subtype": "Matte"},
+            {"material": "PETG"},
+            {"color_name": "White"},
+            {"weight_used": 1000.0},
+            {"archived_at": (NOW - timedelta(days=1)).replace(tzinfo=None)},
+        ],
+        ids=["another-subtype", "another-material", "another-colour", "an-empty-spool", "an-archived-spool"],
+    )
+    async def test_only_a_live_spool_with_filament_of_that_very_kind_stands_in(self, db_session, other) -> None:
+        await _ran_out(db_session)
+        await _spool(db_session, **{"brand": "Sunlu", "weight_used": 200.0, **other})
+
+        alerts = [a for a in await find_stock_alerts(db_session, NOW) if a.key == ("PLA", "", "Bambu", "Black")]
+
+        assert [a.kind for a in alerts] == ["depleted"]
+
+    @pytest.mark.asyncio
+    async def test_a_sku_with_live_spools_is_still_a_break(self, db_session) -> None:
+        db_session.add(Settings(key="forecast_global_lead_time_days", value="7"))
+        spool = await _spool(db_session, weight_used=700.0)  # 300 g left
+        for days_ago in (5, 4, 3, 2, 1):
+            await _usage(db_session, spool.id, days_ago, 100)
+
+        assert [a.kind for a in await find_stock_alerts(db_session, NOW)] == ["break"]
+
+    @pytest.mark.asyncio
+    async def test_it_is_said_once_and_never_repeated(self, db_session, monkeypatch) -> None:
+        await _ran_out(db_session)
+        depleted, breakage = AsyncMock(), AsyncMock()
+        monkeypatch.setattr("backend.app.services.stock_forecast_alerts.async_session", _ctx(db_session))
+        with (
+            patch("backend.app.services.notification_service.notification_service.on_stock_depleted", depleted),
+            patch("backend.app.services.notification_service.notification_service.on_stock_break_alert", breakage),
+        ):
+            await StockForecastAlerts().tick()
+            row = await _only_settings_row(db_session)
+            row.stock_depleted_notified_at = (NOW - timedelta(days=30)).replace(tzinfo=None)
+            await db_session.commit()
+            await StockForecastAlerts().tick()
+
+        assert depleted.await_count == 1, "a colour that ran out is no daily nudge"
+        assert breakage.await_count == 0
+        assert depleted.await_args.kwargs["lead_time_days"] == 7
+        assert row.stock_break_notified_at is None
+
+    @pytest.mark.asyncio
+    async def test_a_stand_in_that_comes_and_goes_re_arms_it(self, db_session, monkeypatch) -> None:
+        await _ran_out(db_session)
+        depleted = AsyncMock()
+        monkeypatch.setattr("backend.app.services.stock_forecast_alerts.async_session", _ctx(db_session))
+        with patch("backend.app.services.notification_service.notification_service.on_stock_depleted", depleted):
+            await StockForecastAlerts().tick()
+            stand_in = await _spool(db_session, brand="Sunlu", weight_used=200.0)
+            await StockForecastAlerts().tick()
+            row = await _only_settings_row(db_session)
+            assert row.stock_depleted_notified_at is None, "covered by another brand is no longer 'ran out'"
+            stand_in.archived_at = (NOW - timedelta(hours=1)).replace(tzinfo=None)
+            await db_session.commit()
+            await StockForecastAlerts().tick()
+
+        # The archived stand-in may now be a colour that ran out of its own; only Bambu's calls count here.
+        assert [c.kwargs["brand"] for c in depleted.await_args_list].count("Bambu") == 2
 
 
 class TestTheTwoAlertsKeepSeparateBooks:

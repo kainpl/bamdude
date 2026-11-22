@@ -93,6 +93,8 @@ ALL_NOTIFY_EVENTS = [
     # ``stock_forecast_alerts`` fires both; see that service.
     "stock_reorder_alert",
     "stock_break_alert",
+    # Another program's message (spec external-app-messages-spec). Not in DEFAULT_NOTIFY_EVENTS: a chat asks.
+    "external_app_message",
 ]
 
 

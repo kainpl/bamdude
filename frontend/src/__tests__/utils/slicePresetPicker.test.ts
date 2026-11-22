@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pickEmbeddedFilament, pickFilamentForSlot, pickDefault } from '../../utils/slicePresetPicker';
+import { pickEmbeddedFilament, pickFilamentForSlot, pickDefault, pickPrinterFallback, pickProcessForField } from '../../utils/slicePresetPicker';
 import { buildCompatibilityIndex } from '../../utils/slicerPrinterMatch';
 import type { UnifiedPresetsResponse, UnifiedPresetsBySlot } from '../../api/client';
 
@@ -252,5 +252,76 @@ describe('pickEmbeddedFilament — a name that several sources hold', () => {
       source: 'standard',
       id: 'Only standard',
     });
+  });
+});
+
+// R5 (spec slicing-setup r5): the printer's last automatic step works on the
+// whole catalogue and never picks a model card; a process pick over a field's
+// offer never takes a mismatch from it.
+describe('pickPrinterFallback (R5)', () => {
+  const printers = (names: string[]) =>
+    makeUnified({
+      standard: {
+        printer: names.map((name) => ({ id: name, name, source: 'standard' as const })),
+        process: [],
+        filament: [],
+      },
+    });
+
+  it('prefers 0.4 machine presets, never a model card', () => {
+    expect(
+      pickPrinterFallback(printers(['Bambu Lab A1', 'Bambu Lab A1 0.6 nozzle', 'Bambu Lab A1 0.4 nozzle']), {}),
+    ).toEqual({ source: 'standard', id: 'Bambu Lab A1 0.4 nozzle' });
+  });
+  it('takes any machine preset when none is 0.4', () =>
+    expect(pickPrinterFallback(printers(['Bambu Lab A1', 'Bambu Lab A1 0.6 nozzle']), {})).toEqual({
+      source: 'standard',
+      id: 'Bambu Lab A1 0.6 nozzle',
+    }));
+  it('picks nothing when only model cards exist', () =>
+    expect(pickPrinterFallback(printers(['Bambu Lab A1']), {})).toBeNull());
+});
+
+describe('pickProcessForField (R5)', () => {
+  const X1C = 'Bambu Lab X1 Carbon 0.4 nozzle';
+  const proc = (source: 'local' | 'standard', id: string, fitsFor: string) => ({
+    id,
+    name: id,
+    source,
+    compatible_printers: [fitsFor],
+  });
+  const index = buildCompatibilityIndex({});
+  const by = makeUnified({
+    local: { printer: [], process: [proc('local', 'mine-mismatch', 'Bambu Lab A1 0.4 nozzle')], filament: [] },
+    standard: { printer: [], process: [proc('standard', 'std-fit', X1C)], filament: [] },
+  });
+  const onlyMine = (p: { source: string }) => p.source === 'local';
+
+  it('never takes a mismatch from the offer', () =>
+    expect(pickProcessForField(by, onlyMine, X1C, index)).toEqual({ source: 'standard', id: 'std-fit' }));
+  it('a usable file process wins whatever the offer', () => {
+    const withFile = makeUnified({
+      local: { printer: [], process: [proc('local', 'mine-fit', X1C)], filament: [] },
+      standard: { printer: [], process: [proc('standard', 'std-fit', X1C)], filament: [] },
+    });
+    expect(
+      pickProcessForField(withFile, onlyMine, X1C, index, { file: { ref: { source: 'standard', id: 'std-fit' } } }),
+    ).toEqual({ source: 'standard', id: 'std-fit' });
+  });
+  it('a record ref that does not fit gives way to the process the file names', () => {
+    // Slice today: the assembly record first, then the 3MF's process name.
+    const both = makeUnified({
+      local: { printer: [], process: [proc('local', 'mine-mismatch', 'Bambu Lab A1 0.4 nozzle')], filament: [] },
+      standard: { printer: [], process: [proc('standard', 'std-fit', X1C), proc('standard', 'std-2', X1C)], filament: [] },
+    });
+    const file = { ref: { source: 'local' as const, id: 'mine-mismatch' }, name: 'std-2' };
+    expect(pickProcessForField(both, () => true, X1C, index, { file })).toEqual({ source: 'standard', id: 'std-2' });
+  });
+  it('fittingOnly: a catalogue of mismatches only picks nothing', () => {
+    const mismatches = makeUnified({
+      standard: { printer: [], process: [proc('standard', 'a1-only', 'Bambu Lab A1 0.4 nozzle')], filament: [] },
+    });
+    expect(pickProcessForField(mismatches, () => true, X1C, index, { fittingOnly: true })).toBeNull();
+    expect(pickProcessForField(mismatches, () => true, X1C, index)).toEqual({ source: 'standard', id: 'a1-only' });
   });
 });

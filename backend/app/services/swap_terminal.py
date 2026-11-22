@@ -25,7 +25,7 @@ from typing import Any
 from uuid import UUID
 
 from backend.app.i18n import current_language, t
-from backend.app.services import swap_compatibility
+from backend.app.services import archive_outcome, swap_compatibility
 from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
 
 #: The swap-start macro's outcome, recorded on the execution archive by dispatch: ``possibly_fired`` from the
@@ -337,6 +337,19 @@ async def finish_change_table(session_factory, archive_id: int, *, ok: bool) -> 
         remove_swap_pending_event(archive, CHANGE_TABLE_EVENT)
         if ok:
             clear_hold(archive)
+            # The plate was swapped: nobody takes this print off it, so nobody is asked to grade it.
+            await archive_outcome.mark_checked_by_swap(db, archive)
+        await db.commit()
+
+
+async def note_baked_clear(session_factory, archive_id: int) -> None:
+    """The file's own swap sequence cleared the plate of this run (:func:`baked_clears` said so): the same
+    "nobody takes it off" as our change_table, so the print is counted as checked, in a short transaction."""
+    async with session_factory() as db, archive_write_scope(db, archive_id):
+        archive = await load_active_archive_for_write(db, archive_id)
+        if archive is None:
+            return
+        await archive_outcome.mark_checked_by_swap(db, archive)
         await db.commit()
 
 

@@ -7,8 +7,14 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import type { LoadedFilamentsResponse, OnlinePrinter } from '../../api/client';
-import { filamentPresetIsLoaded, loadedFilamentsFor, printerPresetIsOnline } from '../../utils/sliceFarmFilter';
+import type { FamilyPresetRefs, LoadedFilamentsResponse, OnlinePrinter } from '../../api/client';
+import {
+  filamentPresetIsLoaded,
+  loadedFilamentsFor,
+  printerPresetFitsFarmPrinter,
+  presetIsOfFamily,
+  printerPresetIsOnline,
+} from '../../utils/sliceFarmFilter';
 
 const printer = (over: Partial<OnlinePrinter>): OnlinePrinter => ({
   printer_id: 1,
@@ -20,6 +26,7 @@ const printer = (over: Partial<OnlinePrinter>): OnlinePrinter => ({
 });
 
 const farm = (printers: OnlinePrinter[], families: LoadedFilamentsResponse['families'] = {}): LoadedFilamentsResponse => ({
+  farm_printers: [],
   printers,
   families,
 });
@@ -99,6 +106,7 @@ describe('filamentPresetIsLoaded', () => {
       orca_cloud: ['orca-uuid'],
       local: ['17'],
       standard: ['Bambu PLA Basic @BBL X1C'],
+      cloud_aliases: ['GFSA00'],
     },
   };
   const basic = [{ kind: 'ams' as const, material: 'PLA', family_id: 'GFA00', by_material: false }];
@@ -122,6 +130,15 @@ describe('filamentPresetIsLoaded', () => {
     expect(filamentPresetIsLoaded({ source: 'local', id: 'PFUSmine', filament_type: 'PLA' }, basic, families)).toBe(false);
   });
 
+  it('local, standard and Orca Cloud are exact only', () => {
+    const is = (source: 'orca_cloud' | 'local' | 'standard', id: string) =>
+      filamentPresetIsLoaded({ source, id, filament_type: 'PLA' }, basic, families);
+    expect(is('standard', 'Bambu PLA Basic @BBL X1C_1')).toBe(false);
+    expect(is('local', '17_2')).toBe(false);
+    expect(is('orca_cloud', 'orca-uuid_2')).toBe(false);
+    expect(is('local', 'GFSA00_07')).toBe(false);
+  });
+
   it('matches a source that states only a material by material type', () => {
     const typed = [{ kind: 'ams' as const, material: 'ASA-GF', family_id: null, by_material: true }];
     expect(filamentPresetIsLoaded({ source: 'standard', id: 'Some ASA-GF', filament_type: 'ASA-GF' }, typed, {})).toBe(true);
@@ -132,5 +149,77 @@ describe('filamentPresetIsLoaded', () => {
 
   it('is false when nothing is loaded', () => {
     expect(filamentPresetIsLoaded({ source: 'standard', id: 'Generic PLA', filament_type: 'PLA' }, [], families)).toBe(false);
+  });
+});
+
+// D4 (spec slicing-setup r5): the farm-models switch compares a printer preset
+// with every non-archived farm printer the same way the online filter did.
+describe('printerPresetFitsFarmPrinter', () => {
+  const x1c = { model: 'X1C', accepts: [], nozzle_diameters: [0.4] };
+  it('exact model and a fitted nozzle', () =>
+    expect(printerPresetFitsFarmPrinter({ name: 'Bambu Lab X1 Carbon 0.4 nozzle' }, x1c, null)).toBe(true));
+  it('a nozzle the printer does not carry', () =>
+    expect(printerPresetFitsFarmPrinter({ name: 'Bambu Lab X1 Carbon 0.6 nozzle' }, x1c, null)).toBe(false));
+  it('an unknown nozzle list excludes no size', () =>
+    expect(
+      printerPresetFitsFarmPrinter({ name: 'Bambu Lab X1 Carbon 0.6 nozzle' }, { ...x1c, nozzle_diameters: [] }, null),
+    ).toBe(true));
+  it('a model the printer accepts counts', () =>
+    expect(
+      printerPresetFitsFarmPrinter({ name: 'Bambu Lab X1 0.4 nozzle' }, { ...x1c, accepts: ['X1'] }, null),
+    ).toBe(true));
+  it('another model does not', () =>
+    expect(printerPresetFitsFarmPrinter({ name: 'Bambu Lab A1 0.4 nozzle' }, x1c, null)).toBe(false));
+});
+
+// Spec slicing-setup r5 §8.3 (D9), through the real FamilyPresetRefs shape the
+// server sends: exact ids first; a shared base stands for nobody.
+describe('presetIsOfFamily', () => {
+  const refs = (cloud: string[], cloud_aliases: string[]): FamilyPresetRefs => ({
+    name: 'x',
+    cloud,
+    orca_cloud: [],
+    local: [],
+    standard: [],
+    cloud_aliases,
+  });
+  // What the server answers for the families that share GFSR99 / GFSP97.
+  const TPU = refs(['GFSR99', 'GFSR99_10'], []);
+  const EVA = refs(['GFSR99_00', 'GFSR99_01', 'GFSR99_02', 'GFSR99_11', 'GFSR99_12'], []);
+  const PP = refs(['GFSP97_00', 'GFSP97_01', 'GFSP97_02', 'GFSP97_04'], []);
+  const PP_GF = refs(['GFSP97_03'], []);
+  const cloud = (id: string) => ({ source: 'cloud' as const, id });
+
+  it('TPU loaded: EVA GFSR99_01 not counted; TPU GFSR99_10 counted', () => {
+    expect(presetIsOfFamily(cloud('GFSR99_01'), TPU)).toBe(false);
+    expect(presetIsOfFamily(cloud('GFSR99_10'), TPU)).toBe(true);
+    expect(presetIsOfFamily(cloud('GFSR99'), TPU)).toBe(true);
+  });
+
+  it('EVA loaded: GFSR99 and GFSR99_10 not counted', () => {
+    expect(presetIsOfFamily(cloud('GFSR99'), EVA)).toBe(false);
+    expect(presetIsOfFamily(cloud('GFSR99_10'), EVA)).toBe(false);
+    expect(presetIsOfFamily(cloud('GFSR99_01'), EVA)).toBe(true);
+  });
+
+  it('PP loaded: GFSP97_03 not counted; PP-GF loaded: no PP counted', () => {
+    expect(presetIsOfFamily(cloud('GFSP97_03'), PP)).toBe(false);
+    for (const id of ['GFSP97_00', 'GFSP97_01', 'GFSP97_02', 'GFSP97_04']) {
+      expect(presetIsOfFamily(cloud(id), PP_GF)).toBe(false);
+    }
+  });
+
+  it('an unknown suffixed variant and the bare GFSA06 match through the alias', () => {
+    const PLA_LITE = refs(['GFSA06_00'], ['GFSA06']);
+    expect(presetIsOfFamily(cloud('GFSA06_99'), PLA_LITE)).toBe(true);
+    expect(presetIsOfFamily(cloud('GFSA06'), PLA_LITE)).toBe(true);
+  });
+
+  it('a foreign prefix without the separator does not match', () => {
+    expect(presetIsOfFamily(cloud('GFSA060'), refs([], ['GFSA06']))).toBe(false);
+  });
+
+  it('no refs is no family', () => {
+    expect(presetIsOfFamily(cloud('GFSA00'), undefined)).toBe(false);
   });
 });

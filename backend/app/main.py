@@ -9579,6 +9579,11 @@ async def _on_print_complete_impl(
             logger.info(
                 "[SWAP] baked swap sequence of archive %s — plate auto-cleared for printer %s", archive_id, printer_id
             )
+            # Nobody takes this print off the plate, so nobody is asked to grade it -- as after our change_table.
+            try:
+                await swap_terminal.note_baked_clear(async_session, archive_id)
+            except Exception:  # noqa: BLE001 -- a missed mark leaves «Not checked»; the completion goes on
+                logger.exception("[SWAP] could not count archive %s as checked after its baked swap", archive_id)
         elif _swap_fact is True:
             logger.info(
                 "[SWAP] archive %s declares a baked swap sequence, but this finish does not prove the run "

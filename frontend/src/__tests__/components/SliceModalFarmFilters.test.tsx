@@ -6,7 +6,7 @@
  * browser, never replacing the chosen preset, and saying why a list is empty.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 
@@ -15,6 +15,7 @@ import { server } from '../mocks/server';
 import { SliceModal } from '../../components/SliceModal';
 import { SliceJobTrackerProvider } from '../../contexts/SliceJobTrackerContext';
 import type { LoadedFilamentsResponse, UnifiedPreset, UnifiedPresetsBySlot } from '../../api/client';
+import { __resetSharedMemoryForTests } from '../../components/slicing-setup/memory';
 
 type Tier = 'local' | 'orca_cloud' | 'cloud' | 'standard';
 type Listing = Partial<Record<Tier, Partial<Record<keyof UnifiedPresetsBySlot, Partial<UnifiedPreset>[]>>>>;
@@ -22,7 +23,7 @@ type Listing = Partial<Record<Tier, Partial<Record<keyof UnifiedPresetsBySlot, P
 const H2D = 'Bambu Lab H2D 0.4 nozzle';
 const A1 = 'Bambu Lab A1 0.4 nozzle';
 const X1C = 'Bambu Lab X1 Carbon 0.4 nozzle';
-const ONLINE_KEY = 'bamdude:slice-modal:only-online-printers';
+const ONLINE_KEY = 'bamdude:presets:only-farm-models';
 const LOADED_KEY = 'bamdude:slice-modal:only-loaded-filaments';
 
 const LISTING: Listing = {
@@ -39,6 +40,7 @@ const LISTING: Listing = {
 };
 
 const FARM: LoadedFilamentsResponse = {
+  farm_printers: [{ printer_id: 1, model: 'H2D', accepts: [], nozzle_diameters: [0.4] }],
   printers: [
     {
       printer_id: 1,
@@ -55,6 +57,7 @@ const FARM: LoadedFilamentsResponse = {
       orca_cloud: [],
       local: [],
       standard: ['Bambu PLA Basic @BBL H2D'],
+      cloud_aliases: ['GFSA00'],
     },
   },
 };
@@ -118,10 +121,19 @@ const offered = (select: HTMLSelectElement) =>
     .filter((o) => o.value !== '')
     .map((o) => o.textContent);
 
-const onlineToggle = () => screen.findByRole('checkbox', { name: 'Only printers that are online' });
+const onlineToggle = () => screen.findByRole('checkbox', { name: 'Only models of my farm' });
 const loadedToggle = () => screen.findByRole('checkbox', { name: 'Only filaments that are loaded' });
 
-beforeEach(() => localStorage.clear());
+// Spec slicing-setup §4.4.1: the source filter's first value is Mine. These
+// tests are about the rest of the dialog, so each starts from All.
+const startFromAllSources = () => {
+  __resetSharedMemoryForTests();
+  localStorage.setItem('bamdude:presets:source-filter', 'all');
+};
+beforeEach(() => {
+  localStorage.clear();
+  startFromAllSources();
+});
 afterEach(() => localStorage.clear());
 
 describe('SliceModal — the farm filters start off', () => {
@@ -179,8 +191,8 @@ describe('SliceModal — only printers that are online', () => {
     expect(localStorage.getItem(LOADED_KEY)).not.toBe('1');
   });
 
-  it('says why the list is empty and shows everything again in one click', async () => {
-    serve({ printers: [], families: {} });
+  it('relaxes the list with a note instead of emptying it, and shows everything again in one click (§4.4.3)', async () => {
+    serve({ printers: [], families: {}, farm_printers: [] });
     open();
     const printer = await picker('Printer profile');
     await waitFor(() => expect(offered(printer)).toHaveLength(4));
@@ -188,9 +200,9 @@ describe('SliceModal — only printers that are online', () => {
 
     await userEvent.click(await onlineToggle());
 
-    const note = await screen.findByText('No printer is online, so no printer profile matches.');
-    await waitFor(() => expect(offered(printer)).toHaveLength(0));
-    await userEvent.click(screen.getByRole('button', { name: 'Show all printer profiles' }));
+    const note = await screen.findByText(/No profile of a printer model in your farm fits here/);
+    expect(offered(printer)).toHaveLength(4);
+    await userEvent.click(within(note).getByRole('button', { name: 'Show all' }));
 
     await waitFor(() => expect(offered(printer)).toHaveLength(4));
     expect(await onlineToggle()).not.toBeChecked();
@@ -231,7 +243,7 @@ describe('SliceModal — only filaments that are loaded', () => {
     await waitFor(() => expect(localStorage.getItem(LOADED_KEY)).toBe('1'));
   });
 
-  it('counts only the online printers of the chosen printer’s model, and says when none of that model is online', async () => {
+  it('counts only the online printers of the chosen printer’s model, and relaxes the field when none of that model is online', async () => {
     serve();
     open();
     const printer = await picker('Printer profile');
@@ -243,10 +255,10 @@ describe('SliceModal — only filaments that are loaded', () => {
 
     await userEvent.click(await loadedToggle());
 
-    // Something IS loaded on the farm (the H2D): the reason is the model.
-    await screen.findByText('No printer of the chosen model is online, so no filament counts as loaded.');
-    await waitFor(() => expect(offered(filament)).toHaveLength(0));
-    await userEvent.click(screen.getByRole('button', { name: 'Show all filament profiles' }));
+    // Nothing counts as loaded for an A1 (§4.4.3): the field relaxes, with a note.
+    const note = await screen.findByText(/No profile of a loaded filament fits here/);
+    expect(offered(filament)).toHaveLength(3);
+    await userEvent.click(within(note).getByRole('button', { name: 'Show all' }));
     await waitFor(() => expect(offered(filament)).toHaveLength(3));
     expect(await loadedToggle()).not.toBeChecked();
   });

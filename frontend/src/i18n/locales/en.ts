@@ -2889,8 +2889,8 @@ export default {
     wearCostShort: 'wear',
     busiestDay: 'Busiest Day',
     successStreak: 'Success Streak',
-    streakPrint: 'consecutive print',
-    streakPrints: '{{count}} consecutive prints',
+    streakPrints_one: 'consecutive print',
+    streakPrints_other: 'consecutive prints',
     printerStats: 'Printer Stats',
     hours: 'hours',
     avgPrints: 'Avg. prints',
@@ -2899,6 +2899,34 @@ export default {
     avgWeight: 'Avg. weight',
     avgTime: 'Avg. time',
     filamentByPrints: 'Prints',
+    weekOf: 'Week of {{date}}',
+    avgCost: '{{cost}} avg',
+    colorsCount_one: '{{count}} color',
+    colorsCount_other: '{{count}} colors',
+    printsCount_one: '{{count}} print',
+    printsCount_other: '{{count}} prints',
+    legendLess: 'Less',
+    legendMore: 'More',
+    durationBuckets: {
+      lt30m: '<30m',
+      m30h1: '30m-1h',
+      h1h2: '1-2h',
+      h2h4: '2-4h',
+      h4h8: '4-8h',
+      h8h12: '8-12h',
+      h12h24: '12-24h',
+      h24plus: '24h+'
+    },
+    widget: {
+      dragToReorder: 'Drag to reorder',
+      size: 'Size: {{size}} - Click to cycle',
+      sizeQuarter: '1/4',
+      sizeHalf: '1/2',
+      sizeFull: 'Full',
+      hide: 'Hide widget',
+      hiddenList: 'Hidden widgets (click to show):',
+      allHidden: 'All widgets are hidden.'
+    },
     timeframe: {
       'today': 'Today',
       'this-week': 'This Week',
@@ -3105,10 +3133,6 @@ export default {
     sourceMode: 'Base',
     sourceModeType: 'From type (standard profile)',
     sourceModePreset: 'From an existing preset',
-    pickPreset: 'Pick a preset…',
-    tierLocal: 'local',
-    tierBambu: 'Bambu Cloud',
-    tierOrca: 'Orca Cloud',
     pushBambu: 'Also push to Bambu Cloud',
     pushOrca: 'Also push to Orca Cloud',
     orcaRequired: 'Connect Orca Cloud first (Profiles → Orca Cloud)',
@@ -3497,7 +3521,7 @@ export default {
     pipelines: {
       title: 'Slice settings',
       subtitle: 'Save the printer / process / filament / bed picks from the Slice dialog under a name, then apply them to the next file in one go.',
-      loading: 'Loading saved settingsâ¦',
+      loading: 'Loading saved settings…',
       loadError: 'Could not load saved settings.',
       confirmDelete: 'Delete these saved settings? This cannot be undone.',
       staleWarning: 'One or more referenced presets no longer exist. Re-save from the Slice dialog to fix.',
@@ -3527,7 +3551,7 @@ export default {
         profiles: 'Profiles',
         filaments: 'Filaments'
       },
-      searchPlaceholder: 'Search saved settingsâ¦',
+      searchPlaceholder: 'Search saved settings…',
       filter: {
         count: '{{shown}} / {{total}}',
         noMatches: 'Nothing matches the current filters.'
@@ -4022,6 +4046,12 @@ export default {
     archivesBadge: 'Archives',
     projectsBadge: 'Projects',
     labelsBadge: 'Labels',
+    updateEnergyCost: 'Update the electricity price',
+    updateEnergyCostDescription: 'Only POST /settings/electricity-price — for Home Assistant and dynamic tariffs. It is not a general right to change settings.',
+    energyCostBadge: 'Electricity price',
+    sendNotifications: 'Send notifications as an external app',
+    sendNotificationsDescription: 'Only POST /notifications/external-message: the key\'s program tells the farm\'s people something, always under the key\'s name and its owner. The owner needs the right to manage notifications.',
+    sendNotificationsBadge: 'Notifications',
     legacyBadge: 'Legacy',
     unnamedKey: 'Unnamed Key',
     lastUsed: 'Last used',
@@ -6027,12 +6057,33 @@ export default {
     noMatches: 'No settings match this search.',
   },
 
+  // The slicing-setup family's filters and field notes (spec slicing-setup r5).
+  slicingSetup: {
+    farmModels: 'Only models of my farm',
+    relaxed: {
+      source: 'No profile of your own fits here, so built-in profiles are shown too.',
+      farm: 'No profile of a printer model in your farm fits here, so every printer profile is shown.',
+      loaded: 'No profile of a loaded filament fits here, so every filament profile is shown.',
+    },
+    showAll: 'Show all',
+    noFit: 'No profile is known to fit this printer, so every profile is shown.',
+    gone: 'The chosen profile is no longer in the list. Choose one to continue.',
+    notProven: 'This printer profile is not known to be this printer with the chosen nozzle. Choose a profile of this printer to start.',
+    otherModel: 'This printer profile is for another model, so the file is for that model.',
+    family: {
+      pending: 'Waiting for the printer to say which filament family is in {{slot}}. You can choose a profile now.',
+      unavailable: 'The filament family in {{slot}} could not be read. Choose its profile.',
+      absent: 'No profile of the filament family in {{slot}} was found. Choose its profile.',
+    },
+    noCatalogue: 'Choosing presets here needs the right to slice files.',
+    fromPreset: 'Preset to start from',
+  },
   slice: {
     title: 'Slice model',
     action: 'Slice',
     pipelines: {
       label: 'Saved settings',
-      applyPrompt: 'Apply saved settingsâ¦',
+      applyPrompt: 'Apply saved settings…',
       empty: 'Nothing saved yet',
       saveButton: 'Save these settings',
       saveTitle: 'Save the current printer / process / filament / bed selection for reuse',
@@ -6062,20 +6113,10 @@ export default {
     autoArrange: 'Auto-arrange on the bed',
     autoArrangeHint: 'Let the slicer reposition objects before slicing. Applied automatically when re-slicing for a different nozzle class.',
     farmFilter: {
-      onlyOnline: 'Only printers that are online',
       onlyLoaded: 'Only filaments that are loaded',
-      noOnlinePrinters: 'No printer is online, so no printer profile matches.',
-      noOnlinePresets: 'No printer profile matches a printer that is online.',
-      nothingLoaded: 'Nothing is loaded on the printers that are online.',
-      noOnlineOfModel: 'No printer of the chosen model is online, so no filament counts as loaded.',
-      nothingLoadedOnModel: 'Nothing is loaded on the online printers of the chosen model.',
-      noLoadedPresets: 'No filament profile matches a loaded filament.',
       unavailable: 'The printers could not be read, so every profile is shown.',
       forbidden: 'These filters need the right to view printers, so every profile is shown.',
       stale: 'The printers could not be read again. The lists are still narrowed by the last answer, which may be out of date.',
-      showAll: 'Show all',
-      showAllPrinters: 'Show all printer profiles',
-      showAllFilaments: 'Show all filament profiles',
     },
     autoOrient: 'Auto-orient objects',
     autoOrientHint: 'Let the slicer rotate each object onto its best-scoring orientation. Overrides how the model was laid out.',
@@ -10670,7 +10711,16 @@ export default {
       intro:
         "Verification mode runs the calibration through your slicer sidecar and returns the sliced .gcode.3mf as a download. Open it in Bambu Studio or OrcaSlicer and compare against your reference output before BamDude wires this mode to dispatch real prints.",
       loadingPresets: 'Loading presets…',
-      specHeading: 'PA Tower parameters',
+      specHeadings: {
+        paLine: 'PA Line parameters',
+        paPattern: 'PA Pattern parameters',
+        paTower: 'PA Tower parameters',
+        flowRate: 'Flow Rate parameters',
+        tempTower: 'Temperature Tower parameters',
+        volSpeedTower: 'Max Volumetric Speed Tower parameters',
+        vfaTower: 'VFA Tower parameters',
+        retractionTower: 'Retraction Tower parameters',
+      },
       startK: 'Start K',
       endK: 'End K',
       stepK: 'K step',
@@ -12369,7 +12419,11 @@ export default {
     stockReorderAlert: 'Reorder Alert',
     stockReorderAlertDescription: 'SKU has reached its reorder point',
     stockBreakAlert: 'Stock Break Alert',
-    stockBreakAlertDescription: 'Stock will run out before replenishment arrives',
+    stockBreakAlertDescription: 'Stock will run out before replenishment arrives — or has run out',
+    // Messages from external apps (POST /notifications/external-message)
+    externalApps: 'External apps',
+    externalAppMessageLabel: 'External App',
+    externalAppMessageDescription: 'A message another program (Home Assistant, a script) sent through the API, with its sender',
     printFailed: 'Print Failed',
     printStopped: 'Print Stopped',
     printPausedLabel: 'Print Paused',
@@ -12574,6 +12628,8 @@ export default {
         cleared: '{{count}} removed',
         delete: 'Delete',
         openPlugs: 'Open smart plugs',
+        from: 'From: {{sender}}',
+        openLink: 'Open link',
         notificationCount_one: 'notification',
         notificationCount_other: 'notifications',
         unread: 'Unread'
@@ -12632,7 +12688,8 @@ export default {
         ,ha_sensor_alert: 'Printer HA sensor alert',
         location_ha_sensor_alert: 'Storage HA sensor alert',
         plug_meter_stalled: 'Plug energy counter stalled',
-        credentials_reissue_required: "Integration credentials need reissuing"
+        credentials_reissue_required: "Integration credentials need reissuing",
+        external_app_message: 'Message from an external app'
       }
     },
     // User email notification preferences
@@ -12878,6 +12935,17 @@ export default {
     inHours: 'in {{count}}h',
     daysAgo: '{{count}}d ago',
     inDays: 'in {{count}}d'
+  },
+
+  // Units beside a number (utils/weight, utils/date with a translator).
+  units: {
+    grams: '{{value}}g',
+    kilograms: '{{value}}kg',
+    tonnes: '{{value}}t',
+    hours: '{{value}}h',
+    minutes: '{{minutes}}m',
+    hoursMinutes: '{{hours}}h {{minutes}}m',
+    kwh: '{{value}} kWh'
   },
 
   // Permission categories and actions (for group editor)

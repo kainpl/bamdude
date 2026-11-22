@@ -70,3 +70,18 @@ class TestSettingIdCollisions:
         preset = cat.preset_for_setting_id("GFSR99_10")
         assert preset is not None
         assert preset.filament_id == "GFU99"
+
+
+# Spec slicing-setup r5 §8.3 (D9): a base stands for a family only when every
+# catalogue setting id with that base belongs to that family.
+def test_ambiguous_bases_have_no_alias():
+    assert "GFSR99" not in cat.alias_bases_for_family("GFR99")  # EVA
+    assert "GFSR99" not in cat.alias_bases_for_family("GFU99")  # TPU shares the base
+    assert "GFSP97" not in cat.alias_bases_for_family("GFP97")  # PP
+    assert "GFSP97" not in cat.alias_bases_for_family("GFP95")  # PP-GF shares it
+
+
+def test_unambiguous_bases_are_aliases():
+    assert "GFSA00" in cat.alias_bases_for_family("GFA00")
+    assert "GFSA06" in cat.alias_bases_for_family("GFA06")  # no bare GFSA06 in the catalogue
+    assert cat.alias_bases_for_family("NO-SUCH-FAMILY") == frozenset()

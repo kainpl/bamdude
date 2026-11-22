@@ -18,9 +18,12 @@ from backend.app.services.preview_protocol import CONTROL_SECONDS, PreviewError,
 from backend.app.services.worker_staging import abandoned_attempts, cleanup_owned, retained_entries
 
 logger = logging.getLogger(__name__)
-_COMPUTE_SECONDS = 180
+# Compute time grows with the G-code limit (owner, 2026-11-20): 180 s for
+# 256 MiB became 720 s for 1 GiB (``print_file_analysis._MAX_GCODE_BYTES``).
+# The transfer moves the small result, not the G-code, and keeps its 60 s.
+_COMPUTE_SECONDS = 720
 _TRANSFER_SECONDS = 60
-_HARD_SECONDS = 240
+_HARD_SECONDS = _COMPUTE_SECONDS + _TRANSFER_SECONDS
 # Bootstrap does disk-backed JetStream administration, not a worker control RPC.
 _BOOTSTRAP_SECONDS = 30
 _BOOTSTRAP_REQUEST_SECONDS = 10
@@ -489,7 +492,11 @@ class AnalysisRuntime:
                         await owned(self.cancel(command))
                     except Exception:
                         self.uncertain = True
-                raise AnalysisResourceError("analysis service failed") from exc
+                # The parent log must say why (local microservice rule): our own
+                # refusals carry a safe, path-free text (the worker's outcome,
+                # a phase marker, a budget); anything else is named by its type.
+                reason = str(exc) if isinstance(exc, AnalysisResourceError) else type(exc).__name__
+                raise AnalysisResourceError(f"analysis service failed: {reason}") from exc
             finally:
 
                 async def cleanup():

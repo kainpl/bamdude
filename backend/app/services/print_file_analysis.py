@@ -40,11 +40,17 @@ _RETRY_DELAYS_SECONDS = (5.0, 30.0, 120.0)
 _SERVICE_START_POLL_SECONDS = 2.0
 _MAX_SERVICE_START_WAITS = 60
 _MAX_PENDING_CONTEXTS = 64
-_MAX_GCODE_BYTES = 256 * 1024 * 1024
+# Owner's decision (2026-11-20): 256 MiB refused the whole analysis of a long
+# four-colour X2D plate (305 MiB of G-code) — no live usage, no slicer grams at
+# completion. 1 GiB is safe only because the layer timeline streams the member
+# (``threemf_tools.extract_layer_filament_usage_from_3mf``): measured 18 s for
+# 305 MiB here. The deadlines grew in the same proportion (180 s → 720 s, here
+# and ``analysis_runtime._COMPUTE_SECONDS``) so a slow host still finishes.
+_MAX_GCODE_BYTES = 1024 * 1024 * 1024
 _MAX_LAYER_CHANNEL_ENTRIES = 1_000_000
 _MAX_ANALYSIS_BYTES = 32 * 1024 * 1024
 _MAX_RETAINED_ANALYSIS_BYTES = 256 * 1024 * 1024
-_ANALYSIS_DEADLINE_SECONDS = 180.0
+_ANALYSIS_DEADLINE_SECONDS = 720.0
 
 
 class AnalysisResourceError(RuntimeError):

@@ -199,6 +199,16 @@
     "title_template": "Ризик закінчення: {filament}",
     "body_template": "{filament} ({brand}) закінчиться до прибуття поповнення.\nЗалишок: {stock_g}г | Темп: {rate_g_day}г/день | Термін постачання: {lead_time_days}д\nЛишилось лише {days_left}д запасу — замовляй негайно."
   },
+  "stock_depleted_alert": {
+    "name": "Матеріал закінчився",
+    "title_template": "Закінчився: {filament}",
+    "body_template": "{filament} ({brand}) закінчився: останню котушку заархівовано, а цього матеріалу й кольору іншого бренду на полиці немає.\nТемп, поки був: {rate_g_day}г/день | Термін постачання: {lead_time_days}д\nЯкщо колір ще потрібен — замов; якщо ні — вимкни сповіщення для цього SKU у прогнозі."
+  },
+  "external_app_message": {
+    "name": "Повідомлення від зовнішньої програми",
+    "title_template": "{level_icon} {title}",
+    "body_template": "{message}\n{link}"
+  },
   "user_print_start": {
     "name": "Друк користувача розпочато (лист)",
     "title_template": "Ваш друк розпочато",

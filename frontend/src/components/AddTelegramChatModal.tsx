@@ -190,6 +190,7 @@ export function AddTelegramChatModal({ chat, providerId, onClose }: AddTelegramC
     queue_job_failed: 'notifications.jobFailed',
     queue_completed: 'notifications.queueComplete',
     printer_queue_completed: 'notifications.printerQueueComplete',
+    external_app_message: 'notifications.externalAppMessageLabel',
   };
   const CATEGORY_KEYS: Record<string, string> = {
     'Print Lifecycle': 'notifications.printEvents',
@@ -198,6 +199,8 @@ export function AddTelegramChatModal({ chat, providerId, onClose }: AddTelegramC
     'Sensor Alerts': 'notifications.sensorAlerts',
     'Print Events': 'notifications.printEvents',
     'Queue': 'notifications.printQueue',
+    'Inventory': 'notifications.inventoryAlerts',
+    'External apps': 'notifications.externalApps',
   };
 
   return (

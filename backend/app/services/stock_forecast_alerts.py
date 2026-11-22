@@ -26,6 +26,11 @@ panel was right and the service was the bug):
   a stored ``kg`` as *days*;
 * the delta-tier rate runs over ALL spools including archived, and the usage
   window is 90 days of time rather than the newest 5000 rows globally;
+* an archived-only SKU (owner, 2026-11-20) is silent while the same material,
+  subtype and colour is on the shelf under another brand — a farm that moved a
+  colour to another brand was told daily, for every brand it stopped buying,
+  that it would run out with 0 g left — and otherwise is told ONCE that it ran
+  out (``depleted``), in its own words, never repeated while that stands;
 * under Spoolman the tick forecasts the SPOOLMAN inventory (upstream 1d86cff5a,
   #3407): the engine reads Spoolman's spools and their own usage rows there,
   never the local tables, which are not the inventory the operator manages.
@@ -46,10 +51,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import async_session
 from backend.app.models.filament_sku_settings import FilamentSkuSettings
+from backend.app.services.filament_needs import colour_matches, names_of_hex_loader
 from backend.app.services.forecast_engine import (
     DEFAULT_SAFETY_MARGIN_UNIT,
     DEFAULT_SAFETY_MARGIN_VALUE,
     ForecastSourceUnavailable,
+    SkuForecastRow,
     compute_forecast,
     sku_key,
 )
@@ -57,7 +64,12 @@ from backend.app.services.forecast_engine import (
 logger = logging.getLogger(__name__)
 
 # Which column remembers which announcement.
-_STAMP = {"break": "stock_break_notified_at", "reorder": "stock_reorder_notified_at"}
+_STAMP = {
+    "break": "stock_break_notified_at",
+    "reorder": "stock_reorder_notified_at",
+    "depleted": "stock_depleted_notified_at",
+}
+_KINDS = tuple(_STAMP)
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -68,7 +80,7 @@ def _as_utc(value: datetime | None) -> datetime | None:
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
-AlertKind = Literal["break", "reorder"]
+AlertKind = Literal["break", "reorder", "depleted"]
 
 
 class SkuAlert(NamedTuple):
@@ -78,7 +90,11 @@ class SkuAlert(NamedTuple):
     ``reorder`` — stock has fallen to the reorder point: still enough to cover
     the lead time, but no longer enough to cover it with the safety buffer.
 
-    The two are mutually exclusive, exactly as on the panel (the engine's
+    ``depleted`` — every spool of the SKU is archived (zero stock, so the
+    engine flags it), and no other brand of the same material, subtype and
+    colour is on the shelf: the colour ran out. Said once, not daily.
+
+    The kinds are mutually exclusive, exactly as on the panel (the engine's
     flags already encode "break wins outright"). Once a SKU is genuinely going
     to run out in time, "you should reorder" is no longer the message worth
     sending.
@@ -107,8 +123,10 @@ async def find_stock_alerts(db: AsyncSession, now: datetime | None = None) -> li
     """
     now = now or datetime.now(timezone.utc)
 
+    rows = await compute_forecast(db, now=now)
+    names_of_hex = None
     alerts: list[SkuAlert] = []
-    for row in await compute_forecast(db, now=now):
+    for row in rows:
         if row.alerts_snoozed:
             continue
         if row.stock_break_alert:
@@ -117,6 +135,13 @@ async def find_stock_alerts(db: AsyncSession, now: datetime | None = None) -> li
             kind = "reorder"
         else:
             continue
+        if row.total_spools == 0:
+            # Every spool archived: zero stock is a fact, not a forecast.
+            if names_of_hex is None:
+                names_of_hex = await names_of_hex_loader(db)
+            if _stood_in_for(row, rows, names_of_hex):
+                continue
+            kind = "depleted"
         # An alerting row always has a positive rate (the engine raises no flag
         # without one), so the int/float fields below are never None.
         alerts.append(
@@ -134,6 +159,33 @@ async def find_stock_alerts(db: AsyncSession, now: datetime | None = None) -> li
             )
         )
     return alerts
+
+
+def _stood_in_for(gone: SkuForecastRow, rows: list[SkuForecastRow], names_of_hex) -> bool:
+    """Is the same filament on the shelf under another SKU (another brand, or the
+    same brand under another spelling of the colour)?
+
+    Same material and subtype, and a live row with filament left whose colour
+    the ONE colour rule (``filament_needs.colour_matches`` — its own name, or the
+    catalog's name for its hex) says is the gone SKU's. A SKU without a colour
+    name proves nothing and stays "ran out". Material and subtype compare
+    trimmed and case-folded; another subtype (PETG HF for PETG Basic) is a
+    different product, not a stand-in.
+    """
+    colour = (gone.color_name or "").strip().casefold()
+    if not colour:
+        return False
+    material = (gone.material or "").strip().casefold()
+    subtype = (gone.subtype or "").strip().casefold()
+    for row in rows:
+        if row is gone or row.total_spools <= 0 or row.total_remaining_g <= 0:
+            continue
+        if (row.material or "").strip().casefold() != material or (row.subtype or "").strip().casefold() != subtype:
+            continue
+        hex_ = (row.rgba or "").replace("#", "").lower()[:6] or None
+        if colour_matches(row.color_name, hex_, colour, names_of_hex):
+            return True
+    return False
 
 
 class StockForecastAlerts:
@@ -177,8 +229,7 @@ class StockForecastAlerts:
                 logger.info("Stock-forecast alerts skipped: Spoolman did not answer (%s)", exc)
                 return
             active: dict[AlertKind, set[tuple[str, str, str, str]]] = {
-                "break": {a.key for a in alerts if a.kind == "break"},
-                "reorder": {a.key for a in alerts if a.kind == "reorder"},
+                kind: {a.key for a in alerts if a.kind == kind} for kind in _KINDS
             }
 
             # Clear the stamp of every state a SKU is no longer in, so both a
@@ -187,7 +238,7 @@ class StockForecastAlerts:
             rows = list((await db.execute(select(FilamentSkuSettings))).scalars().all())
             by_key = {sku_key(r.material, r.subtype, r.brand, r.color_name): r for r in rows}
             for key, row in by_key.items():
-                for kind in ("break", "reorder"):
+                for kind in _KINDS:
                     if getattr(row, _STAMP[kind]) is not None and key not in active[kind]:
                         setattr(row, _STAMP[kind], None)
 
@@ -195,7 +246,9 @@ class StockForecastAlerts:
             for entry in alerts:
                 row = by_key.get(entry.key)
                 last = _as_utc(getattr(row, _STAMP[entry.kind])) if row else None
-                if last is not None and now - last < self._repeat_after:
+                # A colour that ran out is said once per episode: a daily
+                # "it ran out" is the noise this kind exists to end.
+                if last is not None and (entry.kind == "depleted" or now - last < self._repeat_after):
                     continue
 
                 if row is None:
@@ -229,10 +282,11 @@ class StockForecastAlerts:
             await db.commit()
             if announced:
                 logger.info(
-                    "Stock-forecast alerts: announced %d SKU(s) (%d break, %d reorder)",
+                    "Stock-forecast alerts: announced %d SKU(s) (%d break, %d reorder, %d ran out)",
                     announced,
                     len(active["break"]),
                     len(active["reorder"]),
+                    len(active["depleted"]),
                 )
 
     async def _announce(self, db: AsyncSession, entry: SkuAlert) -> None:
@@ -254,6 +308,8 @@ class StockForecastAlerts:
                 # point of that message ("runs out before replenishment arrives");
                 # the reorder one talks about the reorder point instead.
                 await notification_service.on_stock_break_alert(lead_time_days=entry.lead_time_days, **common)
+            elif entry.kind == "depleted":
+                await notification_service.on_stock_depleted(lead_time_days=entry.lead_time_days, **common)
             else:
                 await notification_service.on_stock_reorder_alert(**common)
         except Exception:

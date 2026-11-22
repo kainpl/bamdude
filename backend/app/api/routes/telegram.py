@@ -167,6 +167,12 @@ EVENT_CATEGORIES = {
             "printer_queue_completed",
         ],
     },
+    "external": {
+        "label": "External apps",
+        "events": [
+            "external_app_message",
+        ],
+    },
 }
 
 EVENT_LABELS = {
@@ -212,6 +218,7 @@ EVENT_LABELS = {
     "queue_job_failed": "Queue job failed",
     "queue_completed": "Queue completed",
     "printer_queue_completed": "Printer queue completed",
+    "external_app_message": "Message from an external app",
 }
 
 

@@ -4,7 +4,7 @@
  * The matching rules themselves are unit-tested in `utils/`; these pin what
  * the dialog does with them.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
@@ -15,6 +15,7 @@ import { SliceModal } from '../../components/SliceModal';
 import { SliceJobTrackerProvider } from '../../contexts/SliceJobTrackerContext';
 import type { UnifiedPreset, UnifiedPresetsBySlot } from '../../api/client';
 import { MODAL_SIZE_CLASS } from '../../components/Modal';
+import { __resetSharedMemoryForTests } from '../../components/slicing-setup/memory';
 
 type Tier = 'local' | 'orca_cloud' | 'cloud' | 'standard';
 type Listing = Partial<Record<Tier, Partial<Record<keyof UnifiedPresetsBySlot, Partial<UnifiedPreset>[]>>>>;
@@ -71,6 +72,14 @@ function open() {
 async function picker(label: string | RegExp): Promise<HTMLElement> {
   return waitFor(() => screen.getByLabelText(label));
 }
+
+// Spec slicing-setup §4.4.1: the source filter's first value is Mine. These
+// tests are about the rest of the dialog, so each starts from All.
+const startFromAllSources = () => {
+  __resetSharedMemoryForTests();
+  localStorage.setItem('bamdude:presets:source-filter', 'all');
+};
+beforeEach(startFromAllSources);
 
 describe('SliceModal — a printer preset saved under a name of its own', () => {
   const listing: Listing = {

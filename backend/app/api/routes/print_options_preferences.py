@@ -105,7 +105,7 @@ async def delete_system_preference(
     await db.commit()
 
 
-@router.get("/{printer_model}", response_model=PrintOptionsPreferenceResponse)
+@router.get("/{printer_model}", response_model=PrintOptionsPreferenceResponse | None)
 async def get_preference(
     printer_model: str,
     current_user: User | None = RequirePermission(Permission.QUEUE_CREATE),
@@ -113,23 +113,21 @@ async def get_preference(
 ):
     """Return the saved preference for ``(current_user, printer_model)``.
 
-    404 if no preference has been saved yet — the modal then falls back
-    to its built-in defaults.
+    ``null`` when none has been saved yet — the Print dialog and the
+    calibration page then use their built-in defaults. Nothing saved is an
+    ordinary answer, not a 404: both ask on every open, and every browser
+    logged that 404 as a failed resource.
     """
     if current_user is None:
-        # Auth disabled (shouldn't happen post-0.4.0 — auth is always on),
-        # but handle gracefully so the modal doesn't 500.
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No preference saved")
+        # Auth disabled (shouldn't happen post-0.4.0 — auth is always on).
+        return None
 
     result = await db.execute(
         select(PrintOptionsPreference)
         .where(PrintOptionsPreference.user_id == current_user.id)
         .where(PrintOptionsPreference.printer_model == printer_model)
     )
-    pref = result.scalar_one_or_none()
-    if pref is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No preference saved")
-    return pref
+    return result.scalar_one_or_none()
 
 
 @router.put("/{printer_model}", response_model=PrintOptionsPreferenceResponse)

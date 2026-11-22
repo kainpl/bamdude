@@ -45,6 +45,7 @@ from backend.app.services.calibration_service import (
     CalibModeVerificationOnlyError,
     CalibrationService,
     SlicerSidecarRequiredError,
+    effective_bed_type,
     reconcile_session_status,
 )
 from backend.app.services.preset_resolver import resolve_preset_ref
@@ -58,7 +59,7 @@ from backend.app.services.slicer_api import (
     SlicerTimeoutError,
     get_stall_timeout_seconds,
 )
-from backend.app.services.slicer_routing import any_sidecar_online, resolve_sidecar_url
+from backend.app.services.slicer_routing import any_sidecar_online, refuse_bed_type_for_slicer, resolve_sidecar_url
 
 logger = logging.getLogger(__name__)
 
@@ -537,9 +538,18 @@ async def slice_calibration_for_verification(
     # into spec so the builder can pin the 3MF's ``curr_bed_type``
     # (otherwise the scaffold's default "Cool Plate" fails PETG / TPU
     # plate-compat validation).
+    # The slicer is resolved BEFORE anything is built, and the plate checked
+    # against it (spec slicing-setup r5 §8.2): one effective plate goes to the
+    # builder's ``curr_bed_type`` and to the CLI.
+    effective = effective_bed_type(body.spec, body.bed_type)
+    kind, api_url = await resolve_sidecar_url(db, slicer_override=body.slicer)
+    refuse_bed_type_for_slicer(effective, kind)
+    if not api_url:
+        raise HTTPException(503, "No slicer sidecar configured")
+
     spec_with_bed = dict(body.spec or {})
-    if body.bed_type and "bed_type" not in spec_with_bed:
-        spec_with_bed["bed_type"] = body.bed_type
+    if effective:
+        spec_with_bed["bed_type"] = effective
     # Target printer's settings_id would let the writer patch the
     # scaffold's project_settings.config to match what's about to land
     # via --load-settings. The PresetRef path defers this until the cloud
@@ -548,9 +558,10 @@ async def slice_calibration_for_verification(
     # slide through.
     # Thread the slicer choice through so mode builders can swap
     # slicer-specific overrides (e.g. PA Tower's brim_type — Orca
-    # supports brim_ears, BS does not and silently produces no brim).
-    if body.slicer and "slicer" not in spec_with_bed:
-        spec_with_bed["slicer"] = body.slicer
+    # supports brim_ears, BS does not and silently produces no brim) —
+    # the slicer that will actually slice, not only an explicit override.
+    if kind:
+        spec_with_bed["slicer"] = kind
 
     # PA Line and Vol Speed Tower both need the printer's real bed
     # size. PA Line centres its pattern on the plate (absolute machine
@@ -602,10 +613,6 @@ async def slice_calibration_for_verification(
     except ValueError as exc:
         logger.warning("slice_only: builder rejected spec for %s — %s", body.cali_mode.value, exc)
         raise HTTPException(400, str(exc))
-
-    _, api_url = await resolve_sidecar_url(db, slicer_override=body.slicer)
-    if not api_url:
-        raise HTTPException(503, "No slicer sidecar configured")
 
     model_filename = f"calibration_{body.cali_mode.value}.3mf"
     # Hoisted so the Vol-Speed patcher can read it after the slice.
@@ -707,7 +714,7 @@ async def slice_calibration_for_verification(
                 process_profile_json=process_json,
                 filament_profile_jsons=filament_jsons,
                 export_3mf=True,
-                bed_type=body.bed_type,
+                bed_type=effective,
             )
     except SlicerInputError as exc:
         # Sidecar 4xx — the CLI rejected our input (incompat preset,
@@ -866,9 +873,16 @@ async def bake_calibration_3mf(
     # letting the operator pull the baked 3MF for debugging once a mode
     # is already wired to dispatch. No verification-only gate.
 
+    # Nothing is sliced here, but the plate is still the one the resolved
+    # slicer would slice with — refused for it before the builder runs.
+    effective = effective_bed_type(body.spec, body.bed_type)
+    kind, _ = await resolve_sidecar_url(db, slicer_override=body.slicer)
+    refuse_bed_type_for_slicer(effective, kind)
     spec_with_bed = dict(body.spec or {})
-    if body.bed_type and "bed_type" not in spec_with_bed:
-        spec_with_bed["bed_type"] = body.bed_type
+    if effective:
+        spec_with_bed["bed_type"] = effective
+    if kind:
+        spec_with_bed["slicer"] = kind
     # No target_printer_settings_id branch here: ``CalibBakeOnlyIn`` has
     # no ``bundle`` / preset fields. The bake-only artefact is for
     # operator inspection only — nothing slices it through --load-settings,

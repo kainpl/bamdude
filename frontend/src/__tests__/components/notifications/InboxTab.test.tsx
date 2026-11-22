@@ -154,4 +154,41 @@ describe('InboxTab', () => {
     // Only the warning about a plug carries one.
     expect(screen.getAllByRole('link', { name: 'Open smart plugs' })).toHaveLength(1);
   });
+
+  it('names who sent an external app message and opens its link', async () => {
+    // Spec external-app-messages-spec: the sender is shown on its own line, never left to the text.
+    const external = {
+      id: 4, event_type: 'external_app_message', severity: 'error', group: 'system', title: '🚨 Power lost',
+      message: 'The farm is on battery.',
+      printer_id: null, printer_name: null,
+      extra_data: {
+        sender: { api_key_id: 5, key_name: 'Home Assistant', owner_id: 2, owner_name: 'kain' },
+        link: 'https://ha.local/power',
+      },
+      created_at: new Date().toISOString(), read_at: null,
+    };
+    server.use(http.get('/api/v1/inbox/', () => HttpResponse.json(pageOf([external, items[1]], 1))));
+    render(<InboxTab />);
+
+    expect(await screen.findByText('From: Home Assistant · kain')).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: 'Open link' });
+    expect(link).toHaveAttribute('href', 'https://ha.local/power');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link.getAttribute('rel')).toContain('noopener');
+    expect(screen.getAllByText(/^From: /)).toHaveLength(1);
+  });
+
+  it('never makes a link of anything but http and https', async () => {
+    const external = {
+      id: 5, event_type: 'external_app_message', severity: 'info', group: 'system', title: 'ℹ️ Note',
+      message: 'x', printer_id: null, printer_name: null,
+      extra_data: { sender: { api_key_id: 5, key_name: 'Script', owner_id: 2, owner_name: 'kain' }, link: 'javascript:alert(1)' },
+      created_at: new Date().toISOString(), read_at: null,
+    };
+    server.use(http.get('/api/v1/inbox/', () => HttpResponse.json(pageOf([external], 1))));
+    render(<InboxTab />);
+
+    expect(await screen.findByText('From: Script · kain')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Open link' })).toBeNull();
+  });
 });

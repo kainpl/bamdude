@@ -47,5 +47,9 @@ class FilamentSkuSettings(Base):
     # the two states are mutually exclusive — sharing a stamp would silence a SKU
     # for a day exactly as it slid from "reorder now" into "will run out".
     stock_reorder_notified_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # When "this colour ran out" went out (m250): a SKU whose every spool is
+    # archived, with no other brand of it on the shelf. Said once, never
+    # repeated while the state stands; cleared when the SKU leaves that state.
+    stock_depleted_notified_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

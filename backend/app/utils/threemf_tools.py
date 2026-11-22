@@ -5,11 +5,13 @@ per-layer filament usage data from the embedded G-code. This enables
 accurate partial usage reporting for multi-material prints.
 """
 
+import io
 import json
 import logging
 import math
 import re
 import zipfile
+from collections.abc import Iterable
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,6 +55,25 @@ PROJECT_SETTINGS_SENTINELS: dict[str, str] = {
 }
 
 PROJECT_SETTINGS_PATH = "Metadata/project_settings.config"
+
+
+# One G-code line, at most. Streaming bounds memory per line only: a member
+# with no line ends would otherwise become one string as large as the member
+# (up to the 1 GiB G-code limit). Real lines are short — moves are tens of
+# bytes, the config block's longest values a few KB — so 1 Mi chars is far
+# above any slicer's output and far below a memory problem.
+_MAX_GCODE_LINE_CHARS = 1 << 20
+
+
+def _bounded_gcode_lines(text: io.TextIOBase) -> Iterable[str]:
+    """Yield the lines of a text stream; refuse a line over the bound."""
+    while True:
+        line = text.readline(_MAX_GCODE_LINE_CHARS + 1)
+        if not line:
+            return
+        if len(line) > _MAX_GCODE_LINE_CHARS:
+            raise ValueError(f"G-code line longer than {_MAX_GCODE_LINE_CHARS} characters")
+        yield line
 
 
 def _is_sentinel(value: object, sentinel: str) -> bool:
@@ -165,7 +186,7 @@ class GcodeLayerScan(dict):
     pause_points: tuple[tuple[int, int | None], ...] = ()
 
 
-def parse_gcode_layer_filament_usage(gcode_content: str) -> GcodeLayerScan:
+def parse_gcode_layer_filament_usage(gcode_content: str | Iterable[str]) -> GcodeLayerScan:
     """Parse G-code to extract per-layer, per-filament cumulative extrusion in mm.
 
     This function tracks filament extrusion across layers and tool changes,
@@ -206,7 +227,12 @@ def parse_gcode_layer_filament_usage(gcode_content: str) -> GcodeLayerScan:
     active_filament: int | None = None
     cumulative_extrusion: dict[int, float] = {}  # filament_id -> total mm
 
-    for line in gcode_content.splitlines():
+    # A string is split here; an iterable of lines (a streamed archive member,
+    # see ``extract_layer_filament_usage_from_3mf``) is read as it comes — the
+    # whole G-code is never held at once. Each line is stripped below, so a
+    # streamed line's own line end changes nothing.
+    lines = gcode_content.splitlines() if isinstance(gcode_content, str) else gcode_content
+    for line in lines:
         line = line.strip()
         if not line:
             continue
@@ -402,9 +428,14 @@ def extract_layer_filament_usage_from_3mf(
                     return (int(digits) if digits else 1 << 30, name)
 
                 gcode_path = sorted(gcode_files, key=_plate_no)[0]
-            gcode_content = zf.read(gcode_path).decode("utf-8", errors="ignore")
-
-            scan = parse_gcode_layer_filament_usage(gcode_content)
+            # Streamed line by line: reading the member whole held its bytes,
+            # their text and a list of every line at once (~1.4 GiB for a
+            # 305 MiB plate), which the 1 GiB G-code limit could not afford.
+            with zf.open(gcode_path) as member:
+                text = io.TextIOWrapper(member, encoding="utf-8", errors="ignore", newline=None)
+                # An overlong line raises here and is caught below: the timeline
+                # is unavailable, the metadata totals are not touched.
+                scan = parse_gcode_layer_filament_usage(_bounded_gcode_lines(text))
             if not plate_is_named:
                 scan.pause_points = ()
             return scan

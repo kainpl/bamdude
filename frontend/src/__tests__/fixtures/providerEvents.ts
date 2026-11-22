@@ -52,4 +52,5 @@ export const PROVIDER_EVENTS: ProviderEventInfo[] = [
   { flag: 'on_sensor_silent', event_types: ['sensor_silent', 'sensor_speaking_again'], group: 'sensors', severity: 'warning', default: false },
   { flag: 'on_ha_sensor_alert', event_types: ['ha_sensor_alert'], group: 'sensors', severity: 'warning', default: false },
   { flag: 'on_location_ha_sensor_alert', event_types: ['location_ha_sensor_alert'], group: 'sensors', severity: 'warning', default: false },
+  { flag: 'on_external_app_message', event_types: ['external_app_message'], group: 'system', severity: 'warning', default: false },
 ];

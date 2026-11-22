@@ -106,6 +106,7 @@ import { SelectionBox } from '../components/SelectionBox';
 
 import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router';
 import { api, discoveryApi, firmwareApi, macrosApi, withMediaToken, DEFAULT_BACKUP_COMPATIBILITY, DEFAULT_AUTO_STOCK_SPOOL } from '../api/client';
+import { invalidatePrinterFleet } from '../utils/printerFleetInvalidation';
 import { AutoStockSpoolFields } from '../components/AutoStockSpoolFields';
 import { BulkPrinterToolbar, type BulkAction } from '../components/BulkPrinterToolbar';
 import { BulkPrinterActionDialog } from '../components/BulkPrinterActionDialog';
@@ -2681,7 +2682,7 @@ const PrinterCard = memo(function PrinterCard({
     mutationFn: (options: { deleteArchives: boolean }) =>
       api.deletePrinter(printer.id, options.deleteArchives),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['printers'] });
+      void invalidatePrinterFleet(queryClient);
       queryClient.invalidateQueries({ queryKey: ['archives'] });
       queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
     },
@@ -2703,7 +2704,7 @@ const PrinterCard = memo(function PrinterCard({
   const maintenanceMutation = useMutation({
     mutationFn: (isActive: boolean) => api.updatePrinter(printer.id, { is_active: isActive }),
     onSuccess: (_data, isActive) => {
-      queryClient.invalidateQueries({ queryKey: ['printers'] });
+      void invalidatePrinterFleet(queryClient);
       queryClient.invalidateQueries({ queryKey: ['printerStatus', printer.id] });
       showToast(
         isActive
@@ -2735,7 +2736,7 @@ const PrinterCard = memo(function PrinterCard({
   const archiveMutation = useMutation({
     mutationFn: () => api.archivePrinter(printer.id),
     onSuccess: (res) => {
-      queryClient.invalidateQueries({ queryKey: ['printers'] });
+      void invalidatePrinterFleet(queryClient);
       invalidateQueueViews(queryClient);
       showToast(
         t('printers.archive.toastArchived', { name: printer.name, count: res.cancelled_items }),
@@ -3071,7 +3072,7 @@ const PrinterCard = memo(function PrinterCard({
   const plateDetectionMutation = useMutation({
     mutationFn: (enabled: boolean) => api.updatePrinter(printer.id, { plate_detection_enabled: enabled }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['printers'] });
+      void invalidatePrinterFleet(queryClient);
       showToast(plateDetectionMutation.variables ? t('printers.toast.plateCheckEnabled') : t('printers.toast.plateCheckDisabled'));
     },
     onError: (error: Error) => showToast(error.message || t('printers.toast.failedToUpdateSetting'), 'error'),
@@ -8994,7 +8995,7 @@ export function EditPrinterModal({
   const updateMutation = useMutation({
     mutationFn: (data: Partial<PrinterCreate>) => api.updatePrinter(printer.id, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['printers'] });
+      void invalidatePrinterFleet(queryClient);
       queryClient.invalidateQueries({ queryKey: ['printerStatus', printer.id] });
       onClose();
     },
@@ -9858,7 +9859,7 @@ export function PrintersPage() {
   const addMutation = useMutation({
     mutationFn: api.createPrinter,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['printers'] });
+      void invalidatePrinterFleet(queryClient);
       queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
       setShowAddModal(false);
     },

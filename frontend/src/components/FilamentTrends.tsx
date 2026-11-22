@@ -14,7 +14,7 @@ import {
 } from 'recharts';
 import type { ArchiveAggregate } from '../api/client';
 import { MetricToggle, type Metric } from './MetricToggle';
-import { localDateOfBucket } from '../utils/date';
+import { hourOfDayLabel, localDateOfBucket, weekdayShortLabels } from '../utils/date';
 import { formatWeight } from '../utils/weight';
 import { MaterialNumberBreakdown } from './MaterialNumberBreakdown';
 
@@ -36,11 +36,11 @@ interface FilamentTrendsProps {
 
 const COLORS = ['#00ae42', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
 
-const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const HOUR_SUFFIXES = ['12am', '1am', '2am', '3am', '4am', '5am', '6am', '7am', '8am', '9am', '10am', '11am', '12pm', '1pm', '2pm', '3pm', '4pm', '5pm', '6pm', '7pm', '8pm', '9pm', '10pm', '11pm'];
 
 export function FilamentTrends({ aggregate, currency = '$', dateFrom, dateTo }: FilamentTrendsProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  // Dates, weekdays and hours in the UI language, not the browser's.
+  const locale = i18n.language;
   const [filamentTypeMetric, setFilamentTypeMetric] = useState<Metric>('weight');
   const [colorMetric, setColorMetric] = useState<Metric>('weight');
 
@@ -64,9 +64,9 @@ export function FilamentTrends({ aggregate, currency = '$', dateFrom, dateTo }: 
       .sort((a, b) => a.date.localeCompare(b.date))
       .map(d => ({
         ...d,
-        dateLabel: localDateOfBucket(d.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        dateLabel: localDateOfBucket(d.date).toLocaleDateString(locale, { month: 'short', day: 'numeric' }),
       }));
-  }, [buckets]);
+  }, [buckets, locale]);
 
   // Compute effective span in days from props or archive spread
   const spanDays = useMemo(() => {
@@ -100,17 +100,16 @@ export function FilamentTrends({ aggregate, currency = '$', dateFrom, dateTo }: 
       dataMap.set(bucket.at, existing);
     });
 
+    const dayNames = weekdayShortLabels(locale, 'sunday');
     return Array.from(dataMap.values())
       .sort((a, b) => a.date.localeCompare(b.date))
       .map(d => {
         const dt = localDateOfBucket(d.date);
-        const h = dt.getHours();
-        const label = multiDay
-          ? `${DAY_NAMES[dt.getDay()]} ${HOUR_SUFFIXES[h]}`
-          : HOUR_SUFFIXES[h];
+        const hour = hourOfDayLabel(dt.getHours(), locale);
+        const label = multiDay ? `${dayNames[dt.getDay()]} ${hour}` : hour;
         return { ...d, dateLabel: label };
       });
-  }, [buckets, spanDays]);
+  }, [buckets, spanDays, locale]);
 
   // Calculate weekly aggregated data when there are many daily points
   const weeklyData = useMemo(() => {
@@ -135,10 +134,12 @@ export function FilamentTrends({ aggregate, currency = '$', dateFrom, dateTo }: 
       .sort((a, b) => a.week.localeCompare(b.week))
       .map(d => ({
         date: d.week,
-        dateLabel: `Week of ${localDateOfBucket(d.week).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`,
+        dateLabel: t('stats.weekOf', {
+          date: localDateOfBucket(d.week).toLocaleDateString(locale, { month: 'short', day: 'numeric' }),
+        }),
         ...d,
       }));
-  }, [dailyData]);
+  }, [dailyData, locale, t]);
 
   // Usage by filament type. The "PLA, PETG" split and the even division of
   // grams and seconds among its parts happen on the server now, under the same
@@ -219,7 +220,7 @@ export function FilamentTrends({ aggregate, currency = '$', dateFrom, dateTo }: 
         <div className="bg-bambu-dark rounded-lg p-4">
           <div className="flex items-center justify-between gap-2">
             <p className="text-sm text-bambu-gray leading-none">{t('stats.periodFilament')}</p>
-            <p className="text-2xl font-bold text-white leading-none">{formatWeight(totalFilament)}</p>
+            <p className="text-2xl font-bold text-white leading-none">{formatWeight(totalFilament, t)}</p>
           </div>
           <p className="text-xs text-bambu-gray">{printerCount} {t('nav.printers').toLowerCase()}</p>
         </div>
@@ -234,26 +235,22 @@ export function FilamentTrends({ aggregate, currency = '$', dateFrom, dateTo }: 
           <div className="flex items-center justify-between gap-2">
             <p className="text-sm text-bambu-gray leading-none">{t('stats.avgPerObject')}</p>
             <p className="text-2xl font-bold text-white leading-none">
-              {totalObjects > 0
-                ? (totalFilament / totalObjects).toFixed(0)
-                : 0}g
+              {formatWeight(totalObjects > 0 ? totalFilament / totalObjects : 0, t)}
             </p>
           </div>
           <p className="text-xs text-bambu-gray">
-            {currency}{totalObjects > 0 ? (totalCost / totalObjects).toFixed(2) : '0.00'} avg
+            {t('stats.avgCost', { cost: `${currency}${totalObjects > 0 ? (totalCost / totalObjects).toFixed(2) : '0.00'}` })}
           </p>
         </div>
         <div className="bg-bambu-dark rounded-lg p-4">
           <div className="flex items-center justify-between gap-2">
             <p className="text-sm text-bambu-gray leading-none">{t('stats.avgPerPrint')}</p>
             <p className="text-2xl font-bold text-white leading-none">
-              {totalPrints > 0
-                ? (totalFilament / totalPrints).toFixed(0)
-                : 0}g
+              {formatWeight(totalPrints > 0 ? totalFilament / totalPrints : 0, t)}
             </p>
           </div>
           <p className="text-xs text-bambu-gray">
-            {currency}{totalPrints > 0 ? (totalCost / totalPrints).toFixed(2) : '0.00'} avg
+            {t('stats.avgCost', { cost: `${currency}${totalPrints > 0 ? (totalCost / totalPrints).toFixed(2) : '0.00'}` })}
           </p>
         </div>
       </div>
@@ -280,7 +277,7 @@ export function FilamentTrends({ aggregate, currency = '$', dateFrom, dateTo }: 
               <YAxis
                 stroke="#9ca3af"
                 tick={{ fontSize: 12 }}
-                tickFormatter={(value) => `${value}g`}
+                tickFormatter={(value) => formatWeight(Number(value), t)}
               />
               <Tooltip
                 contentStyle={{
@@ -289,7 +286,7 @@ export function FilamentTrends({ aggregate, currency = '$', dateFrom, dateTo }: 
                   borderRadius: '8px',
                 }}
                 labelStyle={{ color: '#fff' }}
-                formatter={(value) => [`${Number(value ?? 0).toFixed(0)}g`, 'Filament']}
+                formatter={(value) => [formatWeight(Number(value ?? 0), t), t('stats.filamentUsed')]}
               />
               <Area
                 type="monotone"
@@ -340,10 +337,11 @@ export function FilamentTrends({ aggregate, currency = '$', dateFrom, dateTo }: 
                       borderRadius: '8px',
                     }}
                     formatter={(value) => [
-                      filamentTypeMetric === 'weight' ? formatWeight(Number(value ?? 0)) :
-                      filamentTypeMetric === 'time' ? `${Number(value ?? 0)}h` :
+                      filamentTypeMetric === 'weight' ? formatWeight(Number(value ?? 0), t) :
+                      filamentTypeMetric === 'time' ? t('units.hours', { value: Number(value ?? 0) }) :
                       `${value ?? 0}`,
-                      filamentTypeMetric === 'weight' ? 'Usage' : filamentTypeMetric === 'time' ? 'Time' : 'Prints',
+                      filamentTypeMetric === 'weight' ? t('stats.filamentByWeight')
+                        : filamentTypeMetric === 'time' ? t('stats.filamentByTime') : t('stats.filamentByPrints'),
                     ]}
                   />
                 </PieChart>
@@ -360,8 +358,8 @@ export function FilamentTrends({ aggregate, currency = '$', dateFrom, dateTo }: 
                       />
                       <span className="text-white truncate flex-1">{entry.name}</span>
                       <span className="text-bambu-gray flex-shrink-0">
-                        {filamentTypeMetric === 'weight' ? formatWeight(entry.value) :
-                         filamentTypeMetric === 'time' ? `${entry.value}h` :
+                        {filamentTypeMetric === 'weight' ? formatWeight(entry.value, t) :
+                         filamentTypeMetric === 'time' ? t('units.hours', { value: entry.value }) :
                          entry.value} · {percent}%
                       </span>
                     </div>
@@ -441,7 +439,7 @@ export function FilamentTrends({ aggregate, currency = '$', dateFrom, dateTo }: 
                           borderRadius: '8px',
                         }}
                         formatter={(value) => [
-                          colorMetric === 'weight' ? formatWeight(Number(value ?? 0)) : `${value ?? 0}`,
+                          colorMetric === 'weight' ? formatWeight(Number(value ?? 0), t) : `${value ?? 0}`,
                           colorMetric === 'weight' ? t('stats.filamentByWeight') : t('stats.filamentByPrints'),
                         ]}
                       />
@@ -449,10 +447,10 @@ export function FilamentTrends({ aggregate, currency = '$', dateFrom, dateTo }: 
                   </ResponsiveContainer>
                   <div className="absolute inset-0 flex flex-col items-center justify-center">
                     <span className="text-lg font-bold text-white">
-                      {colorMetric === 'weight' ? formatWeight(colorTotal) : colorTotal}
+                      {colorMetric === 'weight' ? formatWeight(colorTotal, t) : colorTotal}
                     </span>
                     <span className="text-[10px] text-bambu-gray">
-                      {colorData.length} {colorData.length === 1 ? 'color' : 'colors'}
+                      {t('stats.colorsCount', { count: colorData.length })}
                     </span>
                   </div>
                 </div>
@@ -471,7 +469,7 @@ export function FilamentTrends({ aggregate, currency = '$', dateFrom, dateTo }: 
                   })}
                 </div>
                 {colorData.length > 8 && (
-                  <p className="text-[10px] text-bambu-gray mt-1 text-center">+{colorData.length - 8} more</p>
+                  <p className="text-[10px] text-bambu-gray mt-1 text-center">{t('common.more', { count: colorData.length - 8 })}</p>
                 )}
               </div>
             );

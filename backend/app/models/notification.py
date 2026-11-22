@@ -95,6 +95,8 @@ PROVIDER_EVENT_DEFAULTS: dict[str, bool] = {
     "on_printer_queue_completed": True,
     "on_stock_reorder_alert": False,
     "on_stock_break_alert": False,
+    # Another program's message (spec external-app-messages-spec): every provider opts in itself.
+    "on_external_app_message": False,
 }
 
 

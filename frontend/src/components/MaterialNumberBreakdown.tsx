@@ -30,7 +30,7 @@ export function MaterialNumberBreakdown({ rows, currency }: { rows: AggregateMat
               <tr key={row.material_number} className="border-b border-bambu-dark-tertiary/50 last:border-0">
                 <td className="py-1.5 pr-3 font-mono text-white break-all">{row.material_number}</td>
                 <td className="py-1.5 px-3 text-right text-bambu-gray">{row.spools}</td>
-                <td className="py-1.5 px-3 text-right text-white">{formatWeight(row.grams)}</td>
+                <td className="py-1.5 px-3 text-right text-white">{formatWeight(row.grams, t)}</td>
                 <td className="py-1.5 pl-3 text-right text-white">{currency}{row.cost.toFixed(2)}</td>
               </tr>
             ))}

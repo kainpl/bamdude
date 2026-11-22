@@ -5,6 +5,7 @@ import { availableEngines, hasEngineChoice, resolveEngine, type SliceEngineId } 
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
 import { api, macrosApi } from '../api/client';
+import { invalidatePrinterFleet } from '../utils/printerFleetInvalidation';
 import { cameraTestMessage } from '../utils/cameraTestMessage';
 import type { SecretAction } from '../api/client';
 import { SecretInput } from '../components/SecretInput';
@@ -379,6 +380,10 @@ export function SettingsPage() {
     // already had; this one is new, and it is what a desktop bridge sitting on
     // somebody's machine authenticates with — granting it must be deliberate.
     can_print_labels: false,
+    // Narrow opt-ins, off by default: the electricity-price door for Home Assistant, and messages to
+    // the farm as an external app. Neither is a general settings or notifications right.
+    can_update_energy_cost: false,
+    can_send_notifications: false,
   });
   const [createdAPIKey, setCreatedAPIKey] = useState<string | null>(null);
   const [showDeleteAPIKeyConfirm, setShowDeleteAPIKeyConfirm] = useState<number | null>(null);
@@ -593,6 +598,8 @@ export function SettingsPage() {
       can_manage_archives: boolean;
       can_manage_projects: boolean;
       can_print_labels: boolean;
+      can_update_energy_cost: boolean;
+      can_send_notifications: boolean;
     }) => api.createAPIKey(data),
     onSuccess: (data) => {
       setCreatedAPIKey(data.key || null);
@@ -1295,7 +1302,7 @@ export function SettingsPage() {
     mutationFn: ({ id, data }: { id: number; data: Partial<{ secret_actions: Partial<Record<'external_camera_url' | 'external_camera_snapshot_url', 'keep' | 'clear' | 'replace'>>; external_camera_url: string | null; external_camera_type: string | null; external_camera_enabled: boolean; external_camera_snapshot_url: string | null; camera_rotation: number; camera_light_auto: CameraLightPolicy }> }) =>
       api.updatePrinter(id, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['printers'] });
+      void invalidatePrinterFleet(queryClient);
       showToast(t('settings.toast.cameraSettingsSaved'), 'success');
     },
     onError: (error: Error) => {
@@ -5836,6 +5843,30 @@ export function SettingsPage() {
                           <p className="text-xs text-bambu-gray">{t('settings.printLabelsDescription')}</p>
                         </div>
                       </label>
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newAPIKeyPermissions.can_update_energy_cost}
+                          onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_update_energy_cost: e.target.checked }))}
+                          className="accent-bambu-green w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+                        />
+                        <div>
+                          <span className="text-white">{t('settings.updateEnergyCost')}</span>
+                          <p className="text-xs text-bambu-gray">{t('settings.updateEnergyCostDescription')}</p>
+                        </div>
+                      </label>
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newAPIKeyPermissions.can_send_notifications}
+                          onChange={(e) => setNewAPIKeyPermissions(prev => ({ ...prev, can_send_notifications: e.target.checked }))}
+                          className="accent-bambu-green w-4 h-4 text-bambu-green rounded border-bambu-dark-tertiary bg-bambu-dark focus:ring-bambu-green"
+                        />
+                        <div>
+                          <span className="text-white">{t('settings.sendNotifications')}</span>
+                          <p className="text-xs text-bambu-gray">{t('settings.sendNotificationsDescription')}</p>
+                        </div>
+                      </label>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 pt-2">
@@ -5922,6 +5953,12 @@ export function SettingsPage() {
                             )}
                             {key.can_print_labels && (
                               <span className="px-1.5 py-0.5 bg-pink-100 dark:bg-pink-500/20 text-pink-700 dark:text-pink-400 rounded">{t('settings.labelsBadge')}</span>
+                            )}
+                            {key.can_update_energy_cost && (
+                              <span className="px-1.5 py-0.5 bg-yellow-100 dark:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400 rounded">{t('settings.energyCostBadge')}</span>
+                            )}
+                            {key.can_send_notifications && (
+                              <span className="px-1.5 py-0.5 bg-sky-100 dark:bg-sky-500/20 text-sky-700 dark:text-sky-400 rounded">{t('settings.sendNotificationsBadge')}</span>
                             )}
                             {key.user_id === null && (
                               <span className="px-1.5 py-0.5 bg-bambu-dark-tertiary text-bambu-gray rounded">{t('settings.legacyBadge')}</span>

@@ -112,6 +112,7 @@ async def create_api_key(
         can_access_mcp=data.can_access_mcp,
         can_read_mcp_logs=data.can_read_mcp_logs,
         can_update_energy_cost=data.can_update_energy_cost,
+        can_send_notifications=data.can_send_notifications,
         can_manage_library=data.can_manage_library,
         can_manage_inventory=data.can_manage_inventory,
         can_manage_maintenance=data.can_manage_maintenance,
@@ -147,6 +148,7 @@ async def create_api_key(
         can_access_mcp=api_key.can_access_mcp,
         can_read_mcp_logs=api_key.can_read_mcp_logs,
         can_update_energy_cost=api_key.can_update_energy_cost,
+        can_send_notifications=api_key.can_send_notifications,
         can_manage_library=api_key.can_manage_library,
         can_manage_inventory=api_key.can_manage_inventory,
         can_manage_maintenance=api_key.can_manage_maintenance,
@@ -242,6 +244,8 @@ async def update_api_key(
         api_key.can_access_cloud = data.can_access_cloud
     if data.can_update_energy_cost is not None:
         api_key.can_update_energy_cost = data.can_update_energy_cost
+    if data.can_send_notifications is not None:
+        api_key.can_send_notifications = data.can_send_notifications
     if data.can_manage_library is not None:
         api_key.can_manage_library = data.can_manage_library
     if data.can_manage_inventory is not None:
