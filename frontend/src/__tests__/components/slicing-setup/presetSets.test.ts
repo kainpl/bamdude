@@ -52,6 +52,16 @@ describe('buildPresetField (R2)', () => {
     expect(field.relaxed).toEqual(['source']);
   });
 
+  it('prefers built-in farm machines to personal profiles for other models', () => {
+    const data = listing([]);
+    data.local.printer = [p('local', 'A1', null)];
+    data.standard.printer = [p('standard', 'P1S', null), p('standard', 'H2C', null)];
+    const farm: SoftFilter = { id: 'farm', keep: (x) => x.id === 'P1S', pickKeep: (x) => x.id === 'P1S' };
+    const field = buildPresetField({ listing: data, slot: 'printer', filters: [mine(), farm], pinned: null });
+    expect(ids(field)).toEqual(['P1S']);
+    expect(field.relaxed).toEqual(['source']);
+  });
+
   it('pick offer has no relaxation, no pinned ref, no other printers', () => {
     const data = listing([p('local', 'mine-mismatch', A1), p('standard', 'std-fit', X1C)]);
     const field = buildPresetField({

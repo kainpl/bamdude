@@ -75,6 +75,11 @@ function relax(
 
 export function buildPresetField(input: PresetFieldInput): PresetField {
   const { listing, slot, bound, fit, filters, pinned } = input;
+  // A built-in profile for an actual farm model is preferable to a personal
+  // machine profile for another model. Relax source before farm for machines.
+  const displayFilters = slot === 'printer'
+    ? [...filters.filter((f) => f.id === 'farm'), ...filters.filter((f) => f.id !== 'farm')]
+    : filters;
   const all = TIER_ORDER.flatMap((tier) => listing[tier][slot]);
   const inBound = (p: UnifiedPreset) => (bound ? bound.keep(p) : true);
   const boundSet = all.filter(inBound);
@@ -98,11 +103,11 @@ export function buildPresetField(input: PresetFieldInput): PresetField {
   let trailing: UnifiedPreset[] = [];
   let relaxed: SoftFilterId[] = [];
   if (noFit) {
-    const r = relax(base, filters, (shown) => shown.length > 0);
+    const r = relax(base, displayFilters, (shown) => shown.length > 0);
     relaxed = r.relaxed;
     main = base.filter((e) => r.active.every((f) => f.keep(e)));
   } else {
-    const r = relax(fitting, filters, (shown) => shown.length > 0 || fitting.length === 0);
+    const r = relax(fitting, displayFilters, (shown) => shown.length > 0 || fitting.length === 0);
     relaxed = r.relaxed;
     main = fitting.filter((e) => r.active.every((f) => f.keep(e)));
     if (fit?.mode === 'group') trailing = other.filter((e) => r.active.every((f) => f.keep(e)));
