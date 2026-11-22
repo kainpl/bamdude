@@ -874,6 +874,44 @@ class TestAsyncWrappers:
         assert result is True
 
     @pytest.mark.asyncio
+    async def test_a1_upload_reopens_ftps_to_verify_after_a_lost_reply(
+        self, patch_ftp_port, ftp_server, tmp_path, monkeypatch
+    ):
+        source = tmp_path / "unconfirmed.3mf"
+        content = b"complete upload data"
+        source.write_bytes(content)
+        sessions = []
+        connect = BambuFTPClient.connect
+
+        def connect_injecting_lost_reply(client):
+            if sessions:
+                assert sessions[-1].sock is None
+            if not connect(client):
+                return False
+            sessions.append(client._ftp)
+            if len(sessions) == 1:
+
+                def lose_reply():
+                    raise TimeoutError("simulated lost STOR reply")
+
+                monkeypatch.setattr(client._ftp, "voidresp", lose_reply)
+            return True
+
+        monkeypatch.setattr(BambuFTPClient, "connect", connect_injecting_lost_reply)
+        monkeypatch.setattr(BambuFTPClient, "_mode_cache", {})
+        assert await upload_file_async(
+            "127.0.0.1",
+            "12345678",
+            source,
+            "/cache/unconfirmed.3mf",
+            timeout=30.0,
+            printer_model="A1",
+        )
+        old, fresh = sessions
+        assert old is not fresh
+        assert ftp_server.read_file("cache/unconfirmed.3mf") == content
+
+    @pytest.mark.asyncio
     async def test_upload_file_async_timeout_salvages_completed_zombie(self, tmp_path, monkeypatch):
         """A slow upload must not be retried on top of itself (#2529).
 
@@ -905,7 +943,7 @@ class TestAsyncWrappers:
             def connect(self):
                 return True
 
-            def upload_file(self, local_path, remote_path, progress_callback=None):
+            def upload_file(self, local_path, remote_path, progress_callback=None, *, checkpoint=None):
                 time.sleep(0.4)  # longer than wait_for timeout=0.1
                 return True
 
@@ -945,7 +983,7 @@ class TestAsyncWrappers:
             def connect(self):
                 return True
 
-            def upload_file(self, local_path, remote_path, progress_callback=None):
+            def upload_file(self, local_path, remote_path, progress_callback=None, *, checkpoint=None):
                 time.sleep(0.3)
                 return False  # never signals success
 

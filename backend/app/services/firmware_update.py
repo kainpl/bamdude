@@ -411,32 +411,33 @@ class FirmwareUpdateService:
                 raise Exception(refusal)
             may_run = may_upload(printer_id)
 
-            if ftp_retry_enabled:
-                success = await with_ftp_retry(
-                    upload_file_async,
-                    ip_address,
-                    access_code,
-                    firmware_path,
-                    remote_path,
-                    progress_callback=on_upload_progress,
-                    socket_timeout=ftp_timeout,
-                    printer_model=model,
-                    may_run=may_run,
-                    max_retries=ftp_retry_count,
-                    retry_delay=ftp_retry_delay,
-                    operation_name=f"Upload firmware to printer {printer_id}",
-                )
-            else:
-                success = await upload_file_async(
-                    ip_address,
-                    access_code,
-                    firmware_path,
-                    remote_path,
-                    progress_callback=on_upload_progress,
-                    socket_timeout=ftp_timeout,
-                    printer_model=model,
-                    may_run=may_run,
-                )
+            with printer_manager.transfer_in_progress(printer_id):
+                if ftp_retry_enabled:
+                    success = await with_ftp_retry(
+                        upload_file_async,
+                        ip_address,
+                        access_code,
+                        firmware_path,
+                        remote_path,
+                        progress_callback=on_upload_progress,
+                        socket_timeout=ftp_timeout,
+                        printer_model=model,
+                        may_run=may_run,
+                        max_retries=ftp_retry_count,
+                        retry_delay=ftp_retry_delay,
+                        operation_name=f"Upload firmware to printer {printer_id}",
+                    )
+                else:
+                    success = await upload_file_async(
+                        ip_address,
+                        access_code,
+                        firmware_path,
+                        remote_path,
+                        progress_callback=on_upload_progress,
+                        socket_timeout=ftp_timeout,
+                        printer_model=model,
+                        may_run=may_run,
+                    )
 
             if not success:
                 raise Exception(upload_refusal(printer_id) or "Failed to upload firmware to printer")

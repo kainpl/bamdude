@@ -24,7 +24,7 @@ from backend.app.models.printer import Printer
 from backend.app.services import firmware_store
 from backend.app.services.bambu_ftp import get_ftp_retry_settings, upload_file_async, with_ftp_retry
 from backend.app.services.firmware_profiles import get_firmware_profile
-from backend.app.services.printer_manager import is_printer_busy
+from backend.app.services.printer_manager import is_printer_busy, printer_manager
 
 logger = logging.getLogger(__name__)
 
@@ -68,24 +68,25 @@ async def _ftp_upload(item, sf) -> None:
     may_run = may_upload(item.printer_id)
     _uploading.add(item.printer_id)
     try:
-        if ftp_retry_enabled:
-            ok = await with_ftp_retry(
-                upload_file_async,
-                ip,
-                code,
-                sf.path,
-                remote_path,
-                socket_timeout=ftp_timeout,
-                printer_model=model,
-                may_run=may_run,
-                max_retries=ftp_retry_count,
-                retry_delay=ftp_retry_delay,
-                operation_name=f"Bulk firmware upload to printer {item.printer_id}",
-            )
-        else:
-            ok = await upload_file_async(
-                ip, code, sf.path, remote_path, socket_timeout=ftp_timeout, printer_model=model, may_run=may_run
-            )
+        with printer_manager.transfer_in_progress(item.printer_id):
+            if ftp_retry_enabled:
+                ok = await with_ftp_retry(
+                    upload_file_async,
+                    ip,
+                    code,
+                    sf.path,
+                    remote_path,
+                    socket_timeout=ftp_timeout,
+                    printer_model=model,
+                    may_run=may_run,
+                    max_retries=ftp_retry_count,
+                    retry_delay=ftp_retry_delay,
+                    operation_name=f"Bulk firmware upload to printer {item.printer_id}",
+                )
+            else:
+                ok = await upload_file_async(
+                    ip, code, sf.path, remote_path, socket_timeout=ftp_timeout, printer_model=model, may_run=may_run
+                )
     finally:
         _uploading.discard(item.printer_id)
     if not ok:

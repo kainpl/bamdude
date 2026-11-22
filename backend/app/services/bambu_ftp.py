@@ -360,6 +360,8 @@ class FileNotOnPrinterError(Exception):
 # completed upload waits a minute for its 226 because that 226 is the proof the file is whole, and a
 # cancel needs no such proof.
 CANCEL_REPLY_SECONDS = 10.0
+A1_UPLOAD_SIZE_WAIT = 120.0
+A1_UPLOAD_SIZE_POLL = 5.0
 
 
 def _graceful_close_data_conn(conn) -> None:
@@ -1182,17 +1184,15 @@ class BambuFTPClient:
 
         Returns the verdict and the size behind it: ``"ok"``, ``"truncated"``,
         or ``"unknown"`` — three answers, not two, because a printer whose FTP
-        has no ``SIZE`` must not be read as a failed upload. ``unknown`` leaves
-        the caller exactly where it was before the probe existed.
+        has no ``SIZE`` can still confirm a transfer with its STOR reply.
 
         The size comes back with the verdict so no caller has to ask twice; one
         of them wants it for its log line, and a second round-trip to this
         daemon is exactly what this method is careful about.
 
-        ⚠️ Runs on the session that did the upload. A fresh connection for the
-        check would be serialised behind ``@_ftp_serialized`` per IP and is how
-        the printer's FTP daemon was wedged during the tunnel investigation —
-        one extra command in an open session is the whole budget here.
+        Normally runs on the session that did the upload. After a lost reply
+        on an A1 we replace that unusable session while retaining the same
+        file lane. We never open both sessions at once.
 
         ⚠️ Size, not a hash. The printer's FTP exposes no digest of what it
         stored, so bit-rot is out of reach; a transfer that stopped early is
@@ -1202,6 +1202,55 @@ class BambuFTPClient:
         if server_size is None:
             return "unknown", None
         return ("ok" if server_size == expected else "truncated"), server_size
+
+    def _verify_unconfirmed_a1_upload(
+        self, remote_path: str, expected: int, checkpoint: Callable[[], None] | None
+    ) -> bool:
+        """Wait for an A1's file to reach the expected size after a lost reply."""
+        # ftplib's buffered control stream may still contain the late 226, or
+        # may refuse all reads after a socket timeout. Do not send SIZE or QUIT
+        # on it. The same worker keeps the lane and its abort hook.
+        self._abandon_connection("STOR reply lost")
+        deadline = time.monotonic() + A1_UPLOAD_SIZE_WAIT
+        previous_timeout = self.timeout
+        probe_timeout = min(previous_timeout, A1_UPLOAD_SIZE_POLL)
+        size = None
+        try:
+            if checkpoint is not None:
+                checkpoint()
+            self.timeout = probe_timeout
+            try:
+                if not self.connect():
+                    return False
+            finally:
+                self.timeout = previous_timeout
+            if checkpoint is not None:
+                checkpoint()
+            self._ftp.voidcmd("TYPE I")
+            while (remaining := deadline - time.monotonic()) > 0:
+                if checkpoint is not None:
+                    checkpoint()
+                self._ftp.sock.settimeout(min(probe_timeout, remaining))
+                verdict, size = self._uploaded_size_verdict(remote_path, expected)
+                if checkpoint is not None:
+                    checkpoint()
+                if verdict == "ok":
+                    logger.info("FTP upload of %s verified after lost STOR reply (%s bytes)", remote_path, size)
+                    return True
+                if size is None or size > expected:
+                    break
+                time.sleep(max(0, min(A1_UPLOAD_SIZE_POLL, deadline - time.monotonic())))
+        except (OSError, EOFError, ftplib.Error) as exc:
+            logger.debug("FTP upload size verification failed for %s: %s", remote_path, type(exc).__name__)
+
+        logger.warning(
+            "FTP upload of %s could not be verified: read %s bytes, expected %s", remote_path, size, expected
+        )
+        self.failure = FtpFailure(
+            "network" if size is None else "truncated",
+            f"no STOR reply and size {size} did not verify against {expected}",
+        )
+        return False
 
     def _finish_cancelled_upload(self, remote_path: str, stop: Exception) -> None:
         """End an upload its callback stopped. Always raises: ``stop`` once the partial file is gone.
@@ -1247,6 +1296,8 @@ class BambuFTPClient:
         local_path: Path,
         remote_path: str,
         progress_callback: Callable[[int, int], None] | None = None,
+        *,
+        checkpoint: Callable[[], None] | None = None,
     ) -> bool:
         """Upload a file to the printer with optional progress callback.
 
@@ -1382,7 +1433,12 @@ class BambuFTPClient:
                 # where being wrong is worst — no 226 means nothing confirmed
                 # the write, so a truncated file here reaches start_print and
                 # fails a plate in.
-                verdict, _ = self._uploaded_size_verdict(remote_path, file_size)
+                if self._is_a1_model():
+                    if not self._verify_unconfirmed_a1_upload(remote_path, file_size, checkpoint):
+                        return False
+                    verdict = "ok"
+                else:
+                    verdict, _ = self._uploaded_size_verdict(remote_path, file_size)
                 if verdict == "truncated":
                     logger.error(
                         "FTP STOR unconfirmed for %s (%s) AND the printer's copy is the wrong size "
@@ -1401,21 +1457,18 @@ class BambuFTPClient:
                     type(e).__name__,
                 )
 
-            # ⚠️ A 226 says the printer finished reading the stream, not that
-            # what it stored is what we sent. Nothing verified the outgoing file
-            # until here — while the two paths where a file ARRIVES both got a
-            # ZIP check after uvloop silently truncated 3MFs (see
-            # inv-vp-ftp-asyncio-loop). This is the same class of failure on the
-            # way out, and it costs one command in a session already open.
-            if self._uploaded_size_verdict(remote_path, file_size)[0] == "truncated":
-                logger.error(
-                    "FTP upload of %s was acknowledged but the printer's copy is the wrong size "
-                    "(expected %d) — not sending a print command for it",
-                    remote_path,
-                    file_size,
-                )
-                self.failure = FtpFailure("truncated", "size check after 226")
-                return False
+            else:
+                # Acknowledgement confirms the stream ended. SIZE checks what
+                # the printer actually stored on this same connection.
+                if self._uploaded_size_verdict(remote_path, file_size)[0] == "truncated":
+                    logger.error(
+                        "FTP upload of %s was acknowledged but the printer's copy is the wrong size "
+                        "(expected %d) — not sending a print command for it",
+                        remote_path,
+                        file_size,
+                    )
+                    self.failure = FtpFailure("truncated", "size check after 226")
+                    return False
 
             elapsed = time.monotonic() - t0
             speed_kbs = (file_size / 1024) / elapsed if elapsed > 0 else 0
@@ -1966,7 +2019,7 @@ async def upload_file_async(
             try:
                 if may_run is not None and not may_run():
                     return False
-                result = client.upload_file(local_path, remote_path, progress_callback)
+                result = client.upload_file(local_path, remote_path, progress_callback, checkpoint=worker.checkpoint)
                 if result:
                     BambuFTPClient.cache_mode(ip_address, mode_str)
                 if report is not None:

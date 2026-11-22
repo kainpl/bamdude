@@ -6,13 +6,17 @@ its card. The check is now asked again immediately before the first byte, and
 the queue leaves the printer alone while the upload runs (upstream 770c6bfdf).
 """
 
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from backend.app.services import firmware_batch, firmware_update, printer_file_guard
+from backend.app.services.bambu_mqtt import BambuMQTTClient
 from backend.app.services.firmware_update import FirmwareUploadStatus
+from backend.app.services.printer_manager import printer_manager
 
 
 @pytest.fixture(autouse=True)
@@ -83,6 +87,60 @@ async def test_the_single_upload_asks_again_before_the_first_byte(monkeypatch, t
     state = firmware_update.get_upload_state(7)
     assert state.status == FirmwareUploadStatus.ERROR
     assert "busy" in (state.error or "").lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bulk", [False, True], ids=["single", "bulk"])
+async def test_firmware_transfer_tolerates_mqtt_silence_only_for_the_upload(
+    monkeypatch, tmp_path, bulk, test_engine, printer_factory
+):
+    printer = await printer_factory(model="A1")
+    firmware = tmp_path / "fw.bin"
+    firmware.write_bytes(b"x")
+    client = BambuMQTTClient(printer.ip_address, printer.serial_number, printer.access_code, model=printer.model)
+    client.state.connected = True
+    client._last_message_time = time.time() - 2 * client.STALE_TIMEOUT
+    monkeypatch.setitem(printer_manager._clients, printer.id, client)
+    monkeypatch.setattr(printer_file_guard, "wide_refusal", lambda printer_id: None)
+
+    async def no_retry():
+        return False, 0, 0, 30
+
+    during_upload = []
+
+    async def upload(ip, code, local, remote, **kwargs):
+        assert kwargs["may_run"]()
+        during_upload.append((client.is_stale(), client._transfers_active))
+        return True
+
+    async def download(*args, **kwargs):
+        return firmware
+
+    assert client.is_stale()
+    module = firmware_batch if bulk else firmware_update
+    monkeypatch.setattr(module, "get_ftp_retry_settings", no_retry)
+    monkeypatch.setattr(module, "upload_file_async", upload)
+    if bulk:
+        monkeypatch.setattr(module, "async_session", async_sessionmaker(test_engine))
+        await firmware_batch._ftp_upload(
+            SimpleNamespace(printer_id=printer.id), SimpleNamespace(filename=firmware.name, path=firmware)
+        )
+    else:
+        service = firmware_update.FirmwareUpdateService()
+        monkeypatch.setattr(
+            firmware_update, "get_firmware_service", lambda: SimpleNamespace(download_firmware=download)
+        )
+        monkeypatch.setattr(service, "_broadcast_progress", download)
+        await service._do_upload(
+            printer.id, printer.ip_address, printer.access_code, printer.model, target_version="01.00"
+        )
+        assert firmware_update.get_upload_state(printer.id).status == FirmwareUploadStatus.COMPLETE
+
+    assert during_upload == [(False, 1)]
+    assert client._transfers_active == 0
+    assert not client.is_stale()
+    client._transfer_ended_at = time.time() - client.STALE_TIMEOUT - 1
+    assert client.is_stale()
 
 
 @pytest.mark.parametrize(

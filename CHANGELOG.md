@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **A1 and A1 Mini verify uploads after a lost FTP reply.** BamDude checks the file size on a fresh connection and waits for a short copy to finish writing before it can start a print. Single and bulk firmware uploads now tolerate the same temporary MQTT silence as print uploads.
+
 - **A slice retry keeps the selected printer model.** If the slicer crashes while using the selected profiles, BamDude can retry with a 3MF's embedded settings only when both profiles identify the same known model. Otherwise the slice reports the original error.
 - **Spreadsheet exports keep text as text.** Archive, statistics, spool and shopping-list exports protect formula-looking text while keeping quantities and measurements numeric. Spool CSV exports preserve notes that start with an apostrophe when you import them again.
 

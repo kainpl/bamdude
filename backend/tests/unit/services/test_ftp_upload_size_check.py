@@ -19,11 +19,14 @@ from __future__ import annotations
 
 import ftplib
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
+from backend.app.services import bambu_ftp
 from backend.app.services.bambu_ftp import BambuFTPClient
+from backend.app.services.printer_file_lanes import WorkerCancelled
 
 PAYLOAD = b"x" * 5000
 
@@ -93,6 +96,51 @@ class TestWhenTheConfirmationNeverArrives:
         client = _client(server_size=None, voidresp=TimeoutError("no 226"))
 
         assert client.upload_file(local_file, "/plate.3mf") is True
+
+
+@pytest.mark.parametrize(
+    ("sizes", "accepted", "probes"),
+    [([0, 500, len(PAYLOAD)], True, 3), ([1] * 4, False, 3), ([None], False, 1), ([17], None, 1)],
+    ids=["flushes-late", "stays-short", "size-unavailable", "worker-cancelled"],
+)
+def test_a1_without_226_verifies_the_copy_on_one_fresh_session(local_file, monkeypatch, sizes, accepted, probes):
+    client = _client(server_size=None, voidresp=TimeoutError("no 226"))
+    client.printer_model = "A1"
+    old = client._ftp
+    fresh = MagicMock()
+    fresh.size.side_effect = sizes
+    ticks = 0.0
+
+    def sleep(seconds):
+        nonlocal ticks
+        ticks += seconds
+
+    def connect():
+        old.close.assert_called_once()
+        assert client._ftp is None
+        client._ftp = fresh
+        return True
+
+    monkeypatch.setattr(bambu_ftp, "time", SimpleNamespace(monotonic=lambda: ticks, sleep=sleep))
+    monkeypatch.setattr(bambu_ftp, "A1_UPLOAD_SIZE_WAIT", 12.0, raising=False)
+    reopen = MagicMock(side_effect=connect)
+    monkeypatch.setattr(client, "connect", reopen)
+
+    def checkpoint():
+        if accepted is None and ticks:
+            raise WorkerCancelled("restore")
+
+    if accepted is None:
+        with pytest.raises(WorkerCancelled, match="restore"):
+            client.upload_file(local_file, "/plate.3mf", checkpoint=checkpoint)
+    else:
+        assert client.upload_file(local_file, "/plate.3mf") is accepted
+    reopen.assert_called_once()
+    old.size.assert_not_called()
+    fresh.voidcmd.assert_called_once_with("TYPE I")
+    assert fresh.size.call_count == probes
+    if accepted is False:
+        assert client.failure.kind == ("truncated" if sizes[0] is not None else "network")
 
 
 class TestWhenThePrinterRejectsTheTransfer:
