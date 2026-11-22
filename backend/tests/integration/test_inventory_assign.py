@@ -721,6 +721,31 @@ class TestARunoutIsNotASpoolRemoval:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    @pytest.mark.parametrize("state", ["RUNNING", "PAUSE"])
+    async def test_reconnect_blank_preserves_assignment_until_replacement(
+        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession, state
+    ):
+        printer = await self._assigned_printer(printer_factory, spool_factory, db_session)
+        [original] = await self._assignment_for(db_session, printer.id)
+        original_id = original.id
+
+        async def push(tray):
+            await self._push(printer.id, [{"id": 0, "tray": [{"id": 0, **tray}]}], state)
+
+        await push({"state": 9, "exists": False, "tray_type": "", "tray_color": "00000000", "remain": 0})
+        [blank] = await self._assignment_for(db_session, printer.id)
+        assert blank.id == original_id
+
+        await push({"state": 11, "exists": True, "tray_type": "PLA", "tray_color": "FF0000FF"})
+        [restored] = await self._assignment_for(db_session, printer.id)
+        assert restored.id == original_id
+
+        # A typed clear filament with the same zero colour is positive evidence.
+        await push({"state": 11, "exists": True, "tray_type": "PETG", "tray_color": "00000000"})
+        assert await self._assignment_for(db_session, printer.id) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_the_link_survives_a_slot_vanishing_mid_print(
         self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
     ):

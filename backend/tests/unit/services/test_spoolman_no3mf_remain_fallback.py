@@ -393,19 +393,26 @@ class TestPartialUsageRemainDelta:
     path, otherwise aborts of "Untitled" prints stay silent."""
 
     @pytest.mark.asyncio
-    async def test_aborted_no_3mf_writes_remain_delta(self):
-        """Aborted at remain=70% from start of 90% on a 1000g spool.
-        Delta = 20% × 1000g = 200g — must be written even though no
-        3MF / layer data is available."""
+    @pytest.mark.parametrize(
+        ("remain", "captured_progress", "estimates", "charge"),
+        [
+            (70, 0, [], 200.0),
+            (0, 0, [], 0.0),
+            (0, 0, [{"slot_id": 1, "used_g": 300.0}], 0.0),
+            (0, 25, [{"slot_id": 1, "used_g": 300.0}], 75.0),
+        ],
+        ids=["valid-delta", "early-cancel-no-3mf", "early-cancel-with-3mf", "partial-3mf"],
+    )
+    async def test_aborted_print_charges_only_valid_consumption(self, remain, captured_progress, estimates, charge):
         from backend.app.services.spoolman_tracking import _report_partial_usage
 
         tracking = SimpleNamespace(
             archive_id=99,
-            filament_usage=[],
+            filament_usage=estimates,
             layer_usage=None,
             filament_properties=None,
             ams_trays={"0": {"tray_uuid": "AAAA"}},
-            slot_to_tray=None,
+            slot_to_tray=[0] if estimates else None,
             tray_remain_start={"0-0": {"remain": 90, "tray_uuid": "AAAA"}},
         )
 
@@ -415,11 +422,12 @@ class TestPartialUsageRemainDelta:
 
         client = AsyncMock()
         client.get_spool = AsyncMock(return_value={"id": 7, "filament": {"weight": 1000.0}})
+        client.find_spool_by_tag = AsyncMock(return_value=None)
         client.use_spool = AsyncMock()
 
         printer_manager = MagicMock()
         printer_manager.get_status.return_value = SimpleNamespace(
-            raw_data={"ams": [{"id": 0, "tray": [{"id": 0, "tray_uuid": "AAAA", "remain": 70}]}]},
+            raw_data={"ams": [{"id": 0, "tray": [{"id": 0, "tray_uuid": "AAAA", "remain": remain}]}]},
             layer_num=42,
             total_layers=100,
         )
@@ -445,10 +453,19 @@ class TestPartialUsageRemainDelta:
 
             # The abort's own terminal figures travel in its completion event.
             await _report_partial_usage(
-                printer_id=1, tracking=tracking, completion=CompletionSnapshot(layer_num=42, total_layers=100)
+                printer_id=1,
+                tracking=tracking,
+                completion=CompletionSnapshot(
+                    layer_num=42 if remain else None,
+                    total_layers=100 if remain else None,
+                    captured_progress=captured_progress or None,
+                ),
             )
 
-        client.use_spool.assert_awaited_once_with(7, 200.0)
+        if charge:
+            client.use_spool.assert_awaited_once_with(7, charge)
+        else:
+            client.use_spool.assert_not_awaited()
 
 
 class _AsyncCtx:

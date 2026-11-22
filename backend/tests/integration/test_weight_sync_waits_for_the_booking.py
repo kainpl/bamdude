@@ -183,6 +183,31 @@ def _session(printer_id: int, spool_id: int, archive: PrintArchive) -> PrintSess
     )
 
 
+@pytest.mark.parametrize(
+    ("last_progress", "charge"), [(0, 0.0), (25, 75.0)], ids=["cancel-before-first-layer", "cancel-after-extrusion"]
+)
+async def test_cancelled_print_does_not_use_a_zero_remain_reading(db_session, printer_factory, last_progress, charge):
+    printer, spool = await _reel(db_session, printer_factory)
+    archive = await _archive(db_session, printer.id)
+    archive.status = "aborted"
+    await db_session.commit()
+    usage_tracker._active_sessions[printer.id] = _session(printer.id, spool.id, archive)
+
+    results = await usage_tracker.on_print_complete(
+        printer.id,
+        {"status": "aborted", "terminal_layer_num": 0, "terminal_progress": 0, "last_progress": last_progress},
+        _printer_manager(0),
+        db_session,
+        archive_id=archive.id,
+        ams_mapping=[0],
+        file_analysis=ANALYSIS,
+        analysis_attempted=True,
+    )
+
+    assert sum(row["weight_used"] for row in results) == charge
+    assert await _books(db_session, spool) == (200.0 + charge, [("aborted", charge)] if charge else [])
+
+
 # ── the predicate ───────────────────────────────────────────────────────────
 
 

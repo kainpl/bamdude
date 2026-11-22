@@ -116,6 +116,34 @@ class TestTheSyncAnnouncesWhatItChanged:
         )
         assert _announced(broadcast) == []
 
+    async def test_reconnect_blank_preserves_assignment_until_replacement(
+        self, endpoint, async_client: AsyncClient, printer_factory, db_session: AsyncSession, spoolman_enabled
+    ):
+        from sqlalchemy import select
+
+        printer = await _printer_with_row(printer_factory, db_session, spool_id=42)
+        path = endpoint.format(id=printer.id)
+        spool_id = select(SpoolmanSlotAssignment.spoolman_spool_id).where(
+            SpoolmanSlotAssignment.printer_id == printer.id
+        )
+        blank = [{"id": 0, "tray": [{"id": 0, "tray_type": "", "tray_color": "00000000", "exists": False, "state": 9}]}]
+        assert _announced(await _sync(async_client, path, _client(), _state("RUNNING", blank))) == []
+        assert await db_session.scalar(spool_id) == 42
+
+        current = _client(parsed_tray=_tagless_tray(), synced_spool_id=42)
+        assert _announced(await _sync(async_client, path, current, _state("RUNNING", LOADED_SLOT_PUSH))) == []
+        assert await db_session.scalar(spool_id) == 42
+
+        clear_tray = _tagless_tray()
+        clear_tray.tray_type = "PETG"
+        clear_tray.tray_color = "00000000"
+        replacement = _client(parsed_tray=clear_tray, synced_spool_id=77)
+        loaded = [{"id": 0, "tray": [{"id": 0, "tray_type": "PETG", "tray_color": "00000000", "exists": True}]}]
+        assert _announced(await _sync(async_client, path, replacement, _state("RUNNING", loaded))) == [
+            (printer.id, 0, 0)
+        ]
+        assert await db_session.scalar(spool_id) == 77
+
     async def test_a_slot_that_now_holds_another_spool_is_announced(
         self, endpoint, async_client: AsyncClient, printer_factory, db_session: AsyncSession, spoolman_enabled
     ):
