@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.color_catalog import ColorCatalogEntry
 from backend.app.models.spool import Spool
 from backend.app.schemas.spool import SpoolCreate, naive_utc
+from backend.app.utils.spreadsheet import needs_csv_text_prefix
 
 # Fixed CSV header, in output order. Round-trips cleanly: export writes these
 # columns, import expects them. `material` is the only required field; the rest
@@ -65,11 +66,6 @@ CSV_COLUMNS = [
 # even with thousands of rows; 5 MB is a generous cap that still refuses an
 # OOM-sized body before it's read into memory.
 MAX_CSV_IMPORT_BYTES = 5 * 1024 * 1024
-
-# Spreadsheet formula-injection guard. A cell whose first character is one of
-# these is treated as a formula by Excel / LibreOffice / Sheets; we prefix it
-# with a single quote on export so the value renders as literal text.
-_FORMULA_INJECTION_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
 # Columns whose CSV cell must be coerced to a number before SpoolCreate sees it.
 # DictReader hands us strings; SpoolCreate wants int/float. Empty cell → omit
@@ -608,37 +604,24 @@ def serialize(spools: list[Spool], *, delimiter: str = "comma", decimal: str = "
         cells = []
         for col in CSV_COLUMNS:
             value = _cell_value(spool, col)
-            if decimal == "comma" and col in _EXPORT_NUMERIC_COLUMNS:
-                value = value.replace(".", ",")
-            cells.append(_sanitize_cell(value))
+            if col in _EXPORT_NUMERIC_COLUMNS:
+                cells.append(value.replace(".", ",") if decimal == "comma" else value)
+            else:
+                cells.append(_sanitize_cell(value))
         writer.writerow(cells)
     return output.getvalue().encode("utf-8-sig" if bom else "utf-8")
 
 
 def _sanitize_cell(value: str) -> str:
-    """Neutralise spreadsheet formula injection.
-
-    A free-text field (note, color_name) starting with =, +, -, @, tab, or CR
-    is evaluated as a formula by Excel/Sheets/LibreOffice when the CSV is
-    opened. Prefixing with a single quote forces it to render as literal text.
-    `_desanitize_cell` is the exact inverse, applied on import.
-    """
-    if value and value[0] in _FORMULA_INJECTION_PREFIXES:
+    """Prefix formula-looking text without changing its content."""
+    if needs_csv_text_prefix(value):
         return "'" + value
     return value
 
 
 def _desanitize_cell(value: str) -> str:
-    """Undo `_sanitize_cell` on import so the round-trip is lossless.
-
-    Export prefixes formula-looking cells with a single quote; strip exactly
-    that quote back off when the next character is one of the guarded prefixes,
-    so `'=SUM(A1)` reads back as `=SUM(A1)` and the value doesn't accumulate a
-    leading quote on every export→import cycle. A quote followed by anything
-    else is left untouched — only the prefix `_sanitize_cell` could have added
-    is removed.
-    """
-    if len(value) >= 2 and value[0] == "'" and value[1] in _FORMULA_INJECTION_PREFIXES:
+    """Remove one export prefix, including for exports made with the older guard."""
+    if value.startswith("'") and needs_csv_text_prefix(value[1:]):
         return value[1:]
     return value
 

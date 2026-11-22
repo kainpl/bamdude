@@ -324,16 +324,26 @@ class TestSliceLibraryFile:
 class TestEmbeddedSettingsFallback:
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_3mf_5xx_retries_without_profiles_and_succeeds(
-        self, async_client: AsyncClient, db_session, slice_test_setup
+    @pytest.mark.parametrize(
+        ("source_model", "target_model", "retries"),
+        [
+            ("Bambu Lab A1", "A11", True),
+            ("Bambu Lab A1", "P1S", False),
+            (None, "A1", False),
+            ("Bambu Lab A1", None, False),
+            ("Unknown machine", "Unknown machine", False),
+        ],
+        ids=["same-alias", "different", "unknown-source", "custom-label-only", "unrecognized"],
+    )
+    async def test_3mf_5xx_retries_only_for_a_known_matching_model(
+        self, async_client: AsyncClient, db_session, slice_test_setup, source_model, target_model, retries
     ):
-        """When the slicer-with-profiles call returns 5xx for a 3MF input,
-        ``_run_slicer_with_fallback`` retries via ``slice_without_profiles``
-        and surfaces the success — with ``used_embedded_settings: true``
-        so the UI can flag the fallback."""
-        # Replace the source with a real 3MF.
+        printer = await db_session.get(LocalPreset, slice_test_setup["printer_id"])
+        printer.setting = json.dumps(
+            {"name": "Bambu Lab A1 0.4 nozzle", "type": "machine", "printer_model": target_model}
+        )
         src_path = slice_test_setup["tmp_path"] / "library" / "files" / "Cube.3mf"
-        src_path.write_bytes(_make_3mf_with_settings())
+        src_path.write_bytes(_make_3mf_with_settings({"printer_model": source_model}))
         threemf = LibraryFile(
             filename="Cube.3mf",
             file_path=str(src_path.relative_to(slice_test_setup["tmp_path"])),
@@ -385,9 +395,18 @@ class TestEmbeddedSettingsFallback:
         )
         assert response.status_code == 202
         terminal = await _wait_for_job(async_client, response.json()["job_id"])
-        assert terminal["status"] == "completed"
-        assert terminal["result"]["used_embedded_settings"] is True
-        assert call_count["n"] == 2
+        if retries:
+            assert call_count["n"] == 2
+            assert terminal["status"] == "completed"
+            assert terminal["result"]["used_embedded_settings"] is True
+        else:
+            assert call_count["n"] == 1
+            assert terminal["status"] == "failed"
+            assert terminal["error_status"] == 502
+            assert "bad config" in terminal["error_detail"]
+            from sqlalchemy import func, select
+
+            assert await db_session.scalar(select(func.count()).select_from(LibraryFile)) == 2
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -576,8 +595,11 @@ class TestSlicerRejectionMessage:
 class TestSliceArchive:
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_archive_slice_creates_new_archive_row(self, async_client: AsyncClient, db_session, slice_test_setup):
-        archive_dir = slice_test_setup["tmp_path"] / "archive" / "1" / "20260101_010101_Cube"
+    async def test_archive_slice_creates_new_archive_row(
+        self, async_client: AsyncClient, db_session, slice_test_setup, printer_factory
+    ):
+        printer = await printer_factory()
+        archive_dir = slice_test_setup["tmp_path"] / "archive" / str(printer.id) / "20260101_010101_Cube"
         archive_dir.mkdir(parents=True, exist_ok=True)
         src_3mf = archive_dir / "Cube.3mf"
         src_3mf.write_bytes(_make_3mf_with_settings())
@@ -586,7 +608,7 @@ class TestSliceArchive:
         db_session.add(order)
         await db_session.flush()
         archive = PrintArchive(
-            printer_id=1,
+            printer_id=printer.id,
             project_id=order.id,
             filename="Cube.3mf",
             file_path=str(src_3mf.relative_to(slice_test_setup["tmp_path"])),

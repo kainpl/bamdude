@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+- **A slice retry keeps the selected printer model.** If the slicer crashes while using the selected profiles, BamDude can retry with a 3MF's embedded settings only when both profiles identify the same known model. Otherwise the slice reports the original error.
+- **Spreadsheet exports keep text as text.** Archive, statistics, spool and shopping-list exports protect formula-looking text while keeping quantities and measurements numeric.
+
 - **Grouped spool weights use all measured members.** Weight Check compares the group's measured and calculated totals when every spool has a scale reading, even when the measured total is below the group's tare. Expand the group to inspect individual readings.
 - **Git backup can start with an empty GitHub repository.** BamDude adds a small initialization marker to its default branch and saves the backup files to the configured branch. If both branches are missing and GitHub has not confirmed that the repository is empty, the backup reports an error before writing.
 - **Failed and cancelled prints can keep the printer's timelapse.** When the printer was recording, BamDude uses the same archive and storage checks that protect the scan after a successful print.

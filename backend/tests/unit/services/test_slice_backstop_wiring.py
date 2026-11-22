@@ -45,7 +45,9 @@ def _source_3mf() -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("3D/3dmodel.model", "<model/>")
-        archive.writestr("Metadata/project_settings.config", json.dumps({"layer_height": "0.2"}))
+        archive.writestr(
+            "Metadata/project_settings.config", json.dumps({"layer_height": "0.2", "printer_model": "X2D"})
+        )
         archive.writestr("Metadata/model_settings.config", "<config><object id='1'/></config>")
         archive.writestr(
             "Metadata/slice_info.config",
@@ -99,7 +101,9 @@ async def _run(
         patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(side_effect=_setting)),
         patch(
             "backend.app.services.preset_resolver.resolve_preset_ref",
-            new=AsyncMock(return_value=json.dumps({"name": "x", "from": "system", "type": "machine"})),
+            new=AsyncMock(
+                return_value=json.dumps({"name": "Bambu Lab X2D 0.4 nozzle", "from": "system", "type": "machine"})
+            ),
         ),
         patch.object(slicer_api_module, "SlicerApiService", return_value=service),
         patch.object(slicer_api_module, "get_stall_timeout_seconds", new=AsyncMock(return_value=60.0)),

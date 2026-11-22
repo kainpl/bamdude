@@ -8,6 +8,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.models.archive import PrintArchive
+from backend.app.utils.spreadsheet import csv_literal
+
+
+def _write_xlsx_cell(sheet, row: int, column: int, value):
+    cell = sheet.cell(row=row, column=column, value=value)
+    if isinstance(value, str):
+        # openpyxl otherwise infers formulas and Excel error cells from strings.
+        cell.data_type = "s"
+    return cell
 
 
 class ExportService:
@@ -266,14 +275,14 @@ class ExportService:
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow(headers)
-        writer.writerows(rows)
+        writer.writerows([csv_literal(value) for value in row] for row in rows)
         return output.getvalue().encode("utf-8")
 
     def _generate_csv_simple(self, rows: list[list]) -> bytes:
         """Generate CSV file content from simple rows (no separate headers)."""
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerows(rows)
+        writer.writerows([csv_literal(value) for value in row] for row in rows)
         return output.getvalue().encode("utf-8")
 
     def _generate_xlsx(self, headers: list[str], rows: list[list], fields: list[str]) -> bytes:
@@ -304,7 +313,7 @@ class ExportService:
         # Write data
         for row_idx, row in enumerate(rows, 2):
             for col_idx, value in enumerate(row, 1):
-                ws.cell(row=row_idx, column=col_idx, value=value)
+                _write_xlsx_cell(ws, row_idx, col_idx, value)
 
         # Auto-adjust column widths
         for col_idx, _field in enumerate(fields, 1):
@@ -339,7 +348,7 @@ class ExportService:
 
         for row_idx, row in enumerate(rows, 1):
             for col_idx, value in enumerate(row, 1):
-                cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                cell = _write_xlsx_cell(ws, row_idx, col_idx, value)
                 # Bold section headers
                 if col_idx == 1 and value and isinstance(value, str) and value.endswith(":"):
                     cell.font = bold_font

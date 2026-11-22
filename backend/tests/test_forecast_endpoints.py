@@ -799,6 +799,24 @@ class TestShoppingListCsv:
         assert row[7] in _acceptable_dates(4)
         assert row[8] == "pending"
 
+    async def test_shopping_list_csv_keeps_text_literal(self, async_client):
+        await _add_cart_item(
+            async_client,
+            material="PLA",
+            brand="+Brand",
+            color_name="  =1+1",
+            note="@Note",
+            quantity_spools=2,
+        )
+        rsp = await async_client.get("/api/v1/inventory/shopping-list/export.csv")
+        assert rsp.status_code == 200, rsp.text
+        (row,) = _csv_rows(rsp.text)[1:]
+        assert row[0] == "2"
+        assert row[2] == "'+Brand"
+        assert row[4] == "'  =1+1"
+        assert row[5] == "2000"
+        assert row[9] == "'@Note"
+
     async def test_a_matched_sku_prices_the_weight_and_lead_time_from_its_row(self, async_client, db_session):
         """avgSpoolG = the row's served ``avg_spool_label_g``; the lead time is
         the SKU's effective one, not the global. (Both spools here are live, so

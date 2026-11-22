@@ -95,6 +95,7 @@ from backend.app.services.spool_csv import (
 from backend.app.services.spoolman import SpoolmanClient, get_spoolman_client, init_spoolman_client
 from backend.app.services.tag_conflict import tag_already_linked
 from backend.app.utils.filament_remaining import grams_used
+from backend.app.utils.spreadsheet import csv_literal
 from backend.app.utils.tag_normalization import normalize_tag_uid, normalize_tray_uuid
 
 logger = logging.getLogger(__name__)
@@ -4507,20 +4508,19 @@ async def export_shopping_list_csv(
         avg_spool_g = row.avg_spool_label_g if row is not None and row.avg_spool_label_g is not None else 1000.0
         lead = row.eff_lead_time_days if row is not None else global_lead
         restock = (today + timedelta(days=lead)).isoformat() if lead > 0 else ""
-        writer.writerow(
-            [
-                item.quantity_spools,
-                item.material,
-                item.brand or "",
-                item.subtype or "",
-                item.color_name or "",
-                _js_round(item.quantity_spools * avg_spool_g),
-                lead or "",
-                restock,
-                item.status or "pending",
-                item.note or "",
-            ]
-        )
+        values = [
+            item.quantity_spools,
+            item.material,
+            item.brand or "",
+            item.subtype or "",
+            item.color_name or "",
+            _js_round(item.quantity_spools * avg_spool_g),
+            lead or "",
+            restock,
+            item.status or "pending",
+            item.note or "",
+        ]
+        writer.writerow(csv_literal(value) for value in values)
     return Response(
         content=buffer.getvalue(),
         media_type="text/csv",

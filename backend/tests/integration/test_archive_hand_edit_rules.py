@@ -515,6 +515,29 @@ async def test_export_includes_the_end_day_in_the_callers_zone(async_client, arc
     assert await _exported_names(async_client, "date_to=2026-11-18T22:00:00") == {"before"}
 
 
+@pytest.mark.parametrize("format", ["csv", "xlsx"])
+async def test_archive_spreadsheets_keep_text_literal(async_client, archive_factory, printer_factory, format):
+    import csv
+    from io import BytesIO, StringIO
+
+    printer = await printer_factory()
+    await archive_factory(printer.id, print_name="=1+1", print_time_seconds=42)
+    response = await async_client.get(
+        "/api/v1/archives/export",
+        params={"format": format, "fields": "print_name,print_time_seconds"},
+    )
+    assert response.status_code == 200, response.text
+    if format == "csv":
+        rows = list(csv.reader(StringIO(response.text)))
+        assert rows[1] == ["'=1+1", "42"]
+    else:
+        from openpyxl import load_workbook
+
+        sheet = load_workbook(BytesIO(response.content)).active
+        assert (sheet["A2"].data_type, sheet["A2"].value) == ("s", "=1+1")
+        assert (sheet["B2"].data_type, sheet["B2"].value) == ("n", 42)
+
+
 @pytest.mark.parametrize("bad", ["yesterday", "2026-13-40", "0000-00-00T00:00:00%2B00:00"])
 async def test_export_refuses_an_unreadable_date(async_client, bad):
     response = await async_client.get(f"/api/v1/archives/export?format=csv&date_to={bad}")

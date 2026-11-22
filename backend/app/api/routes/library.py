@@ -2832,35 +2832,29 @@ def _canonical_printer_model(raw: str | None) -> str | None:
     model code. Strips the BambuStudio ``"# "`` user-clone prefix and the
     ``" 0.4 nozzle"`` variant suffix that preset names carry but bare model
     names don't (so ``"Bambu Lab H2D 0.4 nozzle"`` → ``H2D``)."""
-    from backend.app.utils.printer_models import normalize_printer_model
+    from backend.app.utils.printer_models import normalize_model_name
 
     if not raw:
         return None
-    cleaned = str(raw).strip()
+    cleaned = raw.strip()
     if cleaned.startswith("# "):
         cleaned = cleaned[2:].strip()
     cleaned = re.sub(r"\s+0\.\d+\s+nozzle$", "", cleaned, flags=re.IGNORECASE)
-    return normalize_printer_model(cleaned) if cleaned else None
+    return normalize_model_name(cleaned)
 
 
-async def _resolve_target_printer_model(db: AsyncSession, user: "User | None", request) -> str | None:
-    """Best-effort: the printer model a slice request targets. Returns ``None``
-    when it can't be determined (cross-class detection then simply doesn't
-    fire — fail-open, never blocks/alters a slice spuriously)."""
-    from backend.app.services.preset_resolver import resolve_preset_ref
-
-    if request.printer_preset is None:
-        return None
+def _preset_printer_model(printer_json: str, *, allow_preset_name: bool = True) -> str | None:
+    """Read the model from the printer profile resolved for this request."""
     try:
-        printer_json = await resolve_preset_ref(db, user, request.printer_preset, "printer")
         data = json.loads(printer_json)
-        if not isinstance(data, dict):
-            return None
-        return _canonical_printer_model(
-            data.get("printer_model") or data.get("printer_settings_id") or data.get("name")
-        )
-    except Exception:  # noqa: BLE001
+    except json.JSONDecodeError:
         return None
+    if not isinstance(data, dict):
+        return None
+    raw = data.get("printer_model")
+    if not raw and allow_preset_name:
+        raw = data.get("printer_settings_id") or data.get("name")
+    return _canonical_printer_model(raw) if isinstance(raw, str) else None
 
 
 # The sidecar prefixes the slicer CLI's own ``error_string`` with this when the
@@ -3170,12 +3164,13 @@ async def _run_slicer_with_fallback(
     # per-nozzle dead zone or trips the multi-extruder geometry pipeline.
     # Only on a true class crossing; same-printer slices keep the user's layout.
     cross_class_arrange = False
+    source_model = target_model = None
     if is_3mf:
         from backend.app.services.slicer_3mf_convert import extract_source_printer_model
         from backend.app.utils.printer_models import is_dual_nozzle_model
 
-        source_model = extract_source_printer_model(primary_bytes)
-        target_model = await _resolve_target_printer_model(db, user, request)
+        source_model = _canonical_printer_model(extract_source_printer_model(primary_bytes))
+        target_model = _preset_printer_model(presets["printer"])
         if source_model and target_model and is_dual_nozzle_model(source_model) != is_dual_nozzle_model(target_model):
             logger.info(
                 "Cross-nozzle-class re-slice (%s -> %s): enabling --arrange",
@@ -3326,6 +3321,17 @@ async def _run_slicer_with_fallback(
                 # there is nothing to fall back TO, so surface the server error
                 # (the outer handler turns it into a 502) instead of re-running
                 # the identical embedded slice.
+                raise
+            from backend.app.utils.printer_models import PRINTER_MODEL_MAP
+
+            # Standard refs are stubs named after bundled profiles. A custom
+            # preset's editable label alone cannot prove its printer model.
+            retry_model = _preset_printer_model(
+                presets["printer"], allow_preset_name=request.printer_preset.source == "standard"
+            )
+            if source_model != retry_model or source_model not in PRINTER_MODEL_MAP.values():
+                # An automatic retry must not publish a slice for a different
+                # printer, or guess from two absent or unrecognised models.
                 raise
             logger.warning(
                 "Slicer CLI rejected --load-settings for %s (%s); retrying with embedded settings",
