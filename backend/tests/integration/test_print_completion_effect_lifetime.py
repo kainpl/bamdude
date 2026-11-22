@@ -13,6 +13,137 @@ from backend.app.services.printer_manager import PrinterManager
 from backend.tests.integration.swap_terminal_support import an_execution, make_rig  # noqa: F401
 
 
+async def test_startup_while_paused_then_finish_closes_only_the_recovered_run(
+    test_engine, db_session, printer_factory, archive_factory, tmp_path, monkeypatch
+):
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+
+    from backend.app.core.tasks import spawn_background_task
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.bambu_mqtt import BambuMQTTClient
+    from backend.app.services.print_run_binding import current_print_run
+
+    printer = await printer_factory(auto_archive=True, plate_detection_enabled=False)
+    started_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    archive = await archive_factory(
+        printer.id,
+        status="printing",
+        filename="cube.3mf",
+        print_name="cube",
+        subtask_id="81",
+        file_path="",
+        created_at=started_at,
+        started_at=started_at,
+    )
+    queue = PrinterQueue(id=printer.id, printer_id=printer.id, status="printing", pending_count=1)
+    db_session.add(queue)
+    await db_session.flush()
+    current = PrintQueueItem(queue_id=queue.id, archive_id=archive.id, status="printing", started_at=started_at)
+    next_item = PrintQueueItem(queue_id=queue.id, status="pending", position=1)
+    db_session.add_all([current, next_item])
+    await db_session.flush()
+    queue.current_item_id = current.id
+    await db_session.commit()
+
+    manager = PrinterManager()
+    start = AsyncMock(wraps=main.on_print_start)
+    manager.set_print_start_callback(start)
+    manager.set_print_running_observed_callback(main.on_print_running_observed)
+    manager.set_print_complete_callback(main.on_print_complete)
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    monkeypatch.setattr(main, "printer_manager", manager)
+    monkeypatch.setattr("backend.app.services.printer_manager.printer_manager", manager)
+    monkeypatch.setattr(main, "async_session", factory)
+    monkeypatch.setattr("backend.app.core.database.async_session", factory)
+    monkeypatch.setattr(main.app_settings, "base_dir", tmp_path)
+    monkeypatch.setattr(main, "_active_prints", {})
+    monkeypatch.setattr(main, "_timelapse_baselines", {})
+    monkeypatch.setattr(main, "ws_manager", AsyncMock())
+    monkeypatch.setattr(main, "mqtt_relay", AsyncMock())
+    monkeypatch.setattr(main, "smart_plug_manager", AsyncMock())
+    monkeypatch.setattr(main, "notification_service", AsyncMock())
+    monkeypatch.setattr(main, "_capture_timelapse_baseline_at_start", AsyncMock())
+    monkeypatch.setattr(main, "_record_print_energy", AsyncMock())
+    monkeypatch.setattr("backend.app.services.macro_trigger.fire_event_macros", AsyncMock())
+    monkeypatch.setattr("backend.app.services.usage_tracker.on_print_complete", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        "backend.app.services.archive_download_retry.archive_download_retry.retry_archive",
+        AsyncMock(return_value="failed"),
+    )
+    monkeypatch.setattr(
+        "backend.app.services.archive_download_retry.archive_download_retry.retry_printer_archives", AsyncMock()
+    )
+
+    def connect_without_transport(client):
+        client.state.connected = True
+
+    background = []
+
+    def schedule(coro, *, name):
+        task = spawn_background_task(coro, name=name)
+        background.append(task)
+        return task
+
+    monkeypatch.setattr(BambuMQTTClient, "connect", connect_without_transport)
+    monkeypatch.setattr(main, "spawn_background_task", schedule)
+    monkeypatch.setattr("backend.app.services.printer_manager.spawn_background_task", schedule)
+    # Drain callbacks at each packet boundary without a timing-dependent MQTT thread.
+    callbacks = []
+    monkeypatch.setattr(manager, "_schedule_async", callbacks.append)
+    assert await manager.connect_printer(printer)
+    client = manager.get_client(printer.id)
+    assert current_print_run(manager, printer.id) is None
+
+    async def push(state, progress):
+        client._process_message(
+            {
+                "print": {
+                    "gcode_state": state,
+                    "gcode_file": "/data/Metadata/plate_1.gcode",
+                    "subtask_id": "81",
+                    "subtask_name": "cube",
+                    "mc_percent": progress,
+                }
+            }
+        )
+        while callbacks:
+            await callbacks.pop(0)
+        while background:
+            finished = background[:]
+            background.clear()
+            await asyncio.gather(*finished)
+
+    await push("PAUSE", 37)
+    binding = current_print_run(manager, printer.id)
+    assert (binding.archive_id, binding.archive_identity) == (archive.id, archive.recovery_identity)
+    await db_session.refresh(current)
+    await db_session.refresh(queue)
+    assert (current.status, queue.current_item_id) == ("printing", current.id)
+
+    await push("RUNNING", 60)
+    start.assert_not_awaited()
+    await push("FINISH", 100)
+    await push("FINISH", 100)
+
+    async with factory() as db:
+        archives = (await db.scalars(select(PrintArchive))).all()
+        assert [(row.id, row.recovery_identity, row.status) for row in archives] == [
+            (archive.id, archive.recovery_identity, "completed"),
+        ]
+        rows = (await db.scalars(select(PrintQueueItem).order_by(PrintQueueItem.id))).all()
+        assert [(row.id, row.archive_id, row.status) for row in rows] == [
+            (current.id, archive.id, "completed"),
+            (next_item.id, None, "pending"),
+        ]
+        stored_queue = await db.get(PrinterQueue, queue.id)
+        assert (stored_queue.status, stored_queue.current_item_id, stored_queue.pending_count) == ("idle", None, 1)
+    main.ws_manager.send_print_complete.assert_awaited_once()
+
+
 async def test_actual_completion_backgrounds_run_after_callback(
     test_engine, db_session, printer_factory, archive_factory, tmp_path, monkeypatch
 ):
