@@ -315,7 +315,7 @@ class GitHubBackend(GitProviderBackend):
         repo_url: str,
         token: str,
     ) -> dict:
-        """Create branch (from default branch or as initial commit) then push."""
+        """Create a branch from the default branch, initializing it only on a confirmed empty response."""
         try:
             repo_response = await client.get(f"{api_base}/repos/{owner}/{repo}", headers=headers)
             if repo_response.status_code != 200:
@@ -355,8 +355,6 @@ class GitHubBackend(GitProviderBackend):
                     msg = f"Failed to initialize empty repository (HTTP {seed.status_code}): {self._truncated_response_text(seed)}"
                     return {"status": "failed", "message": msg}
                 base_sha, err = self._read_sha(seed, "commit", "sha")
-            elif ref_response.status_code == 404:
-                return await self._create_initial_commit(client, headers, api_base, owner, repo, branch, files)
             elif ref_response.status_code != 200:
                 msg = f"Failed to get default branch ref (HTTP {ref_response.status_code}): {self._truncated_response_text(ref_response)}"
                 return {"status": "failed", "message": msg}
@@ -384,95 +382,6 @@ class GitHubBackend(GitProviderBackend):
 
         except Exception as e:
             logger.exception("_create_branch_and_push failed for %s/%s branch=%s", owner, repo, branch)
-            return {"status": "failed", "message": str(e), "error": str(e)}
-
-    async def _create_initial_commit(
-        self,
-        client: httpx.AsyncClient,
-        headers: dict,
-        api_base: str,
-        owner: str,
-        repo: str,
-        branch: str,
-        files: dict,
-    ) -> dict:
-        """Create the first commit in an empty repository."""
-        try:
-            tree_items = []
-            for path, content in files.items():
-                content_str = json.dumps(content, indent=2, default=str)
-                blob_response = await client.post(
-                    f"{api_base}/repos/{owner}/{repo}/git/blobs",
-                    headers=headers,
-                    json={"content": base64.b64encode(content_str.encode()).decode(), "encoding": "base64"},
-                )
-                if blob_response.status_code == 404:
-                    msg = "GitHub API returned 404 for POST /git/blobs — check repository visibility and token scope"
-                    logger.warning("_create_initial_commit %s/%s: %s", owner, repo, msg)
-                    return {"status": "failed", "message": msg}
-                if blob_response.status_code != 201:
-                    msg = f"Failed to create blob for {path} (HTTP {blob_response.status_code}): {self._truncated_response_text(blob_response)}"
-                    logger.warning("_create_initial_commit %s/%s: %s", owner, repo, msg)
-                    return {"status": "failed", "message": msg}
-                blob_sha, err = self._read_sha(blob_response, "sha")
-                if err:
-                    msg = f"Malformed blob response for {path} ({err}): {self._truncated_response_text(blob_response)}"
-                    logger.warning("_create_initial_commit %s/%s: %s", owner, repo, msg)
-                    return {"status": "failed", "message": msg}
-                tree_items.append({"path": path, "mode": "100644", "type": "blob", "sha": blob_sha})
-
-            tree_response = await client.post(
-                f"{api_base}/repos/{owner}/{repo}/git/trees",
-                headers=headers,
-                json={"tree": tree_items},
-            )
-            if tree_response.status_code != 201:
-                msg = f"Failed to create tree (HTTP {tree_response.status_code}): {self._truncated_response_text(tree_response)}"
-                logger.warning("_create_initial_commit %s/%s: %s", owner, repo, msg)
-                return {"status": "failed", "message": msg}
-
-            tree_sha, err = self._read_sha(tree_response, "sha")
-            if err:
-                msg = f"Malformed tree-create response ({err}): {self._truncated_response_text(tree_response)}"
-                logger.warning("_create_initial_commit %s/%s: %s", owner, repo, msg)
-                return {"status": "failed", "message": msg}
-            commit_response = await client.post(
-                f"{api_base}/repos/{owner}/{repo}/git/commits",
-                headers=headers,
-                json={
-                    "message": f"Initial BamDude backup - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
-                    "tree": tree_sha,
-                },
-            )
-            if commit_response.status_code != 201:
-                msg = f"Failed to create commit (HTTP {commit_response.status_code}): {self._truncated_response_text(commit_response)}"
-                logger.warning("_create_initial_commit %s/%s: %s", owner, repo, msg)
-                return {"status": "failed", "message": msg}
-
-            commit_sha, err = self._read_sha(commit_response, "sha")
-            if err:
-                msg = f"Malformed commit-create response ({err}): {self._truncated_response_text(commit_response)}"
-                logger.warning("_create_initial_commit %s/%s: %s", owner, repo, msg)
-                return {"status": "failed", "message": msg}
-            ref_response = await client.post(
-                f"{api_base}/repos/{owner}/{repo}/git/refs",
-                headers=headers,
-                json={"ref": f"refs/heads/{branch}", "sha": commit_sha},
-            )
-            if ref_response.status_code != 201:
-                msg = f"Failed to create branch ref (HTTP {ref_response.status_code}): {self._truncated_response_text(ref_response)}"
-                logger.warning("_create_initial_commit %s/%s: %s", owner, repo, msg)
-                return {"status": "failed", "message": msg}
-
-            return {
-                "status": "success",
-                "message": f"Initial backup created - {len(files)} files",
-                "commit_sha": commit_sha,
-                "files_changed": len(files),
-            }
-
-        except Exception as e:
-            logger.exception("_create_initial_commit failed for %s/%s branch=%s", owner, repo, branch)
             return {"status": "failed", "message": str(e), "error": str(e)}
 
     async def list_commits(

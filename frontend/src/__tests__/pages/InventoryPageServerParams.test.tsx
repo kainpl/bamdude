@@ -561,6 +561,39 @@ describe('InventoryPage — server-driven params (task 4)', () => {
     expect(await screen.findByText('1100g')).toBeInTheDocument();
   });
 
+  it.each([true, false])('reports a group shortfall below total tare (first column: %s)', async (firstColumn) => {
+    localStorage.setItem('bamdude-inventory-group', 'true');
+    const weight = { id: 'weight_check', label: 'Weight Check', visible: true };
+    const material = { id: 'material', label: 'Material', visible: true };
+    localStorage.setItem('bamdude-inventory-columns', JSON.stringify(firstColumn ? [weight, material] : [material, weight]));
+    const members = [
+      { ...SPOOLS[0], id: 10, core_weight: 100, last_scale_weight: 90 },
+      { ...SPOOLS[0], id: 20, core_weight: 150, weight_used: 1200, last_scale_weight: 140 },
+    ];
+    server.use(
+      http.get('/api/v1/inventory/spools', () => HttpResponse.json({
+        items: [{
+          ...members[0], group_count: 2, ids: [10, 20], representative: members[0],
+          remaining_total: 1000, weight_used_total: 1200, core_weight_total: 250, scale_weight_total: 230,
+        }],
+        meta: { total: 1, current_page: 1, per_page: 50, last_page: 1 },
+      })),
+      http.get('/api/v1/inventory/spools/:id', ({ params }) =>
+        HttpResponse.json(members.find((spool) => spool.id === Number(params.id))),
+      ),
+    );
+    render(<InventoryPageRouter />);
+    const open = await screen.findByTitle('#10, #20');
+    const group = open.closest('tr')!;
+    expect(within(group).getByText('230g').parentElement).toHaveAttribute(
+      'title', 'Scale: 230g\nCalculated: 1250g\nDifference: -1020g (mismatch!)',
+    );
+    fireEvent.click(open);
+    expect((await screen.findByText('90g')).parentElement).toHaveAttribute(
+      'title', 'Scale: 90g\nCalculated: 1100g\nDifference: -10g (within tolerance)',
+    );
+  });
+
   it('orders Spoolman groups by total net weight rather than the first member weight', async () => {
     localStorage.setItem('bamdude-inventory-group', 'true');
     localStorage.setItem('bamdude-inventory-sort', JSON.stringify({ column: 'net', direction: 'asc' }));

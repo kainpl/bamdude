@@ -172,42 +172,41 @@ class TestGitHubBackendPushFiles:
         assert "404" in result["message"]
         assert "token scope" in result["message"].lower()
 
-    @pytest.mark.asyncio
-    async def test_initial_commit_blob_404_surfaces_token_scope_hint(self):
-        """Empty repo path: 404 on POST /git/blobs surfaces token scope hint."""
-        client = AsyncMock()
-        client.get = AsyncMock(
-            side_effect=[
-                _make_mock_response(404, {}),  # backup branch missing
-                _make_mock_response(200, {"default_branch": "main"}),  # repo info
-                _make_mock_response(404, {}),  # default branch missing -> empty repo
-            ]
+
+async def test_github_missing_target_and_default_refs_leave_existing_history_alone():
+    repo_path = "/repos/owner/repo"
+    refs = {"other": "existing-history"}
+    requests = []
+
+    def respond(request):
+        method = request.method
+        path = request.url.path.removeprefix(repo_path)
+        requests.append((method, path))
+        if method == "GET":
+            if not path:
+                return httpx.Response(200, json={"default_branch": "main", "private": True})
+            branch = path.removeprefix("/git/refs/heads/")
+            if branch in refs:
+                return httpx.Response(200, json={"object": {"sha": refs[branch]}})
+            return httpx.Response(404, json={"message": "Not Found"})
+
+        if method == "POST":
+            if path == "/git/refs":
+                payload = json.loads(request.content)
+                refs[payload["ref"].removeprefix("refs/heads/")] = payload["sha"]
+                return httpx.Response(201)
+            return httpx.Response(201, json={"sha": "new-root"})
+        raise AssertionError((method, path))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await GitHubBackend().push_files(
+            "https://github.com/owner/repo", "fixture", "backup", {"sample.json": {}}, client
         )
-        client.post = AsyncMock(return_value=_make_mock_response(404, {}))
 
-        result = await self.backend.push_files(self.repo_url, self.token, self.branch, {"a.json": {"k": "v"}}, client)
-
-        assert result["status"] == "failed"
-        assert "404" in result["message"]
-        assert "token scope" in result["message"].lower()
-
-    @pytest.mark.asyncio
-    async def test_initial_commit_blob_non_201_returns_path_in_message(self):
-        """Empty repo path: non-201 on POST /git/blobs includes the file path in the failure message."""
-        client = AsyncMock()
-        client.get = AsyncMock(
-            side_effect=[
-                _make_mock_response(404, {}),  # backup branch missing
-                _make_mock_response(200, {"default_branch": "main"}),  # repo info
-                _make_mock_response(404, {}),  # default branch missing -> empty repo
-            ]
-        )
-        client.post = AsyncMock(return_value=_make_mock_response(500, {}, text="Internal Server Error"))
-
-        result = await self.backend.push_files(self.repo_url, self.token, self.branch, {"a.json": {"k": "v"}}, client)
-
-        assert result["status"] == "failed"
-        assert "a.json" in result["message"]
+    assert requests == [("GET", "/git/refs/heads/backup"), ("GET", ""), ("GET", "/git/refs/heads/main")]
+    assert refs == {"other": "existing-history"}
+    assert result["status"] == "failed"
+    assert "404" in result["message"]
 
 
 @pytest.mark.parametrize("branch", ["main", "snapshots/bamdude"])
@@ -487,26 +486,30 @@ class TestGitHubBackendRobustness:
         # Total message ≈ "Connection failed: ConnectError: " (33) + 200 char detail
         assert len(result["message"]) < 300
 
-    @pytest.mark.asyncio
-    async def test_initial_commit_malformed_blob_response(self):
-        """B20: _create_initial_commit: 201 blob response with no sha surfaces shape-error."""
+    @pytest.mark.parametrize(
+        ("status", "body", "error"),
+        [(404, {}, "HTTP 404"), (201, {"unexpected": "shape"}, "Cannot establish the default branch commit")],
+    )
+    async def test_empty_repository_seed_failure_stops_before_the_backup(self, status, body, error):
         client = AsyncMock()
         client.get = AsyncMock(
             side_effect=[
-                _make_mock_response(404, {}),  # backup branch missing
+                _make_mock_response(404, {}),
                 _make_mock_response(200, {"default_branch": "main"}),
-                _make_mock_response(404, {}),  # default branch missing -> empty repo
+                _make_mock_response(409, {"message": "Git Repository is empty."}),
             ]
         )
-        client.post = AsyncMock(return_value=_make_mock_response(201, {"unexpected": "shape"}))
+        client.put = AsyncMock(return_value=_make_mock_response(status, body))
 
         result = await self.backend.push_files(
             self.repo_url, self.token, self.branch, {"seed.json": {"k": "v"}}, client
         )
 
         assert result["status"] == "failed"
-        assert "blob response" in result["message"].lower()
-        assert "seed.json" in result["message"]
+        assert error in result["message"]
+        client.put.assert_awaited_once()
+        client.post.assert_not_awaited()
+        client.patch.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_recursive_push_files_log_marker_on_branch_create(self, caplog):

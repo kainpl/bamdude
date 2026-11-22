@@ -360,6 +360,7 @@ type LocationDisplay = {
 
 type CellCtx = {
   spool: InventorySpool;
+  isGroup?: boolean;
   remaining: number;
   pct: number;
   assignmentMap: Record<number, LocationDisplay>;
@@ -620,17 +621,18 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
       </span>
     );
   },
-  weight_check: ({ spool, remaining, onSyncWeight }) => {
+  weight_check: ({ spool, remaining, onSyncWeight, isGroup }) => {
     const scaleWeight = spool.last_scale_weight;
     if (scaleWeight == null) return <span className="text-sm text-bambu-gray/50" title="No scale measurement">-</span>;
 
     const coreWeight = spool.core_weight || 0;
     const calculatedWeight = remaining + coreWeight;
 
-    // Edge case: scale < core_weight means spool is empty or not on scale - treat as match
+    // An individual reading below tare can mean the spool is off the scale.
+    // A group always compares its measured total with its calculated total.
     let difference: number;
     let isMatch: boolean;
-    if (scaleWeight < coreWeight) {
+    if (!isGroup && scaleWeight < coreWeight) {
       difference = scaleWeight - coreWeight;
       isMatch = true;
     } else {
@@ -3895,14 +3897,14 @@ function SpoolTableGroup({
             {idx === 0 ? (
               <div className="flex items-center gap-2">
                 <ChevronDown className={`w-4 h-4 text-bambu-gray transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
-                {columnCells[colId]?.({ spool: headerSpool, remaining, pct, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight, spoolDisplayTemplate })}
+                {columnCells[colId]?.({ spool: headerSpool, isGroup: true, remaining, pct, assignmentMap, catalogMap, currencySymbol, dateFormat, t, spoolDisplayTemplate })}
               </div>
             ) : colId === 'id' ? (
               <span className="text-xs font-medium bg-bambu-green/20 text-bambu-green px-2 py-0.5 rounded-full">
                 {t('inventory.groupedSpools', { count: memberIds.length })}
               </span>
             ) : (
-              columnCells[colId]?.({ spool: headerSpool, remaining, pct, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight, spoolDisplayTemplate })
+              columnCells[colId]?.({ spool: headerSpool, isGroup: true, remaining, pct, assignmentMap, catalogMap, currencySymbol, dateFormat, t, spoolDisplayTemplate })
             )}
           </td>
         ))}
