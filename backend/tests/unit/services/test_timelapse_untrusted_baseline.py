@@ -51,10 +51,12 @@ def _fresh():
 
 
 def _card(monkeypatch, *, answered: bool, files: list[dict] | None = None, internal: bool = False):
-    async def listing(*_args, **_kwargs):
-        return (list(files or []), answered)
+    from backend.app.services.bambu_ftp import LISTING_COMPLETE, LISTING_UNAVAILABLE, DirectoryListing
 
-    monkeypatch.setattr("backend.app.services.bambu_ftp.list_files_checked_async", listing)
+    async def listing(ip, code, path, **kwargs):
+        return DirectoryListing(path, LISTING_COMPLETE if answered else LISTING_UNAVAILABLE, tuple(files or ()))
+
+    monkeypatch.setattr("backend.app.services.bambu_ftp.list_directory_async", listing)
     monkeypatch.setattr(
         "backend.app.services.printer_manager.printer_manager.get_status",
         lambda _pid: type("S", (), {"print_option_support": {"internal_timelapse": internal}})(),

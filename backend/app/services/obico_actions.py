@@ -25,8 +25,8 @@ async def execute_action(
     if action in ("pause", "pause_and_off"):
         _pause_print(printer_id)
 
-    if action == "pause_and_off":
-        await _turn_off_linked_plugs(printer_id)
+    if action == "pause_and_off" and not await _turn_off_linked_plugs(printer_id):
+        action = "pause"
 
     await _notify(printer_id, printer_name, task_name, score, action, frame)
 
@@ -49,8 +49,8 @@ def _pause_print(printer_id: int) -> None:
         logger.warning("Obico pause: pause_print() returned False for printer %s", printer_id)
 
 
-async def _turn_off_linked_plugs(printer_id: int) -> None:
-    from backend.app.services.smart_plug_manager import is_script_plug, plug_switched, smart_plug_manager
+async def _turn_off_linked_plugs(printer_id: int) -> bool:
+    from backend.app.services.smart_plug_manager import can_auto_turn_off, plug_switched, smart_plug_manager
 
     async with async_session() as db:
         plugs = await smart_plug_manager._get_plugs_for_printer(printer_id, db)
@@ -58,7 +58,7 @@ async def _turn_off_linked_plugs(printer_id: int) -> None:
         for plug in plugs:
             # A script can only be run, never turned off: ``script/turn_off`` STOPS a script that is
             # running. The printer's "off" scripts run through plug_switched below.
-            if not plug.enabled or is_script_plug(plug):
+            if not plug.enabled or not can_auto_turn_off(plug):
                 continue
             try:
                 service = await smart_plug_manager.get_service_for_plug(plug, db)
@@ -73,6 +73,7 @@ async def _turn_off_linked_plugs(printer_id: int) -> None:
         # printer — once, however many plugs feed it.
         for plug in switched_off:
             await plug_switched(plug, False, scripts="automatic")
+        return any(plug.controls_printer_power for plug in switched_off)
 
 
 async def _notify(

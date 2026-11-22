@@ -19,6 +19,7 @@ instead), so the probe keeps its own per-printer timestamp.
 
 from __future__ import annotations
 
+import ftplib
 import socket
 import ssl
 import threading
@@ -116,6 +117,35 @@ def test_the_probe_runs_once_per_window_per_printer():
         BambuFTPClient("10.0.0.10", "12345678").connect()
 
     assert [c.args[0] for c in probe.call_args_list] == ["10.0.0.9", "10.0.0.10"]
+
+
+def test_confirmed_session_exhaustion_has_a_specific_upload_reason(monkeypatch):
+    from backend.app.services.background_dispatch import _upload_failure_message
+
+    probe = MagicMock(return_value="421 Too many connections")
+    monkeypatch.setattr(bambu_ftp, "_read_cleartext_reply", probe)
+    monkeypatch.setattr(bambu_ftp, "ImplicitFTP_TLS", lambda **_: _failing_tls(_wrong_version()))
+    for _ in range(2):
+        client = BambuFTPClient("10.0.0.9", "12345678")
+        assert client.connect() is False
+        assert client.failure.code == "421"
+        assert "421" in bambu_ftp.describe_upload_failure(client.failure)
+        assert _upload_failure_message("external", bambu_ftp.UploadReport(client.failure)) == "FTP 421"
+    probe.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_an_a1_refused_ftp_421_does_not_try_another_data_mode(tmp_path, monkeypatch):
+    ftp = _failing_tls(ftplib.error_temp("421 Too many connections"))
+    factory = MagicMock(return_value=ftp)
+    monkeypatch.setattr(bambu_ftp, "ImplicitFTP_TLS", factory)
+    monkeypatch.setattr(BambuFTPClient, "_mode_cache", {})
+    result = await bambu_ftp.upload_file_async(
+        "10.0.0.11", "12345678", tmp_path / "job.3mf", "/job.3mf", printer_model="A1"
+    )
+    assert result is False
+    factory.assert_called_once()
+    ftp.login.assert_not_called()
 
 
 def test_only_a_cleartext_answer_is_probed():

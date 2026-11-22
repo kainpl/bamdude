@@ -18,6 +18,7 @@ import pytest
 
 from backend.app import main
 from backend.app.models.archive import PrintArchive
+from backend.app.services.mqtt_smart_plug import SmartPlugMQTTData, mqtt_smart_plug_service
 
 
 async def _archive(db_session, printer_id, **over):
@@ -82,6 +83,27 @@ async def test_the_end_reads_the_plug_the_start_used(db_session, smart_plug_fact
         await main._record_print_energy(archive.id, printer.id)
 
     await db_session.refresh(archive)
+    assert archive.energy_kwh == 0.5
+
+
+@pytest.mark.asyncio
+async def test_mqtt_print_energy_uses_lifetime_counter_across_midnight(
+    db_session, smart_plug_factory, printer_factory, monkeypatch
+):
+    printer = await printer_factory()
+    meter = await smart_plug_factory(printer_id=printer.id, plug_type="mqtt")
+    archive = await _archive(db_session, printer.id)
+    reading = SmartPlugMQTTData(plug_id=meter.id, energy=1.5, energy_total=12.5)
+    monkeypatch.setitem(mqtt_smart_plug_service.plug_data, meter.id, reading)
+    monkeypatch.setattr(main, "async_session", lambda: _SessionProxy(db_session))
+
+    assert await main._record_energy_start(archive, printer.id, db_session)
+    reading.energy = 0.25  # Daily value reset, lifetime value rose.
+    reading.energy_total = 13.0
+    await main._record_print_energy(archive.id, printer.id)
+    await db_session.refresh(archive)
+
+    assert archive.energy_start_kwh == 12.5
     assert archive.energy_kwh == 0.5
 
 

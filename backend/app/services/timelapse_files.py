@@ -46,7 +46,7 @@ MEDIUM_UNAVAILABLE = "unavailable"
 MEDIUM_NOT_ASKED = "not_asked"
 _listing_media: dict[int, dict[str, str]] = {}
 
-# Automatic scans of a card whose file service did not let us connect wait
+# Automatic scans of a card whose file service refused or timed out wait
 # before they knock again (upstream 36991dadc, G10 spec r4 §5.2): per endpoint,
 # 30 s doubling to 5 min. A manual scan is never held back, and any answer from
 # the card — or a changed address or access code, or a restart — starts over.
@@ -143,7 +143,7 @@ async def list_timelapse_videos(printer, *, automatic: bool = False) -> tuple[li
     printer did not answer; :func:`last_listing_answered` tells the two apart.
 
     ``automatic`` — a scan nobody asked for (the baseline at print start, the
-    retries after completion): it skips a card that refused its last connect
+    retries after completion): it skips a card whose file service refused or stalled
     for a bounded while, and the internal catalogue is still read.
     """
     videos, source, answered = await _list_both_media(printer, automatic=automatic)
@@ -153,24 +153,23 @@ async def list_timelapse_videos(printer, *, automatic: bool = False) -> tuple[li
 
 async def _list_both_media(printer, *, automatic: bool = False) -> tuple[list[dict], str | None, bool]:
     """``(videos, source, answered)`` — the listing, and whether every medium asked replied."""
-    from backend.app.services.bambu_ftp import BambuFTPClient, list_files_checked_async
+    from backend.app.services.bambu_ftp import LISTING_COMPLETE, LISTING_MISSING, LISTING_SLOW, list_directory_async
 
     card_answered = True
     card_skipped = automatic and _held_back(printer)
     if card_skipped:
-        logger.info("[TIMELAPSE] %s refused its last FTP connect — the automatic scan skips the card", printer.name)
+        logger.info("[TIMELAPSE] %s has an FTP retry delay — the automatic scan skips the card", printer.name)
         card_answered = False
-    started = time.monotonic()
     for directory in () if card_skipped else FTP_TIMELAPSE_DIRS:
         try:
-            found, answered = await list_files_checked_async(
-                printer.ip_address, printer.access_code, directory, printer_model=printer.model
+            listing = await list_directory_async(
+                printer.ip_address, printer.access_code, directory, printer_model=printer.model, prove_missing=True
             )
         except Exception as exc:  # noqa: BLE001 — an error is no answer (G10 CR2), not an empty directory
             logger.debug("[TIMELAPSE] %s failed on %s: %s", directory, printer.name, exc)
             card_answered = False
             continue
-        if not answered:
+        if listing.status not in (LISTING_COMPLETE, LISTING_MISSING):
             # ⚠️ Stop the whole FTP leg, not just this directory. The printer's
             # FTP daemon can wedge — a live X2D did, and stayed unreachable
             # until it was restarted — and every remaining directory then costs
@@ -181,10 +180,17 @@ async def _list_both_media(printer, *, automatic: bool = False) -> tuple[list[di
                 printer.name,
             )
             card_answered = False
-            if BambuFTPClient.connect_failure_since(printer.ip_address, started):
+            if listing.status == LISTING_SLOW or listing.reason in {
+                "auth",
+                "connect",
+                "network",
+                "sessions",
+                "timeout",
+                "tls",
+            }:
                 _note_unreachable(printer)
             break
-        videos = _videos_only(found)
+        videos = _videos_only(listing.entries)
         if videos:
             _note_answered(printer)
             _listing_media[printer.id] = {

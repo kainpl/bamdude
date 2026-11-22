@@ -99,6 +99,41 @@ async def test_pause_action_still_pauses_and_notifies(fake_printer):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("can_switch", [False, True])
+async def test_pause_and_off_reports_only_confirmed_mains_switch(fake_printer, can_switch):
+    from backend.app.services.smart_plug_manager import smart_plug_manager
+
+    meter = SimpleNamespace(name="Meter", enabled=True, plug_type="mqtt", mqtt_command_topic=None)
+    mains = SimpleNamespace(
+        name="Mains relay",
+        enabled=True,
+        plug_type="mqtt",
+        mqtt_command_topic="mains/set",
+        controls_printer_power=True,
+    )
+    driver = SimpleNamespace(turn_off=AsyncMock(return_value=True))
+    with (
+        patch("backend.app.services.obico_actions._pause_print") as pause,
+        patch.object(
+            smart_plug_manager,
+            "_get_plugs_for_printer",
+            AsyncMock(return_value=[meter, mains] if can_switch else [meter]),
+        ),
+        patch.object(smart_plug_manager, "get_service_for_plug", AsyncMock(return_value=driver)),
+        patch("backend.app.services.smart_plug_manager.plug_switched", new_callable=AsyncMock) as switched,
+        patch("backend.app.services.obico_actions._notify", new_callable=AsyncMock) as notify,
+    ):
+        await execute_action(fake_printer.id, "pause_and_off", "test.3mf", 0.9)
+
+    pause.assert_called_once_with(fake_printer.id)
+    assert driver.turn_off.await_count == int(can_switch)
+    assert switched.await_count == int(can_switch)
+    if can_switch:
+        driver.turn_off.assert_awaited_once_with(mains)
+    assert notify.await_args.args[4] == ("pause_and_off" if can_switch else "pause")
+
+
+@pytest.mark.asyncio
 async def test_notify_swallows_notification_service_exceptions(fake_printer):
     """Notification failure must not propagate — Obico's detection loop
     keeps polling; one transient Discord blip shouldn't kill it."""

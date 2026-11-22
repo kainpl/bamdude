@@ -729,7 +729,7 @@ class AutoQueueScheduler:
         Unknown is woken — never having heard is not the same as nothing loaded.
         """
         from backend.app.models.smart_plug import SmartPlug
-        from backend.app.services.smart_plug_manager import smart_plug_manager
+        from backend.app.services.smart_plug_manager import is_monitor_only, smart_plug_manager
 
         candidates = await offline_candidates_for(db, item, busy_printers)
         if not candidates:
@@ -767,6 +767,7 @@ class AutoQueueScheduler:
                 .scalars()
                 .all()
             )
+            plugs = [plug for plug in plugs if not is_monitor_only(plug)]
             if not plugs:
                 continue
 

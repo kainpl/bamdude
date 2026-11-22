@@ -522,6 +522,34 @@ async def test_only_a_successful_wake_suppresses_that_printers_offline_fact(
     assert switch.await_count == 2
 
 
+@pytest.mark.parametrize("controllable", [False, True])
+async def test_meter_is_ignored_by_autoqueue_wake(
+    db_session, printer_factory, smart_plug_factory, scheduler, routing_item, sent, monkeypatch, controllable
+):
+    printer, _ = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
+    await smart_plug_factory(printer_id=printer.id, plug_type="mqtt", auto_on=True)
+    if controllable:
+        relay = await smart_plug_factory(
+            printer_id=printer.id, plug_type="mqtt", mqtt_command_topic="mains/set", auto_on=True
+        )
+    db_session.add(routing_item(target_model="A1MINI", status="pending", position=1))
+    await db_session.commit()
+    switch = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "backend.app.services.smart_plug_manager.smart_plug_manager.get_service_for_plug",
+        AsyncMock(return_value=SimpleNamespace(turn_on=switch)),
+    )
+    one, two = _patch_printer_manager(set())
+    with one, two:
+        await scheduler.tick()
+    if controllable:
+        switch.assert_awaited_once_with(relay)
+        sent.assert_not_awaited()
+    else:
+        switch.assert_not_awaited()
+        sent.assert_awaited_once()
+
+
 async def test_one_failed_plug_does_not_skip_the_other_plugs_or_claim_success(
     db_session, printer_factory, smart_plug_factory, scheduler, routing_item, sent, monkeypatch
 ):

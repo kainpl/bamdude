@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from backend.app.services.bambu_ftp import LISTING_COMPLETE, LISTING_UNAVAILABLE, DirectoryListing
 from backend.app.services.timelapse_files import (
     INTERNAL_TIMELAPSE_ROOT,
     archive_subtask_name,
@@ -48,14 +49,10 @@ def _entry(name: str, model_name: str = "", *, root: str = INTERNAL_TIMELAPSE_RO
 def _patch(monkeypatch, host: str, port: int, *, ftp: list[dict] | None = None, internal: bool = True):
     from backend.app.services.printer_files.tunnel import TunnelTransport
 
-    async def _ftp_listing(*_args, **_kwargs):
-        # ⚠️ answered=True: these fixtures model a printer that REPLIES, whose
-        # directories happen to be empty. An unreachable one answers False and
-        # ends the card leg after a single call — pinned separately in
-        # TestFtpThatStopsAnswering.
-        return list(ftp or []), True
+    async def _ftp_listing(ip, code, path, **kwargs):
+        return DirectoryListing(path, LISTING_COMPLETE, tuple(ftp or ()))
 
-    monkeypatch.setattr("backend.app.services.bambu_ftp.list_files_checked_async", _ftp_listing)
+    monkeypatch.setattr("backend.app.services.bambu_ftp.list_directory_async", _ftp_listing)
     monkeypatch.setattr(
         "backend.app.services.printer_manager.printer_manager.get_status",
         lambda _pid: type("S", (), {"print_option_support": {"internal_timelapse": internal}})(),
@@ -408,12 +405,12 @@ class TestFtpThatStopsAnswering:
         printer = SimpleNamespace(id=1, name="X2D", model="X2D", ip_address="1.2.3.4", access_code="x")
         asked: list[str] = []
 
-        async def _never_answers(ip, code, path, printer_model=None):
+        async def _never_answers(ip, code, path, **kwargs):
             asked.append(path)
-            return [], False
+            return DirectoryListing(path, LISTING_UNAVAILABLE)
 
         with (
-            patch("backend.app.services.bambu_ftp.list_files_checked_async", new=_never_answers),
+            patch("backend.app.services.bambu_ftp.list_directory_async", new=_never_answers),
             patch("backend.app.services.timelapse_files._supports_internal_timelapse", return_value=False),
         ):
             videos, source = await list_timelapse_videos(printer)
@@ -430,13 +427,13 @@ class TestFtpThatStopsAnswering:
         printer = SimpleNamespace(id=1, name="P1S", model="P1S", ip_address="1.2.3.4", access_code="x")
         asked: list[str] = []
 
-        async def _answers(ip, code, path, printer_model=None):
+        async def _answers(ip, code, path, **kwargs):
             asked.append(path)
             if path == "/record":
-                return [{"name": "clip.mp4", "is_directory": False, "path": "/record/clip.mp4"}], True
-            return [], True
+                return DirectoryListing(path, LISTING_COMPLETE, ({"name": "clip.mp4", "path": "/record/clip.mp4"},))
+            return DirectoryListing(path, LISTING_COMPLETE)
 
-        with patch("backend.app.services.bambu_ftp.list_files_checked_async", new=_answers):
+        with patch("backend.app.services.bambu_ftp.list_directory_async", new=_answers):
             videos, source = await list_timelapse_videos(printer)
 
         assert [v["name"] for v in videos] == ["clip.mp4"]
@@ -456,11 +453,11 @@ class TestFtpThatStopsAnswering:
         )
         transport = SimpleNamespace(list_files=AsyncMock(return_value=[entry]))
 
-        async def _never_answers(ip, code, path, printer_model=None):
-            return [], False
+        async def _never_answers(ip, code, path, **kwargs):
+            return DirectoryListing(path, LISTING_UNAVAILABLE)
 
         with (
-            patch("backend.app.services.bambu_ftp.list_files_checked_async", new=_never_answers),
+            patch("backend.app.services.bambu_ftp.list_directory_async", new=_never_answers),
             patch("backend.app.services.timelapse_files._supports_internal_timelapse", return_value=True),
             patch("backend.app.services.printer_files.factory.transport_for", return_value=transport),
         ):

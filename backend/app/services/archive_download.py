@@ -36,6 +36,7 @@ _failure_reasons: dict[int, str] = {}
 # succeeded — means the file was on neither storage.
 _REASON_BY_CONNECT_FAILURE = {
     "tls": "ftps_refused",
+    "sessions": "ftps_refused",
     "auth": "auth_rejected",
     "timeout": "unreachable",
     "network": "unreachable",

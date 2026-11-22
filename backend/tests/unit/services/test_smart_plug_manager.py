@@ -5,12 +5,95 @@ that were identified as common regression points.
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from backend.app.services.smart_plug_manager import SmartPlugManager
+
+
+@pytest.mark.asyncio
+async def test_monitor_only_plug_skips_automation_but_command_plug_still_works(
+    db_session, printer_factory, smart_plug_factory
+):
+    from backend.app.services.print_scheduler import PrintScheduler
+
+    printer = await printer_factory()
+    meter = await smart_plug_factory(
+        printer_id=printer.id,
+        plug_type="mqtt",
+        auto_on=True,
+        auto_off=True,
+        auto_off_after_drying=True,
+    )
+    relay = await smart_plug_factory(
+        printer_id=printer.id,
+        plug_type="mqtt",
+        mqtt_command_topic="relay/set",
+        auto_on=True,
+        auto_off=True,
+        auto_off_after_drying=True,
+    )
+    manager = SmartPlugManager()
+    assert PrintScheduler._wake_plugs([meter, relay]) == [relay]
+    driver = AsyncMock()
+    driver.turn_on.return_value = False
+    with (
+        patch.object(manager, "get_service_for_plug", AsyncMock(return_value=driver)),
+        patch.object(manager, "_schedule_off_per_mode") as schedule_off,
+        patch.object(manager, "_schedule_delayed_off") as schedule_dry,
+    ):
+        await manager.on_print_start(printer.id, db_session)
+        await manager.on_print_complete(printer.id, "completed", db_session)
+        await manager.schedule_off_after_queue_job(printer.id, db_session)
+        await manager.on_drying_complete(printer.id, db_session)
+
+    driver.turn_on.assert_awaited_once_with(relay)
+    assert [call.args[0] for call in schedule_off.call_args_list] == [relay, relay]
+    assert [call.args[0] for call in schedule_dry.call_args_list] == [relay]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command_topic", [None, "relay/set"])
+async def test_mqtt_delayed_off_uses_current_command_topic(
+    db_session, printer_factory, smart_plug_factory, command_topic
+):
+    printer = await printer_factory()
+    plug = await smart_plug_factory(
+        printer_id=printer.id,
+        plug_type="mqtt",
+        mqtt_command_topic=command_topic,
+        controls_printer_power=False,
+    )
+    manager = SmartPlugManager()
+    driver = AsyncMock()
+    driver.turn_off.return_value = True
+
+    @asynccontextmanager
+    async def session():
+        yield db_session
+
+    with (
+        patch("backend.app.core.database.async_session", session),
+        patch("backend.app.services.smart_plug_manager.printer_manager.is_print_active", return_value=False),
+        patch.object(manager, "get_service_for_plug", AsyncMock(return_value=driver)),
+        patch.object(manager, "_mark_auto_off_pending", new_callable=AsyncMock) as mark_pending,
+        patch.object(manager, "_mark_auto_off_executed", new_callable=AsyncMock) as mark_executed,
+        patch("backend.app.services.smart_plug_manager.plug_switched", new_callable=AsyncMock) as switched,
+    ):
+        await manager._delayed_off(plug.id, "mqtt", None, None, None, None, printer.id, 0)
+
+    if command_topic is None:
+        driver.turn_off.assert_not_awaited()
+        mark_pending.assert_awaited_once_with(plug.id, False, may_run=None)
+        mark_executed.assert_not_awaited()
+        switched.assert_not_awaited()
+    else:
+        driver.turn_off.assert_awaited_once_with(plug)
+        mark_executed.assert_awaited_once_with(plug.id)
+        switched.assert_awaited_once()
 
 
 class TestSmartPlugManager:

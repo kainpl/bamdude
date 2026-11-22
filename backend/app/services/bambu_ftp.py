@@ -37,7 +37,8 @@ T = TypeVar("T")
 class FtpFailure:
     """Why an FTP operation failed, as the client saw it (upstream 70ee5346).
 
-    ``kind``: ``auth`` / ``timeout`` / ``tls`` / ``network`` (the connect), or
+    ``kind``: ``auth`` / ``timeout`` / ``tls`` / ``network`` (the connect),
+    ``sessions`` (confirmed FTP 421 session exhaustion), or
     ``storage`` (553 / 552 — the printer's own storage refused), ``not_found``
     (550), ``rejected`` (any other refusal), ``transfer`` (the connection
     dropped mid-file), ``truncated`` (the printer's copy is the wrong size),
@@ -75,6 +76,8 @@ def describe_upload_failure(failure: FtpFailure | None) -> str:
     if failure is None:
         return "Could not upload the file to the printer. The server log records what the printer's file service said."
     kind, code = failure.kind, failure.code
+    if kind == "sessions":
+        return "FTP 421"
     if kind == "storage":
         return (
             f"The printer refused to store the file ({code or 'storage error'}). Check that its SD card is inserted, "
@@ -273,6 +276,13 @@ class DirectoryListing:
 def _reply_code(error: BaseException) -> str:
     text = str(error)
     return text[:3] if text[:3].isdigit() else type(error).__name__
+
+
+def _session_limit(reply: str | None) -> bool:
+    if not reply or not reply.startswith(("421 ", "421-")):
+        return False
+    text = reply.lower()
+    return "too many connections" in text or "too many users" in text
 
 
 _MONTHS = {
@@ -573,7 +583,7 @@ class BambuFTPClient:
     # Maps IP -> "prot_p" or "prot_c"
     _mode_cache: dict[str, str] = {}
     # When each printer was last asked what it answers port 990 with (audit D5).
-    _cleartext_probed_at: dict[str, float] = {}
+    _cleartext_probed_at: dict[str, tuple[float, bool]] = {}
     # Why the last connect to each printer failed, and when: ``(kind, monotonic)``.
     # The 3MF download turns it into the reason an archive is left without its
     # file (audit D6); a successful connect forgets it.
@@ -632,7 +642,7 @@ class BambuFTPClient:
         """How the last connect to *ip_address* failed, if it failed at or after *since*.
 
         ``"auth"`` (the login was refused), ``"timeout"``, ``"tls"`` (the
-        handshake failed — a cleartext answer on port 990 among them) or
+        handshake failed — a cleartext answer on port 990 among them), ``"sessions"`` or
         ``"network"``; ``None`` when nothing failed since *since* (``time.monotonic``)
         or a connect has succeeded after the failure.
         """
@@ -641,9 +651,9 @@ class BambuFTPClient:
             return None
         return record[0]
 
-    def _note_connect_failure(self, kind: str, detail: str = "") -> None:
+    def _note_connect_failure(self, kind: str, detail: str = "", code: str | None = None) -> None:
         self._last_connect_failure[self.ip_address] = (kind, time.monotonic())
-        self.failure = FtpFailure(kind, detail)
+        self.failure = FtpFailure(kind, detail, code)
 
     def connect(self) -> bool:
         """Connect to the printer FTP server (implicit FTPS on port 990)."""
@@ -683,6 +693,9 @@ class BambuFTPClient:
                 f"FTP connected successfully to {self.ip_address} (model={self.printer_model}, prot_c={use_prot_c})"
             )
             self._last_connect_failure.pop(self.ip_address, None)
+            last_probe = self._cleartext_probed_at.get(self.ip_address)
+            if last_probe and last_probe[1]:
+                self._cleartext_probed_at[self.ip_address] = (last_probe[0], False)
             self.failure = None
             return True
         except ftplib.error_perm as e:
@@ -697,21 +710,21 @@ class BambuFTPClient:
             return False
         except ssl.SSLError as e:
             logger.warning("FTP SSL error connecting to %s: %s", self.ip_address, e)
-            self._note_connect_failure("tls", str(e))
             # Close the dead socket BEFORE asking the printer anything else: the
             # probe below opens a second connection, and the leading theory for
             # this failure is a printer out of connection slots.
             self._abandon_connection("TLS handshake failed")
-            if getattr(e, "reason", None) == "WRONG_VERSION_NUMBER":
-                self._probe_cleartext_reply()
+            exhausted = getattr(e, "reason", None) == "WRONG_VERSION_NUMBER" and self._probe_cleartext_reply()
+            self._note_connect_failure("sessions" if exhausted else "tls", str(e), "421" if exhausted else None)
             return False
         except (OSError, ftplib.Error) as e:
             logger.warning("FTP connection failed to %s: %s (type: %s)", self.ip_address, e, type(e).__name__)
             self._abandon_connection("connect failed")
-            self._note_connect_failure("network", str(e))
+            exhausted = isinstance(e, ftplib.error_temp) and _session_limit(str(e))
+            self._note_connect_failure("sessions" if exhausted else "network", str(e), "421" if exhausted else None)
             return False
 
-    def _probe_cleartext_reply(self) -> None:
+    def _probe_cleartext_reply(self) -> bool:
         """Log what the printer answered port 990 with — at most once per window (audit D5).
 
         Only on ``WRONG_VERSION_NUMBER``: a protocol-version alert means the peer
@@ -721,10 +734,12 @@ class BambuFTPClient:
         """
         now = time.monotonic()
         last = self._cleartext_probed_at.get(self.ip_address)
-        if last is not None and now - last < _CLEARTEXT_PROBE_WINDOW_SECONDS:
-            return
-        self._cleartext_probed_at[self.ip_address] = now
+        if last is not None and now - last[0] < _CLEARTEXT_PROBE_WINDOW_SECONDS:
+            return last[1]
+        self._cleartext_probed_at[self.ip_address] = (now, False)
         reply = _read_cleartext_reply(self.ip_address, self.FTP_PORT)
+        exhausted = _session_limit(reply)
+        self._cleartext_probed_at[self.ip_address] = (now, exhausted)
         if reply:
             logger.warning(
                 "Printer %s answered port %s in cleartext with: %s — that is what the TLS handshake read as a "
@@ -740,6 +755,7 @@ class BambuFTPClient:
                 self.ip_address,
                 self.FTP_PORT,
             )
+        return exhausted
 
     def _held_for(self) -> str:
         """How long the control socket has been open, for the close log."""
@@ -837,20 +853,18 @@ class BambuFTPClient:
         """
         if not self._ftp:
             return DirectoryListing(path, LISTING_UNAVAILABLE, reason="not_connected")
-        try:
-            self._ftp.cwd(path)
-        except ftplib.error_perm as e:
-            return DirectoryListing(path, LISTING_UNREADABLE, reason=_reply_code(e))
-        except (OSError, EOFError, ftplib.Error) as e:
-            logger.info("FTP CWD %s failed: %s", path, e)
-            return DirectoryListing(path, LISTING_UNAVAILABLE, reason=type(e).__name__)
         items: list[str] = []
         try:
+            self._ftp.cwd(path)
             self._ftp.retrlines("LIST", items.append)
         except ftplib.error_perm as e:
             return DirectoryListing(path, LISTING_UNREADABLE, reason=_reply_code(e))
         except (OSError, EOFError, ftplib.Error) as e:
             logger.info("FTP list_files failed for %s: %s", path, e)
+            if isinstance(e, TimeoutError):
+                return DirectoryListing(path, LISTING_SLOW, reason="timeout")
+            if isinstance(e, ftplib.error_temp) and _session_limit(str(e)):
+                return DirectoryListing(path, LISTING_UNAVAILABLE, reason="sessions")
             return DirectoryListing(path, LISTING_UNAVAILABLE, reason=type(e).__name__)
         reference = now or datetime.now(UTC)
         entries: list[dict] = []
@@ -1509,6 +1523,8 @@ class BambuFTPClient:
             logger.error("FTP upload failed for %s: %s (error code: %s)", remote_path, e, error_code)
             if error_code == "452":
                 self.failure = FtpFailure("storage", str(e), error_code)
+            elif _session_limit(str(e)):
+                self.failure = FtpFailure("sessions", str(e), "421")
             else:
                 self.failure = FtpFailure("transfer", f"{type(e).__name__}: {e}")
             return False
@@ -2001,6 +2017,8 @@ async def upload_file_async(
         printer_model: Printer model for A1-specific workarounds
     """
     is_a1 = printer_model in BambuFTPClient.A1_MODELS if printer_model else False
+    if is_a1 and report is None:
+        report = UploadReport()
 
     def _upload(force_prot_c: bool):
         mode_str = "prot_c" if force_prot_c else "prot_p"
@@ -2094,8 +2112,8 @@ async def upload_file_async(
     if await _run(False):
         return True
 
-    # Upload failed - for A1 models, try prot_c fallback
-    if is_a1:
+    # A different data protection mode cannot free a control session.
+    if is_a1 and not (report and report.failure and report.failure.kind == "sessions"):
         logger.info("FTP upload failed with prot_p for A1 model, trying prot_c fallback...")
         return await _run(True)
 

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend.app.services import timelapse_files
+from backend.app.services.bambu_ftp import LISTING_COMPLETE, LISTING_SLOW, LISTING_UNAVAILABLE, DirectoryListing
 
 
 @pytest.fixture(autouse=True)
@@ -26,15 +27,15 @@ def _printer():
 def card(monkeypatch):
     state = SimpleNamespace(calls=0, answered=False, refused=True)
 
-    async def listing(ip, code, directory, printer_model=None):
+    async def listing(ip, code, directory, **kwargs):
         state.calls += 1
-        return [], state.answered
+        return DirectoryListing(
+            directory,
+            LISTING_COMPLETE if state.answered else LISTING_UNAVAILABLE,
+            reason="timeout" if state.refused else None,
+        )
 
-    monkeypatch.setattr("backend.app.services.bambu_ftp.list_files_checked_async", listing)
-    monkeypatch.setattr(
-        "backend.app.services.bambu_ftp.BambuFTPClient.connect_failure_since",
-        classmethod(lambda cls, ip, since: "timeout" if state.refused else None),
-    )
+    monkeypatch.setattr("backend.app.services.bambu_ftp.list_directory_async", listing)
     monkeypatch.setattr(timelapse_files, "_supports_internal_timelapse", lambda printer: False)
     return state
 
@@ -83,3 +84,26 @@ def test_the_backoff_is_bounded():
         timelapse_files._note_unreachable(printer)
     _until, step = timelapse_files._backoff[timelapse_files._endpoint(printer)]
     assert step == timelapse_files._BACKOFF_MAX
+
+
+@pytest.mark.asyncio
+async def test_list_timeout_backs_off_only_automatic_scans(monkeypatch):
+    calls = []
+    outcome = LISTING_SLOW
+
+    async def listing(ip, code, directory, **kwargs):
+        calls.append(directory)
+        return DirectoryListing(directory, outcome, reason="timeout" if outcome == LISTING_SLOW else None)
+
+    monkeypatch.setattr("backend.app.services.bambu_ftp.list_directory_async", listing)
+    monkeypatch.setattr(timelapse_files, "_supports_internal_timelapse", lambda _: False)
+    printer = _printer()
+    await timelapse_files.list_timelapse_videos(printer, automatic=True)
+    await timelapse_files.list_timelapse_videos(printer, automatic=True)
+    assert calls == ["/timelapse"]
+    assert not timelapse_files.last_listing_answered(printer.id)
+    outcome = LISTING_COMPLETE
+    await timelapse_files.list_timelapse_videos(printer)
+    assert timelapse_files.last_listing_answered(printer.id)
+    await timelapse_files.list_timelapse_videos(printer, automatic=True)
+    assert len(calls) == 1 + 2 * len(timelapse_files.FTP_TIMELAPSE_DIRS)

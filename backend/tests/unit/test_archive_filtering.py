@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from backend.app.services.bambu_ftp import LISTING_COMPLETE, DirectoryListing
+
 # Patch paths for lazy imports inside functions
 _FTP_MODULE = "backend.app.services.bambu_ftp"
 
@@ -200,8 +202,8 @@ class TestListTimelapseVideos:
             {"name": "video3.avi", "is_directory": False, "size": 500, "path": "/timelapse/video3.avi"},
         ]
 
-        with patch(f"{_FTP_MODULE}.list_files_checked_async", new_callable=AsyncMock) as mock_list:
-            mock_list.return_value = (mock_files, True)
+        with patch(f"{_FTP_MODULE}.list_directory_async", new_callable=AsyncMock) as mock_list:
+            mock_list.return_value = DirectoryListing("/timelapse", LISTING_COMPLETE, tuple(mock_files))
 
             from backend.app.main import _list_timelapse_videos
 
@@ -219,16 +221,20 @@ class TestListTimelapseVideos:
         mock_printer.access_code = "12345678"
         mock_printer.model = "H2D"
 
-        async def mock_list_files(ip, code, path, printer_model=None):
+        async def mock_list_files(ip, code, path, **kwargs):
             # ⚠️ answered=True on the empty ones: the printer replied and the
             # directory holds nothing, which is what keeps the walk going. An
             # unreachable printer answers False and stops it — see
             # TestFtpThatStopsAnswering.
             if path == "/record":
-                return [{"name": "clip.mp4", "is_directory": False, "size": 500, "path": "/record/clip.mp4"}], True
-            return [], True
+                return DirectoryListing(
+                    path,
+                    LISTING_COMPLETE,
+                    ({"name": "clip.mp4", "is_directory": False, "size": 500, "path": "/record/clip.mp4"},),
+                )
+            return DirectoryListing(path, LISTING_COMPLETE)
 
-        with patch(f"{_FTP_MODULE}.list_files_checked_async", side_effect=mock_list_files):
+        with patch(f"{_FTP_MODULE}.list_directory_async", side_effect=mock_list_files):
             from backend.app.main import _list_timelapse_videos
 
             mp4s, path = await _list_timelapse_videos(mock_printer)
@@ -245,8 +251,8 @@ class TestListTimelapseVideos:
         mock_printer.access_code = "12345678"
         mock_printer.model = "X1C"
 
-        with patch(f"{_FTP_MODULE}.list_files_checked_async", new_callable=AsyncMock) as mock_list:
-            mock_list.return_value = ([], True)
+        with patch(f"{_FTP_MODULE}.list_directory_async", new_callable=AsyncMock) as mock_list:
+            mock_list.return_value = DirectoryListing("/timelapse", LISTING_COMPLETE)
 
             from backend.app.main import _list_timelapse_videos
 
@@ -268,8 +274,8 @@ class TestListTimelapseVideos:
             {"name": "real.mp4", "is_directory": False, "size": 1000, "path": "/timelapse/real.mp4"},
         ]
 
-        with patch(f"{_FTP_MODULE}.list_files_checked_async", new_callable=AsyncMock) as mock_list:
-            mock_list.return_value = (mock_files, True)
+        with patch(f"{_FTP_MODULE}.list_directory_async", new_callable=AsyncMock) as mock_list:
+            mock_list.return_value = DirectoryListing("/timelapse", LISTING_COMPLETE, tuple(mock_files))
 
             from backend.app.main import _list_timelapse_videos
 
@@ -554,8 +560,8 @@ class TestListTimelapseVideosAvi:
             },
         ]
 
-        with patch(f"{_FTP_MODULE}.list_files_checked_async", new_callable=AsyncMock) as mock_list:
-            mock_list.return_value = (mock_files, True)
+        with patch(f"{_FTP_MODULE}.list_directory_async", new_callable=AsyncMock) as mock_list:
+            mock_list.return_value = DirectoryListing("/timelapse", LISTING_COMPLETE, tuple(mock_files))
 
             from backend.app.main import _list_timelapse_videos
 
@@ -578,8 +584,8 @@ class TestListTimelapseVideosAvi:
             {"name": "VIDEO.AVI", "is_directory": False, "size": 1000, "path": "/timelapse/VIDEO.AVI"},
         ]
 
-        with patch(f"{_FTP_MODULE}.list_files_checked_async", new_callable=AsyncMock) as mock_list:
-            mock_list.return_value = (mock_files, True)
+        with patch(f"{_FTP_MODULE}.list_directory_async", new_callable=AsyncMock) as mock_list:
+            mock_list.return_value = DirectoryListing("/timelapse", LISTING_COMPLETE, tuple(mock_files))
 
             from backend.app.main import _list_timelapse_videos
 

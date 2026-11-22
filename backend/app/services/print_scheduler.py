@@ -61,7 +61,7 @@ from backend.app.services.printer_occupancy import (
 from backend.app.services.queue_ops import queue_claim_scope
 from backend.app.services.queue_row_basis import row_basis
 from backend.app.services.queue_wait_reason import write_wait_reason
-from backend.app.services.smart_plug_manager import smart_plug_manager
+from backend.app.services.smart_plug_manager import is_monitor_only, smart_plug_manager
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable, require_source_file
 from backend.app.services.spoolman_weights import spool_net_weight
 from backend.app.services.stagger_groups import GroupKey, StaggerGroupResolver, StaggerSplit
@@ -2702,7 +2702,7 @@ class PrintScheduler:
         and cool-off.
         """
         return sorted(
-            (p for p in plugs if p.auto_on and p.enabled),
+            (p for p in plugs if p.auto_on and p.enabled and not is_monitor_only(p)),
             key=lambda p: (not getattr(p, "controls_printer_power", True), p.id),
         )
 
@@ -2809,8 +2809,8 @@ class PrintScheduler:
             return
         extras = [
             plug
-            for plug in await self._get_smart_plugs(db, printer_id)
-            if plug.auto_on and plug.enabled and plug.id != wake.primary_plug_id
+            for plug in self._wake_plugs(await self._get_smart_plugs(db, printer_id))
+            if plug.id != wake.primary_plug_id
         ]
         services = []
         for plug in extras:
