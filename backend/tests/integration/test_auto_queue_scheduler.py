@@ -39,7 +39,7 @@ from backend.app.services.auto_queue_eligibility import find_eligible_printer
 from backend.app.services.auto_queue_scheduler import AutoQueueScheduler
 from backend.app.services.farm_forecast import model_key
 from backend.app.services.printer_feed_snapshot import FeedTelemetry, snapshot_from_state
-from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
+from backend.tests.fixtures.filament_routing_cases import DUAL_SETTINGS, mixed_filaments, write_routing_3mf
 from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
 
 _test_models = {}
@@ -1600,3 +1600,75 @@ async def test_remaining_filament_breaks_only_an_eligible_tie(
     with one, two:
         result = await find_eligible_printer(db_session, item, set(), prefer_lowest=prefer_lowest)
     assert result.printer.id == (low.id if expected == "low" else high.id)
+
+
+@pytest.mark.parametrize(
+    ("model", "feed", "expected_mapping"),
+    [
+        ("A1MINI", "ams", [0]),
+        ("A1MINI", "external", [254]),
+        ("H2D", "ams", [0, 4]),
+        ("H2D", "external", [254, 255]),
+    ],
+)
+async def test_any_model_waits_for_matching_nozzles_before_placing(
+    db_session, scheduler, printer_factory, tmp_path, model, feed, expected_mapping
+):
+    preferred, _ = await _make_printer_with_queue(db_session, printer_factory, model=model)
+    alternative, chosen_queue = await _make_printer_with_queue(db_session, printer_factory, model=model)
+    assert preferred.id < alternative.id  # The normal tie break favours the first printer.
+
+    dual = model == "H2D"
+    filaments = mixed_filaments() if dual else [{"id": 1, "type": "PLA", "color": "#FFFFFF", "used_g": "1"}]
+    nozzle_settings = DUAL_SETTINGS if dual else {"nozzle_diameter": ["0.4"]}
+    path = write_routing_3mf(tmp_path / "nozzle.3mf", {1: filaments}, model=model, settings=nozzle_settings)
+    item = AutoQueueItem(
+        library_file=LibraryFile(
+            filename=path.name, file_path=str(path), file_type="gcode", file_size=path.stat().st_size
+        ),
+        target_model=None,
+        status="pending",
+        position=1,
+    )
+    db_session.add(item)
+    await db_session.commit()
+
+    def status(diameter):
+        trays = [{"id": i, "tray_type": f["type"], "tray_color": f["color"]} for i, f in enumerate(filaments)]
+        raw_data = {"nozzle_diameter": "0.6" if dual else diameter}
+        if dual:
+            raw_data["left_nozzle_diameter"] = diameter
+        if feed == "external":
+            raw_data["ams"] = []
+            raw_data["vt_tray"] = [{**tray, "id": 254 + i} for i, tray in enumerate(trays)]
+        elif dual:
+            raw_data["ams"] = [
+                {"id": i, "info": info, "tray": [{**tray, "id": 0}]}
+                for i, (info, tray) in enumerate(zip(("0100", "0000"), trays, strict=True))
+            ]
+        else:
+            raw_data["ams"] = [{"id": 0, "tray": trays}]
+        return SimpleNamespace(state="IDLE", raw_data=raw_data)
+
+    statuses = {preferred.id: status("0.6"), alternative.id: status("0.6")}
+    eligibility, dispatch = _patch_printer_manager(set(statuses), statuses)
+    with eligibility, dispatch:
+        refused = await find_eligible_printer(db_session, item, set())
+        assert refused.printer is None
+        assert {(f.printer_id, f.code) for f in refused.facts} == {
+            (preferred.id, "nozzle_mismatch"),
+            (alternative.id, "nozzle_mismatch"),
+        }
+        await scheduler.tick()
+        await db_session.refresh(item)
+        assert (item.status, item.assigned_to_item_id) == ("pending", None)
+        assert not (await db_session.scalars(select(PrintQueueItem))).all()
+
+        statuses[alternative.id] = status("0.4")
+        await scheduler.tick()
+
+    await db_session.refresh(item)
+    (placed,) = (await db_session.scalars(select(PrintQueueItem))).all()
+    assert (item.status, item.assigned_to_item_id) == ("assigned", placed.id)
+    assert (placed.queue_id, placed.source_auto_item_id) == (chosen_queue.id, item.id)
+    assert json.loads(placed.ams_mapping) == expected_mapping
