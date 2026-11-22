@@ -3114,7 +3114,7 @@ class TestVirtualPrinterSlicerIntake:
                 inst, "_save_to_library", new_callable=AsyncMock, return_value=_routing_library(fake_lib, file_path)
             ),
             patch.object(inst, "_find_best_queue", new_callable=AsyncMock, return_value=mock_queue),
-            patch.object(inst, "_load_system_print_profile", new_callable=AsyncMock, return_value=None),
+            patch.object(inst, "_load_system_print_profile", new_callable=AsyncMock, return_value=(None, None)),
             publishing_into(session, max_position=0),
         ):
             await inst._add_to_print_queue(file_path, "192.168.1.100")

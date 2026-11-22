@@ -51,22 +51,22 @@ def test_slicer_and_pref_key_naming_differ():
     assert _resolve_print_option(None, {"bed_levelling": False}, "bed_leveling", "bed_levelling", True) is False
 
 
-# ────────────────────── _load_system_print_options (DB) ──────────────────────
+# ────────────────────── _load_system_print_profile (DB) ──────────────────────
 
 
 @pytest.mark.asyncio
 async def test_load_returns_none_without_printer_id(db_session):
-    assert await VirtualPrinterInstance._load_system_print_options(db_session, None) is None
+    assert await VirtualPrinterInstance._load_system_print_profile(db_session, None) == (None, None)
 
 
 @pytest.mark.asyncio
 async def test_load_returns_none_without_system_row(db_session, printer_factory):
     printer = await printer_factory(model="P1S")
-    assert await VirtualPrinterInstance._load_system_print_options(db_session, printer.id) is None
+    assert await VirtualPrinterInstance._load_system_print_profile(db_session, printer.id) == (None, None)
 
 
 @pytest.mark.asyncio
-async def test_load_returns_print_options_for_model(db_session, printer_factory):
+async def test_load_keeps_legacy_partial_print_options_for_model(db_session, printer_factory):
     printer = await printer_factory(model="P1S")
     db_session.add(
         PrintOptionsPreference(
@@ -77,8 +77,9 @@ async def test_load_returns_print_options_for_model(db_session, printer_factory)
     )
     await db_session.commit()
 
-    opts = await VirtualPrinterInstance._load_system_print_options(db_session, printer.id)
+    opts, profile = await VirtualPrinterInstance._load_system_print_profile(db_session, printer.id)
     assert opts == {"timelapse": True, "flow_cali": False}
+    assert profile is None
 
 
 @pytest.mark.asyncio
@@ -89,4 +90,4 @@ async def test_load_ignores_other_models_system_row(db_session, printer_factory)
     )
     await db_session.commit()
     # Printer is X1C; the only system row is for P1S → no match.
-    assert await VirtualPrinterInstance._load_system_print_options(db_session, printer.id) is None
+    assert await VirtualPrinterInstance._load_system_print_profile(db_session, printer.id) == (None, None)

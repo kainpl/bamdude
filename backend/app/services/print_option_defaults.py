@@ -122,6 +122,13 @@ async def preference_options(
     why that is not an empty profile.
     """
     pref = await _saved_preference(db, user, printer_model)
+    return await preference_options_from_row(db, pref, printer_model)
+
+
+async def preference_options_from_row(
+    db: AsyncSession, pref: PrintOptionsPreference | None, printer_model: str | None
+) -> PrintProfile | None:
+    """Map an already selected row when the caller also needs its original options."""
     if pref is None:
         return None
     try:

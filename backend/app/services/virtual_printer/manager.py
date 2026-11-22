@@ -1271,8 +1271,7 @@ class VirtualPrinterInstance:
                 # printer's model — fills any flag the slicer omitted. There's
                 # no user in a slicer→VP handshake, so the per-user preference
                 # rows can't serve here (upstream Bambuddy #1235).
-                system_profile = await self._load_system_print_profile(db, queue.printer_id)
-                system_opts = system_profile.for_printer_queue() if system_profile else None
+                system_opts, system_profile = await self._load_system_print_profile(db, queue.printer_id)
 
                 # As values: the rows below are written by the publication's own
                 # transaction (m173), and an ORM attribute reached across the end
@@ -1554,17 +1553,26 @@ class VirtualPrinterInstance:
             logger.exception("[VP %s] Error adding to print queue: %s", self.name, e)
 
     @staticmethod
-    async def _load_system_print_profile(db, printer_id: int | None) -> "PrintProfile | None":
-        """Read the selected printer's system profile for a submission with no user."""
+    async def _load_system_print_profile(db, printer_id: int | None) -> "tuple[dict | None, PrintProfile | None]":
+        """Read print toggles and the validated system macro profile from the same row."""
         if not printer_id:
-            return None
+            return None, None
         from sqlalchemy import select as sa_select
 
         from backend.app.models.printer import Printer
-        from backend.app.services.print_option_defaults import preference_options
+        from backend.app.services.print_option_defaults import _saved_preference, preference_options_from_row
 
         model = await db.scalar(sa_select(Printer.model).where(Printer.id == printer_id))
-        return await preference_options(db, None, model) if isinstance(model, str) and model else None
+        if not isinstance(model, str) or not model:
+            return None, None
+        pref = await _saved_preference(db, None, model)
+        if pref is None or not isinstance(pref.options, dict):
+            return None, None
+        toggles = pref.options.get("print_options")
+        # Older partial profiles still provide the toggles they saved. A macro
+        # selection requires the validated profile used by the other writers.
+        profile = await preference_options_from_row(db, pref, model)
+        return (toggles if isinstance(toggles, dict) else None), profile
 
     @staticmethod
     async def _load_system_print_options_for_model(db, model: str | None) -> dict | None:
