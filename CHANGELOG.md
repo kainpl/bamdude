@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+- **Windows ZIP backups keep their managed files accessible after restore on Linux and macOS.** Archive and library paths use the destination separators when the backup carries the corresponding file.
+- **Backup and restore keep the server responsive during staging cleanup.** The operation keeps its lock until cleanup finishes, including when the request is cancelled.
+
 - **A1 and A1 Mini verify uploads after a lost FTP reply.** BamDude checks the file size on a fresh connection and waits for a short copy to finish writing before it can start a print. Single and bulk firmware uploads now tolerate the same temporary MQTT silence as print uploads.
 
 - **A slice retry keeps the selected printer model.** If the slicer crashes while using the selected profiles, BamDude can retry with a 3MF's embedded settings only when both profiles identify the same known model. Otherwise the slice reports the original error.

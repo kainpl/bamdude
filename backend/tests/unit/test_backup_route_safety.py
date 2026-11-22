@@ -3,9 +3,12 @@
 import asyncio
 import io
 import sqlite3
+import tempfile
+import threading
 import zipfile
 from contextlib import closing
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -134,6 +137,82 @@ async def test_corrupt_backup_is_rejected_before_service_or_database_changes(tmp
     assert caught.value.status_code == 400
     stop.assert_not_awaited()
     close.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["backup", "restore"])
+async def test_staging_cleanup_stays_off_loop_and_owns_the_lock_until_finished(tmp_path, monkeypatch, operation):
+    from backend.app.core import db_portable
+    from backend.app.services import backup_files
+
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    entered = asyncio.Event()
+    release = threading.Event()
+    cleanup_threads = []
+    owned_paths = []
+    output_zips = []
+
+    class ObservedDirectory(tempfile.TemporaryDirectory):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            owned_paths.append(Path(self.name))
+
+        def cleanup(self):
+            thread = threading.get_ident()
+            cleanup_threads.append(thread)
+            loop.call_soon_threadsafe(entered.set)
+            if thread != loop_thread:
+                assert release.wait(10)
+            return super().cleanup()
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", ObservedDirectory)
+    if operation == "backup":
+        mkstemp = tempfile.mkstemp
+
+        def observe_zip(*args, **kwargs):
+            descriptor, name = mkstemp(*args, **kwargs)
+            if kwargs.get("suffix") == ".zip":
+                output_zips.append(Path(name))
+            return descriptor, name
+
+        async def dump(_engine, _metadata, path):
+            with closing(sqlite3.connect(path)) as db:
+                db.execute("CREATE TABLE fixture(id INTEGER)")
+
+        monkeypatch.setattr(db_portable, "dump_to_sqlite", dump)
+        monkeypatch.setattr(route, "_stage_files_and_pictures", AsyncMock())
+        monkeypatch.setattr(tempfile, "mkstemp", observe_zip)
+        monkeypatch.setenv("DATA_DIR", str(tmp_path / "empty"))
+        coro = route.create_backup_zip()
+    else:
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, "w") as archive:
+            archive.writestr("archive/example.3mf", b"staged content")
+        coro = route.restore_backup(file=UploadFile(file=payload, filename="no-database.zip"), db=AsyncMock(), _=None)
+
+    task = asyncio.create_task(coro)
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        assert cleanup_threads[0] != loop_thread
+        assert owned_paths[0].is_dir()
+        if operation == "backup":
+            (zip_file,) = output_zips
+            assert zip_file.is_file()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        with pytest.raises(backup_files.BackupBusyError):
+            async with backup_files.exclusive_operation():
+                pytest.fail("cleanup still owns the operation")
+    finally:
+        release.set()
+        (result,) = await asyncio.gather(task, return_exceptions=True)
+    assert isinstance(result, asyncio.CancelledError)
+    assert not owned_paths[0].exists()
+    assert all(not path.exists() for path in output_zips)
+    async with backup_files.exclusive_operation():
+        pass
 
 
 async def test_part_render_refusal_keeps_vps_retired_until_restart(tmp_path, monkeypatch):

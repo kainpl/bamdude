@@ -32,6 +32,18 @@ async def exclusive_operation():
         yield
 
 
+@asynccontextmanager
+async def staging_directory():
+    """Own the staged tree until its off-thread cleanup has finished."""
+    from backend.app.core.db_portable import _file_work
+
+    directory = tempfile.TemporaryDirectory()
+    try:
+        yield Path(directory.name)
+    finally:
+        await _file_work(directory.cleanup)
+
+
 # Deliberately absent: settings.part_renders_dir. Part thumbnails are derived files the queue rebuilds
 # (spec §8.3) -- the one exception to vault inv-data-dir-one-root-per-subsystem. Their rows travel with
 # the database, and the start-up reconciliation (part_renders.reconcile) settles rows and files after a
@@ -375,6 +387,63 @@ def extract_zip(stream, staging: Path) -> None:
                     os.fsync(dst.fileno())
                 dest.chmod(((item.external_attr >> 16) & 0o777) or 0o600)
         verify_manifest(staging)
+
+
+_RESTORED_PATH_COLUMNS = {
+    "print_archives": ("archive", ("file_path", "thumbnail_path", "timelapse_path", "source_3mf_path", "f3d_path")),
+    "library_files": ("library", ("file_path", "thumbnail_path")),
+}
+
+
+def normalize_managed_restore_paths(database: Path, staging: Path, settings) -> None:
+    """Fix separator spelling in the private import copy, proved by staged files."""
+    if os.name == "nt":
+        return
+    roots = directories(settings)
+    base = Path(settings.base_dir)
+    try:
+        with closing(sqlite3.connect(f"{database.as_uri()}?mode=rw", uri=True)) as db, db:
+            # Path-only rewrites do not change search content. Do not execute
+            # UPDATE triggers from the uploaded database while staging it.
+            db.setconfig(sqlite3.SQLITE_DBCONFIG_ENABLE_TRIGGER, False)
+            db.row_factory = sqlite3.Row
+            tables = {row["name"] for row in db.execute("PRAGMA main.table_list") if row["type"] == "table"}
+            for table, (root, names) in _RESTORED_PATH_COLUMNS.items():
+                if table not in tables or not roots[root].is_relative_to(base) or not (staging / root).is_dir():
+                    continue
+                prefix = roots[root].relative_to(base).parts
+                if not prefix:
+                    continue
+                # These orders include only columns from the fixed allowlist,
+                # intersected with the schema a legacy backup actually has.
+                schema = {row["name"] for row in db.execute(f'PRAGMA table_info("{table}")')}
+                columns = [name for name in names if name in schema]
+                if not columns or "id" not in schema:
+                    continue
+                external = table == "library_files" and "is_external" in schema
+                projection = ", ".join(["id", *columns, *(["is_external"] if external else [])])
+                has_separator = " OR ".join(f"instr({name}, ?) > 0" for name in columns)
+                rows = db.execute(f"SELECT {projection} FROM {table} WHERE {has_separator}", ["\\"] * len(columns))  # noqa: S608
+                for row in rows:
+                    for name in columns:
+                        if external and name == "file_path" and row["is_external"]:
+                            continue
+                        raw = row[name]
+                        if not isinstance(raw, str) or "\\" not in raw:
+                            continue
+                        try:
+                            relative = _member_path(raw.replace("\\", "/"))
+                        except ValueError:
+                            continue
+                        tail = relative.parts[len(prefix) :]
+                        if relative.parts[: len(prefix)] != prefix or not tail:
+                            continue
+                        # SEC-PATH-OK: same path validator as the ZIP extractor;
+                        # only check a member of this private staging tree.
+                        if (staging / root / Path(*tail)).is_file():
+                            db.execute(f"UPDATE {table} SET {name}=? WHERE id=?", (relative.as_posix(), row["id"]))  # noqa: S608
+    except sqlite3.Error as exc:
+        raise ValueError("Cannot normalize managed restore paths in the private database copy") from exc
 
 
 def write_zip(staging: Path, output: Path) -> None:

@@ -4,6 +4,7 @@ import asyncio
 import json
 import sqlite3
 import sys
+import zipfile
 from contextlib import closing
 from pathlib import Path
 
@@ -194,6 +195,137 @@ async def exercise_restored_database():
     return before
 
 
+_WINDOWS_EXTERNAL = r"C:\Shared\original.gcode.3mf"
+_WINDOWS_FOLDER = r"\\workshop\models"
+_WINDOWS_MISSING = r"archive\missing\thumbnail.png"
+
+
+async def seed_windows_paths():
+    from backend.app.core.config import settings
+    from backend.app.core.database import async_session
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.library import LibraryFile, LibraryFolder
+    from backend.app.models.printer import Printer
+    from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
+
+    model = settings.archive_dir / "2026" / "fixture.gcode.3mf"
+    model.parent.mkdir(parents=True)
+    write_routing_3mf(model, {1: [{"id": 1, "type": "PLA", "color": "#FFFFFF", "used_g": 1}]})
+    (model.parent / "thumb.png").write_bytes(b"preview fixture")
+    library = settings.library_dir / "files" / model.name
+    library.parent.mkdir(parents=True)
+    library.write_bytes(model.read_bytes())
+    (settings.library_dir / "thumbnails").mkdir(exist_ok=True)
+    (settings.library_dir / "thumbnails" / "thumb.png").write_bytes(b"library preview")
+
+    async with async_session() as db:
+        db.add_all(
+            [
+                Printer(
+                    id=41,
+                    name="test printer",
+                    ip_address="192.0.2.41",
+                    serial_number="PORTABLE41",
+                    access_code="00000000",
+                    model="X1C",
+                ),
+                LibraryFolder(id=11, name="Outside", is_external=True, external_path=_WINDOWS_FOLDER),
+            ]
+        )
+        await db.flush()
+        db.add_all(
+            [
+                PrintArchive(
+                    id=51,
+                    printer_id=41,
+                    filename=model.name,
+                    file_path=r"archive\2026\fixture.gcode.3mf",
+                    thumbnail_path=r"archive\2026\thumb.png",
+                    source_3mf_path=_WINDOWS_EXTERNAL,
+                    timelapse_path=r"archive\..\library\files\fixture.gcode.3mf",
+                    f3d_path=_WINDOWS_MISSING,
+                    file_size=model.stat().st_size,
+                    plate_index=1,
+                    print_name="Windows path fixture",
+                ),
+                LibraryFile(
+                    id=61,
+                    filename=model.name,
+                    file_path=r"library\files\fixture.gcode.3mf",
+                    thumbnail_path=r"library\thumbnails\thumb.png",
+                    file_type="gcode",
+                    file_size=model.stat().st_size,
+                ),
+                LibraryFile(
+                    id=62,
+                    folder_id=11,
+                    is_external=True,
+                    filename=model.name,
+                    file_path=r"library\files\fixture.gcode.3mf",
+                    file_type="gcode",
+                    file_size=model.stat().st_size,
+                ),
+            ]
+        )
+        await db.commit()
+
+
+async def check_windows_paths():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    from fastapi import Request
+
+    from backend.app.api.routes import archives, library
+    from backend.app.core.database import async_session, engine
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.library import LibraryFile, LibraryFolder
+    from backend.app.schemas.archive import ReprintRequest
+    from backend.app.services.background_dispatch import background_dispatch
+    from backend.app.services.printer_manager import printer_manager
+
+    auth = (None, True)
+    async with async_session() as db:
+        archive = await db.get(PrintArchive, 51)
+        managed = await db.get(LibraryFile, 61)
+        external = await db.get(LibraryFile, 62)
+        folder = await db.get(LibraryFolder, 11)
+        assert archive.file_path == "archive/2026/fixture.gcode.3mf"
+        assert archive.thumbnail_path == "archive/2026/thumb.png"
+        assert archive.source_3mf_path == _WINDOWS_EXTERNAL
+        assert archive.timelapse_path == r"archive\..\library\files\fixture.gcode.3mf"
+        assert archive.f3d_path == _WINDOWS_MISSING
+        assert managed.file_path == "library/files/fixture.gcode.3mf"
+        assert managed.thumbnail_path == "library/thumbnails/thumb.png"
+        assert external.file_path == r"library\files\fixture.gcode.3mf"
+        assert folder.external_path == _WINDOWS_FOLDER
+
+        preview = await archives.get_thumbnail(51, Request({"type": "http"}), db=db, auth_result=auth)
+        assert Path(preview.path).read_bytes() == b"preview fixture"
+        archived = await archives.download_archive(51, db=db, auth_result=auth)
+        library_copy = await library.download_file(61, db=db, auth_result=auth)
+        assert Path(archived.path).read_bytes() == Path(library_copy.path).read_bytes()
+        with zipfile.ZipFile(archived.path) as model:
+            assert model.read("Metadata/plate_1.gcode").startswith(b"; printer_model")
+
+        dispatch = AsyncMock(return_value={"dispatch_job_id": 9, "dispatch_position": 1})
+        with (
+            patch.object(printer_manager, "is_connected", return_value=True),
+            patch.object(background_dispatch, "dispatch_reprint_archive", dispatch),
+        ):
+            repeated = await archives.reprint_archive(
+                51,
+                41,
+                ReprintRequest(keep_order=False),
+                db,
+                auth,
+                SimpleNamespace(capture=AsyncMock()),
+            )
+        assert repeated["status"] == "dispatched"
+        assert dispatch.call_args.kwargs["options"]["plate_id"] == 1
+    return {"paths": "verified", "dialect": engine.dialect.name}
+
+
 async def main(mode, path):
     from fastapi import UploadFile
 
@@ -204,8 +336,13 @@ async def main(mode, path):
 
     try:
         # Export and restore on different external archive roots.
-        settings.archive_dir = settings.base_dir.parent / (settings.base_dir.name + "-archives")
+        if mode not in ("export-windows-paths", "restore-windows-paths"):
+            settings.archive_dir = settings.base_dir.parent / (settings.base_dir.name + "-archives")
         await database.init_db()
+        if mode == "export-windows-paths":
+            await seed_windows_paths()
+            output, _ = await create_backup_zip(path)
+            return {"zip": str(output)}
         if mode in ("export", "export-r5"):
             await seed()
             if mode == "export-r5":
@@ -262,6 +399,8 @@ async def main(mode, path):
                 assert (settings.base_dir / ".mfa_encryption_key").read_bytes() == previous_key
                 return {"rollback": True}
             assert isinstance(response, dict) and response["success"], response
+        if mode == "restore-windows-paths":
+            return await check_windows_paths()
         assert (settings.archive_dir / "test.3mf").read_bytes() == b"fixture"
         for name, directory in directories(settings).items():
             assert not (directory / "old-only.bin").exists()

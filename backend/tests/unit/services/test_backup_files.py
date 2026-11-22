@@ -3,9 +3,11 @@
 import asyncio
 import io
 import os
+import sqlite3
 import stat
 import threading
 import zipfile
+from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
@@ -23,6 +25,28 @@ def settings(root):
         products_dir=root / "products",
         plate_calibration_dir=root / "calibration",
     )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows natively resolves backslashes")
+def test_normalization_uses_the_legacy_columns_and_does_not_run_update_triggers(tmp_path):
+    staging = tmp_path / "staging"
+    (staging / "archive").mkdir(parents=True)
+    (staging / "archive/model.3mf").write_bytes(b"archived print")
+    database = tmp_path / "prepared.db"
+    with closing(sqlite3.connect(database)) as db, db:
+        db.executescript("""
+            CREATE TABLE print_archives(id INTEGER PRIMARY KEY, file_path TEXT);
+            CREATE TABLE touched(value TEXT);
+            CREATE TRIGGER observed AFTER UPDATE ON print_archives
+            BEGIN INSERT INTO touched VALUES ('ran'); END;
+        """)
+        db.execute("INSERT INTO print_archives VALUES (?, ?)", (1, r"custom-archive\model.3mf"))
+
+    files.normalize_managed_restore_paths(database, staging, settings(tmp_path / "data"))
+
+    with closing(sqlite3.connect(database)) as db:
+        assert db.execute("SELECT file_path FROM print_archives").fetchone() == ("custom-archive/model.3mf",)
+        assert db.execute("SELECT value FROM touched").fetchall() == []
 
 
 def transaction(tmp_path):

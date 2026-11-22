@@ -1261,6 +1261,7 @@ async def _create_backup_zip(output_path: Path | None) -> tuple[Path, str]:
     from backend.app.services.backup_files import (
         stage_queue_spool,
         stage_zigbee_db,
+        staging_directory,
         write_manifest,
         write_zip,
     )
@@ -1268,32 +1269,36 @@ async def _create_backup_zip(output_path: Path | None) -> tuple[Path, str]:
     from backend.app.services.obico_history_files import stage_history
 
     filename = f"bamdude-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
-    with tempfile.TemporaryDirectory() as temp_dir:
-        staging = Path(temp_dir)
-        # The pin starts before the DB export and remains until every referenced
-        # object was copied. GC therefore cannot unlink a row the portable
-        # snapshot still names while this backup is being assembled.
-        async with queue_sources.pin_backup(), obico_history.pin_backup():
-            await dump_to_sqlite(engine, Base.metadata, staging / "bamdude.db")
-            data_dir = resolve_data_dir()
-            await _stage_files_and_pictures(data_dir, staging)
-            await _file_work(stage_zigbee_db, data_dir, staging)
-            await _file_work(stage_queue_spool, data_dir, staging, staging / "bamdude.db")
-            await _file_work(stage_history, data_dir, staging, staging / "bamdude.db")
-            await _file_work(write_manifest, staging)
-        if output_path is not None:
-            zip_file = output_path / filename  # SEC-PATH-OK: trusted output directory and server-generated filename.
-        else:
-            fd, temporary = tempfile.mkstemp(suffix=".zip")
-            os.close(fd)
-            zip_file = Path(temporary)
-        try:
+    zip_file = None
+    try:
+        async with staging_directory() as staging:
+            # The pin starts before the DB export and remains until every referenced
+            # object was copied. GC therefore cannot unlink a row the portable
+            # snapshot still names while this backup is being assembled.
+            async with queue_sources.pin_backup(), obico_history.pin_backup():
+                await dump_to_sqlite(engine, Base.metadata, staging / "bamdude.db")
+                data_dir = resolve_data_dir()
+                await _stage_files_and_pictures(data_dir, staging)
+                await _file_work(stage_zigbee_db, data_dir, staging)
+                await _file_work(stage_queue_spool, data_dir, staging, staging / "bamdude.db")
+                await _file_work(stage_history, data_dir, staging, staging / "bamdude.db")
+                await _file_work(write_manifest, staging)
+            if output_path is not None:
+                zip_file = (
+                    output_path / filename
+                )  # SEC-PATH-OK: trusted output directory and server-generated filename.
+            else:
+                fd, temporary = tempfile.mkstemp(suffix=".zip")
+                os.close(fd)
+                zip_file = Path(temporary)
             await _file_work(write_zip, staging, zip_file)
-        except BaseException:
-            if output_path is None:
-                zip_file.unlink(missing_ok=True)
-            raise
-    return zip_file, filename
+            return zip_file, filename
+    except BaseException:
+        # Cancellation while staging is being removed can still prevent the
+        # response from taking ownership of a successfully written temp ZIP.
+        if output_path is None and zip_file is not None:
+            await _file_work(zip_file.unlink, missing_ok=True)
+        raise
 
 
 @router.get("/backup", dependencies=[RequireAdmin()])
@@ -1325,7 +1330,7 @@ async def create_backup(
         try:
             count = await _file_work(zip_warning_count, zip_file)
         except BaseException:
-            zip_file.unlink(missing_ok=True)
+            await _file_work(zip_file.unlink, missing_ok=True)
             raise
 
         return FileResponse(
@@ -1415,7 +1420,6 @@ async def _restore_backup(
     calibration_receipt=None,
 ):
     import asyncio
-    import tempfile
     from contextlib import AsyncExitStack
 
     from backend.app.core.database import Base, close_all_connections, init_db, reinitialize_database
@@ -1446,7 +1450,13 @@ async def _restore_backup(
         SqliteSourceReadError,
     )
     from backend.app.services import queue_sources
-    from backend.app.services.backup_files import FileRestore, extract_zip, validate_staged_queue_spool
+    from backend.app.services.backup_files import (
+        FileRestore,
+        extract_zip,
+        normalize_managed_restore_paths,
+        staging_directory,
+        validate_staged_queue_spool,
+    )
     from backend.app.services.connector_runtime import connector_runtime
     from backend.app.services.farm_startup_guard import farm_startup_guard
 
@@ -1454,8 +1464,7 @@ async def _restore_backup(
         raise HTTPException(400, "Invalid backup file: must be a .zip file")
 
     async with AsyncExitStack() as source_stack:
-        temp_dir = source_stack.enter_context(tempfile.TemporaryDirectory())
-        staging = Path(temp_dir)
+        staging = await source_stack.enter_async_context(staging_directory())
         # UploadFile is already spooled: don't duplicate a multi-GB ZIP in RAM.
         await file.seek(0)
         try:
@@ -1488,6 +1497,7 @@ async def _restore_backup(
             from backend.app.services.obico_history_files import validate_history
 
             await _file_work(validate_history, staging, checked_db)
+            await _file_work(normalize_managed_restore_paths, checked_db, staging, app_settings)
         except SqliteSourceLevelError as exc:
             raise HTTPException(400, {"error": exc.code, "message": SOURCE_LEVEL_MESSAGE}) from exc
         except SqliteSourceReadError as exc:
