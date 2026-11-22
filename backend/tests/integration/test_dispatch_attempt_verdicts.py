@@ -689,6 +689,8 @@ async def test_a_shutdown_or_an_unknown_outcome_announces_no_failure(monkeypatch
 async def test_dispatch_color_changes_follow_a_proven_start(db_session, monkeypatch, verdict):
     from backend.app.services import dispatch_phase
     from backend.app.services.background_dispatch import BackgroundDispatchService, DispatchNotStarted
+    from backend.app.services.filament_preflight import DispatchRoutingGuard
+    from backend.app.services.filament_routing import RoutingPolicy
     from backend.app.services.printer_feed_snapshot import FeedSource
 
     archive = PrintArchive(
@@ -706,7 +708,13 @@ async def test_dispatch_color_changes_follow_a_proven_start(db_session, monkeypa
         execution_archive_id=archive.id,
         dispatch_boot_id="color-test",
         printer_id=1,
-        routing_guard=SimpleNamespace(
+        routing_guard=DispatchRoutingGuard(
+            policy=RoutingPolicy(),
+            exact_model=True,
+            revision="color-test",
+            generation=1,
+            nozzle_diameters={},
+            left_tpu_check=False,
             requirements=SimpleNamespace(
                 used_filaments=(
                     {"slot_id": 3, "color": "#000000"},
@@ -722,7 +730,7 @@ async def test_dispatch_color_changes_follow_a_proven_start(db_session, monkeypa
         ),
     )
     service = BackgroundDispatchService()
-    assert await service._send_start(db_session, job, lambda: True)
+    assert await service._send_start(db_session, job, lambda **_: True)
     await db_session.refresh(archive)
     assert "dispatch_color_changes" not in archive.extra_data
     if verdict == "observed_in_start_callback":
@@ -743,4 +751,107 @@ async def test_dispatch_color_changes_follow_a_proven_start(db_session, monkeypa
     else:
         assert archive.extra_data["dispatch_color_changes"] == [
             {"slot_id": 3, "requested_color": "#000000", "loaded_color": "#FF0000"}
+        ]
+
+
+@pytest.mark.parametrize(
+    ("planned", "live", "verdict"),
+    [
+        ("00FF00FF", "FF0000FF", "deferred"),
+        ("00FF00FF", "000000FF", "deferred"),
+        ("000000FF", "FF0000FF", "deferred"),
+        ("FF0000FF", "FF0000", "accepted"),
+        ("FF0000FF", "FF0000FF", "observed_in_start_callback"),
+        ("FF0000FF", "FF0000FF", "not_started"),
+    ],
+)
+async def test_color_evidence_is_checked_under_the_mqtt_publish_lock(db_session, monkeypatch, planned, live, verdict):
+    from dataclasses import replace
+    from functools import partial
+
+    from backend.app.services import dispatch_phase
+    from backend.app.services.background_dispatch import BackgroundDispatchService, DispatchNotStarted
+    from backend.app.services.bambu_mqtt import BambuMQTTClient
+    from backend.app.services.farm_startup_guard import farm_startup_guard
+    from backend.app.services.filament_preflight import DispatchRoutingGuard
+    from backend.app.services.filament_requirements import PrintRequirements
+    from backend.app.services.filament_routing import RoutingDeferred, RoutingPlan, RoutingPolicy
+    from backend.app.services.printer_feed_snapshot import FeedSource, PrinterFeedSnapshot
+
+    archive = PrintArchive(
+        filename="mapped.3mf",
+        file_path="",
+        file_size=1,
+        status="printing",
+        dispatch_phase=dispatch_phase.PREPARED,
+        dispatch_boot_id="mqtt-color-test",
+        extra_data={"dispatch_intent": {"version": 1, "remote_filename": "mapped.3mf"}},
+    )
+    db_session.add(archive)
+    await db_session.commit()
+    former = FeedSource(0, "ams", "PLA", color=planned, nozzles=(0,), identity="former")
+    replacement = replace(former, color=live, identity="replacement")
+    requirements = PrintRequirements(
+        "ok",
+        resolved_plate_id=1,
+        model="X1C",
+        used_filaments=({"slot_id": 1, "type": "PLA", "color": "#000000", "used_grams": 1},),
+    )
+    policy = RoutingPolicy()
+    plan = RoutingPlan(1, 1, {}, policy.fingerprint, (1, "before"), {1: former}, 0)
+    guard = DispatchRoutingGuard(requirements, policy, plan, True, "before", 1, {}, False)
+    before = PrinterFeedSnapshot(1, "X1C", True, 1, "before", True, True, True, (former,))
+    at_publish = replace(before, revision="after", sources=(replacement,))
+    guard.validate(before, mapping=plan.mapping, use_ams=plan.use_ams, plate_id=1)
+
+    mqtt = BambuMQTTClient("127.0.0.1", "G03-C-COLOR", "00000000", model="X1C")
+    mqtt.state.connected = True
+    mqtt.state.state = "IDLE"
+    mqtt._client = MagicMock()
+    monkeypatch.setattr(mqtt, "get_feed_snapshot", lambda _: at_publish)
+    monkeypatch.setattr(farm_startup_guard, "require", lambda: None)
+    service = BackgroundDispatchService()
+    job = SimpleNamespace(
+        execution_archive_id=archive.id,
+        dispatch_boot_id="mqtt-color-test",
+        printer_id=1,
+        routing_guard=guard,
+    )
+    start = partial(
+        mqtt.start_print,
+        "mapped.3mf",
+        ams_mapping=plan.mapping,
+        use_ams=plan.use_ams,
+        routing_guard=guard,
+    )
+    if verdict == "deferred":
+        with pytest.raises(RoutingDeferred, match="feed_state_changed"):
+            await service._send_start(db_session, job, start)
+        mqtt._client.publish.assert_not_called()
+        assert job.send_fact == "refused"
+        await db_session.refresh(archive)
+        assert "dispatch_color_changes" not in archive.extra_data
+        return
+
+    assert await service._send_start(db_session, job, start)
+    mqtt._client.publish.assert_called_once()
+    await db_session.refresh(archive)
+    assert "dispatch_color_changes" not in archive.extra_data
+    if verdict == "observed_in_start_callback":
+        assert dispatch_phase.mark_seen_running(archive)
+        await db_session.commit()
+    else:
+        answer = "accepted" if verdict == "accepted" else "no_acknowledgement"
+        monkeypatch.setattr(service, "_await_print_response", AsyncMock(return_value=answer))
+        if verdict == "not_started":
+            with pytest.raises(DispatchNotStarted):
+                await service._require_running(db_session, job, "Printer", "IDLE")
+        else:
+            await service._require_running(db_session, job, "Printer", "IDLE")
+    await db_session.refresh(archive)
+    if verdict == "not_started":
+        assert "dispatch_color_changes" not in archive.extra_data
+    else:
+        assert archive.extra_data["dispatch_color_changes"] == [
+            {"slot_id": 1, "requested_color": "#000000", "loaded_color": "#FF0000"}
         ]

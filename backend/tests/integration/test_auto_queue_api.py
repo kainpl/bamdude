@@ -542,3 +542,51 @@ async def test_the_line_is_resolved_per_plate_inside_the_fan_out(
     rows = (await db_session.execute(select(AutoQueueItem).order_by(AutoQueueItem.plate_id))).scalars().all()
     assert [(row.plate_id, row.project_line_id) for row in rows] == [(1, lines[0].id), (2, lines[1].id)]
     assert len(lines_read) == 1, lines_read
+
+
+@pytest.mark.parametrize("global_exact", [True, False])
+async def test_exact_colors_use_only_printed_channels_of_the_captured_plate(
+    async_client, db_session, tmp_path, global_exact
+):
+    from backend.app.models.library import LibraryFile
+
+    path = write_routing_3mf(
+        tmp_path / "two-profiles.3mf",
+        {
+            1: [
+                {"id": 1, "type": "PLA", "color": "#000000", "used_g": "1"},
+                {"id": 2, "type": "PETG", "color": "#112233", "used_g": "0"},
+                {"id": 3, "type": "PLA", "color": "#FFFFFF", "used_g": "2"},
+            ],
+            2: [{"id": 2, "type": "PETG", "color": "#00FF00", "used_g": "3"}],
+        },
+    )
+    source = LibraryFile(
+        filename=path.name,
+        file_path=str(path),
+        file_type="gcode",
+        file_size=path.stat().st_size,
+        file_hash="g03-c-n15-captured",
+    )
+    db_session.add(source)
+    await db_session.commit()
+
+    response = await async_client.post(
+        "/api/v1/auto-queue/",
+        json={
+            "library_file_id": source.id,
+            "plate_id": 1,
+            "force_color_match": global_exact,
+            "filament_overrides": [{"slot_id": 3, "color": "#223344", "force_color_match": True}],
+        },
+    )
+    assert response.status_code == 200, response.text
+    item_id = response.json()["id"]
+    write_routing_3mf(path, {1: [{"id": 1, "type": "PLA", "color": "#FF0000", "used_g": "1"}]})
+
+    response = await async_client.get(f"/api/v1/auto-queue/{item_id}")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["required_filament_types"] == ["PLA"]
+    expected = {"1": "#000000", "3": "#223344"} if global_exact else {"3": "#223344"}
+    assert payload["forced_filament_colors"] == expected

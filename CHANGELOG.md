@@ -1,8 +1,8 @@
 ## [Unreleased]
 
-- **AutoQueue shows filament types and exact colours by channel.** With **Drain the emptiest spool first** enabled, the lower known filament level breaks a tie between otherwise equally ranked printers.
+- **AutoQueue shows filament types and exact colours for the channels the selected plate uses.** With **Drain the emptiest spool first** enabled, the lower known filament level breaks a tie between otherwise equally ranked printers.
 - **Queue Job Added notifications follow the operator's action.** A committed add or repeat announces once for the copies added together. Later automatic assignment or return leaves that notification alone.
-- **Archives show when dispatch started with a different filament colour.** The edit window lists the requested and loaded colours for each changed channel after the printer confirms the start.
+- **Archives show when dispatch started with a different filament colour.** The edit window lists the requested and loaded colours for each changed channel after the printer confirms the start. A change to that evidence during preparation defers the start.
 
 - **Returning a print to AutoQueue keeps its filament choices.** The preview shows changes to feed, matching rules and individual slots. The operator can carry those choices back to the existing AutoQueue job.
 

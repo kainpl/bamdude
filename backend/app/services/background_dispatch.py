@@ -18,7 +18,7 @@ from collections import deque
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict
@@ -909,24 +909,6 @@ async def _rebind_if_moved(
         )
         return keys, generation
     return bound, bound_generation
-
-
-def _dispatch_color_changes(job) -> list[dict]:
-    """Compare the captured plate with the physical spool in the final routing plan."""
-    from backend.app.services.filament_routing import normalized_color
-
-    guard = job.routing_guard
-    if guard is None:
-        return []
-    changes = []
-    for filament in guard.requirements.used_filaments:
-        slot_id = filament["slot_id"]
-        source = guard.plan.assignments.get(slot_id)
-        requested = normalized_color(filament.get("color"))
-        actual = normalized_color(source.color) if source is not None else None
-        if requested and actual and requested != actual:
-            changes.append({"slot_id": slot_id, "requested_color": f"#{requested}", "loaded_color": f"#{actual}"})
-    return changes
 
 
 async def _record_dispatched_mapping(job) -> None:
@@ -3404,7 +3386,6 @@ class BackgroundDispatchService:
                     job.printer_id,
                     remote_filename,
                     plate_id,
-                    routing_guard=job.routing_guard,
                     printer_life=job.printer_life,
                     ams_mapping=job.options.get("ams_mapping"),
                     timelapse=effective_timelapse,
@@ -3605,7 +3586,7 @@ class BackgroundDispatchService:
                 # place every exit path of the runner passes through.
                 await report_failure_if_unwatched(job)
 
-    async def _send_start(self, db, job: PrintDispatchJob, start: Callable[[], bool]) -> bool:
+    async def _send_start(self, db, job: PrintDispatchJob, start: Callable[..., bool]) -> bool:
         """Commit ``sending``, then publish — and record what the publish did before anything else runs.
 
         ``sending`` is committed on the runner's own session, on its own execution
@@ -3618,17 +3599,24 @@ class BackgroundDispatchService:
         """
         from backend.app.services import dispatch_phase
 
+        guard = job.routing_guard
+        color_changes = guard.color_changes() if guard is not None else ()
+        if guard is not None:
+            guard = replace(guard, committed_color_changes=color_changes)
         if not await dispatch_phase.advance(
             db,
             job.execution_archive_id,
             dispatch_phase.SENDING,
             boot_id=job.dispatch_boot_id,
-            planned_color_changes=_dispatch_color_changes(job),
+            planned_color_changes=[
+                {"slot_id": slot, "requested_color": requested, "loaded_color": loaded}
+                for slot, requested, loaded in color_changes
+            ],
         ):
             raise DispatchPhaseLost("This attempt's archive is no longer the one being started; nothing was sent.")
         await db.commit()
         try:
-            started = start()
+            started = start(routing_guard=guard)
         except RoutingDeferred:
             # The farm guard or the plan's own validate refused before any publish.
             job.send_fact = SEND_REFUSED
@@ -4424,7 +4412,6 @@ class BackgroundDispatchService:
                     job.printer_id,
                     remote_filename,
                     plate_id,
-                    routing_guard=job.routing_guard,
                     printer_life=job.printer_life,
                     ams_mapping=job.options.get("ams_mapping"),
                     timelapse=effective_timelapse,

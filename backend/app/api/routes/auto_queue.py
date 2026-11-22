@@ -142,17 +142,32 @@ def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
         for choice in overrides or []
         if isinstance(choice, dict) and type(choice.get("slot_id")) is int
     }
-    if item.force_color_match or any(choice.get("force_color_match") for choice in overrides_by_slot.values()):
+    plate_id = item.plate_id
+    if plate_id is None:
+        plate_id = descriptor.plate_fallback if descriptor else (item.archive.plate_index if item.archive else None)
+    if plate_id and (
+        item.force_color_match or any(choice.get("force_color_match") for choice in overrides_by_slot.values())
+    ):
         sliced = (
             filaments_for_row(
-                archive=item.archive, library_file=item.library_file, plate_id=item.plate_id, descriptor=descriptor
+                archive=item.archive, library_file=item.library_file, plate_id=plate_id, descriptor=descriptor
             )
             or []
         )
-        sliced_colors = {entry.get("slot_id"): entry.get("color") for entry in sliced}
-        for slot_id in sorted(slot for slot in sliced_colors.keys() | overrides_by_slot.keys() if type(slot) is int):
+        for channel in sliced:
+            slot_id = channel.get("slot_id")
+            grams = channel.get("used_g", channel.get("used_grams"))
+            # The weight reader also carries unused channels. Routing only asks
+            # for channels with positive, finite usage on this selected plate.
+            if (
+                type(slot_id) is not int
+                or slot_id <= 0
+                or type(grams) not in (int, float)
+                or not 0 < grams < float("inf")
+            ):
+                continue
             choice = overrides_by_slot.get(slot_id, {})
-            color = choice.get("color") or sliced_colors.get(slot_id)
+            color = choice.get("color") or channel.get("color")
             if isinstance(color, str) and (item.force_color_match or choice.get("force_color_match")):
                 forced_colors[slot_id] = color
 

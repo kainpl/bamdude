@@ -21,6 +21,7 @@ from backend.app.services.filament_routing import (
     effective_slots,
     feed_preconditions,
     fingerprint,
+    normalized_color,
     resolve_filament_routing,
     slot_nozzle,
     source_fits,
@@ -63,6 +64,24 @@ class DispatchRoutingGuard:
     #: ``validate`` runs under the MQTT routing lock, where nothing may. No
     #: default — a safety check must never be off because an argument was forgotten.
     left_tpu_check: bool
+    #: None before the durable sending phase. An empty tuple still proves
+    #: that no colour difference was recorded for this attempt.
+    committed_color_changes: tuple[tuple[int, str, str], ...] | None = None
+
+    def color_changes(self, snapshot=None) -> tuple[tuple[int, str, str], ...]:
+        """Compare the file's colour to the physical colour of each mapped tray."""
+        sources = None if snapshot is None else {source.id: source for source in snapshot.sources}
+        changes = []
+        for filament in self.requirements.used_filaments:
+            slot_id = filament["slot_id"]
+            source = self.plan.assignments.get(slot_id)
+            if source is not None and sources is not None:
+                source = sources.get(source.id)
+            requested = normalized_color(filament.get("color"))
+            loaded = normalized_color(source.color) if source is not None else None
+            if requested and loaded and requested != loaded:
+                changes.append((slot_id, f"#{requested}", f"#{loaded}"))
+        return tuple(changes)
 
     def validate(self, snapshot, *, mapping, use_ams, plate_id):
         """Under the client's routing lock: no await and no file read before publish."""
@@ -79,6 +98,8 @@ class DispatchRoutingGuard:
             raise RoutingDeferred(reason or "feed_state_changed")
         if mapping != self.plan.mapping or use_ams != self.plan.use_ams or plate_id != self.plan.resolved_plate_id:
             raise RoutingDeferred("mapping_review_required")
+        if self.committed_color_changes is not None and self.color_changes(snapshot) != self.committed_color_changes:
+            raise RoutingDeferred("feed_state_changed")
 
 
 def plan_holds(guard, snapshot, *, with_model: bool = True) -> tuple[bool, str | None, bool]:
