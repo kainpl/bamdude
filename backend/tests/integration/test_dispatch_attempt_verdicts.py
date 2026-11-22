@@ -10,6 +10,7 @@ and runners, device I/O faked (the harness of ``test_dispatch_without_original``
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -19,6 +20,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
+from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
 from backend.tests.integration.test_dispatch_attempt_outcome import a_queued_job, execution_archive, reread
 from backend.tests.integration.test_dispatch_without_original import (  # noqa: F401 - fixtures
     clean_spool_state,
@@ -401,7 +403,7 @@ async def test_a_lost_sending_mark_sends_nothing(
     )
     real_advance = dispatch_phase.advance
 
-    async def advance(db, archive_id, to, *, boot_id):
+    async def advance(db, archive_id, to, *, boot_id, planned_color_changes=None):
         if to == dispatch_phase.SENDING:
             return False
         return await real_advance(db, archive_id, to, boot_id=boot_id)
@@ -681,3 +683,64 @@ async def test_a_shutdown_or_an_unknown_outcome_announces_no_failure(monkeypatch
     job.outcome["uncertain"] = True
     await bd.report_failure_if_unwatched(job)
     notify.assert_not_awaited()
+
+
+@pytest.mark.parametrize("verdict", ["accepted", "observed_in_start_callback", "not_started"])
+async def test_dispatch_color_changes_follow_a_proven_start(db_session, monkeypatch, verdict):
+    from backend.app.services import dispatch_phase
+    from backend.app.services.background_dispatch import BackgroundDispatchService, DispatchNotStarted
+    from backend.app.services.printer_feed_snapshot import FeedSource
+
+    archive = PrintArchive(
+        filename="mapped.3mf",
+        file_path="",
+        file_size=1,
+        status="printing",
+        dispatch_phase=dispatch_phase.PREPARED,
+        dispatch_boot_id="color-test",
+        extra_data={"dispatch_intent": {"version": 1, "remote_filename": "mapped.3mf"}},
+    )
+    db_session.add(archive)
+    await db_session.commit()
+    job = SimpleNamespace(
+        execution_archive_id=archive.id,
+        dispatch_boot_id="color-test",
+        printer_id=1,
+        routing_guard=SimpleNamespace(
+            requirements=SimpleNamespace(
+                used_filaments=(
+                    {"slot_id": 3, "color": "#000000"},
+                    {"slot_id": 4, "color": "#FFFFFF"},
+                )
+            ),
+            plan=SimpleNamespace(
+                assignments={
+                    3: FeedSource(0, "ams", "PLA", "FF0000FF", declared_color="000000FF"),
+                    4: FeedSource(1, "ams", "PLA", "#FFFFFF"),
+                }
+            ),
+        ),
+    )
+    service = BackgroundDispatchService()
+    assert await service._send_start(db_session, job, lambda: True)
+    await db_session.refresh(archive)
+    assert "dispatch_color_changes" not in archive.extra_data
+    if verdict == "observed_in_start_callback":
+        assert dispatch_phase.mark_seen_running(archive)
+        await db_session.commit()
+    else:
+        answer = "accepted" if verdict == "accepted" else "no_acknowledgement"
+        monkeypatch.setattr(service, "_await_print_response", AsyncMock(return_value=answer))
+        if verdict == "not_started":
+            with pytest.raises(DispatchNotStarted):
+                await service._require_running(db_session, job, "Printer", "IDLE")
+        else:
+            await service._require_running(db_session, job, "Printer", "IDLE")
+    await db_session.refresh(archive)
+    assert archive.extra_data["dispatch_intent"]["remote_filename"] == "mapped.3mf"
+    if verdict == "not_started":
+        assert "dispatch_color_changes" not in archive.extra_data
+    else:
+        assert archive.extra_data["dispatch_color_changes"] == [
+            {"slot_id": 3, "requested_color": "#000000", "loaded_color": "#FF0000"}
+        ]

@@ -35,10 +35,12 @@ from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.settings import Settings
+from backend.app.services.auto_queue_eligibility import find_eligible_printer
 from backend.app.services.auto_queue_scheduler import AutoQueueScheduler
 from backend.app.services.farm_forecast import model_key
 from backend.app.services.printer_feed_snapshot import FeedTelemetry, snapshot_from_state
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
+from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
 
 _test_models = {}
 
@@ -1571,3 +1573,30 @@ class TestRebalanceAcrossModels:
         assert (result.converted, result.created, result.moved_parts) == (0, 0, 0)
         assert (farm.item.id, "creation_failed") in result.skipped
         assert len(await _pending_rows(db_session)) == 1
+
+
+@pytest.mark.parametrize(
+    ("prefer_lowest", "low_color", "low_remain", "expected"),
+    [
+        (True, "#FFFFFF", 12, "low"),
+        (False, "#FFFFFF", 12, "high"),
+        (True, "#FF0000", 12, "high"),
+        (True, "#FFFFFF", -1, "high"),
+    ],
+)
+async def test_remaining_filament_breaks_only_an_eligible_tie(
+    db_session, printer_factory, routing_item, prefer_lowest, low_color, low_remain, expected
+):
+    high, _ = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI", serial_number="RANK-HIGH")
+    low, _ = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI", serial_number="RANK-LOW")
+    item = routing_item(target_model="A1MINI", status="pending", position=1)
+    db_session.add(item)
+    await db_session.commit()
+
+    statuses = {high.id: _idle_status(["PLA"]), low.id: _idle_status(["PLA"], [low_color])}
+    statuses[high.id].raw_data["ams"][0]["tray"][0]["remain"] = 64
+    statuses[low.id].raw_data["ams"][0]["tray"][0]["remain"] = low_remain
+    one, two = _patch_printer_manager({high.id, low.id}, statuses)
+    with one, two:
+        result = await find_eligible_printer(db_session, item, set(), prefer_lowest=prefer_lowest)
+    assert result.printer.id == (low.id if expected == "low" else high.id)

@@ -21,6 +21,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
+from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
 from backend.tests.unit.services.test_product_composition import counting_statements
 
 
@@ -74,7 +75,7 @@ async def test_post_auto_queue_with_archive_returns_200_and_includes_archive_nam
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_post_auto_queue_with_library_file_returns_200_and_includes_filename(
-    async_client: AsyncClient, db_session, tmp_path
+    async_client: AsyncClient, db_session, tmp_path, monkeypatch
 ):
     from backend.app.models.library import LibraryFile
 
@@ -94,13 +95,36 @@ async def test_post_auto_queue_with_library_file_returns_200_and_includes_filena
     await db_session.commit()
     await db_session.refresh(library_file)
 
-    response = await async_client.post("/api/v1/auto-queue/", json={"library_file_id": library_file.id})
+    from sqlalchemy import func
+
+    from backend.app.core import database
+    from backend.app.models.auto_queue import AutoQueueItem
+
+    announced = []
+
+    async def observe(*, job_name, target, **_):
+        async with database.async_session() as reader:
+            count = await reader.scalar(select(func.count()).select_from(AutoQueueItem))
+        announced.append((job_name, target, count))
+
+    monkeypatch.setattr("backend.app.services.notification_service.notification_service.on_queue_job_added", observe)
+    response = await async_client.post(
+        "/api/v1/auto-queue/",
+        json={"library_file_id": library_file.id, "force_color_match": True, "quantity": 2},
+    )
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["library_file_id"] == library_file.id
     assert payload["archive_id"] is None
     # No ``file_metadata['print_name']`` present → falls back to ``filename``.
     assert payload["library_file_name"] == "part_x5.gcode.3mf"
+    assert payload["required_filament_types"] == ["PLA"]
+    assert payload["forced_filament_colors"] == {"1": "#FFFFFF"}
+    assert announced == [("part_x5", "AutoQueue", 2)]
+
+    refused = await async_client.post("/api/v1/auto-queue/", json={"library_file_id": 987654})
+    assert 400 <= refused.status_code < 500
+    assert announced == [("part_x5", "AutoQueue", 2)]
 
 
 @pytest.mark.asyncio

@@ -638,6 +638,9 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
             process_lanes=(queue_id,),
             source_access=chat_source_access(file_id, printer_id, printer_identity, queue_id),
         )
+        from backend.app.services.queue_add_effects import announce_queue_add
+
+        await announce_queue_add(staged.receipt.display_filename, printer_id)
         await callback.answer(f"\u2705 {t(lang, NS, 'queue_add.added', pos=positions[0])}")
     except Exception as exc:
         # The bytes nobody is going to print go back (\u00a75 step 7), and the

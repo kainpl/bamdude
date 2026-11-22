@@ -464,7 +464,7 @@ async def test_only_a_fresh_publication_announces_and_a_failed_announcement_chan
 
     calls = []
 
-    async def announce(db, item, queue):
+    async def announce(item, queue):
         calls.append((item.id, queue.id))
         if helper == "raises":
             raise RuntimeError("notification channel down")

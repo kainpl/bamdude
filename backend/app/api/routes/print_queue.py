@@ -71,7 +71,7 @@ from backend.app.services.filament_policy_write import routing_update
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.queue_add import add_items_to_printer_queue, add_next_block_to_printer_queue
-from backend.app.services.queue_add_effects import announce_printer_queue_add
+from backend.app.services.queue_add_effects import announce_printer_queue_add, announce_printer_queue_item
 from backend.app.services.queue_edit_apply import CheckedFacts, apply_edits, checked_facts, plan_edit
 from backend.app.services.queue_row_basis import row_basis
 from backend.app.services.queue_source_capture import refusal, reusing_sources, swap_request
@@ -764,7 +764,7 @@ async def add_to_queue(
     logger.info("Added %s to queue for %s", source_name, target_desc)
 
     # The MQTT relay event and the "job added" notification -- shared with the slicer connector's fresh publications.
-    await announce_printer_queue_add(db, item, queue)
+    await announce_printer_queue_add(item, queue)
 
     response = _enrich_response(item)
     response.created_item_ids = created_item_ids
@@ -784,7 +784,7 @@ async def add_next_block_to_queue(
     if any(item.project_id is not None or item.project_line_id is not None for item in data.items):
         await ensure_may_file_future(creds)
     await _ensure_may_queue_archives(db, creds, current_user, [item.archive_id for item in data.items])
-    items, _queue = await add_next_block_to_printer_queue(db, data.items, current_user, authority=await creds.capture())
+    items, queue = await add_next_block_to_printer_queue(db, data.items, current_user, authority=await creds.capture())
     result = await db.execute(
         select(PrintQueueItem)
         .options(
@@ -798,7 +798,10 @@ async def add_next_block_to_queue(
         .where(PrintQueueItem.id.in_([item.id for item in items]))
         .order_by(PrintQueueItem.position, PrintQueueItem.id)
     )
-    return [_enrich_response(item) for item in result.scalars().all()]
+    rows = result.scalars().all()
+    if rows:
+        await announce_printer_queue_add(rows[0], queue)
+    return [_enrich_response(item) for item in rows]
 
 
 @router.patch("/bulk", response_model=PrintQueueBulkUpdateResponse)
@@ -2074,7 +2077,9 @@ async def clone_item_endpoint(
         )
         .where(PrintQueueItem.id == first.id)
     )
-    return _enrich_response(result.scalar_one())
+    clone = result.scalar_one()
+    await announce_printer_queue_add(clone, clone.queue)
+    return _enrich_response(clone)
 
 
 @router.post("/{item_id}/skip")
@@ -2285,6 +2290,8 @@ async def retry_failed_block(
         cancelled_item_ids=data.cancelled_item_ids,
     )
     _end_capture_cooldowns(result["retried"])
+    if result["retried"]:
+        await announce_printer_queue_item(result["retried"][0])
     return result
 
 
@@ -2405,7 +2412,9 @@ async def retry_failed_item(
         )
         .where(PrintQueueItem.id == item_id)
     )
-    return _enrich_response(result.scalar_one())
+    retried = result.scalar_one()
+    await announce_printer_queue_add(retried, retried.queue)
+    return _enrich_response(retried)
 
 
 # ============================================================================
@@ -2832,6 +2841,7 @@ async def clone_batch_endpoint(
                 raise HTTPException(500, "Clone failed")
             await update_queue_counters(db, target)
             await db.commit()
+            await announce_printer_queue_item(new_item.id)
             return {"cloned": 1, "scope": "one", "batch_id": batch_id, "new_item_id": new_item.id, "queue_id": target}
 
         clones = await clone_batch(db, batch_id, queue_id=target, **as_new)
@@ -2841,6 +2851,7 @@ async def clone_batch_endpoint(
         await db.commit()
     except QueueSourceError as exc:
         raise refusal(exc) from exc
+    await announce_printer_queue_item(clones[0].id)
     return {
         "cloned": len(clones),
         "scope": "batch",

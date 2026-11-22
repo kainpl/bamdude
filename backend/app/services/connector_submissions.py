@@ -668,8 +668,7 @@ async def _publish_entry(factory, actor: ConnectorActor, submission_id: int, ent
 
 
 async def _announce(factory, entry_pk: int, target: dict) -> None:
-    """After a fresh commit only: what the REST printer-queue route announces (``queue_add_effects``). The AutoQueue
-    keeps its own semantics -- nothing is announced before an assignment. Never raises."""
+    """Announce a fresh printer-queue publication. The AutoQueue writer announces its own commit."""
     if target["kind"] != "printer":
         return
     from sqlalchemy.orm import selectinload
@@ -701,7 +700,7 @@ async def _announce(factory, entry_pk: int, target: dict) -> None:
                 )
             ).scalar_one_or_none()
             if item is not None and queue is not None:
-                await announce_printer_queue_add(db, item, queue)
+                await announce_printer_queue_add(item, queue)
     except Exception:  # noqa: BLE001 -- best effort, the publication stands
         logger.warning("Connector entry %s: the queue announcement failed", entry_pk, exc_info=True)
 

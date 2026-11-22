@@ -168,6 +168,20 @@ function routerRow(overrides: Partial<AutoQueueItem>): AutoQueueItem {
   };
 }
 
+it('shows material types and the exact colors by filament on the current queue row', async () => {
+  vi.spyOn(api, 'getAutoQueue').mockResolvedValue([
+    routerRow({
+      required_filament_types: ['PLA', 'PETG'],
+      force_color_match: true,
+      forced_filament_colors: { 3: '#FF0000', 5: '00FF00FF' },
+    }),
+  ]);
+  render(<AutoQueuePanel />);
+  expect(await screen.findByText('· PLA, PETG')).toBeInTheDocument();
+  expect(screen.getByText('Filament 3: #FF0000 (exact)')).toBeInTheDocument();
+  expect(screen.getByText('Filament 5: #00FF00 (exact)')).toBeInTheDocument();
+});
+
 describe('AutoQueuePanel — rebalancing across models', () => {
   it('offers Rebalance on a collapsed block and sends every copy of it', async () => {
     vi.spyOn(api, 'getAutoQueue').mockResolvedValue([

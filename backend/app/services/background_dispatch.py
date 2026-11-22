@@ -911,6 +911,24 @@ async def _rebind_if_moved(
     return bound, bound_generation
 
 
+def _dispatch_color_changes(job) -> list[dict]:
+    """Compare the captured plate with the physical spool in the final routing plan."""
+    from backend.app.services.filament_routing import normalized_color
+
+    guard = job.routing_guard
+    if guard is None:
+        return []
+    changes = []
+    for filament in guard.requirements.used_filaments:
+        slot_id = filament["slot_id"]
+        source = guard.plan.assignments.get(slot_id)
+        requested = normalized_color(filament.get("color"))
+        actual = normalized_color(source.color) if source is not None else None
+        if requested and actual and requested != actual:
+            changes.append({"slot_id": slot_id, "requested_color": f"#{requested}", "loaded_color": f"#{actual}"})
+    return changes
+
+
 async def _record_dispatched_mapping(job) -> None:
     """The queue row keeps the mapping the printer was actually sent.
 
@@ -3601,7 +3619,11 @@ class BackgroundDispatchService:
         from backend.app.services import dispatch_phase
 
         if not await dispatch_phase.advance(
-            db, job.execution_archive_id, dispatch_phase.SENDING, boot_id=job.dispatch_boot_id
+            db,
+            job.execution_archive_id,
+            dispatch_phase.SENDING,
+            boot_id=job.dispatch_boot_id,
+            planned_color_changes=_dispatch_color_changes(job),
         ):
             raise DispatchPhaseLost("This attempt's archive is no longer the one being started; nothing was sent.")
         await db.commit()

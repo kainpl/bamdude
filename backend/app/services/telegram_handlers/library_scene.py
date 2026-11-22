@@ -480,6 +480,9 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
             process_lanes=(queue_id,),
             source_access=chat_source_access(file_id, printer_id, printer_identity, queue_id),
         )
+        from backend.app.services.queue_add_effects import announce_queue_add
+
+        await announce_queue_add(staged.receipt.display_filename, printer_id)
         await callback.answer(f"\u2705 {t(lang, NS, 'library.queued')}")
     except Exception as exc:
         # Whatever went wrong, the bytes nobody is going to print are given back

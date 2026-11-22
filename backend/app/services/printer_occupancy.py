@@ -70,8 +70,10 @@ def row_holds_printer(row: PrintQueueItem | Row[tuple[int, str, bool, datetime |
     return row.status == "pending" and row.manual_start is False and not scheduled_for_later(row.scheduled_time, now)
 
 
-def placement_rank(ready: bool, exact: bool, colours: int, has_deferred_rows: bool, printer_id: int):
-    return ready, exact, colours, not has_deferred_rows, -printer_id
+def placement_rank(
+    ready: bool, exact: bool, colours: int, has_deferred_rows: bool, printer_id: int, *, remaining_rank: float = 0
+):
+    return ready, exact, colours, not has_deferred_rows, remaining_rank, -printer_id
 
 
 def claim_token_matches(actual: datetime | None, expected: datetime | None) -> bool:

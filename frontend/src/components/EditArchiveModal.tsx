@@ -138,6 +138,11 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
   // Filament used, typed by hand (audit D6 part 2) — above all for a print whose
   // 3MF never arrived, which has no figure and no file to rescan. Sent only
   // when changed, so an untouched save never rewrites the stored figure.
+  const colorEvidence = archive.extra_data?.dispatch_color_changes;
+  const dispatchColorChanges = Array.isArray(colorEvidence) ? colorEvidence.filter(change =>
+    change != null && Number.isInteger(change.slot_id)
+    && typeof change.requested_color === 'string' && typeof change.loaded_color === 'string'
+  ) : [];
   const initialFilamentGrams = archive.filament_used_grams == null ? '' : String(archive.filament_used_grams);
   const [filamentGrams, setFilamentGrams] = useState(initialFilamentGrams);
   const [defectiveCount, setDefectiveCount] = useState(archive.defective_count ?? 0);
@@ -528,6 +533,19 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
             {t('editArchive.filamentUsedHelp')}
           </p>
         </div>
+
+        {dispatchColorChanges.length > 0 && (
+          <div className="text-sm text-bambu-gray">
+            <p>{t('editArchive.dispatchColorChanges')}</p>
+            <ul className="mt-1 space-y-1">
+              {dispatchColorChanges.map(({ slot_id, requested_color, loaded_color }) => (
+                <li key={slot_id}>
+                  {t('editArchive.dispatchColorChange', { slot: slot_id, requested: requested_color, loaded: loaded_color })}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {/* Defective parts — scrap out of the plate above. One form, shared
             with the order page and the printer card (`DefectsFields`). */}

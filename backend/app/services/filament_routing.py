@@ -86,6 +86,14 @@ class RoutingPlan:
     color_matches: int
 
     @property
+    def remaining_rank(self) -> float:
+        """Lower average reported fill wins; unknown readings sort after known ones."""
+        levels = [source.remain for source in self.assignments.values()]
+        if not levels or any(not 0 <= level <= 100 for level in levels):
+            return -101
+        return -sum(levels) / len(levels)
+
+    @property
     def mapping(self) -> list[int]:
         # Padding exists only at this serialization boundary.
         return [self.assignments[i].id if i in self.assignments else -1 for i in range(1, max(self.assignments) + 1)]

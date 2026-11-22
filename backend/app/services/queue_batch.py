@@ -598,4 +598,7 @@ async def enqueue_batch_copies(
         .scalars()
         .all()
     )
+    from backend.app.services.queue_add_effects import announce_queue_add
+
+    await announce_queue_add(staged.receipt.display_filename, printer_id)
     return items, batch_id

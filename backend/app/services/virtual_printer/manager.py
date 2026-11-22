@@ -1529,6 +1529,9 @@ class VirtualPrinterInstance:
             # saving/committing — shared with the auto-queue path so the
             # two cannot drift (see ``_consume_late_slicer_options``).
             await self._consume_late_slicer_options(file_path.name)
+            from backend.app.services.queue_add_effects import announce_queue_add
+
+            await announce_queue_add(staged.receipt.display_filename, printer_id, sessions=self._session_factory)
             if len(queue_item_ids) == 1:
                 logger.info(
                     "[VP %s] Added to queue %s (printer %s): item %s, library_file=%s",
@@ -1778,6 +1781,9 @@ class VirtualPrinterInstance:
             # while the library save and commit were running, so a command
             # that landed in that window is still sitting in the stash.
             await self._consume_late_slicer_options(file_path.name)
+            from backend.app.services.queue_add_effects import announce_queue_add
+
+            await announce_queue_add(staged.receipt.display_filename, sessions=self._session_factory)
             logger.info(
                 "[VP %s] Added to auto-queue (item %s, library_file=%s, target_model=%s, filaments=%s, force_color=%s)",
                 self.name,

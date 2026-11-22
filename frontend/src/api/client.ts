@@ -7848,6 +7848,7 @@ export interface AutoQueueItem {
   target_location_id: number | null;
   required_filament_types: string[] | null;
   filament_overrides: AutoQueueFilamentOverride[] | null;
+  forced_filament_colors?: Record<string, string>;
   force_color_match: boolean;
   allow_base_material_match?: boolean;
   plate_id: number | null;

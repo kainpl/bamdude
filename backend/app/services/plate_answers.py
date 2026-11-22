@@ -420,4 +420,8 @@ async def answer_plate_run(
 
     # The scheduler may run only after the database says which held row was answered.
     printer_manager.confirm_awaiting_plate_clear_released(printer_id)
+    if action == "repeat" and item_id is not None and not automatic:
+        from backend.app.services.queue_add_effects import announce_printer_queue_item
+
+        await announce_printer_queue_item(item_id)
     return PlateAnswerResult(archive=archive, action=action, defects=defects_result, item_id=item_id)

@@ -286,6 +286,7 @@ class Fit:
     verdict: Verdict
     reason: str | None = None
     color_matches: int = 0
+    remaining_rank: float = 0
 
 
 @dataclass(frozen=True)
@@ -443,7 +444,7 @@ def _home_job(item: MovableItem, machines: list[Machine], farm: FarmView) -> Job
             continue
         fit = farm.fits.home(item.item_id, machine.printer_id)
         if fit.verdict == "yes":
-            fits.append((machine.printer_id, verdict == "exact", fit.color_matches))
+            fits.append((machine.printer_id, verdict == "exact", fit.color_matches, fit.remaining_rank))
     return Job(
         job_id=item.item_id,
         position=item.position,
@@ -554,7 +555,7 @@ class _Projection:
         touched: set[tuple[frozenset[int], frozenset[int]]] = set()
         for job_id in transferred:
             job = jobs[job_id]
-            touched.update(self._by_lane[pid] for pid, _exact, _colour in job.fits)
+            touched.update(self._by_lane[pid] for pid, *_ in job.fits)
             if self.farm.sjf and job.group in self._by_group:
                 touched.add(self._by_group[job.group])
         printers = frozenset().union(*(part[0] for part in touched))
@@ -575,9 +576,9 @@ def _receivers(
     unknown: set[str | None],
     *,
     companion: bool = False,
-) -> list[tuple[int, bool, int]]:
+) -> list[tuple[int, bool, int, float]]:
     """The ready printers, free now and not spent by a move of this pass, that can print
-    ``plate`` for this job — ``(printer, exact, colour matches)`` in the router's order.
+    ``plate`` for this job — ``(printer, exact, colour matches, remaining rank)`` in the router's order.
 
     The pool the trial may put the moved prints on (spec T15): a forecast that needs any other
     printer is no proof. An unknown answer gives no capacity (R8) and is remembered for the reason.
@@ -595,11 +596,20 @@ def _receivers(
         fit = farm.fits.target(item.item_id, plate, machine.printer_id, companion=companion)
         if fit.verdict == "yes":
             deferred = machine.has_staged_rows or any(h.not_before > 0 for h in machine.held or ())
-            ranked.append(placement_rank(True, verdict == "exact", fit.color_matches, deferred, machine.printer_id))
+            ranked.append(
+                placement_rank(
+                    True,
+                    verdict == "exact",
+                    fit.color_matches,
+                    deferred,
+                    machine.printer_id,
+                    remaining_rank=fit.remaining_rank,
+                )
+            )
         elif fit.verdict == "unknown":
             unknown.add(fit.reason)
     ranked.sort(reverse=True)
-    return [(-pid, exact, colour) for _, exact, colour, _, pid in ranked]
+    return [(-pid, exact, colour, remaining) for _, exact, colour, _, remaining, pid in ranked]
 
 
 def _target_fits(
@@ -616,7 +626,7 @@ def _target_fits(
             continue
         fit = farm.fits.target(item.item_id, plate, machine.printer_id, companion=companion)
         if fit.verdict == "yes":
-            fits.append((machine.printer_id, verdict == "exact", fit.color_matches))
+            fits.append((machine.printer_id, verdict == "exact", fit.color_matches, fit.remaining_rank))
     return tuple(fits)
 
 
@@ -1021,10 +1031,10 @@ class _Job:
     assign_key: tuple | None = None
 
 
-def fit_of(result) -> Fit:
+def fit_of(result, *, prefer_lowest: bool = False) -> Fit:
     """A ``RoutingResult`` as the decision reads it."""
     if result.status == "compatible":
-        return Fit("yes", None, result.plan.color_matches)
+        return Fit("yes", None, result.plan.color_matches, result.plan.remaining_rank if prefer_lowest else 0)
     return Fit("no" if result.status == "incompatible" else "unknown", result.reason)
 
 
@@ -1175,7 +1185,8 @@ class _FitOracle:
                     printer.snapshot,
                     exact_model=verdict == "exact",
                     prefer_lowest=self._prefer_lowest,
-                )
+                ),
+                prefer_lowest=self._prefer_lowest,
             )
         # After the feed, as the router asks: a printer whose assignment would refuse the job —
         # its options do not fit it, or the swap rule turns its source away — is no capacity.

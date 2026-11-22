@@ -101,7 +101,7 @@ class Job:
     group: str | None
     seconds: float | None  # None = no estimate
     #: ``(printer_id, exact model, colour matches)`` of every printer that can print it now.
-    fits: tuple[tuple[int, bool, int], ...] = ()
+    fits: tuple[tuple[int, bool, int] | tuple[int, bool, int, float], ...] = ()
     been_jumped: bool = False
     auto_eject: bool = False
     prep: float = 0.0
@@ -215,14 +215,18 @@ def replay(
     # what scanning every printer's own list gave, set up per class instead of per copy and
     # printer.
     class_of_fits: dict[tuple, int] = {}
-    fit: list[dict[int, tuple[bool, int]]] = []  # per class
+    fit: list[dict[int, tuple[bool, int, float]]] = []  # per class
     cls: list[int] = []  # per job: its class
     for job in jobs:
         c = class_of_fits.get(job.fits)
         if c is None:
             c = class_of_fits[job.fits] = len(fit)
             fit.append(
-                {pid: (exact, colour) for pid, exact, colour in job.fits if pid in by_pid and by_pid[pid].routable}
+                {
+                    entry[0]: (entry[1], entry[2], entry[3] if len(entry) == 4 else 0)
+                    for entry in job.fits
+                    if entry[0] in by_pid and by_pid[entry[0]].routable
+                }
             )
         cls.append(c)
     class_jobs: list[list[int]] = [[] for _ in fit]
@@ -443,6 +447,7 @@ def replay(
                         fitted[pid][1],
                         by_pid[pid].has_staged_rows or any(run.not_before > t for run in queue[pid]),
                         pid,
+                        remaining_rank=fitted[pid][2],
                     ),
                 ),
             )
@@ -578,7 +583,7 @@ def components(
     for job in jobs:
         anchor = anchors.get(job.fits, -1)
         if anchor == -1:
-            fitted = [index[pid] for pid, _exact, _colour in job.fits if pid in index]
+            fitted = [index[pid] for pid, *_ in job.fits if pid in index]
             anchor = fitted[0] if fitted else None
             for other in fitted[1:]:
                 union(fitted[0], other)

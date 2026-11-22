@@ -44,6 +44,7 @@ from backend.app.services.filament_intake import routing_detail
 from backend.app.services.filament_policy import feed_policy
 from backend.app.services.filament_requirements import PrintRequirementsCache
 from backend.app.services.order_filing import line_filer, resolve_link
+from backend.app.services.queue_add_effects import announce_queue_add
 from backend.app.services.queue_publication import PublicationReceipt
 from backend.app.services.queue_source_capture import (
     StagedSource,
@@ -174,6 +175,8 @@ async def add_items_to_auto_queue(
     except BaseException:
         await discard_staged(staged)
         raise
+
+    await announce_queue_add(staged.receipt.display_filename)
 
     # Re-read in the CALLER's session: the rows were written by the publication's
     # own transaction (§5 step 6), and every caller goes on to use them.

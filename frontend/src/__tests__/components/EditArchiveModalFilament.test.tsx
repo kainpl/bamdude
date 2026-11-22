@@ -75,6 +75,14 @@ describe('EditArchiveModal — filament used', () => {
     expect(screen.getByText(/no spool is debited/i)).toBeInTheDocument();
   });
 
+  it('shows a confirmed dispatch colour difference on its own filament channel', () => {
+    renderModal({ extra_data: {
+      dispatch_color_changes: [{ slot_id: 3, requested_color: '#000000', loaded_color: '#FF0000' }],
+    } });
+    expect(screen.getByText('Started with a different filament color')).toBeInTheDocument();
+    expect(screen.getByText('Filament 3: #000000 → #FF0000')).toBeInTheDocument();
+  });
+
   it('sends a typed figure', async () => {
     const user = userEvent.setup();
     renderModal();

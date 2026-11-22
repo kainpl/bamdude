@@ -548,3 +548,10 @@ def test_manual_release_can_delay_stagger_peers_after_the_first_placement(waitin
         released = replace(staged, has_staged_rows=False, held=(Held(15, not_before=1),))
         assert replay([released, receiver], [job], stagger=shared).outcome(41) == ("known", 81)
     assert uncertain.outcome(41) == ("unknown", None)
+
+
+def test_replay_matches_the_router_remaining_filament_tie_break():
+    job = replace(_job(1, 1, 2), fits=((1, True, 1, -60), (2, True, 1, -20)))
+    assert replay([_free(1), _free(2)], [job]).lane_of[1] == 2
+    different_color = replace(job, fits=((1, True, 1, -60), (2, True, 0, -20)))
+    assert replay([_free(1), _free(2)], [different_color]).lane_of[1] == 1

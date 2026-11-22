@@ -28,6 +28,7 @@ import type { SequencedFile } from '../QueueSequencer';
 import { invalidateOrderViews, invalidateQueueViews } from '../../utils/queryInvalidation';
 import { formatDateTime } from '../../utils/date';
 import { compareAutoQueueOrder } from '../../utils/autoQueueOrder';
+import { displayHex } from '../../utils/displayHex';
 
 /**
  * Top-of-page panel that surfaces pending auto-queue items — the router
@@ -536,6 +537,14 @@ function AutoQueueRow({
   const label = item.archive_name || item.library_file_name || `#${item.id}`;
   const targetModel = item.target_model || t('autoQueue.anyModel');
   const targetLocation = item.target_location?.name;
+  const filamentTypes = [...new Set([
+    ...(item.required_filament_types ?? []),
+    ...(item.filament_overrides ?? []).flatMap(override => override.type ? [override.type] : []),
+  ])];
+  const forcedColors = Object.entries(item.forced_filament_colors ?? {}).flatMap(([slot, color]) => {
+    const hex = displayHex(color);
+    return hex ? [{ slot, hex }] : [];
+  });
 
   return (
     <div
@@ -616,7 +625,14 @@ function AutoQueueRow({
             </span>
           )}
           {targetLocation && <span>· {targetLocation}</span>}
+          {filamentTypes.length > 0 && <span>· {filamentTypes.join(', ')}</span>}
           {item.force_color_match && <span>· {t('autoQueue.exactColor')}</span>}
+          {forcedColors.map(({ slot, hex }) => (
+            <span key={slot} className="inline-flex items-center gap-1">
+              <span aria-hidden="true" className="h-2.5 w-2.5 rounded-full border border-bambu-gray" style={{ backgroundColor: hex }} />
+              {t('autoQueue.forcedSlotColor', { slot, color: hex })}
+            </span>
+          ))}
           {item.waiting_reason && (
             <span className={item.status === 'failed' ? 'text-red-700 dark:text-red-400' : 'text-yellow-700 dark:text-yellow-400'}>· <QueueWaitReason item={item} /></span>
           )}

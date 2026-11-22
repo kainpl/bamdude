@@ -68,6 +68,7 @@ from backend.app.services.filament_intake import (
 from backend.app.services.filament_preview import printer_routing_preview, routing_preview
 from backend.app.services.queue_counters import lock_auto_rows
 from backend.app.services.queue_source_descriptor import source_storage_state
+from backend.app.services.queue_times import filaments_for_row
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable
 from backend.app.utils.model_compatibility import model_compatibility
 from backend.app.utils.printer_models import normalize_model_name
@@ -135,6 +136,26 @@ def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
         except (ValueError, TypeError):
             overrides = None
 
+    forced_colors = {}
+    overrides_by_slot = {
+        choice["slot_id"]: choice
+        for choice in overrides or []
+        if isinstance(choice, dict) and type(choice.get("slot_id")) is int
+    }
+    if item.force_color_match or any(choice.get("force_color_match") for choice in overrides_by_slot.values()):
+        sliced = (
+            filaments_for_row(
+                archive=item.archive, library_file=item.library_file, plate_id=item.plate_id, descriptor=descriptor
+            )
+            or []
+        )
+        sliced_colors = {entry.get("slot_id"): entry.get("color") for entry in sliced}
+        for slot_id in sorted(slot for slot in sliced_colors.keys() | overrides_by_slot.keys() if type(slot) is int):
+            choice = overrides_by_slot.get(slot_id, {})
+            color = choice.get("color") or sliced_colors.get(slot_id)
+            if isinstance(color, str) and (item.force_color_match or choice.get("force_color_match")):
+                forced_colors[slot_id] = color
+
     swap_events = None
     if item.swap_macro_events:
         try:
@@ -164,6 +185,7 @@ def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
         target_location=item.target_location,
         required_filament_types=required_types,
         filament_overrides=overrides,
+        forced_filament_colors=forced_colors,
         force_color_match=item.force_color_match,
         allow_base_material_match=item.allow_base_material_match,
         plate_id=item.plate_id,
@@ -737,7 +759,12 @@ async def assign_now(
     item as-is if no eligible printer is available; otherwise the
     item is assigned via the same ``_assign`` path the scheduler uses.
     """
-    from backend.app.services.auto_queue_scheduler import AutoPlacementConflict, auto_queue_scheduler
+    from backend.app.services.auto_queue_scheduler import (
+        PREFER_LOWEST_SETTING_KEY,
+        AutoPlacementConflict,
+        _get_bool_setting,
+        auto_queue_scheduler,
+    )
 
     result = await db.execute(select(AutoQueueItem).where(AutoQueueItem.id == item_id))
     item = result.scalar_one_or_none()
@@ -761,8 +788,9 @@ async def assign_now(
         },
     )
     busy_printers = await busy_printer_ids(db, datetime.now(timezone.utc))
+    prefer_lowest = await _get_bool_setting(db, PREFER_LOWEST_SETTING_KEY, default=True)
     while True:
-        eligible = await find_eligible_printer(db, item, busy_printers)
+        eligible = await find_eligible_printer(db, item, busy_printers, prefer_lowest=prefer_lowest)
         printer, reason = eligible
         if printer is None:
             source_reason = getattr(eligible.requirements, "reason", None)
@@ -785,6 +813,7 @@ async def assign_now(
                 printer,
                 view=view,
                 router_view=False,
+                prefer_lowest=prefer_lowest,
                 plan=eligible.plan,
                 requirements=eligible.requirements,
                 snapshot_signature=eligible.snapshot_signature,
@@ -837,7 +866,11 @@ async def retry_auto_queue_item(
     if not result.rowcount:
         raise HTTPException(409, routing_detail("source_retry_not_failed"))
     await db.commit()
-    return await get_auto_queue_item(item_id, db, _)
+    response = await get_auto_queue_item(item_id, db, _)
+    from backend.app.services.queue_add_effects import announce_queue_add
+
+    await announce_queue_add(response.library_file_name or response.archive_name or f"Job #{item_id}")
+    return response
 
 
 @router.delete("/batch/{batch_id}", response_model=AutoQueueBatchActionResponse)

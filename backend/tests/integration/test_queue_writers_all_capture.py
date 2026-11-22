@@ -42,6 +42,7 @@ from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.queue_source import FORMAT_3MF, QueueSource
 from backend.app.services import queue_sources
+from backend.app.services.archive import sd_stem
 from backend.app.services.auto_queue_eligibility import find_eligible_printer
 from backend.app.services.filament_intake import item_descriptor, read_item_requirements, routing_detail
 from backend.app.services.filament_policy_write import routing_update
@@ -79,6 +80,21 @@ def sessions(test_engine, monkeypatch):
     factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(database, "async_session", factory)
     return factory
+
+
+@pytest.fixture
+def add_announcement(monkeypatch, sessions):
+    observed = []
+
+    async def capture(*, db, job_name, target, printer_id, printer_name):
+        # A different connection can see the committed rows at notification time.
+        model = AutoQueueItem if printer_id is None else PrintQueueItem
+        async with sessions() as observer:
+            count = await observer.scalar(select(func.count()).select_from(model))
+        observed.append((job_name, target, count))
+
+    monkeypatch.setattr("backend.app.services.notification_service.notification_service.on_queue_job_added", capture)
+    return observed
 
 
 @pytest.fixture
@@ -165,7 +181,7 @@ def snapshot_of(blob: QueueSource, *, filename: str, plate_fallback: int | None 
 
 
 async def test_the_bots_library_add_queues_from_a_captured_copy(
-    db_session, tmp_path, printer_factory, monkeypatch, sessions, reads
+    db_session, tmp_path, printer_factory, monkeypatch, sessions, reads, add_announcement
 ):
     """``lib:add_queue`` used to build the row with nothing but an id.
 
@@ -206,6 +222,7 @@ async def test_the_bots_library_add_queues_from_a_captured_copy(
     assert staging_litter() == []
     assert callback.answer.await_args.kwargs.get("show_alert") is not True
     assert await pending_count_of(db_session, queue.id) == 1, "the card's counter is recounted (G03 D7.2)"
+    assert add_announcement == [(sd_stem(source.filename), printer.name, 1)]
 
 
 async def test_the_bots_library_add_refuses_a_file_id_that_names_an_archive(
@@ -479,7 +496,7 @@ async def a_vp(tmp_path, test_engine, printer, *, mode: str) -> VirtualPrinterIn
 
 
 async def test_a_slicer_send_all_captures_once_for_every_plate(
-    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, reads
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, reads, add_announcement
 ):
     """A multi-plate Send All is one upload: one capture, one blob, N rows (A01)."""
     source, printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
@@ -506,6 +523,7 @@ async def test_a_slicer_send_all_captures_once_for_every_plate(
     assert vp._recent_queue_items[Path(source.file_path).name][0] == [item.id for item in items]
     assert staging_litter() == []
     assert await pending_count_of(db_session, queue.id) == 2, "the card's counter is recounted (G03 D7.2)"
+    assert add_announcement == [(sd_stem(source.filename), printer.name, 2)]
 
 
 async def test_a_slicer_upload_naming_a_plate_the_file_lacks_leaves_nothing(
@@ -528,7 +546,7 @@ async def test_a_slicer_upload_naming_a_plate_the_file_lacks_leaves_nothing(
 
 
 async def test_a_farm_distributed_slicer_upload_captures_too(
-    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, reads
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, reads, add_announcement
 ):
     """``auto_queue`` mode has no printer yet, and captures exactly the same."""
     source, printer, _queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
@@ -559,6 +577,7 @@ async def test_a_farm_distributed_slicer_upload_captures_too(
     assert item.source_snapshot["display_filename"] == source.filename
     assert vp._recent_auto_items[original.name][0] == [item.id]
     assert staging_litter() == []
+    assert add_announcement == [(sd_stem(source.filename), "AutoQueue", 1)]
 
 
 async def test_a_failure_between_the_copy_and_the_publish_still_gives_the_bytes_back(

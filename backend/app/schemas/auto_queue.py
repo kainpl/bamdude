@@ -166,6 +166,7 @@ class AutoQueueItemResponse(BaseModel):
     target_location: PrinterLocationOut | None = None
     required_filament_types: list[str] | None = None
     filament_overrides: list[FilamentOverride] | None = None
+    forced_filament_colors: dict[int, str] = Field(default_factory=dict)
     force_color_match: bool
     allow_base_material_match: bool
 

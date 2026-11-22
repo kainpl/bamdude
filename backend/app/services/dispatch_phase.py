@@ -21,7 +21,7 @@ back, and nothing writes over a terminal row. A refusal is not a phase: the
 
 from __future__ import annotations
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from backend.app.models.archive import PrintArchive
 
@@ -57,6 +57,16 @@ def stamp_prepared(archive) -> str | None:
     return boot
 
 
+def _accepted_colors(extra: object) -> dict | None:
+    """Promote the mapping evidence only after the printer was seen running."""
+    intent = extra.get("dispatch_intent") if isinstance(extra, dict) else None
+    if not isinstance(intent, dict) or not intent.get("planned_color_changes"):
+        return None
+    confirmed = dict(intent)
+    changes = confirmed.pop("planned_color_changes")
+    return {**extra, "dispatch_intent": confirmed, "dispatch_color_changes": changes}
+
+
 def mark_seen_running(archive) -> bool:
     """The printer was seen running this archive's print: an unaccepted attempt is ``accepted``.
 
@@ -67,6 +77,9 @@ def mark_seen_running(archive) -> bool:
     """
     if archive.dispatch_phase in UNACCEPTED:
         archive.dispatch_phase = ACCEPTED
+        colors = _accepted_colors(getattr(archive, "extra_data", None))
+        if colors is not None:
+            archive.extra_data = colors
         return True
     return False
 
@@ -91,7 +104,9 @@ def forget_earlier_outcome(archive) -> None:
     archive_outcome.forget(archive)
 
 
-async def advance(db, archive_id: int | None, to: str, *, boot_id: str | None) -> bool:
+async def advance(
+    db, archive_id: int | None, to: str, *, boot_id: str | None, planned_color_changes: list[dict] | None = None
+) -> bool:
     """Move this attempt's archive forward to ``to``; False when the row is no longer this attempt's.
 
     Executes on the caller's session and does not commit: the caller decides what the
@@ -111,4 +126,24 @@ async def advance(db, archive_id: int | None, to: str, *, boot_id: str | None) -
         .values(dispatch_phase=to)
         .execution_options(synchronize_session=False)
     )
-    return result.rowcount == 1
+    if result.rowcount != 1:
+        return False
+    if planned_color_changes or to == ACCEPTED:
+        # The phase update already owns the row. Merge into its committed JSON
+        # without replacing metadata from an earlier ORM snapshot.
+        extra = await db.scalar(select(PrintArchive.extra_data).where(PrintArchive.id == archive_id))
+        if planned_color_changes:
+            extra = extra if isinstance(extra, dict) else {}
+            intent = extra.get("dispatch_intent")
+            intent = intent if isinstance(intent, dict) else {}
+            colors = {**extra, "dispatch_intent": {**intent, "planned_color_changes": planned_color_changes}}
+        else:
+            colors = _accepted_colors(extra)
+        if colors is not None:
+            await db.execute(
+                update(PrintArchive)
+                .where(PrintArchive.id == archive_id)
+                .values(extra_data=colors)
+                .execution_options(synchronize_session=False)
+            )
+    return True

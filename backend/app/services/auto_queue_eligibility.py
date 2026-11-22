@@ -559,8 +559,15 @@ async def find_eligible_printer(
         failed_identities = last_failed_printers(item)
 
         def rank(candidate):
-            ready, exact, colours, printer, _, _ = candidate
-            ordinary = placement_rank(ready, exact, colours, printer.id in deferred_printers, printer.id)
+            ready, exact, colours, printer, plan, _ = candidate
+            ordinary = placement_rank(
+                ready,
+                exact,
+                colours,
+                printer.id in deferred_printers,
+                printer.id,
+                remaining_rank=plan.remaining_rank if prefer_lowest else 0,
+            )
             return returned_printer_rank(failed_identities, printer.connector_identity, ordinary)
 
         _, _, _, printer, plan, snapshot = max(candidates, key=rank)
