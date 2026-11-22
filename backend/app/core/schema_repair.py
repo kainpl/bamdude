@@ -97,9 +97,14 @@ async def run_claimed(engine, metadata, debt, *, phase_hook=None):
         async with engine.begin() as conn:
             accepted = await _accepted(conn, debt)
         if engine.dialect.name == "postgresql":
-            from backend.app.migrations.m240_postgres_historical_schema import replay
+            from backend.app.migrations import m240_postgres_historical_schema, m255_notification_permission_default
 
-            await phase("B", replay)
+            async def replay_postgres_repairs(conn):
+                # An imported SQLite history can already mark a PostgreSQL-only migration as applied.
+                await m240_postgres_historical_schema.replay(conn)
+                await m255_notification_permission_default.replay(conn)
+
+            await phase("B", replay_postgres_repairs)
             await phase("D4-indexes", lambda conn: repair_indexes(conn, accepted_calibration=accepted))
             await phase("columns", lambda conn: conform.columns(conn, metadata))
             await phase("UNIQUE", lambda conn: conform.unique(conn, metadata))
