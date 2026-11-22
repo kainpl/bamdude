@@ -50,7 +50,7 @@ export interface PresetField {
 
 const same = (a: UnifiedPreset, ref: PresetRef | null) => ref !== null && a.source === ref.source && a.id === ref.id;
 
-/** Apply `filters`, dropping them from the end until `accept` holds; returns what stayed and what was dropped. */
+/** Relax from the end, then restore filters made satisfiable by later removals. */
 function relax(
   entries: UnifiedPreset[],
   filters: SoftFilter[],
@@ -62,7 +62,15 @@ function relax(
   while (active.length > 0 && !accept(apply())) {
     relaxed.push((active.pop() as SoftFilter).id);
   }
-  return { active, relaxed };
+  // "Mine" can hide every machine preset while the farm has perfectly good
+  // built-in profiles. Once source is relaxed, the farm restriction works
+  // again: do not leave it disabled merely because it was tried first.
+  for (const filter of filters) {
+    if (active.includes(filter)) continue;
+    const restored = [...active, filter];
+    if (accept(entries.filter((e) => restored.every((f) => f.keep(e))))) active.push(filter);
+  }
+  return { active, relaxed: relaxed.filter((id) => !active.some((f) => f.id === id)) };
 }
 
 export function buildPresetField(input: PresetFieldInput): PresetField {
