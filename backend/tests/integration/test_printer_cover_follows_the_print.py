@@ -11,6 +11,7 @@ the card and the queue's "now printing" block showed an empty frame.
 from __future__ import annotations
 
 import secrets
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
@@ -141,6 +142,7 @@ async def test_renamed_dispatch_cover_fallback_uses_the_reported_upload_name(
     printer = await printer_factory()
     uploaded_stem = "bamdude_auto_cali_for_user"
     picture = _png(b"renamed dispatch")
+    now = datetime.now(timezone.utc)
     await archive_factory(
         printer.id,
         filename="auto_cali_for_user.gcode.3mf",
@@ -148,7 +150,17 @@ async def test_renamed_dispatch_cover_fallback_uses_the_reported_upload_name(
         file_path="",
         thumbnail_path=_thumbnail(picture),
         status="completed",
+        created_at=now - timedelta(minutes=1),
         extra_data={"dispatch_intent": {"version": 1, "remote_filename": f"{uploaded_stem}.3mf"}},
+    )
+    await archive_factory(
+        printer.id,
+        filename=f"{uploaded_stem}.gcode.3mf",
+        print_name=uploaded_stem,
+        file_path="",
+        thumbnail_path=_thumbnail(_png(b"different file with the same stem")),
+        status="completed",
+        created_at=now,
     )
     url = f"/api/v1/printers/{printer.id}/camera-cover"
     printing.subtask_name = "auto_cali_for_user"

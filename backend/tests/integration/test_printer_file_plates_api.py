@@ -247,6 +247,60 @@ async def test_renamed_dispatch_cannot_supply_plates_for_the_original_card_name(
     assert transport.reads == (0 if original else 1)
 
 
+@pytest.mark.parametrize("confirmed_has_attachment", [True, False])
+async def test_plates_keep_distinct_files_with_the_same_historical_stem(
+    committing_client, db_session, transport, tmp_path, confirmed_has_attachment
+):
+    printer = await _printer(db_session)
+    uploaded = "bamdude_auto_cali_for_user.3mf"
+    other_name = "bamdude_auto_cali_for_user.gcode.3mf"
+    (tmp_path / "archive").mkdir()
+    if confirmed_has_attachment:
+        (tmp_path / "archive" / "uploaded.3mf").write_bytes(_three_mf(1))
+    (tmp_path / "archive" / "other.3mf").write_bytes(_three_mf(2))
+    now = datetime.now(timezone.utc)
+    confirmed = PrintArchive(
+        printer_id=printer.id,
+        filename="auto_cali_for_user.gcode.3mf",
+        print_name="auto_cali_for_user",
+        file_path="archive/uploaded.3mf" if confirmed_has_attachment else "",
+        file_size=1,
+        created_at=now - timedelta(minutes=1),
+        extra_data={"dispatch_intent": {"version": 1, "remote_filename": uploaded}},
+    )
+    other = PrintArchive(
+        printer_id=printer.id,
+        filename=other_name,
+        print_name="bamdude_auto_cali_for_user",
+        file_path="archive/other.3mf",
+        file_size=1,
+        created_at=now,
+    )
+    db_session.add_all([confirmed, other])
+    await db_session.commit()
+
+    url = f"/api/v1/printers/{printer.id}/files/plates?path=/cache/"
+    response = await committing_client.get(url + other_name)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["archive_id"] == other.id
+    assert [plate["index"] for plate in body["plates"]] == [1, 2]
+    assert transport.reads == 0
+
+    transport.data = _three_mf(1)
+    response = await committing_client.get(url + uploaded)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["archive_id"] == (confirmed.id if confirmed_has_attachment else None)
+    assert [plate["index"] for plate in body["plates"]] == [1]
+    thumbnail = body["plates"][0]["thumbnail_url"]
+    if confirmed_has_attachment:
+        assert thumbnail.startswith(f"/api/v1/archives/{confirmed.id}/")
+    else:
+        assert thumbnail.startswith("data:image/png;base64,")
+    assert transport.reads == (0 if confirmed_has_attachment else 1)
+
+
 async def test_a_retention_cleaned_archive_answers_from_its_cached_plates(
     committing_client, db_session, transport, tmp_path
 ):

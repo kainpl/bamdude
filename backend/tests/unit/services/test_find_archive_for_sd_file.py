@@ -216,6 +216,37 @@ async def test_another_printers_row_and_no_row_answer_none(db_session, tmp_path,
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("intent_version", [1, 2])
+async def test_exact_upload_precedence_preserves_newest_same_file(db_session, tmp_path, monkeypatch, intent_version):
+    printer = await _printer(db_session, "NEWEST")
+    uploaded = "bamdude_auto_cali_for_user.3mf"
+    original = "auto_cali_for_user.gcode.3mf"
+    confirmed = _archive(
+        printer.id,
+        original,
+        file_path=_on_disk(tmp_path, monkeypatch, "archive/confirmed.3mf"),
+        minutes_ago=2,
+    )
+    confirmed.extra_data = {"dispatch_intent": {"version": intent_version, "remote_filename": uploaded}}
+    same_file = _archive(
+        printer.id,
+        uploaded,
+        file_path=_on_disk(tmp_path, monkeypatch, "archive/same.3mf"),
+        minutes_ago=1,
+    )
+    suffix_alias = _archive(
+        printer.id,
+        "bamdude_auto_cali_for_user.gcode.3mf",
+        file_path=_on_disk(tmp_path, monkeypatch, "archive/alias.3mf"),
+    )
+    db_session.add_all([confirmed, same_file, suffix_alias])
+    await db_session.commit()
+
+    found = await find_archive_for_sd_file(db_session, printer.id, uploaded)
+    assert found is (same_file if intent_version == 1 else suffix_alias)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("intent_version", [1, 2])
 async def test_only_a_valid_recorded_rename_supersedes_historical_names(
     db_session, tmp_path, monkeypatch, intent_version
 ):

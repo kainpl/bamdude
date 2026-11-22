@@ -431,9 +431,8 @@ async def find_archive_for_sd_file(
     no 3MF and they are not the same thing:
 
     * *pending* — the row is created at print start with ``file_path=""`` and no
-      thumbnail yet, while the 3MF is still being fetched. It has nothing to
-      show and must never shadow an older populated row; having neither a path
-      nor a thumbnail, it is already excluded in SQL.
+      thumbnail yet, while the 3MF is still being fetched. Its recorded upload
+      can establish which file to look for while older rows supply attachments.
     * *cleaned* — retention (``archive_cleanup_service``) deleted the 3MF and
       blanked ``file_path`` but deliberately KEPT ``thumbnail_path``, because
       the row is print history. Amended 2026-09-12: that surviving picture is a
@@ -445,10 +444,12 @@ async def find_archive_for_sd_file(
     flow — and the sibling URL the plates route hands out
     (``/archives/{id}/plate-thumbnail/{n}``) refuses a trashed row anyway.
 
-    Newest ``created_at`` first, and a row whose files have since vanished
-    yields to the next — so the walk reads only the candidate paths and naming
-    fields, then loads the winner as an entity. No blind
-    ``LIMIT``: the eleventh row can be the only one still on disk.
+    A confirmed upload gives priority to exact names, including an external
+    archive stored under that same name. If none of those rows has anything to
+    show, the caller can fall back to the printer. Without a confirmed upload,
+    the historical match still wins by recency. Within either group the newest
+    usable ``created_at`` wins. Read only candidate paths and naming fields and
+    load the winning entity.
 
     Deliberately no status filter: the printer can be FINISH (the archive
     already flipped to ``completed``) while the UI still asks for the picture.
@@ -480,6 +481,8 @@ async def find_archive_for_sd_file(
     )
     intent = PrintArchive.extra_data["dispatch_intent"]
     requested_names = (sd_name, f"{sd_name}.3mf") if as_subtask else (sd_name,)
+    possible_upload_match = intent["remote_filename"].as_string().in_(requested_names)
+    has_attachment = or_(PrintArchive.file_path != "", PrintArchive.thumbnail_path.is_not(None))
     candidates = await db.execute(
         select(
             PrintArchive.id,
@@ -491,17 +494,34 @@ async def find_archive_for_sd_file(
         )
         .where(PrintArchive.printer_id == printer_id)
         .where(PrintArchive.deleted_at.is_(None))
-        .where(or_(PrintArchive.file_path != "", PrintArchive.thumbnail_path.is_not(None)))
-        .where(or_(legacy_match, intent["remote_filename"].as_string().in_(requested_names)))
+        .where(or_(possible_upload_match, and_(legacy_match, has_attachment)))
         .order_by(PrintArchive.created_at.desc())
     )
+    fallback_id = None
+    exact_id = None
+    confirmed_match = False
     for archive_id, file_path, thumbnail_path, filename, dispatch_intent, matches_legacy in candidates:
         upload = recorded_upload_filename({"dispatch_intent": dispatch_intent})
-        if upload not in requested_names and (not matches_legacy or renamed_upload_filename(filename, upload)):
+        recorded_match = upload in requested_names
+        if not recorded_match and (not matches_legacy or renamed_upload_filename(filename, upload)):
             continue
-        if archive_has_something_on_disk(file_path, thumbnail_path):
-            return await db.get(PrintArchive, archive_id)
-    return None
+
+        confirmed_match = confirmed_match or recorded_match
+        exact_match = recorded_match or (upload is None and filename in requested_names)
+        if (fallback_id is None or (exact_match and exact_id is None)) and archive_has_something_on_disk(
+            file_path, thumbnail_path
+        ):
+            if fallback_id is None:
+                fallback_id = archive_id
+            if exact_match:
+                exact_id = archive_id
+
+        # With confirmation an exact match wins. When both searches agree,
+        # the winner is already known even if confirmation appears later.
+        if exact_id is not None and (confirmed_match or exact_id == fallback_id):
+            return await db.get(PrintArchive, exact_id)
+
+    return await db.get(PrintArchive, fallback_id) if not confirmed_match and fallback_id is not None else None
 
 
 def archive_has_something_on_disk(file_path: str | None, thumbnail_path: str | None) -> bool:
