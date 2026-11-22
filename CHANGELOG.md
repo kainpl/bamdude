@@ -318,7 +318,7 @@
 
 ### Fixed
 
-- **Preset fallback retains filters that can still be satisfied.** When no personal machine profiles exist, showing built-in profiles no longer drops the farm-model restriction too. Loaded-filament filtering is restored in the same way when relaxing the source filter makes matching profiles available. Automatic picks and existing selections keep their prior rules.
+- **Preset fallback retains filters that can still be satisfied.** When no personal machine profiles exist, showing built-in profiles no longer drops the farm-model restriction too. Loaded-filament filtering is restored in the same way when relaxing the source filter makes matching profiles available. The farm-model filter lists configured farm models rather than additional G-code-compatible models. Automatic picks and existing selections keep their prior rules.
 
 - **Read the finish and color from Spoolman product names.** For example,
   Matte Scarlet Red shows Matte as the subtype and Scarlet Red as the color.
