@@ -1439,6 +1439,10 @@ class BambuFTPClient:
                     verdict = "ok"
                 else:
                     verdict, _ = self._uploaded_size_verdict(remote_path, file_size)
+                    if verdict == "unknown":
+                        # The first read can consume the delayed STOR reply
+                        # instead of SIZE. Ask once more before proceeding.
+                        verdict, _ = self._uploaded_size_verdict(remote_path, file_size)
                 if verdict == "truncated":
                     logger.error(
                         "FTP STOR unconfirmed for %s (%s) AND the printer's copy is the wrong size "
@@ -1703,7 +1707,8 @@ class BambuFTPClient:
 
         try:
             return self._ftp.size(remote_path)
-        except (OSError, ftplib.Error):
+        except (OSError, ftplib.Error, ValueError):
+            # ftplib parses the payload of a 213 reply with int().
             return None
 
     def get_storage_info(self) -> dict | None:

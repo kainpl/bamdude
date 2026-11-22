@@ -20,7 +20,7 @@ from __future__ import annotations
 import ftplib
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -97,6 +97,34 @@ class TestWhenTheConfirmationNeverArrives:
 
         assert client.upload_file(local_file, "/plate.3mf") is True
 
+    @pytest.mark.parametrize(
+        ("completion_error", "size_replies", "accepted"),
+        [
+            (TimeoutError("no 226"), ["226 Transfer complete", "213 17"], False),
+            (
+                UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+                [ftplib.error_temp("450 file still being flushed"), "213 17"],
+                False,
+            ),
+            (TimeoutError("no 226"), ["226 Transfer complete", f"213 {len(PAYLOAD)}"], True),
+            (TimeoutError("no 226"), [ftplib.error_perm("500 Unknown command")] * 2, True),
+        ],
+        ids=["late-226-then-short", "temporary-refusal-then-short", "late-226-then-exact", "size-unsupported"],
+    )
+    def test_h2d_rechecks_when_first_size_is_unknown(self, local_file, completion_error, size_replies, accepted):
+        client = _client(server_size=None, voidresp=completion_error)
+        client.printer_model = "H2D"
+        ftp = client._ftp
+        ftp.sendcmd.side_effect = size_replies
+        ftp.size.side_effect = lambda path: ftplib.FTP.size(ftp, path)
+
+        assert client.upload_file(local_file, "/plate.3mf") is accepted
+        assert ftp.sendcmd.call_args_list == [call("SIZE /plate.3mf")] * 2
+        if accepted:
+            assert client.failure is None
+        else:
+            assert client.failure.kind == "truncated"
+
 
 @pytest.mark.parametrize(
     ("sizes", "accepted", "probes"),
@@ -141,6 +169,27 @@ def test_a1_without_226_verifies_the_copy_on_one_fresh_session(local_file, monke
     assert fresh.size.call_count == probes
     if accepted is False:
         assert client.failure.kind == ("truncated" if sizes[0] is not None else "network")
+
+
+def test_a1_mini_malformed_size_fails_with_a_typed_report(local_file, monkeypatch):
+    client = _client(server_size=None, voidresp=TimeoutError("no 226"))
+    client.printer_model = "A1 Mini"
+    old = client._ftp
+    fresh = MagicMock()
+    fresh.sendcmd.return_value = "213 unavailable"
+    fresh.size.side_effect = lambda path: ftplib.FTP.size(fresh, path)
+
+    def reopen():
+        old.close.assert_called_once()
+        client._ftp = fresh
+        return True
+
+    monkeypatch.setattr(client, "connect", reopen)
+
+    assert client.upload_file(local_file, "/plate.3mf") is False
+    assert client.failure.kind == "network"
+    fresh.sendcmd.assert_called_once_with("SIZE /plate.3mf")
+    old.size.assert_not_called()
 
 
 class TestWhenThePrinterRejectsTheTransfer:
