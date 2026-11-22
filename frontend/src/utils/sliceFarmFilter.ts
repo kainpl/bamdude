@@ -31,12 +31,12 @@ type PresetModel = { model: string; nozzle: string | null };
 type FarmMachine = Pick<OnlinePrinter, 'model' | 'accepts' | 'nozzle_diameters'>;
 
 /** Is this printer one the preset's model can be sliced for? */
-function printerIsOfModel(printer: FarmMachine, model: string): boolean {
+function printerIsOfModel(printer: FarmMachine, model: string, modelMatch: 'exact' | 'accepted' = 'accepted'): boolean {
   if (!printer.model) return false;
   // `model` is the fragment a printer preset's name carries after "Bambu Lab "
   // ("X1 Carbon"); the long marketing name is the spelling the normaliser knows.
   const verdict = modelCompatibility(`Bambu Lab ${model}`, printer.model, { [printer.model]: printer.accepts });
-  return verdict === 'exact' || verdict === 'compatible';
+  return verdict === 'exact' || (modelMatch === 'accepted' && verdict === 'compatible');
 }
 
 function printerHasNozzle(printer: FarmMachine, nozzle: string | null): boolean {
@@ -57,10 +57,11 @@ export function printerPresetFitsFarmPrinter(
   preset: Pick<UnifiedPreset, 'name'>,
   printer: FarmMachine,
   printerParents: PrinterParents | null | undefined,
+  modelMatch: 'exact' | 'accepted' = 'accepted',
 ): boolean {
   const identity: PresetModel | null = printerPresetModel(preset.name, printerParents);
   if (!identity) return false;
-  return printerIsOfModel(printer, identity.model) && printerHasNozzle(printer, identity.nozzle);
+  return printerIsOfModel(printer, identity.model, modelMatch) && printerHasNozzle(printer, identity.nozzle);
 }
 
 /** Does a printer preset belong to a printer that is online now? */

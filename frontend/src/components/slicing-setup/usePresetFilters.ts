@@ -108,7 +108,8 @@ export function usePresetFilters(opts: PresetFiltersOptions): PresetFiltersState
       if (ctx.slot === 'printer' && opts.farmModels && onlyFarmModels && farm?.farm_printers) {
         const machines = farm.farm_printers;
         const keep = (p: Parameters<SoftFilter['keep']>[0]) =>
-          machines.some((m) => printerPresetFitsFarmPrinter(p, m, ctx.parentsBySource[p.source] ?? null));
+          // G-code compatibility is broader than ownership of a machine model.
+          machines.some((m) => printerPresetFitsFarmPrinter(p, m, ctx.parentsBySource[p.source] ?? null, 'exact'));
         out.push({ id: 'farm', keep, pickKeep: steer ? keep : null });
       }
       if (ctx.slot === 'filament' && opts.loaded && onlyLoaded && farm) {

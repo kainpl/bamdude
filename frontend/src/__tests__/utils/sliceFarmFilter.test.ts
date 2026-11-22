@@ -168,6 +168,11 @@ describe('printerPresetFitsFarmPrinter', () => {
     expect(
       printerPresetFitsFarmPrinter({ name: 'Bambu Lab X1 0.4 nozzle' }, { ...x1c, accepts: ['X1'] }, null),
     ).toBe(true));
+  it('an exact farm-model match excludes other accepted file models', () => {
+    const machine = { ...x1c, accepts: ['X1'] };
+    expect(printerPresetFitsFarmPrinter({ name: 'Bambu Lab X1 0.4 nozzle' }, machine, null, 'exact')).toBe(false);
+    expect(printerPresetFitsFarmPrinter({ name: 'Bambu Lab X1 Carbon 0.4 nozzle' }, machine, null, 'exact')).toBe(true);
+  });
   it('another model does not', () =>
     expect(printerPresetFitsFarmPrinter({ name: 'Bambu Lab A1 0.4 nozzle' }, x1c, null)).toBe(false));
 });
