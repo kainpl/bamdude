@@ -2228,11 +2228,7 @@ async def get_printer_cover(
             _cover_cache.setdefault(printer_id, {})[(subtask_name, view_key)] = image_data
 
     if archive is None:
-        # The match (spaces folded, suffix variants, no status filter, newest
-        # row with its 3MF *or* its retention-surviving PNG on disk) lives in
-        # find_archive_for_sd_file — read its docstring for why each part is
-        # there; the file manager asks the same question through it.
-        archive = await find_archive_for_sd_file(db, printer_id, subtask_name)
+        archive = await find_archive_for_sd_file(db, printer_id, subtask_name, as_subtask=True)
     if archive is None:
         raise HTTPException(404, f"No archive with a local 3MF yet for '{subtask_base}' on printer {printer_id}")
 

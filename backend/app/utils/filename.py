@@ -150,6 +150,13 @@ def derive_remote_filename(filename: str) -> str:
     return f"{stem}.3mf".replace(" ", "_")
 
 
+def renamed_upload_filename(filename: str | None, uploaded: str | None) -> str | None:
+    """Return a validated upload name when it differs from the historical derivation."""
+    if uploaded and uploaded != derive_remote_filename(filename or ""):
+        return uploaded
+    return None
+
+
 def subtask_name_from_remote_filename(remote_filename: str) -> str:
     """Return the ``project_file.subtask_name`` for an uploaded 3MF.
 

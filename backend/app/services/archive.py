@@ -43,6 +43,7 @@ from backend.app.services.threemf_parser_core import (  # noqa: F401 - stable ar
     read_total_layers,
 )
 from backend.app.utils.ffmpeg_output import NO_FFMPEG_OUTPUT, summarize_ffmpeg_stderr
+from backend.app.utils.filename import recorded_upload_filename, renamed_upload_filename
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 
 logger = logging.getLogger(__name__)
@@ -409,18 +410,19 @@ def _reconstruct_recovered_start(archive: PrintArchive) -> bool:
     return True
 
 
-async def find_archive_for_sd_file(db: AsyncSession, printer_id: int, sd_name: str) -> PrintArchive | None:
+async def find_archive_for_sd_file(
+    db: AsyncSession, printer_id: int, sd_name: str, *, as_subtask: bool = False
+) -> PrintArchive | None:
     """The archive that still has something to show for a file on the card — or None.
 
     One owner for "printer file name → archive" (spec 2026-09-12 §3.1): the
     file manager asks here, and the printer-card cover asks here only as its
     fallback — first it takes the running print's own archive by id
     (``routes/printers.resolve_current_archive_id``), because a name is how to
-    find an archive when nobody knows which one it is. An archive's
-    ``filename`` IS the card name for an external print (the download attaches
-    the name it found) and DERIVES the card name for a dispatched one
-    (``derive_remote_filename``: suffixes collapsed, spaces → underscores), so
-    the match folds spaces on both sides and accepts ``{stem}.3mf`` /
+    find an archive when nobody knows which one it is. An archive
+    with a confirmed rename matches only its recorded upload name. The cover's
+    MQTT subtask label can also omit that name's final suffix. For archives with
+    no confirmed rename, the older match folds spaces and accepts ``{stem}.3mf`` /
     ``{stem}.gcode.3mf`` / the raw name / ``print_name == stem``. No content
     hash: that would need the bytes, and not fetching them is the point.
 
@@ -444,8 +446,8 @@ async def find_archive_for_sd_file(db: AsyncSession, printer_id: int, sd_name: s
     (``/archives/{id}/plate-thumbnail/{n}``) refuses a trashed row anyway.
 
     Newest ``created_at`` first, and a row whose files have since vanished
-    yields to the next — so the walk reads light ``(id, file_path,
-    thumbnail_path)`` tuples and loads only the winner as an entity. No blind
+    yields to the next — so the walk reads only the candidate paths and naming
+    fields, then loads the winner as an entity. No blind
     ``LIMIT``: the eleventh row can be the only one still on disk.
 
     Deliberately no status filter: the printer can be FINISH (the archive
@@ -457,8 +459,8 @@ async def find_archive_for_sd_file(db: AsyncSession, printer_id: int, sd_name: s
     plate's PNG, and falls through to one read from the printer when a cleaned
     row has no cached plates either.
 
-    ⚠️ Known hole, recorded rather than fixed: a #1542 doubled-suffix filename
-    (``Model.gcode.3mf.gcode.3mf`` stored on the row) matches no arm — the stem
+    A #1542 doubled-suffix filename without a recorded upload
+    (``Model.gcode.3mf.gcode.3mf`` stored on the row) can still be missed: the stem
     of the card name is ``Model``, and folding spaces does not collapse the
     extra suffix. The download stopped producing such names (2026-09-30,
     ``archive_download.build_filename_candidates``); rows stored before keep
@@ -470,25 +472,33 @@ async def find_archive_for_sd_file(db: AsyncSession, printer_id: int, sd_name: s
     stem = sd_stem(sd_name)
     stem_us = stem.replace(" ", "_")
     filename_us = func.replace(PrintArchive.filename, " ", "_")
-    candidates = (
-        await db.execute(
-            select(PrintArchive.id, PrintArchive.file_path, PrintArchive.thumbnail_path)
-            .where(PrintArchive.printer_id == printer_id)
-            .where(PrintArchive.deleted_at.is_(None))
-            .where(or_(PrintArchive.file_path != "", PrintArchive.thumbnail_path.is_not(None)))
-            .where(
-                or_(
-                    PrintArchive.print_name == stem,
-                    PrintArchive.filename == sd_name,
-                    filename_us == f"{stem_us}.3mf",
-                    filename_us == f"{stem_us}.gcode.3mf",
-                    PrintArchive.extra_data["dispatch_intent"]["remote_filename"].as_string() == sd_name,
-                )
-            )
-            .order_by(PrintArchive.created_at.desc())
+    legacy_match = or_(
+        PrintArchive.print_name == stem,
+        PrintArchive.filename == sd_name,
+        filename_us == f"{stem_us}.3mf",
+        filename_us == f"{stem_us}.gcode.3mf",
+    )
+    intent = PrintArchive.extra_data["dispatch_intent"]
+    requested_names = (sd_name, f"{sd_name}.3mf") if as_subtask else (sd_name,)
+    candidates = await db.execute(
+        select(
+            PrintArchive.id,
+            PrintArchive.file_path,
+            PrintArchive.thumbnail_path,
+            PrintArchive.filename,
+            intent,
+            legacy_match.label("legacy_match"),
         )
-    ).all()
-    for archive_id, file_path, thumbnail_path in candidates:
+        .where(PrintArchive.printer_id == printer_id)
+        .where(PrintArchive.deleted_at.is_(None))
+        .where(or_(PrintArchive.file_path != "", PrintArchive.thumbnail_path.is_not(None)))
+        .where(or_(legacy_match, intent["remote_filename"].as_string().in_(requested_names)))
+        .order_by(PrintArchive.created_at.desc())
+    )
+    for archive_id, file_path, thumbnail_path, filename, dispatch_intent, matches_legacy in candidates:
+        upload = recorded_upload_filename({"dispatch_intent": dispatch_intent})
+        if upload not in requested_names and (not matches_legacy or renamed_upload_filename(filename, upload)):
+            continue
         if archive_has_something_on_disk(file_path, thumbnail_path):
             return await db.get(PrintArchive, archive_id)
     return None

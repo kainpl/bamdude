@@ -12,6 +12,7 @@ from backend.app.core.config import settings
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
 from backend.app.services.archive import find_archive_for_sd_file, sd_stem
+from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
 
 
 def _archive(
@@ -211,3 +212,27 @@ async def test_another_printers_row_and_no_row_answer_none(db_session, tmp_path,
     await db_session.commit()
     assert (await find_archive_for_sd_file(db_session, p2.id, "part.3mf")) is None
     assert (await find_archive_for_sd_file(db_session, p1.id, "other.3mf")) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("intent_version", [1, 2])
+async def test_only_a_valid_recorded_rename_supersedes_historical_names(
+    db_session, tmp_path, monkeypatch, intent_version
+):
+    printer = await _printer(db_session, "RENAMED")
+    filename = "auto_cali_for_user.gcode.3mf"
+    uploaded = "bamdude_auto_cali_for_user.3mf"
+    path = _on_disk(tmp_path, monkeypatch, f"archive/1/{filename}")
+    archive = _archive(printer.id, filename, file_path=path)
+    archive.extra_data = {"dispatch_intent": {"version": intent_version, "remote_filename": uploaded}}
+    db_session.add(archive)
+    await db_session.commit()
+
+    found_upload = await find_archive_for_sd_file(db_session, printer.id, uploaded)
+    found_original = await find_archive_for_sd_file(db_session, printer.id, "auto_cali_for_user.3mf")
+    if intent_version == 1:
+        assert found_upload is archive
+        assert found_original is None
+    else:
+        assert found_upload is None
+        assert found_original is archive

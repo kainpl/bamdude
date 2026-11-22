@@ -42,7 +42,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.services import dispatch_phase
 from backend.app.utils.failure_reasons import NO_STATUS_UPDATE, row_class
-from backend.app.utils.filename import derive_remote_filename, recorded_upload_filename
+from backend.app.utils.filename import derive_remote_filename, recorded_upload_filename, renamed_upload_filename
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 
 logger = logging.getLogger(__name__)
@@ -209,9 +209,7 @@ def _legacy_dispatched_subtask(filename: str) -> str:
 
 def _renamed_upload_filename(archive: PrintArchive) -> str | None:
     uploaded = recorded_upload_filename(getattr(archive, "extra_data", None))
-    if uploaded and uploaded != derive_remote_filename(archive.filename or ""):
-        return uploaded
-    return None
+    return renamed_upload_filename(archive.filename, uploaded)
 
 
 def _name_matches_subtask_exact(archive: PrintArchive, live_subtask_name: str) -> bool:

@@ -482,6 +482,8 @@ async def test_a_direct_print_survives_its_library_row_being_trashed_mid_dispatc
     runner has bytes even though the row it was started from is gone by the time
     it reads them.
     """
+    if reuse_id and test_engine.dialect.name == "postgresql":
+        pytest.skip("Requires SQLite's stale foreign key and natural ID reuse")
     _unused, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
     settings.archive_dir.mkdir(parents=True, exist_ok=True)
     source = await a_library_source(db_session, tmp_path, name="bracket.gcode.3mf")

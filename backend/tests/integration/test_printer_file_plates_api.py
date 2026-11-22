@@ -26,6 +26,7 @@ import base64
 import io
 import zipfile
 import zlib
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -35,6 +36,7 @@ from backend.app.api.routes import printers as printers_route
 from backend.app.core.config import settings
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
+from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
 
 PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
@@ -187,6 +189,62 @@ async def test_a_printed_file_answers_from_the_archive_without_touching_the_prin
     assert body["is_multi_plate"] is True
     assert all(pl["has_thumbnail"] for pl in body["plates"])
     assert transport.reads == 0
+
+
+@pytest.mark.parametrize("has_original_archive", [False, True])
+async def test_renamed_dispatch_cannot_supply_plates_for_the_original_card_name(
+    committing_client, db_session, transport, tmp_path, has_original_archive
+):
+    printer = await _printer(db_session)
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    original_name = "auto_cali_for_user.3mf"
+    uploaded_name = "bamdude_auto_cali_for_user.3mf"
+    now = datetime.now(timezone.utc)
+    (archive_dir / "renamed.3mf").write_bytes(_three_mf(1))
+    renamed = PrintArchive(
+        printer_id=printer.id,
+        filename="auto_cali_for_user.gcode.3mf",
+        print_name="auto_cali_for_user",
+        file_path="archive/renamed.3mf",
+        file_size=1,
+        created_at=now,
+        extra_data={"dispatch_intent": {"version": 1, "remote_filename": uploaded_name}},
+    )
+    db_session.add(renamed)
+    original = None
+    if has_original_archive:
+        (archive_dir / "original.3mf").write_bytes(_three_mf(2))
+        original = PrintArchive(
+            printer_id=printer.id,
+            filename=original_name,
+            print_name="auto_cali_for_user",
+            file_path="archive/original.3mf",
+            file_size=1,
+            created_at=now - timedelta(minutes=1),
+        )
+        db_session.add(original)
+    await db_session.commit()
+
+    url = f"/api/v1/printers/{printer.id}/files/plates?path=/cache/"
+    uploaded = await committing_client.get(url + uploaded_name)
+    assert uploaded.status_code == 200, uploaded.text
+    assert uploaded.json()["archive_id"] == renamed.id
+    assert [plate["index"] for plate in uploaded.json()["plates"]] == [1]
+    assert transport.reads == 0
+
+    response = await committing_client.get(url + original_name)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["archive_id"] == (original.id if original else None)
+    assert [plate["index"] for plate in body["plates"]] == [1, 2]
+    for plate in body["plates"]:
+        thumbnail = plate["thumbnail_url"]
+        if original:
+            assert thumbnail.startswith(f"/api/v1/archives/{original.id}/")
+        else:
+            assert thumbnail.startswith("data:image/png;base64,")
+    assert transport.reads == (0 if original else 1)
 
 
 async def test_a_retention_cleaned_archive_answers_from_its_cached_plates(

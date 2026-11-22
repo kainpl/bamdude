@@ -15,6 +15,8 @@ import secrets
 import pytest
 from httpx import AsyncClient
 
+from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
+
 
 def _png(tag: bytes) -> bytes:
     return b"\x89PNG\r\n\x1a\n" + tag
@@ -129,3 +131,33 @@ async def test_the_fallback_is_not_cached_past_the_prints_own_picture(
     await db_session.commit()
     assert (await async_client.get(url)).content == own
     assert (await async_client.get(url)).content == own
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_renamed_dispatch_cover_fallback_uses_the_reported_upload_name(
+    async_client: AsyncClient, printer_factory, archive_factory, printing
+):
+    printer = await printer_factory()
+    uploaded_stem = "bamdude_auto_cali_for_user"
+    picture = _png(b"renamed dispatch")
+    await archive_factory(
+        printer.id,
+        filename="auto_cali_for_user.gcode.3mf",
+        print_name="auto_cali_for_user",
+        file_path="",
+        thumbnail_path=_thumbnail(picture),
+        status="completed",
+        extra_data={"dispatch_intent": {"version": 1, "remote_filename": f"{uploaded_stem}.3mf"}},
+    )
+    url = f"/api/v1/printers/{printer.id}/camera-cover"
+    printing.subtask_name = "auto_cali_for_user"
+    printing.gcode_file = "auto_cali_for_user.3mf"
+    response = await async_client.get(url)
+    assert response.status_code == 404, response.text
+
+    printing.subtask_name = uploaded_stem
+    printing.gcode_file = f"{uploaded_stem}.3mf"
+    response = await async_client.get(url)
+    assert response.status_code == 200, response.text
+    assert response.content == picture
