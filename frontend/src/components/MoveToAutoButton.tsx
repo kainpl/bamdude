@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRightLeft } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { api, ApiError, type PrintQueueItem } from '../api/client';
+import { api, ApiError, type AutoQueueFilamentOverride, type PrintQueueItem } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { invalidateOrderViews, invalidateQueueViews } from '../utils/queryInvalidation';
@@ -53,8 +53,13 @@ function TransferDialog({ itemId, onClose }: { itemId: number; onClose: () => vo
   });
   const optionValue = (value: unknown): string => typeof value === 'boolean' ? t(value ? 'common.enabled' : 'common.disabled')
     : value == null ? '—' : typeof value === 'string' ? t(`queueTransfer.values.${value}`, { defaultValue: value }) : String(value);
+  const overrideValue = (value: AutoQueueFilamentOverride | null) => (
+    [value?.type, value?.color, value?.tray_info_idx, value?.force_color_match && t('queueTransfer.exactColor')]
+      .filter(Boolean).join(' · ') || '—'
+  );
   const allowed = proposal?.allowed && !!proposal.token;
   const changes = proposal?.option_changes ?? [];
+  const filamentChanges = proposal?.filament_changes ?? [];
   const ready = allowed && (!proposal.manual_start || start) && (!proposal.release_pins || filament) && (!changes.length || profile);
   const checkbox = (label: string, checked: boolean, change: (value: boolean) => void) => <label className="flex items-start gap-2 text-sm">
     <input type="checkbox" className="mt-1 shrink-0" checked={checked} onChange={e => change(e.target.checked)} />{label}
@@ -76,6 +81,16 @@ function TransferDialog({ itemId, onClose }: { itemId: number; onClose: () => vo
         </li>)}</ul>
         {checkbox(t('queueTransfer.acceptProfile'), profile, setProfile)}
       </>}
+      {filamentChanges.length > 0 && <div>
+        <p className="font-medium">{t('queueTransfer.filamentChanges')}</p>
+        <ul className="space-y-1">{filamentChanges.map(change => change.field === 'filament_override'
+          ? <li key={`slot-${change.slot_id}`}>
+            {t('queueTransfer.fields.filament_override', { slot: change.slot_id })}: {overrideValue(change.before)} → {overrideValue(change.after)}
+          </li>
+          : <li key={change.field}>
+            {t(`queueTransfer.fields.${change.field}`)}: {optionValue(change.before)} → {optionValue(change.after)}
+          </li>)}</ul>
+      </div>}
       {proposal.manual_start && checkbox(t('queueTransfer.acceptStart'), start, setStart)}
       {proposal.release_pins && checkbox(t('queueTransfer.acceptFilament'), filament, setFilament)}
       <p className="text-bambu-gray">{t('queueTransfer.reresolve')}</p>

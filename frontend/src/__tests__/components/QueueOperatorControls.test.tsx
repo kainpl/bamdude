@@ -82,4 +82,19 @@ describe('queue operator controls', () => {
     fireEvent.click(confirm);
     expect(move).toHaveBeenCalledTimes(1);
   });
+
+  it('shows the filament settings that will move to AutoQueue', async () => {
+    vi.spyOn(api, 'previewQueueAutoTransfer').mockResolvedValue({
+      ...proposal,
+      filament_changes: [
+        { field: 'feed_policy', before: 'auto', after: 'external_only' },
+        { field: 'filament_override', slot_id: 1, before: null,
+          after: { slot_id: 1, type: 'PETG', color: '#112233', force_color_match: true } },
+      ],
+    });
+    render(<MoveToAutoButton item={item} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Move to auto queue' }));
+    expect(await screen.findByText(/Feed: Automatic → External only/)).toBeInTheDocument();
+    expect(screen.getByText(/Filament slot 1: — → PETG · #112233 · Exact colour/)).toBeInTheDocument();
+  });
 });

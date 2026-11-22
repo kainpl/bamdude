@@ -15,7 +15,7 @@ export default {
   },
   queueTransfer: {
   anyLocation: 'Any location',
-  values: {"on": "On", "off": "Off", "auto": "Automatic", "inherit": "Default", "internal": "Internal", "external": "External"},
+  values: {"on": "On", "off": "Off", "auto": "Automatic", "inherit": "Default", "internal": "Internal", "external": "External", "ams_only": "AMS only", "external_only": "External only"},
   "title": "Move to auto queue",
   "move": "Move",
   "help": "Move this one copy. AutoQueue may assign and start it immediately, including on this printer again.",
@@ -24,6 +24,8 @@ export default {
   "acceptProfile": "I accept the option changes shown above",
   "acceptStart": "Allow automatic assignment and start; remove manual start on this printer",
   "acceptFilament": "Allow automatic filament selection instead of physical slot pins",
+  "filamentChanges": "Filament choices carried to AutoQueue",
+  "exactColor": "Exact colour",
   "reresolve": "Swap and selected macros, AMS use and physical mappings are resolved again by the router. No macro runs during this move.",
   "success": "Job moved to auto queue",
   "stale": "The proposal is no longer valid. Close this dialog and read a new proposal.",
@@ -40,7 +42,11 @@ export default {
     "mesh_mode_fast_check": "Fast mesh check",
     "gcode_injection": "G-code injection",
     "preheat_override": "Preheat",
-    "preheat_chamber_target_override": "Chamber temperature"
+    "preheat_chamber_target_override": "Chamber temperature",
+    "feed_policy": "Feed",
+    "force_color_match": "Require matching colour",
+    "allow_base_material_match": "Allow base material match",
+    "filament_override": "Filament slot {{slot}}"
   },
   "refusals": {
     "transfer_order_closed": "The order is closed. Nothing was moved.",

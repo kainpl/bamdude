@@ -7678,6 +7678,10 @@ export interface QueueAutoTransferPreview {
   target_location_id?: number | null; manual_start?: boolean; release_pins?: boolean;
   default_profile?: boolean; comparison_model?: string;
   option_changes?: { field: string; before: unknown; after: unknown }[];
+  filament_changes?: (
+    | { field: 'feed_policy' | 'force_color_match' | 'allow_base_material_match'; before: string | boolean | null; after: string | boolean }
+    | { field: 'filament_override'; slot_id: number; before: AutoQueueFilamentOverride | null; after: AutoQueueFilamentOverride | null }
+  )[];
 }
 export interface QueueAutoTransferApply {
   token: string; allow_automatic_start: boolean; allow_automatic_filament: boolean; accept_profile_changes: boolean;

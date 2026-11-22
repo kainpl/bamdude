@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Returning a print to AutoQueue keeps its filament choices.** The preview shows changes to feed, matching rules and individual slots. The operator can carry those choices back to the existing AutoQueue job.
+
 - **Printer uploads avoid firmware job names.** A print called `auto_cali_for_user` or another reserved name gets a distinct name on the printer. Its library name and archive title stay the same.
 
 - **Telegram applies your saved print profile.** Printing from the library or adding a job to a printer's queue uses the linked operator's profile for that model, with the system profile as a fallback. AutoQueue applies the profile when it selects a printer.

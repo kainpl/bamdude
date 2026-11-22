@@ -1,6 +1,7 @@
 """One captured job changes queue tiers; no printer or order publication is called."""
 
 import asyncio
+import json
 import os
 import uuid
 from datetime import datetime, timezone
@@ -301,14 +302,37 @@ async def test_rearm_preserves_ancestor_plate_identity_and_history(async_client,
         ancestor.failed_return_proof = {"version": 1, "receipt_identity": "historical-receipt"}
     await db_session.commit()
     identity, ancestor_id = ancestor.swap_declaration_identity, ancestor.id
+    old = await proposal(async_client, item_id)
+    override = {"slot_id": 1, "type": "PETG", "color": "#112233", "force_color_match": True}
+    item.filament_routing = serialize_policy(
+        RoutingPolicy(
+            feed_policy="external_only",
+            force_color_match=True,
+            allow_base_material_match=False,
+            filament_overrides=(override,),
+        ),
+        plate_id=1,
+    )
+    await db_session.commit()
+    stale = await move(async_client, item_id, old)
+    assert stale.status_code == 409 and stale.json()["detail"]["code"] == "transfer_stale"
     pre = await proposal(async_client, item_id)
     assert pre["allowed"], pre
+    assert pre["filament_changes"] == [
+        {"field": "feed_policy", "before": "auto", "after": "external_only"},
+        {"field": "force_color_match", "before": False, "after": True},
+        {"field": "allow_base_material_match", "before": True, "after": False},
+        {"field": "filament_override", "slot_id": 1, "before": None, "after": override},
+    ]
     response = await move(async_client, item_id, pre)
     assert response.status_code == 200, response.text
     await db_session.refresh(ancestor)
     assert response.json()["resulting_auto_item_id"] == ancestor_id
     assert ancestor.plate_id is None and ancestor.swap_declaration_identity == identity and ancestor.been_jumped
     assert ancestor.failed_return_count == int(returned)
+    assert ancestor.feed_policy == "external_only" and ancestor.use_ams is False
+    assert ancestor.force_color_match and not ancestor.allow_base_material_match
+    assert json.loads(ancestor.filament_overrides) == [override]
     assert ancestor.failed_return_proof == (
         {"version": 1, "receipt_identity": "historical-receipt"} if returned else None
     )

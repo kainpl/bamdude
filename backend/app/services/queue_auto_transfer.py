@@ -34,7 +34,8 @@ from backend.app.services import (
 )
 from backend.app.services.auto_queue_scheduler import compose_options
 from backend.app.services.filament_intake import item_descriptor, read_item_requirements
-from backend.app.services.filament_policy import decode, queue_policy
+from backend.app.services.filament_policy import auto_policy, decode, queue_policy
+from backend.app.services.filament_routing import RoutingPolicy
 from backend.app.services.print_option_defaults import preference_options
 from backend.app.services.queue_counters import update_queue_counters
 from backend.app.services.queue_ops import claim_lanes
@@ -43,6 +44,7 @@ from backend.app.services.swap_source_declarations import fresh_api_key
 
 logger = logging.getLogger(__name__)
 _MODE_FIELDS = ("bed_levelling", "flow_cali", "nozzle_offset_cali")
+_PORTABLE_FILAMENT_FIELDS = ("feed_policy", "force_color_match", "allow_base_material_match")
 _DEFAULTS = {
     "bed_levelling": True,
     "flow_cali": True,
@@ -289,6 +291,36 @@ async def _basis(db, facts, actor, model):
     return previews.digest(basis), diff, default_profile
 
 
+def _filament_changes(policy, ancestor):
+    def visible_overrides(routing):
+        slots = {}
+        for override in routing.filament_overrides:
+            values = {
+                key: override[key]
+                for key in ("type", "color", "tray_info_idx", "force_color_match")
+                if override.get(key)
+            }
+            if values:
+                slot = override["slot_id"]
+                slots[slot] = {"slot_id": slot, **values}
+        return slots
+
+    previous = auto_policy(ancestor) if ancestor is not None else RoutingPolicy()
+    changes = []
+    for field in _PORTABLE_FILAMENT_FIELDS:
+        before = None if previous.review_required else getattr(previous, field)
+        after = getattr(policy, field)
+        if before != after:
+            changes.append({"field": field, "before": before, "after": after})
+    before_slots = visible_overrides(previous)
+    after_slots = visible_overrides(policy)
+    for slot in sorted(before_slots.keys() | after_slots.keys()):
+        before, after = before_slots.get(slot), after_slots.get(slot)
+        if before != after:
+            changes.append({"field": "filament_override", "slot_id": slot, "before": before, "after": after})
+    return changes
+
+
 async def _preflight(item_id, actor):
     async with database.async_session() as db:
         facts = await _facts(db, item_id, actor)
@@ -315,6 +347,7 @@ async def _preflight(item_id, actor):
             "target_location_id": ancestor.target_location_id if ancestor else None,
             "manual_start": item.manual_start,
             "release_pins": policy.mode == "pinned",
+            "filament_changes": _filament_changes(policy, ancestor),
             "option_changes": diff,
             "default_profile": default_profile,
             "comparison_model": req.model,
@@ -400,12 +433,12 @@ async def apply(item_id, actor, payload):
                 plate_id=item.plate_id,
                 required_filament_types=json.dumps(sorted({f["type"] for f in req.used_filaments})),
                 print_time_seconds=req.print_time_seconds,
-                feed_policy=policy.feed_policy,
-                force_color_match=policy.force_color_match,
-                allow_base_material_match=policy.allow_base_material_match,
-                filament_overrides=json.dumps(list(policy.filament_overrides)),
             )
             db.add(ancestor)
+        for field in _PORTABLE_FILAMENT_FIELDS:
+            setattr(ancestor, field, getattr(policy, field))
+        ancestor.use_ams = policy.feed_policy != "external_only"
+        ancestor.filament_overrides = json.dumps(list(policy.filament_overrides))
         for field in _CARRY:
             setattr(ancestor, field, deepcopy(getattr(item, field)))
         # Rack positions (H2C) were read off the printer the job leaves; the pool hands it to any.
