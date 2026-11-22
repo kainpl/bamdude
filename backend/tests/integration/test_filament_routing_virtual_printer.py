@@ -2,6 +2,7 @@
 
 import json
 import time
+from hashlib import sha256
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -10,10 +11,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from backend.app.models.auto_queue import AutoQueueItem
+from backend.app.models.macro import Macro
+from backend.app.models.print_options_preference import PrintOptionsPreference
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.services import swap_compatibility
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
+from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
 from backend.tests.integration.test_filament_routing_dispatch import setup_source
 
 pytestmark = pytest.mark.integration
@@ -151,16 +156,122 @@ async def test_virtual_printer_intake_and_late_options_preserve_exact_plate_and_
     recent[filename] = ([row.id], time.monotonic())
     await restamp(filename, {"use_ams": False})
     await db_session.refresh(row)
-    assert row.use_ams is False
-    assert (
-        json.loads(row.filament_routing)["feed_policy"] if mode == "print_queue" else row.feed_policy
-    ) == "external_only"
+    assert row.use_ams is (mode == "auto_queue")
+
+    assert (json.loads(row.filament_routing)["feed_policy"] if mode == "print_queue" else row.feed_policy) == (
+        "external_only" if mode == "print_queue" else "auto"
+    )
     row.status = "printing" if mode == "print_queue" else "assigned"
     await db_session.commit()
     recent[filename] = ([row.id], time.monotonic())
     await restamp(filename, {"use_ams": True})
     await db_session.refresh(row)
+    assert row.use_ams is (mode == "auto_queue")
+
+
+async def test_untargeted_virtual_printer_leaves_slicer_feed_choice_to_auto_queue(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch
+):
+    source, _, _, _ = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    source.file_metadata = {"sliced_for_model": "P1P", "plates": [{"index": 15}]}
+    await db_session.commit()
+    vp = VirtualPrinterInstance(
+        vp_id=1,
+        name="Synthetic",
+        mode="auto_queue",
+        model="C11",
+        access_code="00000000",
+        serial_suffix="000000001",
+        base_dir=tmp_path,
+        session_factory=async_sessionmaker(test_engine, expire_on_commit=False),
+    )
+    monkeypatch.setattr(vp, "_save_to_library", AsyncMock(return_value=source))
+    path = Path(source.file_path)
+    vp._slicer_print_options[path.name] = {"use_ams": False, "timelapse": True}
+
+    await vp._add_to_auto_queue(path, "127.0.0.1")
+
+    row = (await db_session.execute(select(AutoQueueItem))).scalar_one()
+    assert row.feed_policy == "auto"
+    assert row.use_ams is True
+    assert row.slicer_options == {"timelapse": True}
+
+    row.feed_policy = "external_only"
+    row.use_ams = False
+    await db_session.commit()
+    await vp._restamp_recent_auto_item(path.name, {"use_ams": True, "timelapse": False})
+    await db_session.refresh(row)
+    assert row.feed_policy == "external_only"
     assert row.use_ams is False
+    assert row.slicer_options == {"timelapse": False}
+
+
+@pytest.mark.parametrize("source_swap,printer_swap", [(False, True), (True, True), (None, True), (None, False)])
+async def test_printer_mode_virtual_printer_applies_system_macros_for_the_captured_job(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, source_swap, printer_swap
+):
+    source, printer, queue, _ = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    path = Path(source.file_path)
+    source.file_metadata = {"sliced_for_model": "P1P", "plates": [{"index": 15}]}
+    if source_swap is not None:
+        source.file_hash = sha256(path.read_bytes()).hexdigest()
+        swap_compatibility.write_source_declaration(
+            source, value=source_swap, sha256=source.file_hash, origin="classifier"
+        )
+    printer.swap_mode_enabled = printer_swap
+    run = Macro(name="Selected", event="print_started", printer_models='["P1P"]')
+    omit = Macro(name="Deselected", event="print_started", printer_models='["P1P"]')
+    wrong_model = Macro(name="Other model", event="print_started", printer_models='["A1"]')
+    swap = Macro(name="Swap", event="swap_mode_start", printer_models='["P1P"]')
+    db_session.add_all([run, omit, wrong_model, swap])
+    await db_session.flush()
+    db_session.add(
+        PrintOptionsPreference(
+            user_id=None,
+            printer_model="P1P",
+            options={
+                "print_options": {
+                    "bed_levelling": "off",
+                    "flow_cali": "on",
+                    "layer_inspect": True,
+                    "timelapse": True,
+                    "mesh_mode_fast_check": True,
+                    "gcode_injection": True,
+                },
+                "swap_macros": {"execute": True, "events": [swap.event]},
+                "event_macros": {"deselected_ids": [omit.id]},
+            },
+        )
+    )
+    await db_session.commit()
+    vp = VirtualPrinterInstance(
+        vp_id=1,
+        name="Synthetic",
+        mode="print_queue",
+        model="C11",
+        access_code="00000000",
+        serial_suffix="000000001",
+        target_printer_id=printer.id,
+        base_dir=tmp_path,
+        session_factory=async_sessionmaker(test_engine, expire_on_commit=False),
+    )
+    monkeypatch.setattr(vp, "_save_to_library", AsyncMock(return_value=source))
+    monkeypatch.setattr(vp, "_find_best_queue", AsyncMock(return_value=queue))
+    vp._slicer_print_options[path.name] = {"timelapse": False}
+
+    await vp._add_to_print_queue(path, "127.0.0.1")
+
+    row = (await db_session.execute(select(PrintQueueItem))).scalar_one_or_none()
+    if source_swap is None and printer_swap:
+        assert row is None
+        return
+    assert row is not None
+    assert json.loads(row.selected_macro_ids) == [run.id]
+    assert row.execute_swap_macros is (source_swap is False and printer_swap)
+    assert row.swap_macro_events == (json.dumps([swap.event]) if row.execute_swap_macros else None)
+    assert row.bed_levelling is False and row.layer_inspect is True
+    assert row.timelapse is False
+    assert row.gcode_injection is False
 
 
 async def test_the_late_stamp_leaves_a_row_edited_after_its_computation_as_the_operator_left_it(

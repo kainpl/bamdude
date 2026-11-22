@@ -34,6 +34,7 @@ from .lifecycle import (
 )
 
 if TYPE_CHECKING:
+    from backend.app.services.print_option_defaults import PrintProfile
     from backend.app.services.printer_manager import PrinterManager
 
 logger = logging.getLogger(__name__)
@@ -551,7 +552,8 @@ class VirtualPrinterInstance:
         can inherit them when adding the item to the queue, rather than
         falling back to the model's column defaults (upstream Bambuddy
         #1403, #1780). BOTH queue-building modes (``print_queue`` and
-        ``auto_queue``) consume the capture — see the branch below, which is
+        ``auto_queue``) consume the capture. Only printer queues take the
+        slicer's AMS choice as a feed restriction. See the branch below, which is
         where the auto tier's hole was; ``file_manager`` and ``proxy`` ignore
         the print command, so we skip the stash there to keep the dict from
         accumulating one entry per print over the VP's uptime.
@@ -670,7 +672,6 @@ class VirtualPrinterInstance:
             ("flow_cali", "flow_cali"),
             ("layer_inspect", "layer_inspect"),
             ("timelapse", "timelapse"),
-            ("use_ams", "use_ams"),
         ):
             if mqtt_field in data:
                 patch[column] = bool(data[mqtt_field])
@@ -679,8 +680,6 @@ class VirtualPrinterInstance:
         nozzle_mapping_json = self._parse_nozzle_mapping(data)
         if nozzle_mapping_json is not None:
             patch["nozzle_mapping"] = nozzle_mapping_json
-        if "use_ams" in patch:
-            patch["feed_policy"] = "auto" if patch["use_ams"] else "external_only"
         if not patch and not _slicer_choices(data):
             return
 
@@ -1230,12 +1229,14 @@ class VirtualPrinterInstance:
             # Step 2: pick a queue based on the library row's metadata, copy the
             # file into queue-sources and link the queue items to that copy.
             from backend.app.models.print_queue import PrintQueueItem
+            from backend.app.models.printer import Printer
             from backend.app.services import queue_sources
             from backend.app.services.queue_source_capture import (
                 capture_staged,
                 discard_staged,
                 plan_capture,
                 publish_staged,
+                swap_request,
             )
 
             sliced_model = None
@@ -1270,7 +1271,8 @@ class VirtualPrinterInstance:
                 # printer's model — fills any flag the slicer omitted. There's
                 # no user in a slicer→VP handshake, so the per-user preference
                 # rows can't serve here (upstream Bambuddy #1235).
-                system_opts = await self._load_system_print_options(db, queue.printer_id)
+                system_profile = await self._load_system_print_profile(db, queue.printer_id)
+                system_opts = system_profile.for_printer_queue() if system_profile else None
 
                 # As values: the rows below are written by the publication's own
                 # transaction (m173), and an ORM attribute reached across the end
@@ -1312,6 +1314,8 @@ class VirtualPrinterInstance:
                 # that feeds per-filament nozzle_id and never reaches
                 # command["print"]). Do not conflate the two.
                 import json
+
+                selected_macro_ids = json.dumps(system_profile.shared["selected_macro_ids"]) if system_profile else None
 
                 # The slicer's own resolved AMS pick (#2700). Captured only
                 # when this VP asks for it: the mapping travels to
@@ -1424,6 +1428,18 @@ class VirtualPrinterInstance:
 
                         if not await queue_header_holds(db, queue_id, queue_identity):
                             raise LookupError("The printer's queue changed; nothing was added")
+                        execute_swap_macros, swap_events = False, None
+                        if system_profile and system_profile.shared["execute_swap_macros"]:
+                            swap_enabled = await db.scalar(
+                                select(Printer.swap_mode_enabled).where(Printer.id == printer_id)
+                            )
+                            execute_swap_macros, swap_events = swap_request(
+                                staged.receipt.swap_fact.value,
+                                execute=True,
+                                events=system_profile.shared["swap_macro_events"],
+                                printer_swap_mode=swap_enabled is True,
+                            )
+                        swap_macro_events = json.dumps(swap_events) if swap_events else None
                         # Append at the tail: MAX(position) for this queue, then hand
                         # consecutive positions to each plate so a Send All keeps
                         # plate-order execution. A hardcoded position=1 stacked every
@@ -1474,6 +1490,9 @@ class VirtualPrinterInstance:
                                 # None unless this VP opted in — see above.
                                 ams_mapping=ams_mapping_json,
                                 filament_routing=record_queue_source(routing, source),
+                                execute_swap_macros=execute_swap_macros,
+                                swap_macro_events=swap_macro_events,
+                                selected_macro_ids=selected_macro_ids,
                                 # Per-VP opt-in for auto-print G-code injection (#1516).
                                 # Default off; when on, the dispatcher still no-ops unless
                                 # gcode_snippets are configured for the target model, so
@@ -1535,28 +1554,21 @@ class VirtualPrinterInstance:
             logger.exception("[VP %s] Error adding to print queue: %s", self.name, e)
 
     @staticmethod
-    async def _load_system_print_options(db, printer_id: int | None) -> dict | None:
-        """Return the system fallback ``print_options`` dict for ``printer_id``'s model.
-
-        The system row is a ``PrintOptionsPreference`` with ``user_id IS NULL``
-        keyed by printer model (upstream Bambuddy #1235). Returns None when the
-        printer / model is unknown or no system row is configured — callers
-        then fall back to the model column defaults.
-        """
+    async def _load_system_print_profile(db, printer_id: int | None) -> "PrintProfile | None":
+        """Read the selected printer's system profile for a submission with no user."""
         if not printer_id:
             return None
         from sqlalchemy import select as sa_select
 
         from backend.app.models.printer import Printer
+        from backend.app.services.print_option_defaults import preference_options
 
         model = await db.scalar(sa_select(Printer.model).where(Printer.id == printer_id))
-        return await VirtualPrinterInstance._load_system_print_options_for_model(db, model)
+        return await preference_options(db, None, model) if isinstance(model, str) and model else None
 
     @staticmethod
     async def _load_system_print_options_for_model(db, model: str | None) -> dict | None:
-        """The system fallback row keyed directly by model — the auto_queue
-        path has a TARGET MODEL but no printer yet, so the printer_id wrapper
-        above cannot serve it."""
+        """The initial print toggles for AutoQueue, before it selects a physical printer."""
         if not model:
             return None
         from sqlalchemy import select as sa_select
@@ -1668,7 +1680,6 @@ class VirtualPrinterInstance:
                         slicer_opts, system_opts, "layer_inspect", "layer_inspect", False
                     )
                     timelapse = _resolve_print_option(slicer_opts, system_opts, "timelapse", "timelapse", False)
-                    use_ams = bool(slicer_opts["use_ams"]) if slicer_opts and "use_ams" in slicer_opts else True
                     timelapse_storage = (slicer_opts or {}).get("timelapse_storage")
                     # No printer yet, so rack positions (H2C) never ride on this tier.
                     nozzle_mapping_json = (
@@ -1719,8 +1730,8 @@ class VirtualPrinterInstance:
                         layer_inspect=layer_inspect,
                         timelapse=timelapse,
                         timelapse_storage=timelapse_storage,
-                        use_ams=use_ams,
-                        feed_policy="auto" if use_ams else "external_only",
+                        # Without a physical target, the slicer's AMS flag cannot specify a feed.
+                        feed_policy="auto",
                         force_color_match=self.queue_force_color_match,
                         nozzle_mapping=nozzle_mapping_json,
                         # What the slicer itself chose; the assignment lays it over the profile (m243).

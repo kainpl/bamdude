@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Virtual printers use the selected model's system profile for macros.** In printer-queue mode the saved event selection applies, and swap macros require both the printer's swap mode and a captured file that can run them. In AutoQueue mode the router chooses the feed for the eventual printer, including when the slicer sent `use_ams=false` before it knew the target.
+
 - The time margin in the archive media download dialog uses the same selector style as other dialogs.
 
 - Older SQLite databases can complete PostgreSQL import when index metadata is reported by SQLAlchemy 2.0. The import also reconciles the temporary default for the notification permission, preserving each API key's saved choice.
