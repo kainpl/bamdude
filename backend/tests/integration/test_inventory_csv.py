@@ -5,6 +5,9 @@ import (only valid rows persisted, atomically), and Color Catalog resolution
 of brand + color_name → rgba.
 """
 
+import csv
+from io import StringIO
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -389,17 +392,35 @@ class TestInventoryCsvReviewFollowups:
         assert response.status_code == 200, response.text
         assert "'=SUM(A1:A9)" in response.text
 
+    @pytest.mark.parametrize(
+        "note",
+        ["=1+1", "  - reserve", "'  - reserve", "'=1+1", "''=1+1", "'plain text", "\t=1+1 "],
+        ids=[
+            "formula",
+            "space-prefix",
+            "literal-apostrophe-space",
+            "literal-apostrophe-formula",
+            "two-apostrophes",
+            "literal-apostrophe-plain",
+            "control-prefix",
+        ],
+    )
     async def test_formula_injection_round_trips_without_quote_accumulation(
-        self, async_client: AsyncClient, db_session: AsyncSession
+        self, async_client: AsyncClient, db_session: AsyncSession, note: str
     ):
-        # The export quote-guard must be undone on import so a formula-looking
-        # note survives export → import unchanged (no accumulating leading ').
-        db_session.add(Spool(material="PLA", color_name="X", rgba="ffffffff", note="=SUM(A1)"))
+        db_session.add(Spool(material="PLA", color_name="X", rgba="ffffffff", note=note))
         await db_session.commit()
 
         export = await async_client.get("/api/v1/inventory/spools/export")
         assert export.status_code == 200, export.text
-        assert "'=SUM(A1)" in export.text  # guarded on export
+        row = next(csv.DictReader(StringIO(export.text)))
+        assert row["note"] == (note if note.startswith("'") else "'" + note)
+        preview = await async_client.post(
+            "/api/v1/inventory/spools/import?dry_run=true", files=_csv_upload(export.text)
+        )
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["warnings"] == []
+        assert preview.json()["rows"][0]["spool"]["note"] == note
 
         # Wipe, re-import the exact export, and confirm the note is restored
         # to its original value (not "'=SUM(A1)").
@@ -414,7 +435,23 @@ class TestInventoryCsvReviewFollowups:
 
         result = await db_session.execute(select(Spool))
         spool = result.scalars().one()
-        assert spool.note == "=SUM(A1)"  # original value, no leading quote
+        assert spool.note == note
+
+        again = await async_client.get("/api/v1/inventory/spools/export")
+        assert again.status_code == 200, again.text
+        assert next(csv.DictReader(StringIO(again.text)))["note"] == row["note"]
+
+    @pytest.mark.parametrize(
+        ("encoded", "note"),
+        [("'=1+1", "=1+1"), ("'  - reserve", "'  - reserve"), ("''=1+1", "''=1+1"), ("'plain text", "'plain text")],
+    )
+    async def test_unmarked_csv_uses_legacy_apostrophe_rules(self, async_client: AsyncClient, encoded: str, note: str):
+        text = f"material,color_name,rgba,note\nPLA,Blue,112233ff,{encoded}\n"
+        preview = await async_client.post("/api/v1/inventory/spools/import?dry_run=true", files=_csv_upload(text))
+        assert preview.status_code == 200, preview.text
+        data = preview.json()
+        assert data["valid_count"] == 1
+        assert data["rows"][0]["spool"]["note"] == note
 
     async def test_export_filename_is_date_stamped(self, async_client: AsyncClient):
         response = await async_client.get("/api/v1/inventory/spools/export")

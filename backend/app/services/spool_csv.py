@@ -38,6 +38,11 @@ from backend.app.utils.spreadsheet import needs_csv_text_prefix
 # `last_dried_at` travels the same way.
 # `storage_location`, `category` and `low_stock_threshold_pct` are SpoolCreate
 # fields included so a round-trip preserves them (they'd otherwise be lost).
+# New exports list the text fields actually prefixed on each row. A literal
+# apostrophe in any other field then survives re-import, even before a formula.
+_TEXT_ESCAPES_COLUMN = "__bamdude_text_escapes_v1"
+_LEGACY_TEXT_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
 CSV_COLUMNS = [
     "material",
     "brand",
@@ -364,7 +369,8 @@ async def parse_and_validate(
 
     norm_header = [_normalize_header(h) for h in header]
     known = set(CSV_COLUMNS)
-    unknown = [h for h in norm_header if h and h not in known]
+    escape_index = norm_header.index(_TEXT_ESCAPES_COLUMN) if _TEXT_ESCAPES_COLUMN in norm_header else None
+    unknown = [h for h in norm_header if h and h not in known and h != _TEXT_ESCAPES_COLUMN]
     if unknown:
         warnings.append(f"Ignoring unknown columns: {', '.join(unknown)}")
     # Map canonical field name → column index in this file (first occurrence).
@@ -386,9 +392,13 @@ async def parse_and_validate(
         idx = col_index.get(field)
         if idx is None or idx >= len(row):
             return ""
-        # Strip whitespace, then undo any export-side formula-injection quoting
-        # so export → import round-trips without accumulating a leading quote.
-        return _desanitize_cell(row[idx].strip())
+        value = row[idx]
+        if escape_index is None:
+            return _desanitize_legacy_cell(value.strip())
+        if value.startswith("'"):
+            escaped = escape_index < len(row) and field in row[escape_index].split()
+            return value[1:] if escaped else value
+        return value.strip()
 
     rows: list[ImportRowResult] = []
     valid = error = skipped = 0
@@ -599,29 +609,26 @@ def serialize(spools: list[Spool], *, delimiter: str = "comma", decimal: str = "
     """
     output = io.StringIO()
     writer = csv.writer(output, delimiter=_DELIMITER_BY_NAME.get(delimiter, ","))
-    writer.writerow(CSV_COLUMNS)
+    writer.writerow([*CSV_COLUMNS, _TEXT_ESCAPES_COLUMN])
     for spool in spools:
         cells = []
+        escaped_fields = []
         for col in CSV_COLUMNS:
             value = _cell_value(spool, col)
             if col in _EXPORT_NUMERIC_COLUMNS:
-                cells.append(value.replace(".", ",") if decimal == "comma" else value)
-            else:
-                cells.append(_sanitize_cell(value))
-        writer.writerow(cells)
+                if decimal == "comma":
+                    value = value.replace(".", ",")
+            elif needs_csv_text_prefix(value):
+                value = "'" + value
+                escaped_fields.append(col)
+            cells.append(value)
+        writer.writerow([*cells, " ".join(escaped_fields)])
     return output.getvalue().encode("utf-8-sig" if bom else "utf-8")
 
 
-def _sanitize_cell(value: str) -> str:
-    """Prefix formula-looking text without changing its content."""
-    if needs_csv_text_prefix(value):
-        return "'" + value
-    return value
-
-
-def _desanitize_cell(value: str) -> str:
-    """Remove one export prefix, including for exports made with the older guard."""
-    if value.startswith("'") and needs_csv_text_prefix(value[1:]):
+def _desanitize_legacy_cell(value: str) -> str:
+    """Read the original markerless spool CSV format using its original prefix rule."""
+    if value.startswith("'") and value[1:].startswith(_LEGACY_TEXT_PREFIXES):
         return value[1:]
     return value
 
