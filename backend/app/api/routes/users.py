@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes.settings import get_external_login_url
+from backend.app.core.admin_membership import LAST_ADMIN_DEMOTION, require_other_active_admin
 from backend.app.core.auth import (
     RequestCredentials,
     RequireAdmin,
@@ -31,7 +32,7 @@ from backend.app.models.group import Group
 from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.settings import Settings
-from backend.app.models.user import User
+from backend.app.models.user import ADMIN_GROUP_NAME, User
 from backend.app.schemas.auth import (
     ChangePasswordRequest,
     GroupBrief,
@@ -284,36 +285,34 @@ async def update_user(
         )
     ).scalar_one()
 
-    # Prevent deactivating the last admin
-    if user_data.is_active is False and user.is_admin:
-        # Count admins by role or Administrators group membership
-        admin_count_result = await db.execute(select(User).where(User.role == "admin", User.is_active.is_(True)))
-        role_admins = admin_count_result.scalars().all()
+    new_role = user.role if user_data.role is None else user_data.role
+    if user_data.role is not None and new_role not in ("admin", "user"):
+        raise HTTPException(400, "Role must be 'admin' or 'user'")
 
-        # Also check for users in Administrators group
-        admin_group_result = await db.execute(
-            select(Group).where(Group.name == "Administrators").options(selectinload(Group.users))
+    new_groups = user.groups
+    if user_data.group_ids is not None:
+        groups = await db.scalars(select(Group).where(Group.id.in_(user_data.group_ids)))
+        new_groups = list(groups.all())
+        if len(new_groups) != len(user_data.group_ids):
+            raise HTTPException(400, "One or more group IDs are invalid")
+        if any(g.name == ADMIN_GROUP_NAME for g in user.groups) and not any(
+            g.name == ADMIN_GROUP_NAME for g in new_groups
+        ):
+            # The edit form may echo the legacy role read before the edit.
+            # Explicit removal from Administrators revokes both admin grants.
+            new_role = "user"
+    elif user_data.role == "user":
+        # An explicit role-only demotion removes group authority as well.
+        new_groups = [g for g in user.groups if g.name != ADMIN_GROUP_NAME]
+
+    stays_active = user.is_active if user_data.is_active is None else user_data.is_active
+    stays_admin = new_role == "admin" or any(g.name == ADMIN_GROUP_NAME for g in new_groups)
+    if user.is_active and user.is_admin and not (stays_active and stays_admin):
+        await require_other_active_admin(
+            db,
+            user.id,
+            "Cannot deactivate the last admin user" if not stays_active else LAST_ADMIN_DEMOTION,
         )
-        admin_group = admin_group_result.scalar_one_or_none()
-        group_admins = [u for u in (admin_group.users if admin_group else []) if u.is_active]
-
-        # Combine unique admins
-        all_admins = {u.id for u in role_admins} | {u.id for u in group_admins}
-        if len(all_admins) <= 1 and user.id in all_admins:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Cannot deactivate the last admin user",
-            )
-
-    # Prevent changing role of last admin
-    if user_data.role and user_data.role != "admin" and user.role == "admin":
-        admin_count_result = await db.execute(select(User).where(User.role == "admin", User.is_active.is_(True)))
-        admin_count = len(admin_count_result.scalars().all())
-        if admin_count <= 1:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Cannot change role of the last admin user",
-            )
 
     if (
         user_data.password is not None
@@ -355,27 +354,11 @@ async def update_user(
         user.password_hash = replacement_hash
         user.password_changed_at = utcnow()
 
-    if user_data.role is not None:
-        if user_data.role not in ["admin", "user"]:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Role must be 'admin' or 'user'",
-            )
-        user.role = user_data.role
-
+    user.role = new_role
     if user_data.is_active is not None:
         user.is_active = user_data.is_active
-
-    # Handle group assignments
-    if user_data.group_ids is not None:
-        groups_result = await db.execute(select(Group).where(Group.id.in_(user_data.group_ids)))
-        groups = groups_result.scalars().all()
-        if len(groups) != len(user_data.group_ids):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="One or more group IDs are invalid",
-            )
-        user.groups = list(groups)
+    if new_groups is not user.groups:
+        user.groups = new_groups
 
     await db.commit()
     result = await db.execute(select(User).where(User.id == user_id).options(selectinload(User.groups)))
@@ -462,26 +445,8 @@ async def delete_user(
 
 
 async def _check_delete_target(db, user, current_user):
-    # Prevent deleting the last admin
-    if user.is_admin:
-        # Count admins by role or Administrators group membership
-        admin_count_result = await db.execute(select(User).where(User.role == "admin", User.id != user.id))
-        other_role_admins = admin_count_result.scalars().all()
-
-        # Also check for users in Administrators group
-        admin_group_result = await db.execute(
-            select(Group).where(Group.name == "Administrators").options(selectinload(Group.users))
-        )
-        admin_group = admin_group_result.scalar_one_or_none()
-        other_group_admins = [u for u in (admin_group.users if admin_group else []) if u.id != user.id and u.is_active]
-
-        # Combine unique admins
-        all_other_admins = {u.id for u in other_role_admins} | {u.id for u in other_group_admins}
-        if len(all_other_admins) == 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Cannot delete the last admin user",
-            )
+    if user.is_active and user.is_admin:
+        await require_other_active_admin(db, user.id, "Cannot delete the last admin user")
 
     # Prevent deleting yourself (only if auth is enabled and we have a current user)
     if current_user and user.id == current_user.id:

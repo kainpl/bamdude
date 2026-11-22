@@ -112,6 +112,32 @@ async def test_complete_empty_lookup_preserves_valid_default_and_manual_group_po
     assert {g["name"] for g in response.json()["user"]["groups"]} == {"F Manual", "Administrators"}
 
 
+@pytest.mark.parametrize("other_active", [False, True])
+async def test_ldap_admin_revocation_respects_last_active_admin(async_client, db_session, monkeypatch, other_active):
+    await enable(db_session, ldap_group_mapping='{"cn=admin,dc=x":"Administrators"}')
+    group = await db_session.scalar(select(Group).where(Group.name == "Administrators"))
+    other = await db_session.scalar(select(User).where(User.username == "test_admin"))
+    other.is_active = other_active
+    user = User(username="f-former-admin", auth_source="ldap", role="admin", groups=[group])
+    db_session.add(user)
+    await db_session.commit()
+    monkeypatch.setattr(
+        ldap, "authenticate_ldap_user", lambda *args: ldap.LDAPUserInfo("f-former-admin", None, None, [])
+    )
+    response = await async_client.post(
+        "/api/v1/auth/login", json={"username": "f-former-admin", "password": "external-password"}
+    )
+    assert response.status_code == (200 if other_active else 400), response.text
+    await db_session.refresh(user)
+    if other_active:
+        assert response.json()["user"]["is_admin"] is False
+        assert user.role == "user"
+        assert {g.name for g in user.groups} == {"Viewers"}
+    else:
+        assert user.is_admin
+        assert {g.name for g in user.groups} == {"Administrators"}
+
+
 async def test_incomplete_info_guard_runs_before_email_or_group_mutation():
     db = AsyncMock()
     user = SimpleNamespace(username="alice", email="old@example.org", groups=[object()])

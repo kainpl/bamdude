@@ -227,6 +227,7 @@
   "Cannot change role of the last admin user": "Не можна змінити роль останнього адміністратора",
   "Cannot create a folder in a read-only external folder": "Не можна створити теку в зовнішній теці лише для читання",
   "Cannot deactivate the last admin user": "Не можна деактивувати останнього адміністратора",
+  "Cannot remove admin rights from the last admin user": "Не можна забрати права в останнього адміністратора",
   "Cannot delete another user's note": "Не можна видалити нотатку іншого користувача",
   "Cannot delete archive — {} related queue item(s) are currently printing. Stop the print first, then retry.": "Не можна видалити архів — {} повʼязаних елементів черги зараз друкуються. Спочатку зупиніть друк, потім повторіть спробу.",
   "Cannot delete built-in macros": "Не можна видаляти вбудовані макроси",

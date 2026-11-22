@@ -300,3 +300,120 @@ async def test_duplicate_username_is_refused_on_an_install_holding_case_variants
 
     assert resp.status_code == 400, resp.text
     assert "already exists" in resp.text
+
+
+@pytest.mark.parametrize("method", ["replace_groups", "remove_member"])
+async def test_admin_group_removal_revokes_old_session_authority(async_client, db_session, method):
+    admin_gid = await _admin_group_id(db_session)
+    viewer = await db_session.scalar(select(Group).where(Group.name == "Viewers"))
+    headers = await _admin_headers()
+    created = await async_client.post(
+        "/api/v1/users/",
+        headers=headers,
+        json={"username": "secondadmin", "password": _PW, "role": "admin", "group_ids": [admin_gid]},
+    )
+    assert created.status_code == 201, created.text
+    uid = created.json()["id"]
+    token = await mint_test_access(username="secondadmin")
+    session = {"Authorization": f"Bearer {token}"}
+    before = await async_client.get("/api/v1/auth/me", headers=session)
+    assert before.status_code == 200 and before.json()["is_admin"], before.text
+
+    if method == "replace_groups":
+        changed = await async_client.patch(
+            f"/api/v1/users/{uid}", headers=headers, json={"role": "admin", "group_ids": [viewer.id]}
+        )
+        assert changed.status_code == 200, changed.text
+    else:
+        changed = await async_client.delete(f"/api/v1/groups/{admin_gid}/users/{uid}", headers=headers)
+        assert changed.status_code == 204, changed.text
+
+    me = await async_client.get("/api/v1/auth/me", headers=session)
+    assert me.status_code == 200 and me.json()["is_admin"] is False, me.text
+    denied = await async_client.get("/api/v1/users/", headers=session)
+    assert denied.status_code == 403, denied.text
+    user = await db_session.get(User, uid)
+    assert user.role == "user"
+
+
+@pytest.mark.parametrize("method", ["replace_groups", "remove_member", "role_only", "deactivate"])
+async def test_last_group_admin_cannot_be_removed(async_client, db_session, method):
+    admin = await db_session.scalar(select(User).where(User.username == "test_admin"))
+    admin.role = "user"
+    await db_session.commit()
+    gid = await _admin_group_id(db_session)
+    headers = await _admin_headers()
+    if method == "replace_groups":
+        refused = await async_client.patch(f"/api/v1/users/{admin.id}", json={"group_ids": []}, headers=headers)
+    elif method == "remove_member":
+        refused = await async_client.delete(f"/api/v1/groups/{gid}/users/{admin.id}", headers=headers)
+    else:
+        payload = {"role": "user"} if method == "role_only" else {"is_active": False}
+        refused = await async_client.patch(f"/api/v1/users/{admin.id}", json=payload, headers=headers)
+
+    assert refused.status_code == 400, refused.text
+    await db_session.refresh(admin, ["groups"])
+    assert [group.id for group in admin.groups] == [gid]
+    me = await async_client.get("/api/v1/auth/me", headers=headers)
+    assert me.status_code == 200 and me.json()["is_admin"], me.text
+
+
+async def test_disjoint_postgres_admin_reductions_cannot_remove_both(async_client, db_session, test_engine):
+    import asyncio
+
+    from fastapi import HTTPException
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from backend.app.core.admin_membership import LAST_ADMIN_DEMOTION, require_other_active_admin
+    from backend.app.core.auth_lifetime import capture_account, guard_accounts
+
+    if test_engine.dialect.name != "postgresql":
+        pytest.skip("Checks a PostgreSQL transaction lock")
+    seeded_admin = await db_session.scalar(select(User).where(User.username == "test_admin"))
+    seeded_admin.is_active = False
+    admin_one = User(username="lock-admin-one", role="admin", groups=[])
+    admin_two = User(username="lock-admin-two", role="admin", groups=[])
+    db_session.add_all([admin_one, admin_two])
+    await db_session.commit()
+    first_id, second_id = admin_one.id, admin_two.id
+    sessions = async_sessionmaker(test_engine, expire_on_commit=False)
+    waiting_pid = asyncio.get_running_loop().create_future()
+
+    async def reduce_second():
+        async with sessions() as db:
+            user = await db.get(User, second_id)
+            await guard_accounts(db, [capture_account(user)])
+            waiting_pid.set_result(await db.scalar(text("SELECT pg_backend_pid()")))
+            await require_other_active_admin(db, user.id, LAST_ADMIN_DEMOTION)
+            user.role = "user"
+            await db.commit()
+
+    async with sessions() as first, sessions() as observer:
+        user = await first.get(User, first_id)
+        await guard_accounts(first, [capture_account(user)])
+        first_pid = await first.scalar(text("SELECT pg_backend_pid()"))
+        await require_other_active_admin(first, user.id, LAST_ADMIN_DEMOTION)
+        user.role = "user"
+        await first.flush()
+        second = asyncio.create_task(reduce_second())
+        try:
+            async with asyncio.timeout(5):
+                pid = await waiting_pid
+                while True:
+                    blockers = await observer.scalar(text("SELECT pg_blocking_pids(:pid)"), {"pid": pid})
+                    if first_pid in blockers:
+                        break
+                    assert not second.done(), "Second transaction bypassed the admin lock"
+                    await asyncio.sleep(0.01)
+            await first.commit()
+            with pytest.raises(HTTPException, match=LAST_ADMIN_DEMOTION):
+                await asyncio.wait_for(second, timeout=5)
+        finally:
+            if not second.done():
+                second.cancel()
+            await asyncio.gather(second, return_exceptions=True)
+
+    async with sessions() as db:
+        assert (await db.get(User, first_id)).role == "user"
+        assert (await db.get(User, second_id)).role == "admin"
