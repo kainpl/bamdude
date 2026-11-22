@@ -5,7 +5,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.core.admin_membership import LAST_ADMIN_DEMOTION, require_other_active_admin
 from backend.app.core.auth import RequireAdmin, RequirePermission
+from backend.app.core.auth_lifetime import capture_account, guard_accounts, validate_captured
 from backend.app.core.database import get_db
 from backend.app.core.permissions import (
     ALL_PERMISSIONS,
@@ -13,7 +15,7 @@ from backend.app.core.permissions import (
     Permission,
 )
 from backend.app.models.group import Group
-from backend.app.models.user import User
+from backend.app.models.user import ADMIN_GROUP_NAME, User
 from backend.app.schemas.group import (
     GroupCreate,
     GroupDetailResponse,
@@ -255,6 +257,23 @@ async def delete_group(
     await db.commit()
 
 
+async def _guard_group_membership(db: AsyncSession, group_id: int, user_id: int, admin: User) -> tuple[Group, User]:
+    group = await db.get(Group, group_id)
+    if group is None:
+        raise HTTPException(404, "Group not found")
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(404, "User not found")
+
+    proof = await guard_accounts(db, [admin._auth_capture, capture_account(user)], require_active=False)
+    actor = await validate_captured(
+        db, admin._auth_capture, required_permissions=(Permission.GROUPS_UPDATE.value,), proof=proof
+    )
+    if not actor.user.is_admin:
+        raise HTTPException(403, "Administrator required")
+    return group, user
+
+
 @router.post("/{group_id}/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def add_user_to_group(
     group_id: int,
@@ -264,32 +283,11 @@ async def add_user_to_group(
     db: AsyncSession = Depends(get_db),
 ):
     """Add a user to a group. Admin-only."""
-    # Get group with users
-    result = await db.execute(select(Group).where(Group.id == group_id).options(selectinload(Group.users)))
-    group = result.scalar_one_or_none()
-    if not group:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Group not found",
-        )
+    group, user = await _guard_group_membership(db, group_id, user_id, _admin)
+    if group in user.groups:
+        raise HTTPException(400, "User is already in this group")
 
-    # Get user
-    user_result = await db.execute(select(User).where(User.id == user_id))
-    user = user_result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
-
-    # Check if user is already in group
-    if user in group.users:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User is already in this group",
-        )
-
-    group.users.append(user)
+    user.groups.append(group)
     await db.commit()
 
 
@@ -302,30 +300,14 @@ async def remove_user_from_group(
     db: AsyncSession = Depends(get_db),
 ):
     """Remove a user from a group. Admin-only."""
-    # Get group with users
-    result = await db.execute(select(Group).where(Group.id == group_id).options(selectinload(Group.users)))
-    group = result.scalar_one_or_none()
-    if not group:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Group not found",
-        )
+    group, user = await _guard_group_membership(db, group_id, user_id, _admin)
+    if group not in user.groups:
+        raise HTTPException(400, "User is not in this group")
 
-    # Get user
-    user_result = await db.execute(select(User).where(User.id == user_id))
-    user = user_result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
+    if group.name == ADMIN_GROUP_NAME:
+        if user.is_active:
+            await require_other_active_admin(db, user.id, LAST_ADMIN_DEMOTION)
+        user.role = "user"
 
-    # Check if user is in group
-    if user not in group.users:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User is not in this group",
-        )
-
-    group.users.remove(user)
+    user.groups.remove(group)
     await db.commit()

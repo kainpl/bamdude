@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes.settings import get_external_login_url
+from backend.app.core.admin_membership import LAST_ADMIN_DEMOTION, require_other_active_admin
 from backend.app.core.auth import (
     ALGORITHM,
     REFRESH_TOKEN_COOKIE_NAME,
@@ -67,7 +68,7 @@ from backend.app.models.auth_ephemeral import AuthEphemeralToken, TokenType
 from backend.app.models.auth_session import AuthSession
 from backend.app.models.group import Group
 from backend.app.models.settings import Settings
-from backend.app.models.user import User
+from backend.app.models.user import ADMIN_GROUP_NAME, User
 from backend.app.schemas.auth import (
     EncryptionRowCounts,
     EncryptionStatusResponse,
@@ -1551,6 +1552,12 @@ async def _sync_ldap_user(db: AsyncSession, user: User, ldap_user, ldap_config) 
     current_group_ids = {g.id for g in user.groups}
     new_group_ids = {g.id for g in new_groups}
     if current_group_ids != new_group_ids:
+        had_admin_group = any(g.name == ADMIN_GROUP_NAME for g in user.groups)
+        keeps_admin_group = any(g.name == ADMIN_GROUP_NAME for g in new_groups)
+        if had_admin_group and not keeps_admin_group:
+            if user.is_active:
+                await require_other_active_admin(db, user.id, LAST_ADMIN_DEMOTION)
+            user.role = "user"
         user.groups = new_groups
         changed = True
 

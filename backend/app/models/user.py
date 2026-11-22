@@ -14,6 +14,9 @@ if TYPE_CHECKING:
     from backend.app.models.user_email_pref import UserEmailPreference
 
 
+ADMIN_GROUP_NAME = "Administrators"
+
+
 class User(Base):
     """User model for authentication and authorization.
 
@@ -109,7 +112,7 @@ class User(Base):
         """
         if self.role == "admin":
             return True
-        return any(g.name == "Administrators" for g in self.groups)
+        return any(g.name == ADMIN_GROUP_NAME for g in self.groups)
 
     def get_permissions(self) -> set[str]:
         """Get all permissions from all groups the user belongs to.
