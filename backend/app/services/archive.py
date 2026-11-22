@@ -482,6 +482,7 @@ async def find_archive_for_sd_file(db: AsyncSession, printer_id: int, sd_name: s
                     PrintArchive.filename == sd_name,
                     filename_us == f"{stem_us}.3mf",
                     filename_us == f"{stem_us}.gcode.3mf",
+                    PrintArchive.extra_data["dispatch_intent"]["remote_filename"].as_string() == sd_name,
                 )
             )
             .order_by(PrintArchive.created_at.desc())

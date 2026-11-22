@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 from backend.app.i18n import get_language, t
@@ -296,6 +297,35 @@ async def next_queue_position(db, queue_id: int) -> int:
         .where(PrintQueueItem.status == "pending")
     )
     return (result.scalar() or 0) + 1
+
+
+async def saved_queue_options(db, user, printer_id: int, swap_fact: bool | None) -> dict:
+    """Build the row fields from the chat's current linked operator or the system profile."""
+    from backend.app.models.printer import Printer
+    from backend.app.schemas.calibration_mode import mode_to_bool
+    from backend.app.services.print_option_defaults import preference_options
+    from backend.app.services.queue_source_capture import swap_request
+
+    printer = await db.get(Printer, printer_id)
+    if printer is None:
+        return {}
+    profile = await preference_options(db, user, printer.model)
+    if profile is None:
+        return {}
+    fields = profile.for_printer_queue()
+    execute, events = swap_request(
+        swap_fact,
+        execute=fields["execute_swap_macros"],
+        events=fields["swap_macro_events"],
+        printer_swap_mode=printer.swap_mode_enabled,
+    )
+    fields["execute_swap_macros"] = execute
+    fields["swap_macro_events"] = json.dumps(events) if events else None
+    fields["selected_macro_ids"] = json.dumps(fields["selected_macro_ids"])
+    for field in ("bed_levelling", "flow_cali", "nozzle_offset_cali"):
+        fields[f"{field}_mode"] = fields[field]
+        fields[field] = mode_to_bool(fields[field])
+    return fields
 
 
 async def scene_expired(callback, lang: str) -> None:

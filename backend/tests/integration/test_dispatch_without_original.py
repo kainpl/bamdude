@@ -45,6 +45,7 @@ from backend.app.services.filament_routing import RoutingDeferred
 from backend.app.services.print_run_binding import discard_print_run
 from backend.app.services.printer_manager import printer_manager
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
+from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
 from backend.tests.integration.test_filament_routing_dispatch import setup_source
 
 pytestmark = pytest.mark.integration
@@ -321,8 +322,12 @@ async def lose_the_original(db, item, original: Path, *, row) -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.parametrize(
+    "stem,wire_name",
+    [("lamp", "lamp.3mf"), ("auto_cali_for_user", "bamdude_auto_cali_for_user.3mf")],
+)
 async def test_an_assigned_auto_job_prints_after_its_library_file_is_gone(
-    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, stem, wire_name
 ):
     """auto add → assignment → check_queue → preflight → patch → md5 → upload → archive.
 
@@ -330,11 +335,14 @@ async def test_an_assigned_auto_job_prints_after_its_library_file_is_gone(
     of this runs on a job whose ``library_file_id`` and ``archive_id`` are both
     NULL — the state Task 5 left preflight refusing.
     """
+    from backend.app.services.archive import find_archive_for_sd_file
     from backend.app.services.auto_queue_add import add_items_to_auto_queue
     from backend.app.services.auto_queue_scheduler import AutoQueueScheduler
+    from backend.app.services.print_reconciliation import _name_matches_subtask, _name_matches_subtask_exact
+    from backend.app.utils.print_jobs import is_internal_printer_job
 
     _unused, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
-    source = await a_library_source(db_session, tmp_path, name="lamp.gcode.3mf")
+    source = await a_library_source(db_session, tmp_path, name=f"{stem}.gcode.3mf")
     original = Path(source.file_path)
     settings.archive_dir.mkdir(parents=True, exist_ok=True)
 
@@ -374,7 +382,9 @@ async def test_an_assigned_auto_job_prints_after_its_library_file_is_gone(
     # The printer is given the human name it was queued under, never the object's
     # own name, which is its hash (§4, A04). ``lamp.gcode.3mf`` → ``lamp.3mf`` is
     # ``derive_remote_filename``'s existing suffix collapse.
-    assert command["file"] == "lamp.3mf"
+    assert command["file"] == wire_name
+    assert command["subtask_name"] == wire_name.removesuffix(".3mf")
+    assert not is_internal_printer_job(command["file"], command["subtask_name"])
     assert blob.sha256[:16] not in command["url"]
 
     await db_session.refresh(item)
@@ -383,6 +393,11 @@ async def test_an_assigned_auto_job_prints_after_its_library_file_is_gone(
     assert archive is not None and archive.status == "printing"
     assert archive.filename == source.filename
     assert archive.plate_index == PLATE
+    assert archive.extra_data["dispatch_intent"]["remote_filename"] == wire_name
+    assert _name_matches_subtask_exact(archive, command["subtask_name"])
+    if stem != command["subtask_name"]:
+        assert not _name_matches_subtask(archive, stem)
+    assert (await find_archive_for_sd_file(db_session, printer.id, wire_name)).id == archive.id
     # S9: the snapshot is the archive's SOURCE, the patched temp copy is what was
     # dispatched. The two hashes are what tells them apart.
     assert archive.source_content_hash == blob.sha256
@@ -396,19 +411,23 @@ async def test_an_assigned_auto_job_prints_after_its_library_file_is_gone(
     assert archived.is_file() and archived != object_of(blob)
     assert archived.name == source.filename
     assert blob.sha256 not in archive.file_path
-    assert archived.parent.name.endswith("_lamp")
+    assert archived.parent.name.endswith(f"_{stem}")
     assert archived.read_bytes() == object_of(blob).read_bytes()
 
 
+@pytest.mark.parametrize(
+    "stem,wire_name",
+    [("shelf", "shelf.3mf"), ("pa_line_calib_mode", "bamdude_pa_line_calib_mode.3mf")],
+)
 async def test_a_queue_job_reprints_after_its_archive_row_is_gone(
-    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, stem, wire_name
 ):
     """The reprint runner on a job whose source archive no longer exists."""
     from backend.app.services.queue_add import add_items_to_printer_queue
 
     _unused, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
     settings.archive_dir.mkdir(parents=True, exist_ok=True)
-    source = await an_archive_source(db_session, tmp_path, printer.id)
+    source = await an_archive_source(db_session, tmp_path, printer.id, name=f"{stem}.gcode.3mf")
     original = Path(settings.base_dir) / source.file_path
 
     items, _queue = await add_items_to_printer_queue(
@@ -436,6 +455,9 @@ async def test_a_queue_job_reprints_after_its_archive_row_is_gone(
     # original id, because the row it names is gone.
     assert contract == [("reprint_archive", None)]
     mqtt._client.publish.assert_called_once()
+    command = json.loads(mqtt._client.publish.call_args.args[1])["print"]
+    assert command["file"] == wire_name
+    assert command["subtask_name"] == wire_name.removesuffix(".3mf")
     await db_session.refresh(item)
     assert item.status == "printing"
     # ⚠️ Not compared against the source archive's id: SQLite hands a deleted
@@ -444,7 +466,8 @@ async def test_a_queue_job_reprints_after_its_archive_row_is_gone(
     # original by id only when the queue row still names one.)
     execution = await db_session.get(PrintArchive, item.archive_id)
     assert execution is not None and execution.status == "printing"
-    assert execution.filename == "shelf.gcode.3mf"
+    assert execution.filename == f"{stem}.gcode.3mf"
+    assert execution.extra_data["dispatch_intent"]["remote_filename"] == wire_name
     assert execution.source_content_hash == blob.sha256
     assert (Path(settings.base_dir) / execution.file_path).is_file()
 

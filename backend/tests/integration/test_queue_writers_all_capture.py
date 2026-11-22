@@ -48,6 +48,7 @@ from backend.app.services.filament_policy_write import routing_update
 from backend.app.services.queue_source_descriptor import SOURCE_SNAPSHOT_VERSION, source_snapshot
 from backend.app.services.virtual_printer.manager import VirtualPrinterInstance
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
+from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
 from backend.tests.integration.test_filament_routing_dispatch import setup_source
 
 pytestmark = pytest.mark.integration
@@ -314,6 +315,95 @@ async def test_the_bots_queue_confirm_captures_once_and_routes_off_the_copy(
     assert item.source_snapshot["display_filename"] == source.filename
     assert staging_litter() == []
     assert await pending_count_of(db_session, queue.id) == 1, "the card's counter is recounted (G03 D7.2)"
+
+
+@pytest.mark.parametrize("door", ["library_queue", "queue_scene", "print_now"])
+async def test_telegram_uses_the_linked_operators_saved_print_profile(
+    db_session, tmp_path, printer_factory, monkeypatch, sessions, door
+):
+    from backend.app.models.macro import Macro
+    from backend.app.models.print_options_preference import PrintOptionsPreference
+    from backend.app.models.user import User
+    from backend.app.services import swap_compatibility
+    from backend.app.services.background_dispatch import background_dispatch
+    from backend.app.services.telegram_handlers.library_scene import cb_library_add_queue, cb_library_print_now
+    from backend.app.services.telegram_handlers.queue_scene import cb_qadd_confirm
+    from backend.tests.integration.test_library_step_jobs_authority import _chat
+
+    source, printer, queue, _ = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    printer.swap_mode_enabled = True
+    source.file_hash = hashlib.sha256(Path(source.file_path).read_bytes()).hexdigest()
+    swap_compatibility.write_source_declaration(source, value=False, sha256=source.file_hash, origin="classifier")
+    owner = User(username="telegram-worker", email="telegram-worker@example.com", is_active=True)
+    keep = Macro(name="Selected", event="print_started", printer_models='["P1P"]')
+    omit = Macro(name="Deselected", event="print_started", printer_models='["P1P"]')
+    db_session.add_all([owner, keep, omit])
+    await db_session.flush()
+    options = {
+        "bed_levelling": "auto",
+        "flow_cali": "off",
+        "layer_inspect": True,
+        "timelapse": True,
+        "timelapse_storage": "external",
+        "mesh_mode_fast_check": False,
+        "gcode_injection": True,
+        "nozzle_offset_cali": "off",
+    }
+    events = ["swap_mode_start"]
+    db_session.add_all(
+        [
+            PrintOptionsPreference(
+                user_id=owner.id,
+                printer_model="C11",
+                options={
+                    "print_options": options,
+                    "swap_macros": {"execute": True, "events": events},
+                    "event_macros": {"deselected_ids": [omit.id]},
+                },
+            ),
+            PrintOptionsPreference(
+                user_id=None,
+                printer_model="P1P",
+                options={
+                    "print_options": {**options, "timelapse": False, "bed_levelling": "on"},
+                    "swap_macros": {"execute": False},
+                },
+            ),
+        ]
+    )
+    chat = await _chat(db_session, ["queue:create", "library:read", "printers:control"])
+    chat.user_id = owner.id
+    await db_session.commit()
+    callback = a_callback()
+    state = a_state({"file_id": source.id, "file_name": source.filename, "printer_id": printer.id})
+
+    if door == "print_now":
+        dispatch = AsyncMock()
+        monkeypatch.setattr(background_dispatch, "dispatch_print_library_file", dispatch)
+        with patch("backend.app.services.telegram_handlers.start.cmd_start", new=AsyncMock()):
+            await cb_library_print_now(callback, state, tg_chat=chat)
+        request = dispatch.await_args.kwargs
+        assert request["requested_by_user_id"] == owner.id
+        assert request["options"] == {
+            **options,
+            "execute_swap_macros": True,
+            "swap_macro_events": events,
+            "selected_macro_ids": [keep.id],
+        }
+        return
+    if door == "library_queue":
+        with patch("backend.app.services.telegram_handlers.start.cmd_start", new=AsyncMock()):
+            await cb_library_add_queue(callback, state, tg_chat=chat)
+    else:
+        with patch("backend.app.services.telegram_handlers.queue.render_queue", new=AsyncMock()):
+            await cb_qadd_confirm(callback, state, tg_chat=chat)
+    item = (await db_session.execute(select(PrintQueueItem))).scalar_one()
+    assert (item.created_by_id, item.queue_id) == (owner.id, queue.id)
+    assert (item.bed_levelling_mode, item.flow_cali_mode, item.nozzle_offset_cali_mode) == ("auto", "off", "off")
+    assert item.timelapse is True and item.timelapse_storage == "external"
+    assert item.gcode_injection is True and item.mesh_mode_fast_check is False
+    assert item.execute_swap_macros is True and json.loads(item.swap_macro_events) == events
+    assert json.loads(item.selected_macro_ids) == [keep.id]
 
 
 @pytest.mark.parametrize("scene", ["library", "queue"])

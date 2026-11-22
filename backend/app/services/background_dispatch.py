@@ -62,7 +62,7 @@ from backend.app.services.printer_manager import printer_manager
 from backend.app.services.queue_source_descriptor import QueueSourceDescriptor
 from backend.app.services.source_io import SourceUnavailable, require_source_file, source_probe
 from backend.app.utils.failure_reasons import USER_CANCELLED, dispatch_reason_text
-from backend.app.utils.filename import derive_remote_filename
+from backend.app.utils.filename import dispatch_upload_filename
 
 logger = logging.getLogger(__name__)
 
@@ -2850,7 +2850,7 @@ class BackgroundDispatchService:
             # the print after a hash. See ``source_display_filename``.
             archive_filename = source_archive.filename if source_archive else source_display_filename(job.source)
             submission_id = _ensure_submission_id(job)
-            remote_filename = derive_remote_filename(archive_filename)
+            remote_filename = dispatch_upload_filename(archive_filename)
 
             if not printer_manager.is_connected(job.printer_id):
                 raise PrinterUnavailable("Printer is not connected")
@@ -3854,7 +3854,7 @@ class BackgroundDispatchService:
             # bookkeeping may run on a session a failed write before it rolled back.
             library_identity = job.library_identity
             submission_id = _ensure_submission_id(job)
-            remote_filename = derive_remote_filename(library_filename)
+            remote_filename = dispatch_upload_filename(library_filename)
 
             file_path = job.source.path if job.source is not None else Path(settings.base_dir) / lib_file.file_path
             await require_source_file(file_path)

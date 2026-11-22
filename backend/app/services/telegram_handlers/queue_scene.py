@@ -20,6 +20,7 @@ from backend.app.services.telegram_handlers.common import (
     next_queue_position,
     refusal_text,
     resolve_queue_id,
+    saved_queue_options,
     scene_expired,
 )
 from backend.app.services.telegram_handlers.pagination import build_page_nav
@@ -604,6 +605,8 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
                 principal = await fresh(
                     session, authority, permissions=("queue:create", "library:read"), printer_id=printer_id
                 )
+                owner = principal.user if principal is not None else None
+                options = await saved_queue_options(session, owner, printer_id, staged.receipt.swap_fact.value)
                 item = PrintQueueItem(
                     queue_source_id=source.id,
                     source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
@@ -613,7 +616,8 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
                     plate_id=plate_id,
                     status="pending",
                     position=await next_queue_position(session, queue_id),
-                    created_by_id=principal.user.id if principal is not None else None,
+                    created_by_id=owner.id if owner is not None else None,
+                    **options,
                 )
                 session.add(item)
                 await session.flush()

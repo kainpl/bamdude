@@ -12,9 +12,12 @@ from backend.app.utils.filename import (
     MAX_FILENAME_BYTES,
     InvalidFilenameError,
     derive_remote_filename,
+    dispatch_upload_filename,
+    recorded_upload_filename,
     subtask_name_from_remote_filename,
     validate_print_filename,
 )
+from backend.app.utils.print_jobs import INTERNAL_JOB_NAMES, is_internal_printer_job
 
 
 @pytest.mark.parametrize("name", ["model.3mf", "My Print v2.gcode.3mf", "part_01.stl", "a.3mf", "Модель.3mf"])
@@ -116,6 +119,19 @@ def test_derive_idempotent():
 
 def test_derive_unicode_stem_preserved():
     assert derive_remote_filename("\u30d7\u30ea\u30f3\u30c8.gcode.3mf") == "\u30d7\u30ea\u30f3\u30c8.3mf"
+
+
+@pytest.mark.parametrize("stem", sorted(INTERNAL_JOB_NAMES))
+def test_dispatch_uses_a_safe_name_for_each_firmware_job(stem):
+    remote = dispatch_upload_filename(f"{stem.upper()}.gcode.3mf")
+    assert remote == f"bamdude_{stem.upper()}.3mf"
+    assert not is_internal_printer_job(remote, subtask_name_from_remote_filename(remote))
+    assert dispatch_upload_filename(f"{stem}_custom.gcode.3mf") == f"{stem}_custom.3mf"
+
+
+@pytest.mark.parametrize("name", ["../outside.3mf", "/absolute.3mf", "not-a-3mf", None])
+def test_recorded_upload_filename_requires_a_flat_3mf_name(name):
+    assert recorded_upload_filename({"dispatch_intent": {"version": 1, "remote_filename": name}}) is None
 
 
 def test_subtask_keeps_internal_gcode_fragment():

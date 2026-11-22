@@ -42,7 +42,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.services import dispatch_phase
 from backend.app.utils.failure_reasons import NO_STATUS_UPDATE, row_class
-from backend.app.utils.filename import derive_remote_filename
+from backend.app.utils.filename import derive_remote_filename, recorded_upload_filename
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 
 logger = logging.getLogger(__name__)
@@ -207,6 +207,13 @@ def _legacy_dispatched_subtask(filename: str) -> str:
     return remote.replace(".3mf", "").replace(".gcode", "")
 
 
+def _renamed_upload_filename(archive: PrintArchive) -> str | None:
+    uploaded = recorded_upload_filename(getattr(archive, "extra_data", None))
+    if uploaded and uploaded != derive_remote_filename(archive.filename or ""):
+        return uploaded
+    return None
+
+
 def _name_matches_subtask_exact(archive: PrintArchive, live_subtask_name: str) -> bool:
     """True when the archive's print identity matches the printer's current
     ``subtask_name`` — a fallback for firmware that hides the real filename.
@@ -245,6 +252,9 @@ def _name_matches_subtask_exact(archive: PrintArchive, live_subtask_name: str) -
     if not (live_subtask_name or "").strip():
         return False
     live = _subtask_norm(live_subtask_name)
+    renamed = _renamed_upload_filename(archive)
+    if renamed:
+        return _norm_names_match(_subtask_norm(renamed), live)
     return any(
         _norm_names_match(_subtask_norm(candidate), live)
         for candidate in (archive.print_name, archive.filename)
@@ -259,7 +269,7 @@ def _name_matches_subtask_legacy(archive: PrintArchive, live_subtask_name: str) 
     shared by more than one archived filename, and the reconciliation sweep
     must leave that collision untouched instead of closing arbitrary runs.
     """
-    if not (live_subtask_name or "").strip():
+    if not (live_subtask_name or "").strip() or _renamed_upload_filename(archive):
         return False
     live = _subtask_norm(live_subtask_name)
     if (archive.filename or "").strip():
@@ -1102,7 +1112,8 @@ async def _reconcile(
             if len(legacy_subtask_matches) == 1
             else False
         )
-        file_match = _file_matches(archive.filename or "", live_file) or subtask_match
+        upload_name = _renamed_upload_filename(archive) or archive.filename or ""
+        file_match = _file_matches(upload_name, live_file) or subtask_match
         action = _classify(
             live_state,
             file_match=file_match,

@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- **Printer uploads avoid firmware job names.** A print called `auto_cali_for_user` or another reserved name gets a distinct name on the printer. Its library name and archive title stay the same.
+
+- **Telegram applies your saved print profile.** Printing from the library or adding a job to a printer's queue uses the linked operator's profile for that model, with the system profile as a fallback. AutoQueue applies the profile when it selects a printer.
+
 - **Virtual printers use the selected model's system profile for macros.** In printer-queue mode the saved event selection applies, and swap macros require both the printer's swap mode and a captured file that can run them. In AutoQueue mode the router chooses the feed for the eventual printer, including when the slicer sent `use_ams=false` before it knew the target.
 
 - The time margin in the archive media download dialog uses the same selector style as other dialogs.

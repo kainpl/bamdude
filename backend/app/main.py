@@ -9028,9 +9028,11 @@ async def _on_print_complete_impl(
         try:
             if subtask_name:
                 archive_filename: str | None = None
+                uploaded_filename: str | None = None
                 from types import SimpleNamespace
 
                 from backend.app.services.printer_cleanup import archive_hashes
+                from backend.app.utils.filename import recorded_upload_filename
 
                 async with async_session() as db:
                     from backend.app.models.archive import PrintArchive
@@ -9051,11 +9053,13 @@ async def _on_print_complete_impl(
                                 PrintArchive.filename,
                                 PrintArchive.source_content_hash,
                                 PrintArchive.content_hash,
+                                PrintArchive.extra_data,
                             ).where(PrintArchive.id == archive_id)
                         )
                         row = archive_row.first()
                         if row is not None:
                             archive_filename = row[0]
+                            uploaded_filename = recorded_upload_filename(row[3])
                             expected_hashes = archive_hashes(
                                 SimpleNamespace(source_content_hash=row[1], content_hash=row[2])
                             )
@@ -9102,14 +9106,16 @@ async def _on_print_complete_impl(
                     )
 
                     # .3mf candidate paths, primary first: the exact path the
-                    # dispatcher uploaded to (derived from archive.filename via the
-                    # same rule as upload). Without it, a library row that ended up
+                    # dispatcher uploaded to (recorded in its intent). For a
+                    # legacy archive, derive it from archive.filename. A row with
                     # with a doubled .gcode.3mf (#1542) leaves the real file behind
                     # because the subtask_name fallback doesn't match what's on the
                     # SD card. The subtask_name fallback stays for archive-less
                     # prints and older naming variants.
                     threemf_candidates: list[str] = []
-                    if archive_filename:
+                    if uploaded_filename:
+                        threemf_candidates.append(f"/{uploaded_filename}")
+                    elif archive_filename:
                         threemf_candidates.append(f"/{derive_remote_filename(archive_filename)}")
                     subtask_3mf = f"/{subtask_name}.3mf"
                     if subtask_3mf not in threemf_candidates:

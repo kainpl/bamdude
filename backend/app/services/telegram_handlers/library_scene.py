@@ -18,6 +18,7 @@ from backend.app.services.telegram_handlers.common import (
     next_queue_position,
     refusal_text,
     resolve_queue_id,
+    saved_queue_options,
     scene_expired,
 )
 from backend.app.services.telegram_handlers.pagination import build_page_nav
@@ -319,8 +320,10 @@ async def cb_library_print_now(callback: CallbackQuery, state: FSMContext, tg_ch
 
     try:
         from backend.app.core.database import async_session
+        from backend.app.models.printer import Printer
         from backend.app.services.background_dispatch import background_dispatch
         from backend.app.services.domain_authority import capture_chat_writer, fresh
+        from backend.app.services.print_option_defaults import preference_options
 
         async with async_session() as db:
             authority = await capture_chat_writer(db, tg_chat)
@@ -329,13 +332,19 @@ async def cb_library_print_now(callback: CallbackQuery, state: FSMContext, tg_ch
             )
             owner_id = principal.user.id if principal is not None else None
             owner_name = principal.user.username if principal is not None else None
+            printer = await db.get(Printer, printer_id)
+            profile = (
+                await preference_options(db, principal.user if principal is not None else None, printer.model)
+                if printer is not None
+                else None
+            )
 
         await background_dispatch.dispatch_print_library_file(
             file_id=file_id,
             filename=file_name,
             printer_id=printer_id,
             printer_name=printer_name or f"#{printer_id}",
-            options={},
+            options=profile.for_printer_queue() if profile is not None else {},
             requested_by_user_id=owner_id,
             requested_by_username=owner_name,
             authority=authority,
@@ -440,6 +449,8 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
                 principal = await fresh(
                     session, authority, permissions=("queue:create", "library:read"), printer_id=printer_id
                 )
+                owner = principal.user if principal is not None else None
+                options = await saved_queue_options(session, owner, printer_id, staged.receipt.swap_fact.value)
                 session.add(
                     PrintQueueItem(
                         queue_source_id=source.id,
@@ -448,7 +459,8 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
                         library_file_id=file_id,
                         status="pending",
                         position=await next_queue_position(session, queue_id),
-                        created_by_id=principal.user.id if principal is not None else None,
+                        created_by_id=owner.id if owner is not None else None,
+                        **options,
                     )
                 )
                 await session.flush()

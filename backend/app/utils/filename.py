@@ -9,6 +9,8 @@ client-side; BamDude now does the same at the rename, upload, and dispatch
 boundaries so the failure surfaces with a clear message.
 """
 
+from backend.app.utils.print_jobs import is_internal_printer_job
+
 INVALID_FILENAME_CHARS = '<>:"/\\|?*'
 
 # FAT/exFAT cap on a single path component; UTF-8 byte length, not codepoints,
@@ -161,3 +163,26 @@ def subtask_name_from_remote_filename(remote_filename: str) -> str:
         stem = remote_filename[:-4]
         return stem or remote_filename
     return remote_filename
+
+
+def dispatch_upload_filename(filename: str) -> str:
+    """Choose a printer-side name that cannot look like a firmware calibration."""
+    remote = derive_remote_filename(filename)
+    if is_internal_printer_job(remote, subtask_name_from_remote_filename(remote)):
+        return f"bamdude_{remote}"
+    return remote
+
+
+def recorded_upload_filename(extra_data: object) -> str | None:
+    """The actual flat upload name recorded in the execution archive's dispatch intent."""
+    intent = extra_data.get("dispatch_intent") if isinstance(extra_data, dict) else None
+    if not isinstance(intent, dict) or type(intent.get("version")) is not int or intent["version"] != 1:
+        return None
+    name = intent.get("remote_filename")
+    if not isinstance(name, str) or not name.endswith(".3mf"):
+        return None
+    try:
+        validate_print_filename(name)
+    except InvalidFilenameError:
+        return None
+    return name
