@@ -150,6 +150,26 @@ describe('SliceModal — the farm filters start off', () => {
 });
 
 describe('SliceModal — only printers that are online', () => {
+  it.each([
+    { source: 'mine', personal: A1, builtin: H2D, visible: [A1, H2D] },
+    { source: 'builtin', personal: H2D, builtin: A1, visible: [H2D] },
+  ])('explains the $source fallback on the printer field and keeps its selection', async ({ source, personal, builtin, visible }) => {
+    localStorage.setItem('bamdude:presets:source-filter', source);
+    localStorage.setItem(ONLINE_KEY, '1');
+    serve(FARM, {
+      local: { printer: [{ name: personal }] },
+      standard: { ...LISTING.standard, printer: [{ name: builtin }] },
+    });
+    open();
+
+    const printer = await picker('Printer profile');
+    await waitFor(() =>
+      expect(printer).toHaveAccessibleDescription(/No profile from the selected source fits here\. Showing profiles from other sources\./),
+    );
+    expect(offered(printer)).toEqual(visible);
+    expect(printer).toHaveValue(`local:${personal}`);
+  });
+
   it('keeps the presets of an online model, a renamed one through the preset it was saved from', async () => {
     serve();
     open();

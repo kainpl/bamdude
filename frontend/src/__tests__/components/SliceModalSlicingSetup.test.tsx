@@ -140,7 +140,7 @@ describe('Slice dialog on the slicing-setup family (§4.4)', () => {
     const source = await screen.findByRole('group', { name: 'Preset source' });
     expect(within(source).getByRole('button', { name: 'My Presets' })).toHaveAttribute('aria-pressed', 'true');
     // No preset of your own: every field still offers something, and says why.
-    expect((await screen.findAllByText(/built-in profiles are shown too/)).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText(/Showing profiles from other sources/)).length).toBeGreaterThan(0);
   });
 
   it('§4.4.2 "Only printers that are online" becomes "Only models of my farm"', async () => {

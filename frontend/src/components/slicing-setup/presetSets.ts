@@ -50,7 +50,7 @@ export interface PresetField {
 
 const same = (a: UnifiedPreset, ref: PresetRef | null) => ref !== null && a.source === ref.source && a.id === ref.id;
 
-/** Apply `filters`, dropping them from the end until `accept` holds; returns what stayed and what was dropped. */
+/** Relax from the end, then restore filters made satisfiable by later removals. */
 function relax(
   entries: UnifiedPreset[],
   filters: SoftFilter[],
@@ -62,11 +62,24 @@ function relax(
   while (active.length > 0 && !accept(apply())) {
     relaxed.push((active.pop() as SoftFilter).id);
   }
-  return { active, relaxed };
+  // "Mine" can hide every machine preset while the farm has perfectly good
+  // built-in profiles. Once source is relaxed, the farm restriction works
+  // again: do not leave it disabled merely because it was tried first.
+  for (const filter of filters) {
+    if (active.includes(filter)) continue;
+    const restored = [...active, filter];
+    if (accept(entries.filter((e) => restored.every((f) => f.keep(e))))) active.push(filter);
+  }
+  return { active, relaxed: relaxed.filter((id) => !active.some((f) => f.id === id)) };
 }
 
 export function buildPresetField(input: PresetFieldInput): PresetField {
   const { listing, slot, bound, fit, filters, pinned } = input;
+  // A built-in profile for an actual farm model is preferable to a personal
+  // machine profile for another model. Relax source before farm for machines.
+  const displayFilters = slot === 'printer'
+    ? [...filters.filter((f) => f.id === 'farm'), ...filters.filter((f) => f.id !== 'farm')]
+    : filters;
   const all = TIER_ORDER.flatMap((tier) => listing[tier][slot]);
   const inBound = (p: UnifiedPreset) => (bound ? bound.keep(p) : true);
   const boundSet = all.filter(inBound);
@@ -90,11 +103,11 @@ export function buildPresetField(input: PresetFieldInput): PresetField {
   let trailing: UnifiedPreset[] = [];
   let relaxed: SoftFilterId[] = [];
   if (noFit) {
-    const r = relax(base, filters, (shown) => shown.length > 0);
+    const r = relax(base, displayFilters, (shown) => shown.length > 0);
     relaxed = r.relaxed;
     main = base.filter((e) => r.active.every((f) => f.keep(e)));
   } else {
-    const r = relax(fitting, filters, (shown) => shown.length > 0 || fitting.length === 0);
+    const r = relax(fitting, displayFilters, (shown) => shown.length > 0 || fitting.length === 0);
     relaxed = r.relaxed;
     main = fitting.filter((e) => r.active.every((f) => f.keep(e)));
     if (fit?.mode === 'group') trailing = other.filter((e) => r.active.every((f) => f.keep(e)));

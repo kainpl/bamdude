@@ -32,6 +32,36 @@ const fit = (mode: 'group' | 'hide' = 'group') => ({ printerName: X1C, compatInd
 const ids = (field: ReturnType<typeof buildPresetField>) => field.sections.flatMap((s) => s.entries.map((e) => e.id));
 
 describe('buildPresetField (R2)', () => {
+  it('keeps the farm restriction when Mine has no printer profiles', () => {
+    const data = listing([]);
+    data.standard.printer = ['A1', 'A1 Mini', 'P1S', 'P2S', 'H2D', 'H2C'].map((name) => p('standard', name, null));
+    const farmIds = ['A1 Mini', 'P1S', 'P2S', 'H2D'];
+    const farm: SoftFilter = { id: 'farm', keep: (x) => farmIds.includes(x.id), pickKeep: (x) => farmIds.includes(x.id) };
+    const field = buildPresetField({ listing: data, slot: 'printer', filters: [mine(), farm], pinned: null });
+    expect(ids(field).sort()).toEqual([...farmIds].sort());
+    expect(field.relaxed).toEqual(['source']);
+    // Display relaxation does not silently broaden automatic picks.
+    expect(data.standard.printer.filter(field.pickKeep)).toEqual([]);
+  });
+
+  it('restores loaded filaments when relaxing source makes them available', () => {
+    const data = listing([p('standard', 'loaded', X1C), p('standard', 'other', X1C)]);
+    const loaded: SoftFilter = { id: 'loaded', keep: (x) => x.id === 'loaded', pickKeep: (x) => x.id === 'loaded' };
+    const field = buildPresetField({ listing: data, slot: 'process', fit: fit(), filters: [mine(), loaded], pinned: null });
+    expect(ids(field)).toEqual(['loaded']);
+    expect(field.relaxed).toEqual(['source']);
+  });
+
+  it('prefers built-in farm machines to personal profiles for other models', () => {
+    const data = listing([]);
+    data.local.printer = [p('local', 'A1', null)];
+    data.standard.printer = [p('standard', 'P1S', null), p('standard', 'H2C', null)];
+    const farm: SoftFilter = { id: 'farm', keep: (x) => x.id === 'P1S', pickKeep: (x) => x.id === 'P1S' };
+    const field = buildPresetField({ listing: data, slot: 'printer', filters: [mine(), farm], pinned: null });
+    expect(ids(field)).toEqual(['P1S']);
+    expect(field.relaxed).toEqual(['source']);
+  });
+
   it('pick offer has no relaxation, no pinned ref, no other printers', () => {
     const data = listing([p('local', 'mine-mismatch', A1), p('standard', 'std-fit', X1C)]);
     const field = buildPresetField({

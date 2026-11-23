@@ -6082,7 +6082,7 @@ export default {
   slicingSetup: {
     farmModels: 'Only models of my farm',
     relaxed: {
-      source: 'No profile of your own fits here, so built-in profiles are shown too.',
+      source: 'No profile from the selected source fits here. Showing profiles from other sources.',
       farm: 'No profile of a printer model in your farm fits here, so every printer profile is shown.',
       loaded: 'No profile of a loaded filament fits here, so every filament profile is shown.',
     },

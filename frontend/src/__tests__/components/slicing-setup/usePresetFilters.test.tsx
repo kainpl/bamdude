@@ -181,6 +181,19 @@ describe('usePresetFilters', () => {
     act(() => result.current.retry());
     expect(spy).not.toHaveBeenCalled();
   });
+
+  it('Only models of my farm does not offer other models whose G-code is accepted', async () => {
+    localStorage.setItem(FARM_MODELS_KEY, '1');
+    vi.spyOn(api, 'getSlicerLoadedFilaments').mockResolvedValue(farm({
+      farm_printers: [{ printer_id: 1, model: 'P1S', accepts: ['P1P', 'X1C'], nozzle_diameters: [0.4] }],
+    }));
+    const { result } = renderHook(() => usePresetFilters({ farmModels: true }), { wrapper: wrapper(newClient()) });
+    await waitFor(() => expect(result.current.farmStatus).toBe('ready'));
+    const [f] = result.current.softFilters(ctx);
+    expect(f.keep(printer('Bambu Lab P1S 0.4 nozzle'))).toBe(true);
+    expect(f.keep(printer('Bambu Lab P1P 0.4 nozzle'))).toBe(false);
+    expect(f.keep(printer('Bambu Lab X1 Carbon 0.4 nozzle'))).toBe(false);
+  });
 });
 
 // Review I-4: two printer presets share a name in two sources with different
