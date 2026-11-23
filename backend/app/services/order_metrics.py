@@ -848,7 +848,10 @@ def attribute(
         for line in lines:
             for key, part in indexes.get(line.product_id, {}).items():
                 pf = by_part_id[line.id].get(part.id)
-                if pf is None or pf.kind != "printed":
+                # A later archive can introduce a configured-out part as
+                # surplus. Retain that shelf part's uncertainty even before
+                # spare() has created its PartFigures row.
+                if part.kind != "printed" or (pf is None and not has_shelf(part)):
                     continue
                 if home is not None and line.id != home.id and counted(home, key) is not None:
                     continue

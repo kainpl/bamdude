@@ -78,3 +78,23 @@ async def test_printer_queue_link_uses_the_monitor_target_query(db_session, shop
     await db_session.commit()
     result = await order_work(db_session, grant(), OrderWorkInput(), "link")
     assert result.data["items"][0]["ui_link"] == f"/queue?monitorPrinter={shop['printer'].id}"
+
+
+@pytest.mark.parametrize("checked", [True, False])
+async def test_gap_covers_surplus_parts_first_seen_after_the_gap(committing_client, db_session, shop, checked):
+    response = await committing_client.put(
+        f"/api/v1/projects/{shop['order']}/lines/{shop['line']}/configuration",
+        json={"part_counts": {str(shop["b"].id): 0}, "choices": {}},
+    )
+    assert response.status_code == 200, response.text
+    gap, _ = await archive(db_session, shop, status="completed", quantities=(0, 0))
+    gap.outcome_checked_at = datetime.now(timezone.utc).replace(tzinfo=None) if checked else None
+    await db_session.execute(delete(PrintArchivePart).where(PrintArchivePart.archive_id == gap.id))
+    good, _ = await archive(db_session, shop, status="completed", quantities=(6, 2))
+    good.outcome_checked_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    await db_session.commit()
+    result = await progress(db_session, shop, include_parts=True)
+    part = next(p for p in result.data["lines"][0]["parts"] if p["id"] == shop["b"].id)
+    assert part["per_unit"] == 0 and part["usable_according_to_ui"] == 2
+    field = "checked_good_from_archives" if checked else "unchecked_net_from_archives"
+    assert part[field] is None
