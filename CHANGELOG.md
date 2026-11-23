@@ -70,6 +70,8 @@
 
 ### Added
 
+- MCP order reads keep known QC counts for independent lines when another archive lacks part rows; genuinely pooled gaps remain uncertain. A progress request shares its single attribution with Workshop fulfilment. Printer-scoped running queries no longer report missing pending work, and queue links select the requested printer.
+
 - **Read order production progress through BamDude MCP.** The read-only orders module finds orders by name or code, reports their existing line/part coverage and stock receipts, distinguishes checked good output from unchecked print output and recount corrections, and lists linked running claims and pending work without counting auto-queue handoffs twice. Existing Workshop readers and permission ceilings remain authoritative; these calls do not reserve stock, accept QC, rebuild plans or change queues.
 
 - **Edit a project assembly and try again.** After a completed or failed assembly, return to the same inputs and change settings for another attempt. The operator starts the new job explicitly and chooses whether to move previous outputs to the trash.

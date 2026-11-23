@@ -751,6 +751,7 @@ def attribute(
     *,
     redistributable_to: set[int] | None = None,
     part_attributions: list[PartAttribution] | None = None,
+    uncertain_parts: dict[int, set[tuple[int, int]]] | None = None,
 ) -> tuple[dict[int, LineFigures], list[PrintArchive]]:
     """Spec §Line resolution for an archive: the unit is the archive's PART ROW.
 
@@ -834,6 +835,24 @@ def attribute(
             for ln in ctx.lines
             if ln.product_id in product_ids and ln is not exclude and line_accepts_materials(ln, materials)
         ]
+
+    def note_gap(archive: PrintArchive, lines: list[ProjectLine], home: ProjectLine | None = None) -> None:
+        """Optional read evidence: which parts absent rows could have fed.
+
+        Use the same home/foreign routing as hand_out, without inventing rows,
+        quantities or awards. Explicit home keys cannot spill to another line.
+        """
+        if uncertain_parts is None or archive.status != _DONE or ctx.archive_parts_by_archive.get(archive.id):
+            return
+        affected = uncertain_parts.setdefault(archive.id, set())
+        for line in lines:
+            for key, part in indexes.get(line.product_id, {}).items():
+                pf = by_part_id[line.id].get(part.id)
+                if pf is None or pf.kind != "printed":
+                    continue
+                if home is not None and line.id != home.id and counted(home, key) is not None:
+                    continue
+                affected.add((line.id, part.id))
 
     def hand_out(
         archive: PrintArchive,
@@ -932,12 +951,15 @@ def attribute(
         # operator's filing is never second-guessed. Rows the home's product does
         # not count fall through to the other candidates rather than vanishing.
         others = candidates(archive, exclude=home)
+        note_gap(archive, [home, *others], home)
         fed = hand_out(archive, home_rows, [home]) | hand_out(
             archive, foreign_rows, others, [home, *others], pooled=True
         )
         list_under(archive, fed | {home.id})
     for archive in implicit:
         lines = candidates(archive)
+        # No filing or linked plate gives no basis to narrow the uncertainty.
+        note_gap(archive, lines or ctx.lines)
         if not lines:
             other.append(archive)
             continue

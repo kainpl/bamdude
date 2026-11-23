@@ -114,9 +114,10 @@ async def order_progress(db, access, args, request_id):
     if ctx is None:
         raise DiagnosticError("not_found")
     awards = []
-    figures, other = order_metrics.attribute(ctx, part_attributions=awards)
+    uncertain_parts = {}
+    figures, other = order_metrics.attribute(ctx, part_attributions=awards, uncertain_parts=uncertain_parts)
     totals = order_metrics.project_figures(ctx, figures, other)
-    fulfilment = await order_fulfilment.state(db, ctx.project, ctx=ctx)
+    fulfilment = await order_fulfilment.state(db, ctx.project, ctx=ctx, figures=figures)
     receipts = {row.line_id: row for row in fulfilment.lines}
     archives = {row.id: row for row in ctx.archives}
     quality = defaultdict(lambda: {"checked_good_from_archives": 0, "unchecked_net_from_archives": 0})
@@ -141,6 +142,12 @@ async def order_progress(db, access, args, request_id):
         a.status == "completed" and a.outcome_checked_at is None and not ctx.archive_parts_by_archive.get(a.id)
         for a in ctx.archives
     )
+    for archive_id, parts in uncertain_parts.items():
+        field = (
+            "checked_good_from_archives" if archives[archive_id].outcome_checked_at else "unchecked_net_from_archives"
+        )
+        for part in parts:
+            quality[part][field] = None
     filters = {"order_id": args.order_id, "line_id": args.line_id, "include_parts": args.include_parts}
     last, upper = 0, max((line.id for line in ctx.lines), default=0)
     if args.cursor:
@@ -188,8 +195,6 @@ async def order_progress(db, access, args, request_id):
                     "need_after_stock": p.need,
                     "usable_according_to_ui": p.usable,
                     **quality[line.id, p.part_id],
-                    **({"checked_good_from_archives": None} if missing_checked else {}),
-                    **({"unchecked_net_from_archives": None} if missing_unchecked else {}),
                     "recount_adjustment": p.count_adjustment,
                     "allocated_from_stock": p.allocated_qty,
                     "stock_used": p.stock_used_qty,
@@ -267,7 +272,7 @@ async def order_progress(db, access, args, request_id):
                 "quality": "Checked/unchecked quantities are the same part awards before recounts, not independent re-attributions. A recount is not a QC verdict. Checked net output is not a stock receipt.",
                 "stock_receipts": "Existing line/stock-ledger counters, not additional production. Product and parts lines use different units. Never add receipts to printed output.",
                 "remaining": "Existing UI shortage after allocated stock, not yet reduced by future running or queued output. Queue claims are not physical proof.",
-                "summary_scope": "Full order totals repeat across line pages. Never add pages' summaries. No unallocated free stock is reserved by this read.",
+                "summary_scope": "Full order totals repeat and are recalculated across line pages; paging bounds the response, not whole-order hydration. Attribution is shared with fulfilment once per request. Never add pages' summaries. No unallocated free stock is reserved by this read.",
             },
             "pagination_is_snapshot": False,
         },
@@ -439,7 +444,7 @@ async def order_work(db, access, args, request_id):
                 if source == "archive"
                 else "/queue"
                 if source == "auto_queue"
-                else f"/queue?printer={queue.printer_id}",
+                else f"/queue?monitorPrinter={queue.printer_id}",
             }
         )
         if len(items) > 1 and len(json.dumps(items).encode()) > 35000:
@@ -461,6 +466,8 @@ async def order_work(db, access, args, request_id):
             "pagination_is_snapshot": False,
             "semantics": "Pending printer rows plus unassigned pending auto rows; handed-off auto rows are omitted. Running queue rows and orphan archive claims are persisted claims, not proven current printing. Compare item IDs with farm overview/inspect_printer; never infer order identity from filenames.",
         },
-        missing=["unassigned_auto_queue_hidden_by_printer_scope"] if access.printer_ids is not None else (),
+        missing=["unassigned_auto_queue_hidden_by_printer_scope"]
+        if access.printer_ids is not None and args.state != "running"
+        else (),
         cursor=cursor,
     )
