@@ -70,6 +70,8 @@
 
 ### Added
 
+- **Edit a project assembly and try again.** After a completed or failed assembly, return to the same inputs and change settings for another attempt. The operator starts the new job explicitly and chooses whether to move previous outputs to the trash.
+
 - **Failed and cancelled prints can keep the printer's timelapse.** When the printer was recording, BamDude uses the same archive and storage checks that protect the scan after a successful print.
 
 - **AutoQueue can find another printer after a refused upload.** When BamDude can prove it sent no start command, an unchanged AutoQueue job with portable settings returns to the pool, up to twice. The failed attempt stays in the printer’s Issues with a link to the AutoQueue job. That printer takes no new work until Resume. Returns after a print that started still use the existing setting and their own limit.

@@ -6726,6 +6726,7 @@ export default {
     schedulePrint: 'Schedule',
     computeOrder: 'Calculate',
     assemble: {
+      editAndRetry: 'Edit and try again',
       action: 'Assemble project',
       hint: 'Lay the selected models out densely and save project files for your printers',
       onlyMeshes: 'Only STL, OBJ and STEP models can be assembled — the selection holds another kind of file',

@@ -772,9 +772,25 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
       </div>
     );
     footer = (
-      <Button variant="primary" onClick={onClose}>
-        {t('common.close')}
-      </Button>
+      <>
+        <Button
+          variant="secondary"
+          onClick={() => {
+            // Keep the form, retire the old poll and clear cached mutation state.
+            setJobId(null);
+            setFinished(null);
+            setSubmitError(null);
+            submit.reset();
+            stop.reset();
+            update((current) => ({ ...current, trashPrevious: false }));
+          }}
+        >
+          {t('fileManager.assemble.editAndRetry')}
+        </Button>
+        <Button variant="primary" onClick={onClose}>
+          {t('common.close')}
+        </Button>
+      </>
     );
   } else if (phase === 'running') {
     body = (
