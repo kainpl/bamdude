@@ -71,10 +71,17 @@ _SUPPORT_BY_FAMILY = {
 SUPPORT_SLOT_TYPES = frozenset(_SUPPORT_BY_FAMILY.values())
 
 
-def support_slot_type(material: str | None, family_id: str | None) -> str:
-    """Refine a reported base material using a known Bambu support family."""
+def support_slot_type(material: str | None, family_id: str | None, *, fingerprint_type: str | None = None) -> str:
+    """Resolve a support type from the family or a compatible slot fingerprint."""
     base = (material or "").strip().upper()
-    known = _SUPPORT_BY_FAMILY.get((family_id or "").strip().upper())
+    family = (family_id or "").strip().upper()
+    known = _SUPPORT_BY_FAMILY.get(family)
     if known and base in (known, known.removesuffix("-S")):
         return known
+    # A reconnect report can supply the base type before the family needed to
+    # distinguish support from ordinary filament. Retain the known type until
+    # the printer supplies a family ID or a different material.
+    previous = (fingerprint_type or "").upper()
+    if not family and previous in SUPPORT_SLOT_TYPES and base == previous.removesuffix("-S"):
+        return previous
     return material or ""

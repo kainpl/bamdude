@@ -3642,9 +3642,11 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                         # Same BL spool still in slot - keep assignment, update fingerprint if needed
                         cur_color = (current_tray.get("tray_color") or "").strip()
                         raw_type = (current_tray.get("tray_type") or "").strip()
-                        cur_type = support_slot_type(raw_type, current_tray.get("tray_info_idx"))
                         fp_color = assignment.fingerprint_color or ""
                         fp_type = assignment.fingerprint_type or ""
+                        cur_type = support_slot_type(
+                            raw_type, current_tray.get("tray_info_idx"), fingerprint_type=fp_type
+                        )
                         color_changed = bool(cur_color) and cur_color.upper() != fp_color.upper()
                         type_changed = bool(cur_type) and cur_type.upper() != fp_type.upper()
                         if color_changed or type_changed:
@@ -3671,10 +3673,10 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                 else:
                     cur_color = (current_tray.get("tray_color") or "").strip()
                     raw_type = current_tray.get("tray_type") or ""
-                    cur_type = support_slot_type(raw_type, current_tray.get("tray_info_idx"))
                     cur_state = current_tray.get("state")
                     fp_color = assignment.fingerprint_color or ""
                     fp_type = assignment.fingerprint_type or ""
+                    cur_type = support_slot_type(raw_type, current_tray.get("tray_info_idx"), fingerprint_type=fp_type)
 
                     # Pre-config replay: empty fingerprint_type means the slot
                     # was empty when the user pre-assigned (Bambu firmware
