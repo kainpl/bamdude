@@ -1163,6 +1163,7 @@ def _load_fields(preset_type: str) -> dict:
     # Map API type names to file names
     file_map = {
         "filament": "filament_fields.json",
+        "slicer_filament_types": "slicer_filament_types.json",
         "print": "process_fields.json",
         "process": "process_fields.json",
         "printer": "printer_fields.json",
@@ -1181,6 +1182,22 @@ def _load_fields(preset_type: str) -> dict:
 
     _fields_cache[preset_type] = data
     return data
+
+
+async def _preset_fields(db: AsyncSession, preset_type: str) -> dict:
+    data = _load_fields(preset_type)
+    if preset_type != "filament":
+        return data
+
+    from backend.app.api.routes.settings import get_setting
+
+    preferred = await get_setting(db, "preferred_slicer") or "bambu_studio"
+    catalog = _load_fields("slicer_filament_types").get(preferred)
+    if catalog is None:
+        return data
+    options = [{"value": material, "label": material} for material in catalog["values"]]
+    fields = [{**field, "options": options} if field["key"] == "filament_type" else field for field in data["fields"]]
+    return {**data, "fields": fields}
 
 
 @router.get("/builtin-filaments")
@@ -1282,6 +1299,7 @@ async def get_filament_id_map(
 @router.get("/fields/{preset_type}")
 async def get_preset_fields(
     preset_type: Literal["filament", "print", "process", "printer"],
+    db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.CLOUD_AUTH),
 ):
     """
@@ -1297,12 +1315,12 @@ async def get_preset_fields(
     - unit: Unit of measurement (if applicable)
     - min/max/step: For number fields, validation constraints
     """
-    data = _load_fields(preset_type)
-    return data
+    return await _preset_fields(db, preset_type)
 
 
 @router.get("/fields")
 async def get_all_preset_fields(
+    db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.CLOUD_AUTH),
 ):
     """
@@ -1311,7 +1329,7 @@ async def get_all_preset_fields(
     Returns field definitions organized by type.
     """
     return {
-        "filament": _load_fields("filament"),
+        "filament": await _preset_fields(db, "filament"),
         "process": _load_fields("process"),
         "printer": _load_fields("printer"),
     }

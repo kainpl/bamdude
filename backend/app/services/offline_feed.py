@@ -228,7 +228,9 @@ async def _bound_internal(db, printer_id: int) -> dict[tuple[int, int], BoundSpo
             bound[key] = None
             continue
         try:
-            written = await tray_types_written_for(db, row.spool, printer_id, row.ams_id, row.tray_id)
+            written = await tray_types_written_for(
+                db, row.spool, printer_id, row.ams_id, row.tray_id, preset_owner_identity=row.preset_owner_identity
+            )
         except Exception:  # noqa: BLE001 — a lookup failure is "unknown", never "empty"
             logger.debug("offline feed: slot plan for spool %s failed", row.spool_id, exc_info=True)
             written = {(row.spool.material or "").upper()}

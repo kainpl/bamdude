@@ -1272,9 +1272,16 @@ function CreatePresetModal({
     return presetsOfType.filter(p => isOwnBambuCloudId(p.setting_id));
   }, [presetsOfType]);
 
-  // Fetch field definitions from API (cached, only loaded once per type)
+  const { data: uiPreferences } = useQuery({
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
+    enabled: presetType === 'filament',
+  });
+  const preferredSlicer = presetType === 'filament' ? uiPreferences?.preferred_slicer : undefined;
+
+  // The filament type field depends on the preferred slicer.
   const { data: fieldDefinitions } = useQuery({
-    queryKey: ['cloudFields', presetType],
+    queryKey: ['cloudFields', presetType, preferredSlicer],
     queryFn: () => api.getCloudFields(presetType === 'print' ? 'process' : presetType),
     staleTime: 1000 * 60 * 60, // Cache for 1 hour
   });
@@ -1364,19 +1371,17 @@ function CreatePresetModal({
 
   // Set inherits field when base preset changes (don't pre-fill all values - they show as placeholders)
   // In edit mode, don't reset settingsObj - keep the saved values
+  const selectedBaseName = availableBasePresets.find(p => p.setting_id === baseId)?.name;
   useEffect(() => {
-    if (!baseId) return;
-
-    const preset = availableBasePresets.find(p => p.setting_id === baseId);
-    if (preset) {
-      setBaseName(preset.name);
+    if (baseId && selectedBaseName) {
+      setBaseName(selectedBaseName);
       // Don't reset settings in edit mode - keep saved values
       if (!isEditMode) {
-        setSettingsObj({ inherits: preset.name });
-        setJsonText(JSON.stringify({ inherits: preset.name }, null, 2));
+        setSettingsObj({ inherits: selectedBaseName });
+        setJsonText(JSON.stringify({ inherits: selectedBaseName }, null, 2));
       }
     }
-  }, [baseId, availableBasePresets, isEditMode]);
+  }, [baseId, selectedBaseName, isEditMode]);
 
   // Build dynamic fields list: merge API definitions with discovered fields from user presets
   const dynamicFields = useMemo(() => {
@@ -1612,7 +1617,8 @@ function CreatePresetModal({
 
   // Render a field input
   const renderFieldInput = (field: FieldDefinition) => {
-    const value = settingsObj[field.key] as string | number | boolean | undefined;
+    const rawValue = settingsObj[field.key];
+    const value = rawValue as string | number | boolean | undefined;
     const baseValue = basePresetValues[field.key];
     const formattedBaseValue = formatValue(baseValue);
     // Always show base value as placeholder when available
@@ -1635,14 +1641,22 @@ function CreatePresetModal({
     }
 
     if (field.type === 'select') {
+      const isMaterial = field.key === 'filament_type';
+      const materialArray = isMaterial && Array.isArray(rawValue) ? rawValue : null;
+      const selected = materialArray ? String(materialArray[0] ?? '') : (value as string) || '';
+      const keepMaterial = isMaterial && selected && !field.options?.some(opt => opt.value === selected);
       return (
         <Select
           size="sm"
           className="w-full"
-          value={(value as string) || ''}
-          onChange={(e) => updateField(field.key, e.target.value)}
+          value={selected}
+          onChange={(e) => {
+            const next = e.target.value;
+            updateField(field.key, materialArray && next ? [next, ...materialArray.slice(1)] : next);
+          }}
         >
           <option value="">{placeholder}</option>
+          {keepMaterial && <option value={selected}>{selected}</option>}
           {field.options?.map(opt => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}

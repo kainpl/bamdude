@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.api.routes.cloud import resolve_api_key_cloud_owner
 from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import RequireAnyPermission, RequirePermission, require_permission
 from backend.app.core.catalog_defaults import DEFAULT_COLOR_CATALOG, DEFAULT_SPOOL_CATALOG
@@ -151,7 +152,15 @@ async def _safe_autolink(db: AsyncSession, spool: Spool) -> None:
 FILAMENT_COLORS_API = "https://filamentcolors.xyz/api"
 
 
-async def spool_slot_plan(db: AsyncSession, spool: Spool, printer_id: int, ams_id: int, tray_id: int):
+async def spool_slot_plan(
+    db: AsyncSession,
+    spool: Spool,
+    printer_id: int,
+    ams_id: int,
+    tray_id: int,
+    *,
+    preset_owner_identity: str | None = None,
+):
     """What the assign path publishes for ``spool`` on this slot, before the
     printer's backup-compatibility projection.
 
@@ -175,11 +184,19 @@ async def spool_slot_plan(db: AsyncSession, spool: Spool, printer_id: int, ams_i
         # The nozzle THIS slot feeds picks the preset — not "the printer's" first.
         nozzle_diameter=slot_nozzle(state, ams_id, tray_id).diameter,
         supports_user_preset=bool(getattr(state, "support_user_preset", False)),
+        scope_cloud_presets=True,
+        preset_owner_identity=preset_owner_identity,
     )
 
 
 async def tray_types_written_for(
-    db: AsyncSession, spool: Spool, printer_id: int, ams_id: int, tray_id: int
+    db: AsyncSession,
+    spool: Spool,
+    printer_id: int,
+    ams_id: int,
+    tray_id: int,
+    *,
+    preset_owner_identity: str | None = None,
 ) -> set[str]:
     """Every ``tray_type`` the assign path can have put in this slot for ``spool``, upper-cased.
 
@@ -194,7 +211,9 @@ async def tray_types_written_for(
     material = spool.material or ""
     written = {material.upper()}
     try:
-        plan = await spool_slot_plan(db, spool, printer_id, ams_id, tray_id)
+        plan = await spool_slot_plan(
+            db, spool, printer_id, ams_id, tray_id, preset_owner_identity=preset_owner_identity
+        )
     except ValueError:
         return written
     from backend.app.utils.filament_types import SUPPORT_SLOT_TYPES
@@ -216,6 +235,7 @@ async def apply_spool_to_slot_via_mqtt(
     tray_id: int,
     current_tray_info_idx: str = "",
     current_tray_type: str = "",
+    preset_owner_identity: str | None = None,
 ) -> bool:
     """Publish ams_filament_setting + extrusion_cali_sel for a spool on a slot.
 
@@ -259,7 +279,7 @@ async def apply_spool_to_slot_via_mqtt(
 
     supports_user_preset = bool(getattr(state, "support_user_preset", False))
     printer_model = printer_manager.get_model(printer_id)
-    plan = await spool_slot_plan(db, spool, printer_id, ams_id, tray_id)
+    plan = await spool_slot_plan(db, spool, printer_id, ams_id, tray_id, preset_owner_identity=preset_owner_identity)
     for note in plan.warnings:
         logger.info("Spool assign: %s", note)
 
@@ -2923,11 +2943,19 @@ async def assign_spool(
     data: SpoolAssignmentCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """Assign a spool to an AMS slot and auto-configure via MQTT."""
     from backend.app.main import _get_ams_assignment_lock
 
     await _refuse_in_spoolman_mode(db)
+
+    preset_owner = current_user
+    if preset_owner is None and api_key_cloud_owner is not None:
+        # Bind to the account authorized for this key, including across ID reuse.
+        capture = getattr(api_key_cloud_owner, "_cloud_authority", None)
+        if capture is not None and capture.account_identity == api_key_cloud_owner.account_identity:
+            preset_owner = api_key_cloud_owner
 
     from contextlib import AsyncExitStack
 
@@ -2947,19 +2975,24 @@ async def assign_spool(
     async with AsyncExitStack() as locks:
         for printer_id in lock_ids:
             await locks.enter_async_context(_get_ams_assignment_lock(printer_id))
-        response, vacated = await _assign_spool(data, db, current_user, locked=set(lock_ids))
+        response, vacated = await _assign_spool(data, db, preset_owner, locked=set(lock_ids))
     await spool_single_slot.announce(vacated)
     return response
 
 
 async def _assign_spool(
-    data: SpoolAssignmentCreate, db: AsyncSession, current_user: User | None, *, locked: set[int] | None = None
+    data: SpoolAssignmentCreate, db: AsyncSession, preset_owner: User | None, *, locked: set[int] | None = None
 ):
     from backend.app.services import spool_single_slot
     from backend.app.services.printer_manager import printer_manager
 
     keep = (data.printer_id, data.ams_id, data.tray_id)
     locked = {data.printer_id} if locked is None else locked
+    preset_owner_identity = (
+        preset_owner.account_identity
+        if preset_owner is not None and preset_owner.has_permission(Permission.CLOUD_AUTH.value)
+        else None
+    )
 
     # 1. Validate spool exists and is not archived
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == data.spool_id))
@@ -3106,6 +3139,7 @@ async def _assign_spool(
             tray_id=data.tray_id,
             fingerprint_color=fingerprint_color,
             fingerprint_type=fingerprint_type,
+            preset_owner_identity=preset_owner_identity,
             created_at=datetime.now(timezone.utc).replace(tzinfo=None),
         )
         db.add(assignment)
@@ -3194,13 +3228,14 @@ async def _assign_spool(
         try:
             configured = await apply_spool_to_slot_via_mqtt(
                 db=db,
-                current_user=current_user,
+                current_user=preset_owner,
                 spool=spool,
                 printer_id=data.printer_id,
                 ams_id=data.ams_id,
                 tray_id=data.tray_id,
                 current_tray_info_idx=current_tray_info_idx,
                 current_tray_type=fingerprint_type or "",
+                preset_owner_identity=assignment.preset_owner_identity,
             )
         except Exception as e:
             logger.warning("MQTT auto-configure failed for spool %d: %s", spool.id, e)
@@ -3236,7 +3271,14 @@ async def _assign_spool(
         # for one thing only: was a generic sent in place of the named filament.
         try:
             response.slot_degraded = (
-                await spool_slot_plan(db, spool, data.printer_id, data.ams_id, data.tray_id)
+                await spool_slot_plan(
+                    db,
+                    spool,
+                    data.printer_id,
+                    data.ams_id,
+                    data.tray_id,
+                    preset_owner_identity=assignment.preset_owner_identity,
+                )
             ).degraded
         except Exception:  # noqa: BLE001 — a report, never the assignment's outcome
             logger.debug("slot plan re-read failed for spool %s", spool.id, exc_info=True)

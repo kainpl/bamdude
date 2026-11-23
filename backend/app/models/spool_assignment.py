@@ -18,6 +18,8 @@ class SpoolAssignment(Base):
     tray_id: Mapped[int] = mapped_column(Integer)  # 0-3
     fingerprint_color: Mapped[str | None] = mapped_column(String(8))  # tray_color snapshot
     fingerprint_type: Mapped[str | None] = mapped_column(String(50))  # tray_type snapshot
+    # Immutable account identity survives integer id reuse after account deletion.
+    preset_owner_identity: Mapped[str | None] = mapped_column(String(36))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     spool: Mapped["Spool"] = relationship(back_populates="assignments")

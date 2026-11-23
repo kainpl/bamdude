@@ -166,6 +166,10 @@
 
 ### Changed
 
+- **The cloud preset editor offers material types for your preferred slicer.**
+  Bambu Studio and OrcaSlicer have their own choices. An imported type stays
+  selected even if the other slicer's list omits it.
+
 - **AutoQueue shows filament types and exact colours for the channels the selected plate uses.** With **Drain the emptiest spool first** enabled, the lower known filament level breaks a tie between otherwise equally ranked printers.
 
 - **Returning a print to AutoQueue keeps its filament choices.** The preview shows changes to feed, matching rules and individual slots. The operator can carry those choices back to the existing AutoQueue job.
@@ -313,6 +317,11 @@
 - **API: `PUT /api/v1/settings/virtual-printer` refuses the settings it no longer applies.** The route dates from when there was one Virtual Printer. It went on accepting `enabled`, `access_code`, `mode`, `model`, `target_printer_id` and `remote_interface_ip`, stored them where nothing reads them and answered as if a Virtual Printer had changed. It now answers 400 and points to the Virtual Printers page (`PUT /api/v1/virtual-printers/{id}`); `archive_name_source` is still set here. BamDude's own interface never used the refused fields.
 
 ### Fixed
+
+- **API-key spool assignments use the owner's allowed cloud preset.**
+  The same account is used for an empty slot's deferred configuration while
+  its cloud access remains available. Shared and Generic presets cover slots
+  without an available private preset.
 
 - **Read the finish and color from Spoolman product names.** For example,
   Matte Scarlet Red shows Matte as the subtype and Scarlet Red as the color.

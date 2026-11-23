@@ -19,8 +19,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+from backend.app.core.permissions import Permission
+from backend.app.models.user import User
 from backend.app.services.filament_identity import (
     bambu_preset_id,
     family_user_presets,
@@ -194,7 +198,19 @@ async def build_slot_assignment(
     color_rgba: str = "FFFFFFFF",
     extra_colors: str | None = None,
     temp_overrides: tuple[int | None, int | None] = (None, None),
+    scope_cloud_presets: bool = False,
+    preset_owner_identity: str | None = None,
 ) -> SlotAssignmentPlan:
+    owner_user_id = None
+    if scope_cloud_presets and preset_owner_identity:
+        owner = await db.scalar(
+            select(User)
+            .where(User.account_identity == preset_owner_identity, User.is_active.is_(True))
+            .options(selectinload(User.groups))
+        )
+        if owner is not None and owner.has_permission(Permission.CLOUD_AUTH.value):
+            owner_user_id = owner.id
+
     warnings: list[str] = []
     degraded: str | None = None
     # What the caller NAMED, before any resolution — to tell "named and not
@@ -206,7 +222,7 @@ async def build_slot_assignment(
         # The spool's own resolution is used AS the resolved identity — it may
         # carry the mirrored cloud preset's setting_id and temps, which a
         # re-resolution through the bare family id would lose.
-        resolved = await resolve_spool(db, spool)
+        resolved = await resolve_spool(db, spool, owner_user_id=owner_user_id, scope_cloud_presets=scope_cloud_presets)
         family_id = resolved.family.filament_id if resolved.family else None
         material_override = material_override or getattr(spool, "material", None)
         color_rgba = getattr(spool, "rgba", None) or color_rgba
@@ -228,7 +244,9 @@ async def build_slot_assignment(
     # (PLA Basic on a spool that is now PETG) would tell the slot PLA.
     from_stored_preset = False
     if (resolved is None or not resolved.family) and stored_preset:
-        candidate = await resolve_raw(db, stored_preset)
+        candidate = await resolve_raw(
+            db, stored_preset, owner_user_id=owner_user_id, scope_cloud_presets=scope_cloud_presets
+        )
         if candidate.family and _preset_is_of_material(
             support_slot_type(candidate.filament_type, candidate.family.filament_id),
             material_override,
@@ -290,7 +308,11 @@ async def build_slot_assignment(
     user_preset = temps_preset = None
     if supports_user_preset and not preset_setting_id and catalog.get_family(family_id) is None:
         user_preset, temps_preset = _user_presets_for_printer(
-            await family_user_presets(db, family_id), printer_model, nozzle_diameter
+            await family_user_presets(
+                db, family_id, owner_user_id=owner_user_id, scope_cloud_presets=scope_cloud_presets
+            ),
+            printer_model,
+            nozzle_diameter,
         )
 
     # setting_id precedence: an explicit request > the user's own preset made

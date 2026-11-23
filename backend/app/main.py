@@ -3732,6 +3732,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                                 tray_id=assignment.tray_id,
                                 current_tray_info_idx=current_tray.get("tray_info_idx", ""),
                                 current_tray_type=cur_type,
+                                preset_owner_identity=assignment.preset_owner_identity,
                             )
                             logger.info(
                                 "Pre-config applied on insert: spool %d → printer %d AMS%d-T%d",
@@ -3889,7 +3890,12 @@ async def _on_ams_change(printer_id: int, ams_data: list):
 
                             spool_color = (spool.rgba or "FFFFFFFF").upper()
                             spool_types = await tray_types_written_for(
-                                db, spool, printer_id, assignment.ams_id, assignment.tray_id
+                                db,
+                                spool,
+                                printer_id,
+                                assignment.ams_id,
+                                assignment.tray_id,
+                                preset_owner_identity=assignment.preset_owner_identity,
                             )
                             if cur_type.upper() in spool_types and (
                                 not cur_color or _colors_similar(cur_color, spool_color)

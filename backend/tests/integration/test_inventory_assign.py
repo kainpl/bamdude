@@ -27,6 +27,87 @@ from backend.app.models.spool import Spool
 from backend.app.models.user_filament import UserFilamentPreset
 
 
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("cloud_access", "has_mirror", "deferred", "expected_family"),
+    [
+        (True, True, False, "GFA00"),
+        (True, False, False, "GFL99"),
+        (False, True, False, "GFL99"),
+        (True, True, "loaded-later", "GFA00"),
+        (True, True, "owner-disabled", "GFL99"),
+    ],
+    ids=["own", "foreign-only", "cloud-scope-off", "replay", "inactive-owner-replay"],
+)
+async def test_api_key_assignment_uses_only_the_owners_cloud_preset(
+    async_client, printer_factory, spool_factory, db_session, cloud_access, has_mirror, deferred, expected_family
+):
+    from backend.app.core.permissions import Permission
+    from backend.app.main import on_ams_change
+    from backend.tests.integration.test_api_key_owner_authority import _key, _user
+
+    owner = await _user(db_session, "slot-owner", [Permission.INVENTORY_UPDATE.value, Permission.CLOUD_AUTH.value])
+    other = await _user(db_session, "other-mirror-owner", [Permission.CLOUD_AUTH.value])
+    printer = await printer_factory(name="P1S", model="P1S")
+    raw, _ = await _key(
+        db_session, owner=owner, can_manage_inventory=True, can_access_cloud=cloud_access, printer_ids=[printer.id]
+    )
+    preset_id = "PFUS_c29_test"
+    spool = await spool_factory(slicer_filament=preset_id, material="PLA")
+    for user_id, family in [(other.id, "GFL05"), *([(owner.id, "GFA00")] if has_mirror else [])]:
+        db_session.add(
+            UserFilamentPreset(
+                owner_user_id=user_id,
+                ecosystem="bambu",
+                source="cloud_bambu",
+                cloud_id=preset_id,
+                name="Cloud PLA",
+                family_filament_id=family,
+                filament_type="PLA",
+            )
+        )
+    await db_session.commit()
+
+    loaded = [{"id": 0, "tray": [{"id": 0, "state": 11, "tray_type": "PLA", "tray_color": "FF0000FF"}]}]
+    empty = [{"id": 0, "tray": [{"id": 0, "state": 9, "tray_type": ""}]}]
+    mqtt = MagicMock()
+    mqtt.ams_set_filament_setting.return_value = True
+    with (
+        patch("backend.app.services.printer_manager.printer_manager") as pm,
+        patch("backend.app.main.printer_manager", new=MagicMock()) as main_pm,
+        patch("backend.app.main.mqtt_relay.on_ams_change", new=AsyncMock()),
+        patch("backend.app.main.ws_manager.send_printer_status", new=AsyncMock()),
+        patch("backend.app.main.ws_manager.broadcast", new=AsyncMock()),
+    ):
+        pm.get_client.return_value = main_pm.get_client.return_value = mqtt
+        pm.get_model.return_value = main_pm.get_model.return_value = "P1S"
+        pm.get_status.return_value = _make_mock_status(ams_data=empty if deferred else loaded)
+        pm.get_status.return_value.state = "IDLE"
+        response = await async_client.post(
+            "/api/v1/inventory/assignments",
+            headers={"X-API-Key": raw},
+            json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 0, "tray_id": 0},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["pending_config"] is bool(deferred)
+
+        if deferred:
+            mqtt.ams_set_filament_setting.assert_not_called()
+            if deferred == "owner-disabled":
+                owner.is_active = False
+                await db_session.commit()
+            pm.get_status.return_value = main_pm.get_status.return_value = _make_mock_status(ams_data=loaded)
+            pm.get_status.return_value.state = "IDLE"
+            await on_ams_change(printer.id, loaded)
+
+    mqtt.ams_set_filament_setting.assert_called_once()
+    sent = mqtt.ams_set_filament_setting.call_args.kwargs
+    assert sent["tray_info_idx"] == expected_family
+    if expected_family == "GFA00":
+        assert sent["setting_id"] == preset_id
+
+
 class _PrinterManagerPatch:
     def __init__(self, target, **kwargs):
         self._patcher = _orig_patch(target, **kwargs)
