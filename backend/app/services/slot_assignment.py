@@ -321,10 +321,15 @@ async def build_slot_assignment(
             nozzle_diameter,
         )
 
+    # Orca Cloud mirrors can identify the material family but their UUIDs
+    # cannot name a Bambu preset. A replacement family needs its own preset.
+    resolved_setting_id = (
+        resolved.setting_id if resolved and resolved.origin in ("system", "cloud_bambu") and degraded is None else None
+    )
     if (
         scope_cloud_presets
         and family_id.startswith("P")
-        and not (preset_setting_id or user_preset or (resolved and resolved.setting_id))
+        and not (preset_setting_id or user_preset or resolved_setting_id)
     ):
         stand_in, fam_type = _stand_in(fam_type or material_override or "")
         if stand_in is None:
@@ -336,13 +341,12 @@ async def build_slot_assignment(
         resolved = temps_preset = None
 
     # setting_id precedence: an explicit request > the user's own preset made
-    # for this printer > the identity's own (a mirrored cloud preset keeps its
-    # PFUS/uuid — the #1815 guarantee) > the catalog preset picked for this
-    # printer.
+    # for this printer > the identity's Bambu setting (including a mirrored
+    # PFUS, #1815) > the catalog preset picked for this printer.
     setting_id = (
         (preset_setting_id or None)
         or (bambu_preset_id(user_preset) if user_preset is not None else None)
-        or (resolved.setting_id if resolved else None)
+        or resolved_setting_id
         or (preset.setting_id if preset else None)
         or ""
     )

@@ -321,6 +321,7 @@
 - **API-key spool assignments use the owner's allowed cloud preset.**
   The owner is checked again when an empty slot is configured after insertion.
   A local preset's Bambu Cloud copy is available to the account that pushed it.
+  An Orca Cloud preset can identify the filament family for a Bambu slot.
   If the assignment has no usable private preset, it can use a shared preset
   or the material's Generic profile. K-profile selection uses the family
   selected for the slot before AMS backup compatibility is applied.

@@ -121,6 +121,10 @@ async def test_api_key_assignment_uses_only_the_owners_cloud_preset(
         ("own-calibration", "GFA00", "PFUS_slot_cloud"),
         ("custom-family-missing-preset", "GFL99", "GFSL99"),
         ("shared-after-unusable", "GFA00", "PFUS_slot_cloud"),
+        ("orca-only", "GFL99", "GFSL99"),
+        ("orca-with-bambu", "P122e532", "PFUS_slot_cloud"),
+        ("orca-system-family", "GFA00", "GFSA00_34"),
+        ("bambu-unsupported", "GFL99", "GFSL99"),
     ],
 )
 async def test_api_key_assignment_publishes_an_authorized_preset_and_uses_its_family(
@@ -132,7 +136,9 @@ async def test_api_key_assignment_publishes_an_authorized_preset_and_uses_its_fa
     from backend.tests.integration.test_api_key_owner_authority import _key, _user
 
     owner = await _user(
-        db_session, "slot-review-owner", [Permission.INVENTORY_UPDATE.value, Permission.CLOUD_AUTH.value]
+        db_session,
+        "slot-review-owner",
+        [Permission.INVENTORY_UPDATE.value, Permission.CLOUD_AUTH.value, Permission.ORCA_CLOUD_AUTH.value],
     )
     other = await _user(db_session, "slot-review-peer", [Permission.CLOUD_AUTH.value])
     printer = await printer_factory(name="P1S", model="P1S")
@@ -145,6 +151,7 @@ async def test_api_key_assignment_publishes_an_authorized_preset_and_uses_its_fa
     )
     custom_family = "P122e532"
     cloud_setting = "PFUS_slot_cloud"
+    stored_setting = cloud_setting
     family_id = custom_family if case.startswith("pushed-") or case == "custom-family-missing-preset" else None
 
     def add_mirror(user_id, family):
@@ -160,13 +167,28 @@ async def test_api_key_assignment_publishes_an_authorized_preset_and_uses_its_fa
             )
         )
 
-    if family_id:
+    if family_id or case in {"orca-only", "orca-with-bambu", "bambu-unsupported"}:
         db_session.add(
             UserFilamentFamily(
-                filament_id=family_id, ecosystem="orca", alias="Custom PLA", filament_type="PLA", origin="local"
+                filament_id=custom_family, ecosystem="orca", alias="Custom PLA", filament_type="PLA", origin="local"
             )
         )
-    if case.startswith("pushed-"):
+    if case.startswith("orca-"):
+        stored_setting = "2202bc2b-2bba-4fcb-a4d4-681fd391f11f"
+        db_session.add(
+            UserFilamentPreset(
+                owner_user_id=owner.id,
+                ecosystem="orca",
+                source="cloud_orca",
+                cloud_id=stored_setting,
+                name="Orca PLA",
+                family_filament_id="GFA00" if case == "orca-system-family" else custom_family,
+                filament_type="PLA",
+            )
+        )
+        if case == "orca-with-bambu":
+            add_mirror(owner.id, custom_family)
+    elif case.startswith("pushed-"):
         pushed_identity = {
             "pushed-foreign": other.account_identity,
             "pushed-unknown": None,
@@ -184,6 +206,8 @@ async def test_api_key_assignment_publishes_an_authorized_preset_and_uses_its_fa
         )
     elif case == "custom-family-missing-preset":
         add_mirror(other.id, custom_family)
+    elif case == "bambu-unsupported":
+        add_mirror(owner.id, custom_family)
     elif case == "own-calibration":
         add_mirror(other.id, "GFL05")
         await db_session.flush()
@@ -193,7 +217,7 @@ async def test_api_key_assignment_publishes_an_authorized_preset_and_uses_its_fa
         add_mirror(None, "GFA00")
     await db_session.commit()
 
-    spool = await spool_factory(slicer_filament=cloud_setting, filament_family_id=family_id, material="PLA")
+    spool = await spool_factory(slicer_filament=stored_setting, filament_family_id=family_id, material="PLA")
     deferred = case == "pushed-owner-disabled-on-replay"
     loaded = [{"id": 0, "tray": [{"id": 0, "state": 11, "tray_type": "PLA", "tray_color": "FF0000FF"}]}]
     empty = [{"id": 0, "tray": [{"id": 0, "state": 9, "tray_type": ""}]}]
@@ -213,7 +237,7 @@ async def test_api_key_assignment_publishes_an_authorized_preset_and_uses_its_fa
         pm.get_model.return_value = main_pm.get_model.return_value = "P1S"
         pm.get_status.return_value = _make_mock_status(ams_data=empty if deferred else loaded)
         pm.get_status.return_value.state = "IDLE"
-        pm.get_status.return_value.support_user_preset = True
+        pm.get_status.return_value.support_user_preset = case != "bambu-unsupported"
         response = await async_client.post(
             "/api/v1/inventory/assignments",
             headers={"X-API-Key": raw},
