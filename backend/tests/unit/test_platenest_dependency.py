@@ -1,8 +1,8 @@
 """The packing engine of "Assemble project" is pinned exactly: we write files with it and read them back."""
 
-from importlib.metadata import version
 import subprocess
 import sys
+from importlib.metadata import version
 from pathlib import Path
 
 from packaging.requirements import Requirement
