@@ -9023,6 +9023,7 @@ export function EditPrinterModal({
 
   const [showAccessCode, setShowAccessCode] = useState(false);
 
+  const saveInProgress = useRef(false);
   const updateMutation = useMutation({
     mutationFn: (data: Partial<PrinterCreate>) => api.updatePrinter(printer.id, data),
     onSuccess: () => {
@@ -9031,9 +9032,11 @@ export function EditPrinterModal({
       onClose();
     },
     onError: (error: Error) => showToast(error.message || t('printers.toast.failedToUpdate'), 'error'),
+    onSettled: () => { saveInProgress.current = false; },
   });
 
   const doSave = () => {
+    if (saveInProgress.current) return;
     const data: Partial<PrinterCreate> = {
       name: form.name,
       ip_address: form.ip_address,
@@ -9056,6 +9059,7 @@ export function EditPrinterModal({
     if (form.access_code) {
       data.access_code = form.access_code;
     }
+    saveInProgress.current = true;
     updateMutation.mutate(data);
   };
 
@@ -9063,6 +9067,7 @@ export function EditPrinterModal({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (saveInProgress.current) return;
     void preflight.check({
       ip_address: form.ip_address.trim(),
       serial_number: printer.serial_number,
@@ -9384,7 +9389,7 @@ export function EditPrinterModal({
               </div>
               <DiagnosticChecklist result={preflight.saveWarning} />
               <div className="flex gap-3">
-                <Button type="submit" variant="secondary" className="flex-1">
+                <Button type="submit" variant="secondary" className="flex-1" disabled={updateMutation.isPending}>
                   {t('printers.addPreflight.checkAgain')}
                 </Button>
                 <Button type="button" onClick={doSave} className="flex-1" disabled={updateMutation.isPending}>

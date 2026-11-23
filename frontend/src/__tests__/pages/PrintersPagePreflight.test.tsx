@@ -132,6 +132,36 @@ describe('printer setup connection check', () => {
     expect(code).toHaveAttribute('type', 'password');
   });
 
+  it('blocks Edit retries and form submits while Save anyway is saving, then allows retry after failure', async () => {
+    let rejectSave!: (error: Error) => void;
+    vi.mocked(api.updatePrinter).mockReset()
+      .mockReturnValueOnce(new Promise((_, reject) => { rejectSave = reject; }))
+      .mockResolvedValueOnce(printer);
+    const form = open('edit');
+    form.submit();
+    const saveAnyway = await screen.findByRole('button', { name: 'Save anyway' });
+    fireEvent.click(saveAnyway);
+    await waitFor(() => expect(api.updatePrinter).toHaveBeenCalledOnce());
+
+    const name = form.ip.closest('form')!.querySelector('input[value="X1 Carbon"]')!;
+    fireEvent.change(name, { target: { value: 'Renamed during save' } });
+    const checkAgain = screen.getByRole('button', { name: 'Check again' });
+    fireEvent.click(checkAgain);
+    await act(async () => { form.submit(); });
+    expect(api.diagnoseConnection).toHaveBeenCalledOnce();
+    expect(api.updatePrinter).toHaveBeenCalledExactlyOnceWith(1, expect.objectContaining({ name: printer.name }));
+    expect(saveAnyway).toBeDisabled();
+    expect(checkAgain).toBeDisabled();
+
+    await act(async () => rejectSave(new Error('Could not save printer')));
+    await waitFor(() => expect(checkAgain).toBeEnabled());
+    expect(saveAnyway).toBeEnabled();
+    fireEvent.click(checkAgain);
+    await waitFor(() => expect(api.diagnoseConnection).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(api.updatePrinter).toHaveBeenCalledTimes(2));
+    expect(api.updatePrinter).toHaveBeenNthCalledWith(2, 1, expect.objectContaining({ name: 'Renamed during save' }));
+  });
+
   it('keeps Save anyway available for the checked settings', async () => {
     const form = open('add');
     form.submit();

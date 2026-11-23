@@ -1,6 +1,6 @@
 ## [Unreleased]
 
-- **Retry the connection check when adding or editing a printer.** Changing the address, serial number or access code clears any warning for the previous settings. The access code stays hidden until you choose to show it.
+- **Retry the connection check when adding or editing a printer.** Changing the address, serial number or access code clears any warning for the previous settings. The access code stays hidden until you choose to show it. Finish saving an edit before checking the connection again.
 
 - **MQTT plugs in monitoring mode stay out of power automation.** The queues skip them when looking for a switch, and Obico reports whether a mains switch succeeded. The meters still contribute energy readings for prints. Changing a plug's type or linked printer cancels a pending automatic shutdown.
 - **Background timelapse scans back off when the printer stops answering FTP listings.** This includes a timeout while checking a parent directory. A queue upload reports confirmed `FTP 421` session exhaustion even when the refusal arrives after file data was sent.
