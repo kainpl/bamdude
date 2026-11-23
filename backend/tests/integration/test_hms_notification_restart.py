@@ -3,6 +3,7 @@
 import asyncio
 import os
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -167,3 +168,96 @@ async def test_a_muted_standing_fault_has_not_cleared(session_factory, restart):
     await main._record_hms_faults(426, [], "PAUSE", (True, True), muted_errors=[fault(ARRAY)], now=2000)
     await main._record_hms_faults(426, [], "PAUSE", (True, True), muted_errors=[fault(ARRAY)], now=3000)
     assert await record([ARRAY], now=3001) == set()
+
+
+HMS_PACKET = {"hms": [{"attr": int(ARRAY[:8], 16), "code": int(ARRAY[8:], 16)}], "print_error": int(SCALAR, 16)}
+HMS_CLEAR = {"hms": [], "print_error": 0}
+
+
+def push(client, **data):
+    client._process_message({"print": data})
+    return client.state
+
+
+async def stored_faults(session_factory):
+    async with session_factory() as db:
+        return await db.scalar(select(Printer.hms_notified_faults).where(Printer.id == 426))
+
+
+async def test_hms_clear_and_new_episode_reach_status_callback_without_a_change_to_its_key(
+    session_factory, restart, monkeypatch
+):
+    clock = SimpleNamespace(value=1000.0)
+    monkeypatch.setattr(main, "time", SimpleNamespace(time=lambda: clock.value))
+    for store in (
+        main._last_status_broadcast,
+        main._last_printer_state,
+        main._last_printer_state_generation,
+        main._printer_last_connected,
+        main._projection_repeat_available,
+    ):
+        monkeypatch.setitem(store, 426, None)
+    projection = AsyncMock()
+    repeat = AsyncMock(return_value=False)
+    notices = AsyncMock()
+    monkeypatch.setattr(main, "_broadcast_printer_status_projection", projection)
+    monkeypatch.setattr(main, "_repeat_available_for", repeat)
+    monkeypatch.setattr(main, "_capture_snapshot_for_notification", AsyncMock(return_value=None))
+    monkeypatch.setattr(main, "notification_service", notices)
+
+    client = BambuMQTTClient(ip_address="127.0.0.1", serial_number="test-hms", access_code="00000000")
+    state = push(client, gcode_state="IDLE", **HMS_PACKET)
+    key = main._printer_status_effect_key(state)
+    await main.on_printer_status_change(426, state)
+    assert await stored_faults(session_factory) == {ARRAY: None, SCALAR: None}
+    notices.on_printer_error.assert_awaited_once()
+    repeat.assert_awaited_once()
+
+    clock.value = 1001
+    state = push(client, **HMS_CLEAR)
+    assert main._printer_status_effect_key(state) == key
+    await main.on_printer_status_change(426, state)
+    assert await stored_faults(session_factory) == {ARRAY: 1000.0, SCALAR: 1000.0}
+
+    clock.value = 1601
+    state = push(client, **HMS_PACKET)
+    assert main._printer_status_effect_key(state) == key
+    await main.on_printer_status_change(426, state)
+    assert notices.on_printer_error.await_count == 2
+    assert await stored_faults(session_factory) == {ARRAY: None, SCALAR: None}
+    repeat.assert_awaited_once()
+    assert projection.await_count == 3
+
+
+@pytest.mark.parametrize(
+    ("start_report", "clear_array", "clear_scalar"),
+    [(HMS_CLEAR, True, True), ({"print_error": 0}, False, True), ({"hms": []}, True, False), ({}, False, False)],
+)
+async def test_print_start_uses_only_hms_sources_reported_in_that_frame(
+    session_factory, restart, start_report, clear_array, clear_scalar
+):
+    client = BambuMQTTClient(ip_address="127.0.0.1", serial_number="test-hms", access_code="00000000")
+    state = push(client, gcode_state="IDLE", **HMS_PACKET)
+    assert await record([ARRAY, SCALAR], state=state.state) == {ARRAY, SCALAR}
+    boundary = client._run_boundary_generation
+
+    state = push(client, gcode_state="RUNNING", gcode_file="/cache/fixture.gcode.3mf", subtask_id="51", **start_report)
+    assert client._run_boundary_generation == boundary + 1
+    assert not state.hms_errors
+    assert (state.hms_array_reported, state.hms_scalar_reported) == (clear_array, clear_scalar)
+    await record([], reported=(state.hms_array_reported, state.hms_scalar_reported), state=state.state, now=1001)
+    cleared = {code for code, reported in ((ARRAY, clear_array), (SCALAR, clear_scalar)) if reported}
+    assert set(await stored_faults(session_factory)) == ({ARRAY, SCALAR} - cleared)
+
+    state = push(client, **HMS_PACKET)
+    assert await record([error.full_code for error in state.hms_errors], state=state.state, now=1702) == cleared
+
+
+async def test_print_start_keeps_faults_reported_in_the_new_run():
+    client = BambuMQTTClient(ip_address="127.0.0.1", serial_number="test-hms", access_code="00000000")
+    push(client, gcode_state="IDLE")
+    boundary = client._run_boundary_generation
+    state = push(client, gcode_state="RUNNING", gcode_file="/cache/fixture.gcode.3mf", subtask_id="51", **HMS_PACKET)
+    assert client._run_boundary_generation == boundary + 1
+    assert (state.hms_array_reported, state.hms_scalar_reported) == (True, True)
+    assert {error.full_code for error in state.hms_errors} == {ARRAY, SCALAR}

@@ -7131,6 +7131,13 @@ class BambuMQTTClient:
                 target = self.state.temperatures.get("bed_target", 0)
                 self.state.temperatures["bed_heating"] = target > 0 and current < target
 
+        if new_print_boundary:
+            # Drop the previous run's local projection before the current frame
+            # is parsed. Only its own reports prove what the firmware cleared.
+            self.state.hms_errors = []
+            self.state.hms_array_reported = False
+            self.state.hms_scalar_reported = False
+
         # Parse HMS (Health Management System) errors
         if "hms" in data:
             hms_list = data["hms"]
@@ -7910,10 +7917,6 @@ class BambuMQTTClient:
 
         # Track RUNNING state for more robust completion detection
         if new_print_boundary:
-            # Reset the local projection. The next report proves any clear.
-            self.state.hms_errors = []
-            self.state.hms_array_reported = False
-            self.state.hms_scalar_reported = False
             # Reset completion tracking for new print
             self._was_running = True
             self._completion_triggered = False
