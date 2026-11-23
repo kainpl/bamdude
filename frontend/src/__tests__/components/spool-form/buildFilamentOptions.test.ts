@@ -135,6 +135,9 @@ describe('buildFilamentOptions', () => {
     const options = buildFilamentOptions([], new Set(), [], []);
     expect(options.length).toBeGreaterThan(0);
     expect(options.map(o => o.name)).toContain('Generic PLA');
+    expect(options.find(o => o.name === 'Bambu PLA-CF')?.code).toBe('GFA50');
+    expect(options.find(o => o.code === 'GFS00')?.name).toBe('Bambu Support W');
+    expect(options.find(o => o.code === 'GFS01')?.name).toBe('Bambu Support G');
   });
 
   it('skips a built-in whose setting_id is already covered by cloud', () => {

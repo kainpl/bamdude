@@ -124,3 +124,18 @@ async def test_a_different_filament_in_the_slot_still_unlinks(db_session, printe
     await _push(printer.id, _slot("PETG-CF"))
 
     assert await _links(db_session, printer.id) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_support_echo_keeps_the_binding_but_plain_pla_releases_it(db_session, printer_factory, main_db):
+    printer, spool = await _assign(db_session, printer_factory, material="PLA", filament_family_id="GFS05")
+    support = _slot("PLA")
+    support[0]["tray"][0]["tray_info_idx"] = "GFS05"
+    await _push(printer.id, support)
+    assert await _links(db_session, printer.id) == [(spool.id, "PLA-S")]
+
+    plain = _slot("PLA")
+    plain[0]["tray"][0]["tray_info_idx"] = "GFA00"
+    await _push(printer.id, plain)
+    assert await _links(db_session, printer.id) == []

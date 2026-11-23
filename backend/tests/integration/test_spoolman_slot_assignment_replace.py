@@ -233,3 +233,38 @@ class TestSpoolmanUnassignBroadcastsTheSlotItCleared:
 
         assert response.status_code == 200
         assert _slot_change_payloads(broadcast) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_assigning_a_support_spool_publishes_the_support_type(async_client, printer_factory, db_session):
+    printer = await printer_factory(name="P1S", model="P1S")
+    spool = _spoolman_spool(42)
+    spool["extra"] = {"bambu_slicer_filament": '"GFS02"'}
+    mqtt = MagicMock()
+    mqtt.ams_set_filament_setting.return_value = True
+    with (
+        patch(
+            "backend.app.api.routes.spoolman_inventory._get_client",
+            new=AsyncMock(return_value=_mock_spoolman_client(spool)),
+        ),
+        patch("backend.app.api.routes.spoolman_inventory.printer_manager") as manager,
+    ):
+        manager.get_client.return_value = mqtt
+        manager.get_status.return_value = None
+        manager.get_model.return_value = "P1S"
+        response = await async_client.post(
+            "/api/v1/spoolman/inventory/slot-assignments",
+            json={"spoolman_spool_id": 42, "printer_id": printer.id, "ams_id": AMS_ID, "tray_id": TRAY_ID},
+        )
+    assert response.status_code == 200, response.text
+    published = mqtt.ams_set_filament_setting.call_args.kwargs
+    assert (published["tray_info_idx"], published["tray_type"]) == ("GFS02", "PLA-S")
+
+    from backend.app.services.offline_feed import _bound_spoolman
+
+    with patch(
+        "backend.app.services.spoolman.get_spoolman_client", new=AsyncMock(return_value=_mock_spoolman_client(spool))
+    ):
+        bound = await _bound_spoolman(db_session, printer.id)
+    assert bound[AMS_ID, TRAY_ID] == (("PLA-S",), "FF0000FF")

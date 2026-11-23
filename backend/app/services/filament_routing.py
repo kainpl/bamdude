@@ -7,7 +7,12 @@ from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from backend.app.services.printer_feed_snapshot import FeedSource, PrinterFeedSnapshot
-from backend.app.utils.filament_types import canonical_filament_type, filament_types_compatible
+from backend.app.utils.filament_types import (
+    SUPPORT_SLOT_TYPES,
+    canonical_filament_type,
+    filament_types_compatible,
+    support_slot_type,
+)
 from backend.app.utils.model_compatibility import model_compatibility
 from backend.app.utils.printer_configs import requires_left_tpu_firmware_check
 from backend.app.utils.printer_models import normalize_model_name
@@ -163,10 +168,17 @@ def effective_slots(requirements: "PrintRequirements", policy: RoutingPolicy) ->
         return None
     for slot in slots:
         override = overrides.get(slot["slot_id"], {})
+        enriched_type = slot.get("filament_type")
+        slot["type"] = (
+            enriched_type
+            if enriched_type in SUPPORT_SLOT_TYPES
+            else support_slot_type(slot["type"], slot.get("tray_info_idx"))
+        )
         if override.get("type"):
-            if not filament_types_compatible(override["type"], slot["type"]):
+            override_type = support_slot_type(override["type"], override.get("tray_info_idx"))
+            if not filament_types_compatible(override_type, slot["type"]):
                 slot["tray_info_idx"] = override.get("tray_info_idx")
-            slot["type"] = override["type"]
+            slot["type"] = override_type
         if override.get("tray_info_idx"):
             slot["tray_info_idx"] = override["tray_info_idx"]
         if override.get("color"):

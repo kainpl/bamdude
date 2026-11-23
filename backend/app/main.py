@@ -175,6 +175,7 @@ from backend.app.services.timelapse_files import (
 from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.failure_reasons import OTHER as FAILURE_OTHER, USER_CANCELLED
 from backend.app.utils.filament_remaining import grams_used
+from backend.app.utils.filament_types import support_slot_type
 from backend.app.utils.print_jobs import is_internal_printer_job
 
 
@@ -3640,7 +3641,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                     if spool_matches:
                         # Same BL spool still in slot - keep assignment, update fingerprint if needed
                         cur_color = current_tray.get("tray_color", "")
-                        cur_type = current_tray.get("tray_type", "")
+                        cur_type = support_slot_type(current_tray.get("tray_type"), current_tray.get("tray_info_idx"))
                         fp_color = assignment.fingerprint_color or ""
                         fp_type = assignment.fingerprint_type or ""
                         if cur_color.upper() != fp_color.upper() or cur_type.upper() != fp_type.upper():
@@ -3664,7 +3665,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                     stale.append(assignment)
                 else:
                     cur_color = current_tray.get("tray_color", "")
-                    cur_type = current_tray.get("tray_type", "")
+                    cur_type = support_slot_type(current_tray.get("tray_type"), current_tray.get("tray_info_idx"))
                     cur_state = current_tray.get("state")
                     fp_color = assignment.fingerprint_color or ""
                     fp_type = assignment.fingerprint_type or ""

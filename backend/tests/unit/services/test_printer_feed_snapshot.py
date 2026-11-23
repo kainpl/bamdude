@@ -351,3 +351,40 @@ def test_a_present_ams_with_no_spool_offers_no_source_whatever_power_on_flag_say
         {"print": {"ams": {"ams_exist_bits": "1", "tray_exist_bits": "0", "power_on_flag": False}}}, "P1S"
     )
     assert snapshot_from_state(1, "P1S", state).sources == ()
+
+
+def test_support_reader_keeps_plain_filament_distinct_after_a_partial_push():
+    from backend.app.utils.filament_types import filament_types_compatible
+
+    state = PrinterState(connected=True)
+    state.feed_telemetry.observe(
+        {
+            "print": {
+                "ams": {
+                    "ams": [
+                        {
+                            "id": 0,
+                            "tray": [
+                                {"id": 0, "tray_type": "PLA", "tray_info_idx": "GFS05"},
+                                {"id": 1, "tray_type": "PLA", "tray_info_idx": "GFA00"},
+                            ],
+                        }
+                    ]
+                }
+            }
+        },
+        "P1P",
+    )
+    state.feed_telemetry.observe({"print": {"ams": {"ams": [{"id": 0, "tray": [{"id": 0, "remain": 42}]}]}}}, "P1P")
+    support, ordinary = snapshot_from_state(1, "P1P", state).sources
+    assert (support.material, support.remain) == ("PLA-S", 42)
+    assert filament_types_compatible(support.material, "PLA-S")
+    assert filament_types_compatible(ordinary.material, "PLA")
+    assert not filament_types_compatible(support.material, ordinary.material)
+
+    # A contradictory material report must not convert PETG to support using
+    # a retained family value from an earlier tray report.
+    state.feed_telemetry.observe(
+        {"print": {"ams": {"ams": [{"id": 0, "tray": [{"id": 0, "tray_type": "PETG"}]}]}}}, "P1P"
+    )
+    assert snapshot_from_state(1, "P1P", state).sources[0].material == "PETG"

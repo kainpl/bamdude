@@ -178,3 +178,32 @@ class TestStrayRowsGoAtStartUp:
 
         assert await clear_stray_builtin_assignments(db_session) == 0
         assert await _row_count(db_session) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_built_in_support_spool_uses_its_wire_type(async_client, printer_factory, db_session):
+    from backend.app.api.routes.inventory import tray_types_written_for
+
+    printer = await printer_factory(name="P1S", model="P1S")
+    spool = await _spool(db_session)
+    spool.material = "PA"
+    spool.filament_family_id = "GFS01"
+    await db_session.commit()
+    await _spoolman_mode(db_session, on=False)
+    with patch("backend.app.services.printer_manager.printer_manager") as manager:
+        mqtt = MagicMock()
+        mqtt.ams_set_filament_setting.return_value = True
+        manager.ensure_fresh_connection = AsyncMock(return_value=True)
+        manager.ensure_fresh_connection_for_printer = AsyncMock(return_value=True)
+        manager.get_client.return_value = mqtt
+        manager.get_model.return_value = "P1S"
+        manager.get_status.return_value = None
+        response = await async_client.post(
+            "/api/v1/inventory/assignments",
+            json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 0, "tray_id": 1},
+        )
+        assert await tray_types_written_for(db_session, spool, printer.id, 0, 1) == {"PA-S"}
+    assert response.status_code == 200, response.text
+    published = mqtt.ams_set_filament_setting.call_args.kwargs
+    assert (published["tray_info_idx"], published["tray_type"]) == ("GFS01", "PA-S")

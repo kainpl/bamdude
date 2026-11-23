@@ -29,6 +29,7 @@ from backend.app.services.queue_source_descriptor import (
     stored_descriptor,
 )
 from backend.app.services.source_io import SourceUnavailable
+from backend.app.utils.filament_types import SUPPORT_SLOT_TYPES, filament_types_compatible, support_slot_type
 
 
 async def enrich_family_filament_rows(db, filaments: Iterable[dict]) -> list[dict]:
@@ -42,7 +43,16 @@ async def enrich_family_filament_rows(db, filaments: Iterable[dict]) -> list[dic
         if family_id not in resolved_by_id:
             resolved = await resolve_tray(db, family_id)
             resolved_by_id[family_id] = resolved if resolved.family else await resolve_raw(db, family_id)
-        filament_type = resolved_by_id[family_id].filament_type
+        resolved = resolved_by_id[family_id]
+        filament_type = resolved.filament_type
+        declared_type = (filament.get("filament_type") or filament.get("type") or "").strip().upper()
+        if declared_type in SUPPORT_SLOT_TYPES and filament_types_compatible(
+            declared_type.removesuffix("-S"), filament_type
+        ):
+            filament_type = declared_type
+        filament_type = support_slot_type(
+            filament_type, resolved.family.filament_id if resolved.family else None, preset_name=resolved.display_name
+        )
         if not filament_type:
             enriched.append(filament)
             continue

@@ -39,7 +39,7 @@ from dataclasses import dataclass
 
 from backend.app.services.ams_advertised_overlay import slot_key
 from backend.app.services.filament_routing import RoutingPolicy, effective_slots, normalized_color
-from backend.app.utils.filament_types import filament_types_compatible
+from backend.app.utils.filament_types import SUPPORT_SLOT_TYPES, filament_types_compatible, support_slot_type
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +156,8 @@ def feed_from(
             continue
         tray = reported[key][1]
         if tray.get("tray_type"):
-            sources.append(OfflineSource(kind, tray["tray_type"], tray.get("tray_color") or None))
+            slot_type = support_slot_type(tray["tray_type"], tray.get("tray_info_idx"))
+            sources.append(OfflineSource(kind, slot_type, tray.get("tray_color") or None))
     return OfflineFeed(tuple(sources), ams_known, external_known)
 
 
@@ -240,8 +241,12 @@ async def _bound_spoolman(db, printer_id: int) -> dict[tuple[int, int], BoundSpo
 
     from backend.app.api.routes._spoolman_helpers import _map_spoolman_spool
     from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+    from backend.app.services.printer_manager import printer_manager
+    from backend.app.services.slot_assignment import build_slot_assignment
     from backend.app.services.spoolman import get_spoolman_client
+    from backend.app.services.spoolman_kprofile_link import resolve_spoolman_slot_kprofile
     from backend.app.utils.filament_catalog import family_for_material, material_type
+    from backend.app.utils.slot_nozzle import slot_nozzle
 
     rows = (
         (await db.execute(select(SpoolmanSlotAssignment).where(SpoolmanSlotAssignment.printer_id == printer_id)))
@@ -263,7 +268,34 @@ async def _bound_spoolman(db, printer_id: int) -> dict[tuple[int, int], BoundSpo
         # The type the slot plan writes for a spool without a family — the
         # same answer the Spoolman assign path gets (slot_assignment._stand_in).
         family = family_for_material(material)
-        written = {material, material_type(material) or "", (family.filament_type if family else "") or ""}
+        base_type = material_type(material) or ""
+        written = {material, base_type, (family.filament_type if family else "") or ""}
+        if base_type in {"PLA", "PA"} or material.upper() in SUPPORT_SLOT_TYPES or "support" in material.casefold():
+            state = printer_manager.get_status(printer_id)
+            nozzle = slot_nozzle(state, row.ams_id, row.tray_id)
+            calibration = await resolve_spoolman_slot_kprofile(
+                db,
+                printer_id=printer_id,
+                spoolman_spool_id=row.spoolman_spool_id,
+                nozzle_diameter=nozzle.diameter_float,
+                slot_extruder=nozzle.extruder,
+                nozzle_flow=nozzle.flow,
+            )
+            try:
+                plan = await build_slot_assignment(
+                    db,
+                    family_id=calibration.filament_id if calibration else None,
+                    stored_preset=mapped.get("slicer_filament"),
+                    material_override=material,
+                    supports_user_preset=bool(getattr(state, "support_user_preset", False)),
+                    printer_model=printer_manager.get_model(printer_id),
+                    nozzle_diameter=nozzle.diameter,
+                )
+            except ValueError:
+                bound[key] = None
+                continue
+            if plan.tray_type in SUPPORT_SLOT_TYPES:
+                written = {plan.tray_type}
         bound[key] = (tuple(sorted(w.upper() for w in written if w)), mapped.get("rgba"))
     return bound
 

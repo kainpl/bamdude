@@ -9,6 +9,7 @@ import json
 from dataclasses import asdict, dataclass, field
 
 from backend.app.services.ams_advertised_overlay import matches_live, slot_key
+from backend.app.utils.filament_types import support_slot_type
 from backend.app.utils.model_compatibility import effective_model_for_state
 from backend.app.utils.printer_models import is_dual_nozzle_model, is_nozzle_rack_model, normalize_model_name
 
@@ -324,7 +325,7 @@ def snapshot_from_state(
             FeedSource(
                 id=sid,
                 kind=kind,
-                material=material,
+                material=support_slot_type(material, variant),
                 color=color,
                 variant=variant,
                 nozzles=nozzles,

@@ -16,6 +16,8 @@ of tidy.
 
 from __future__ import annotations
 
+import re
+
 # Types within a group are interchangeable on the printer side; Bambu Lab
 # firmware treats them as the same material. The first entry is canonical.
 #
@@ -57,3 +59,27 @@ def canonical_filament_type(ftype: str | None) -> str:
 def filament_types_compatible(a: str | None, b: str | None) -> bool:
     """Whether two filament types may stand in for one another."""
     return canonical_filament_type(a) == canonical_filament_type(b)
+
+
+# Bambu Studio's get_filament_type uses the support flag for these PLA and PA
+# families. The catalog keeps the preset's base type for authoring.
+_SUPPORT_BY_FAMILY = {
+    "GFS00": "PLA-S",  # Support W
+    "GFS01": "PA-S",  # Support G
+    "GFS02": "PLA-S",  # Support For PLA
+    "GFS03": "PA-S",  # Support For PA/PET
+    "GFS05": "PLA-S",  # Support For PLA/PETG
+}
+SUPPORT_SLOT_TYPES = frozenset(_SUPPORT_BY_FAMILY.values())
+_SUPPORT_NAME = re.compile(r"\bsupport\b", re.IGNORECASE)
+
+
+def support_slot_type(material: str | None, family_id: str | None, *, preset_name: str | None = None) -> str:
+    """The wire type of a resolved support preset or a legacy tray reading."""
+    base = (material or "").strip().upper()
+    known = _SUPPORT_BY_FAMILY.get((family_id or "").strip().upper())
+    if known and base in ("", known, known.removesuffix("-S")):
+        return known
+    if base in {"PLA", "PA"} and _SUPPORT_NAME.search(preset_name or ""):
+        return f"{base}-S"
+    return material or ""
