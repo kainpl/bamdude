@@ -318,7 +318,8 @@
   Profiles.** Local presets and available cloud presets still load.
 - **Clear a filament family or legacy slicer preset from the spool editor.**
   Searching leaves the saved choice in place until you choose a different
-  family or explicitly clear it.
+  family or explicitly clear it. Spoolman copies retain a saved preset,
+  including a name-only preset, and leave catalog-only names in the catalog.
 
 - **Retry the connection check when adding or editing a printer.** Changing the address, serial number or access code clears any warning for the previous settings. The access code stays hidden until you choose to show it. Finish saving an edit before checking the connection again.
 

@@ -1058,9 +1058,8 @@ async def update_spool(
     # absent from the FilamentUpdateParameters schema in 0.23.1 (#1357),
     # so writing ``filament.color_name`` was a silent no-op that left
     # every edit looking "not saved". They all round-trip via extra and
-    # get unpacked in ``_map_spoolman_spool``. Only writes when the
-    # request explicitly set the field — passing null / omitting leaves
-    # the existing extra entry untouched (write empty string to clear).
+    # get unpacked in ``_map_spoolman_spool``. Omitted fields keep their
+    # existing values. An explicit null writes an empty string to clear.
     sf_set = "slicer_filament" in data.model_fields_set
     sfn_set = "slicer_filament_name" in data.model_fields_set
     cn_set = "color_name" in data.model_fields_set

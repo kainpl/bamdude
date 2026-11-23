@@ -38,6 +38,7 @@ vi.mock('../../api/client', () => ({
     getLocations: vi.fn().mockResolvedValue([]),
     getPrinters: vi.fn().mockResolvedValue([]),
     getSpoolUsageHistory: vi.fn().mockResolvedValue([]),
+    createSpoolmanInventorySpool: vi.fn().mockResolvedValue({ id: 99 }),
     createSpool: vi.fn().mockResolvedValue({ id: 99 }),
     updateSpool: vi.fn().mockResolvedValue({ id: 1 }),
     saveSpoolKProfiles: vi.fn().mockResolvedValue([]),
@@ -732,18 +733,65 @@ describe('SpoolFormModal preset identity', () => {
     expect(screen.queryByRole('button', { name: 'Clear filament family or preset' })).not.toBeInTheDocument();
   });
 
-  it('clears the stored Spoolman preset without treating the catalog name as a preset after reopening', async () => {
-    const modal = openPresetSpool(existingSpool, 'edit', true);
+  const catalogOnlySpool = {
+    ...existingSpool,
+    filament_family_id: null,
+    slicer_filament: null,
+    slicer_filament_name: 'PLA Basic',
+    stored_slicer_filament_name: null,
+  };
+
+  it.each([null, 'GFL99'])('clears a stored Spoolman preset with code=%s and reopens without it', async (code) => {
+    const spool = {
+      ...catalogOnlySpool,
+      slicer_filament: code,
+      slicer_filament_name: 'Legacy PLA',
+      stored_slicer_filament_name: 'Legacy PLA',
+    };
+    const modal = openPresetSpool(spool, 'edit', true);
+    expect(screen.getByText('Legacy PLA')).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('button', { name: 'Clear filament family or preset' }));
     savePresetSpool();
     await waitFor(() => expect(api.updateSpoolmanInventorySpool).toHaveBeenCalledTimes(1));
-    const payload = vi.mocked(api.updateSpoolmanInventorySpool).mock.calls[0][1];
-    expect(payload).toMatchObject({ slicer_filament: null, slicer_filament_name: null });
+    expect(vi.mocked(api.updateSpoolmanInventorySpool).mock.calls[0][1]).toMatchObject({
+      filament_family_id: null, slicer_filament: null, slicer_filament_name: null,
+    });
     modal.unmount();
 
-    openPresetSpool({ ...existingSpool, slicer_filament: null, slicer_filament_name: 'Catalog PLA' }, 'edit', true);
+    openPresetSpool(catalogOnlySpool, 'edit', true);
     expect(screen.getByText(/link a filament family/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Clear filament family or preset' })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { title: 'omits a catalog-only name', storedName: null, clear: false, expectedName: null },
+    { title: 'copies a saved name that matches the catalog', storedName: 'PLA Basic', clear: false, expectedName: 'PLA Basic' },
+    { title: 'omits a saved name after an explicit clear', storedName: 'My PLA', clear: true, expectedName: null },
+  ])('Spoolman Copy Spool $title', async ({ storedName, clear, expectedName }) => {
+    vi.mocked(api.getSpoolmanInventoryFilaments).mockResolvedValueOnce([{
+      id: 7, name: 'PLA Basic', material: 'PLA', color_hex: 'FF0000', color_name: null,
+      vendor: { id: 3, name: 'Bambu Lab' }, weight: 1000, spool_weight: null,
+    }]);
+    const spool = {
+      ...catalogOnlySpool,
+      slicer_filament_name: storedName ?? catalogOnlySpool.slicer_filament_name,
+      stored_slicer_filament_name: storedName,
+    };
+    openPresetSpool(spool, 'copy', true);
+    const clearButton = screen.queryByRole('button', { name: 'Clear filament family or preset' });
+    if (clear) {
+      expect(clearButton).toBeInTheDocument();
+      fireEvent.click(clearButton!);
+    } else if (storedName === null) {
+      expect(clearButton).not.toBeInTheDocument();
+    }
+    fireEvent.click(await screen.findByRole('button', { name: /spoolman filament catalog/i }));
+    fireEvent.click(await screen.findByText('Bambu Lab — PLA Basic'));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Spool' }));
+    await waitFor(() => expect(api.createSpoolmanInventorySpool).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.createSpoolmanInventorySpool).mock.calls[0][0]).toMatchObject({
+      spoolman_filament_id: 7, filament_family_id: null, slicer_filament: null, slicer_filament_name: expectedName,
+    });
   });
 
   it('allows an explicit clear when copying a legacy spool', async () => {

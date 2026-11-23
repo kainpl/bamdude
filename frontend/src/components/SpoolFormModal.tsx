@@ -793,11 +793,9 @@ export function SpoolFormModal({
     setPickedFamily(family);
   };
 
-  const presetName = pickedFamily === undefined ? spool?.slicer_filament_name : pickedFamily?.alias;
-  // Spoolman may return the catalog filament name when no preset is stored.
-  const presetHint = formData.slicer_filament
-    ? presetName || formData.slicer_filament
-    : (!spoolmanMode && presetName) || undefined;
+  const storedPresetName = spoolmanMode ? spool?.stored_slicer_filament_name : spool?.slicer_filament_name;
+  const presetName = pickedFamily === undefined ? storedPresetName : pickedFamily?.alias;
+  const presetHint = presetName || formData.slicer_filament || undefined;
 
   const handleSubmit = () => {
     const validation = validateForm(formData, quickAdd, spoolmanMode, resolvedMode);

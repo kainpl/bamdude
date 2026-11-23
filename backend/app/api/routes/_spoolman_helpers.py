@@ -47,8 +47,9 @@ class MappedSpoolFields(TypedDict):
     weight_locked: bool
     last_scale_weight: None
     last_weighed_at: None
-    slicer_filament: None
+    slicer_filament: str | None
     slicer_filament_name: str | None
+    stored_slicer_filament_name: str | None
     nozzle_temp_min: int | None
     nozzle_temp_max: None
     note: str | None
@@ -434,6 +435,7 @@ def _map_spoolman_spool(spool: dict) -> MappedSpoolFields:
 
     nozzle_temp_raw = filament.get("settings_extruder_temp")
     nozzle_temp_min: int | None = _safe_int(nozzle_temp_raw, 0) or None
+    stored_preset_name = _extract_extra_str(extra, "bambu_slicer_filament_name") or None
 
     return {
         "id": spool_id,
@@ -461,7 +463,8 @@ def _map_spoolman_spool(spool: dict) -> MappedSpoolFields:
         "last_weighed_at": None,
         # Slicer-preset extra is JSON-encoded under bambu_slicer_filament[_name].
         "slicer_filament": (_extract_extra_str(extra, "bambu_slicer_filament") or None),
-        "slicer_filament_name": (_extract_extra_str(extra, "bambu_slicer_filament_name") or (filament_name or None)),
+        "slicer_filament_name": stored_preset_name or filament_name or None,
+        "stored_slicer_filament_name": stored_preset_name,
         "nozzle_temp_min": nozzle_temp_min,
         "nozzle_temp_max": None,
         "note": spool.get("comment") or None,

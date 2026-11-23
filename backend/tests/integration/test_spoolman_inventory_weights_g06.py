@@ -361,13 +361,24 @@ class TestWeightSyncs:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_clearing_the_preset_preserves_the_catalog_filament(async_client: AsyncClient, spoolman):
+@pytest.mark.parametrize("code", [None, "GFL99"], ids=["name-only", "with-code"])
+async def test_clearing_the_preset_preserves_the_catalog_filament(async_client: AsyncClient, spoolman, code):
     spoolman.add_spool(42, 7, used_weight=456.0)
     url = f"{API}/spools/42"
-    linked = await async_client.patch(url, json={"slicer_filament": "GFL99", "slicer_filament_name": "My PLA"})
+    payload = {"slicer_filament_name": "My PLA"}
+    if code is not None:
+        payload["slicer_filament"] = code
+    linked = await async_client.patch(url, json=payload)
     assert linked.status_code == 200, linked.text
-    assert linked.json()["slicer_filament"] == "GFL99"
+    assert linked.json()["slicer_filament"] == code
     assert linked.json()["slicer_filament_name"] == "My PLA"
+    assert linked.json()["stored_slicer_filament_name"] == "My PLA"
+
+    listed = await async_client.get(f"{API}/spools")
+    assert listed.status_code == 200, listed.text
+    [spool] = listed.json()
+    assert spool["slicer_filament"] == code
+    assert spool["stored_slicer_filament_name"] == "My PLA"
 
     cleared = await async_client.patch(
         url, json={"filament_family_id": None, "slicer_filament": None, "slicer_filament_name": None}
@@ -377,8 +388,40 @@ async def test_clearing_the_preset_preserves_the_catalog_filament(async_client: 
     assert reopened.status_code == 200, reopened.text
     assert reopened.json()["slicer_filament"] is None
     assert reopened.json()["slicer_filament_name"] == "PLA Basic"
+    assert reopened.json()["stored_slicer_filament_name"] is None
     saved = spoolman.view(42)
     assert saved["filament"]["id"] == 7
     assert saved["used_weight"] == 456.0
     assert saved["extra"]["bambu_slicer_filament"] == '""'
     assert saved["extra"]["bambu_slicer_filament_name"] == '""'
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("stored_name", [None, "PLA Basic"], ids=["catalog-only", "saved-name-matches-catalog"])
+async def test_copying_a_spool_uses_only_the_stored_preset_name(async_client: AsyncClient, spoolman, stored_name):
+    spoolman.add_spool(42, 7)
+    if stored_name is not None:
+        updated = await async_client.patch(f"{API}/spools/42", json={"slicer_filament_name": stored_name})
+        assert updated.status_code == 200, updated.text
+    source = await async_client.get(f"{API}/spools/42")
+    assert source.status_code == 200, source.text
+    assert source.json()["slicer_filament"] is None
+    assert source.json()["slicer_filament_name"] == "PLA Basic"
+    assert source.json()["stored_slicer_filament_name"] == stored_name
+
+    copied = await async_client.post(
+        f"{API}/spools",
+        json={"spoolman_filament_id": 7, "slicer_filament_name": source.json()["stored_slicer_filament_name"]},
+    )
+    assert copied.status_code == 200, copied.text
+    reopened = await async_client.get(f"{API}/spools/{copied.json()['id']}")
+    assert reopened.status_code == 200, reopened.text
+    assert reopened.json()["slicer_filament"] is None
+    assert reopened.json()["slicer_filament_name"] == "PLA Basic"
+    assert reopened.json()["stored_slicer_filament_name"] == stored_name
+    extra = spoolman.view(copied.json()["id"])["extra"]
+    if stored_name is None:
+        assert "bambu_slicer_filament_name" not in extra
+    else:
+        assert extra["bambu_slicer_filament_name"] == '"PLA Basic"'

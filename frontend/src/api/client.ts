@@ -8683,6 +8683,8 @@ export interface InventorySpool {
   weight_locked?: boolean;
   slicer_filament: string | null;
   slicer_filament_name: string | null;
+  /** Spoolman only. The saved preset name before the catalog name fallback. */
+  stored_slicer_filament_name?: string | null;
   // Family link (spec A §5.1): the catalog identity ("GFG99" / "P122e532").
   filament_family_id?: string | null;
   nozzle_temp_min: number | null;
