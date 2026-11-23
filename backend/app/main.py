@@ -5,7 +5,7 @@ import os
 import re
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -122,7 +122,7 @@ from backend.app.services.ams_slot_presence import spool_present
 from backend.app.services.archive import ArchiveService
 from backend.app.services.auto_queue_scheduler import auto_queue_scheduler
 from backend.app.services.background_dispatch import background_dispatch, delete_internal_by_name
-from backend.app.services.bambu_mqtt import HMS_SEVERITY_NOTIFY_THRESHOLD, PrinterState
+from backend.app.services.bambu_mqtt import HMS_SEVERITY_NOTIFY_THRESHOLD, HMSError, PrinterState
 from backend.app.services.forecast_engine import ForecastSourceUnavailable
 from backend.app.services.git_backup import git_backup_service
 from backend.app.services.ha_sensor_manager import ha_sensor_manager
@@ -710,7 +710,7 @@ def _hms_notify_key(error) -> str:
 
 def _take_new_hms_fault_keys(
     printer_id: int,
-    errors: list,
+    errors: Sequence[HMSError],
     print_state: str | None = None,
     *,
     reported: tuple[bool, bool] = (True, True),
@@ -774,11 +774,11 @@ _hms_notification_storage: dict[int, _HmsNotificationStorage] = {}
 
 async def _record_hms_faults(
     printer_id: int,
-    errors: list,
+    errors: Sequence[HMSError],
     print_state: str | None,
     reported: tuple[bool, bool],
     *,
-    muted_errors: list | None = None,
+    muted_errors: Sequence[HMSError] = (),
     now: float | None = None,
 ) -> set[str]:
     """Keep announced faults across a restart without treating partial reports as clears."""
@@ -2811,7 +2811,29 @@ def _printer_status_effect_key(state: PrinterState) -> str:
     )
 
 
-async def on_printer_status_change(printer_id: int, state: PrinterState):
+@dataclass(frozen=True)
+class _HmsStatusObservation:
+    errors: tuple[HMSError, ...]
+    muted_errors: tuple[HMSError, ...]
+    print_state: str
+    reported: tuple[bool, bool]
+    observed_at: float
+
+
+def on_printer_status_change(printer_id: int, state: PrinterState) -> Coroutine[None, None, None]:
+    # PrinterManager calls this on the producer thread before queuing the
+    # coroutine. The next packet can replace any of these fields immediately.
+    hms = _HmsStatusObservation(
+        errors=tuple(getattr(state, "hms_errors", None) or ()),
+        muted_errors=tuple(getattr(state, "hms_muted", None) or ()),
+        print_state=state.state,
+        reported=(getattr(state, "hms_array_reported", False), getattr(state, "hms_scalar_reported", False)),
+        observed_at=time.time(),
+    )
+    return _handle_printer_status_change(printer_id, state, hms)
+
+
+async def _handle_printer_status_change(printer_id: int, state: PrinterState, hms: _HmsStatusObservation) -> None:
     """Handle printer status changes - broadcast via WebSocket."""
     # Before the dedup below: a printer whose interrupted-dispatch recheck waits for a fresh
     # idle status gets it even when nothing on its card changes (post-rebuild I-R3).
@@ -2819,14 +2841,15 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
 
     interrupted_dispatch.on_status(printer_id, state)
 
-    # Record HMS evidence from every status, including HMS-only changes.
-    current_hms_errors = list(getattr(state, "hms_errors", []) or [])
+    # Enter the per-printer HMS lock before this task can yield to the next
+    # queued report. Notification delivery happens after releasing that lock.
     new_error_codes = await _record_hms_faults(
         printer_id,
-        current_hms_errors,
-        state.state,
-        (getattr(state, "hms_array_reported", False), getattr(state, "hms_scalar_reported", False)),
-        muted_errors=list(getattr(state, "hms_muted", []) or []),
+        hms.errors,
+        hms.print_state,
+        hms.reported,
+        muted_errors=hms.muted_errors,
+        now=hms.observed_at,
     )
     if not printer_manager.session_still_lives(printer_id):
         return
@@ -2949,7 +2972,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
 
     if _last_status_broadcast.get(printer_id) == status_key:
         await _broadcast_printer_status_projection(printer_id, state)
-        await _deliver_hms_notifications(printer_id, current_hms_errors, new_error_codes)
+        await _deliver_hms_notifications(printer_id, hms.errors, new_error_codes)
         return
 
     _last_status_broadcast[printer_id] = status_key
@@ -3022,7 +3045,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     if not printer_manager.session_still_lives(printer_id):
         return
 
-    await _deliver_hms_notifications(printer_id, current_hms_errors, new_error_codes)
+    await _deliver_hms_notifications(printer_id, hms.errors, new_error_codes)
 
     if not printer_manager.session_still_lives(printer_id):
         return
@@ -3034,7 +3057,9 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         await _broadcast_printer_status_projection(printer_id, state, deduplicate=False)
 
 
-async def _deliver_hms_notifications(printer_id: int, current_hms_errors: list, new_error_codes: set[str]) -> None:
+async def _deliver_hms_notifications(
+    printer_id: int, current_hms_errors: Sequence[HMSError], new_error_codes: set[str]
+) -> None:
     if not current_hms_errors or not new_error_codes or not printer_manager.session_still_lives(printer_id):
         return
 

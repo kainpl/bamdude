@@ -261,3 +261,80 @@ async def test_print_start_keeps_faults_reported_in_the_new_run():
     assert client._run_boundary_generation == boundary + 1
     assert (state.hms_array_reported, state.hms_scalar_reported) == (True, True)
     assert {error.full_code for error in state.hms_errors} == {ARRAY, SCALAR}
+
+
+@pytest.mark.parametrize("queued_together", [False, True], ids=["sequential", "queued-together"])
+async def test_printer_manager_keeps_hms_clear_and_return_in_frame_order(
+    session_factory, restart, monkeypatch, queued_together
+):
+    from backend.app.services.archive_download_retry import archive_download_retry
+    from backend.app.services.printer_manager import PrinterManager
+
+    manager = PrinterManager()
+    manager.set_event_loop(asyncio.get_running_loop())
+    completed = asyncio.Queue()
+    notices = AsyncMock()
+
+    def on_status(printer_id, state):
+        processing = main.on_printer_status_change(printer_id, state)
+
+        async def finish():
+            await processing
+            completed.put_nowait(None)
+
+        return finish()
+
+    def connect_without_transport(client):
+        client.state.connected = True
+
+    manager.set_status_change_callback(on_status)
+    monkeypatch.setattr(BambuMQTTClient, "connect", connect_without_transport)
+    monkeypatch.setattr(archive_download_retry, "retry_printer_archives", AsyncMock())
+    monkeypatch.setattr(database, "async_session", session_factory)
+    monkeypatch.setattr(main, "printer_manager", manager)
+    monkeypatch.setattr(main, "mqtt_relay", AsyncMock())
+    monkeypatch.setattr(main, "_repeat_available_for", AsyncMock(return_value=False))
+    monkeypatch.setattr(main, "_broadcast_printer_status_projection", AsyncMock())
+    monkeypatch.setattr(main, "_capture_snapshot_for_notification", AsyncMock(return_value=None))
+    monkeypatch.setattr(main, "_handle_resume_edge", AsyncMock())
+    monkeypatch.setattr(main, "_handle_pause_edge", AsyncMock())
+    monkeypatch.setattr(main, "notification_service", notices)
+    for store in (
+        main._last_status_broadcast,
+        main._last_printer_state,
+        main._last_printer_state_generation,
+        main._printer_last_connected,
+        main._projection_repeat_available,
+    ):
+        monkeypatch.setitem(store, 426, None)
+
+    async def next_callback():
+        await asyncio.wait_for(completed.get(), timeout=8)
+
+    async with session_factory() as db:
+        printer = await db.get(Printer, 426)
+    try:
+        assert await manager.connect_printer(printer)
+        client = manager.get_client(printer.id)
+        assert client is not None
+        push(client, gcode_state="PAUSE", **HMS_PACKET)
+        await next_callback()
+        assert await stored_faults(session_factory) == {ARRAY: None, SCALAR: None}
+        notices.on_printer_error.assert_awaited_once()
+
+        state = push(client, gcode_state="RUNNING", **HMS_CLEAR)
+        assert not state.hms_errors
+        assert (state.hms_array_reported, state.hms_scalar_reported) == (True, True)
+        if not queued_together:
+            await next_callback()
+            assert await stored_faults(session_factory) == {}
+
+        # No event-loop yield between frames in the queued case.
+        push(client, gcode_state="PAUSE", **HMS_PACKET)
+        await next_callback()
+        if queued_together:
+            await next_callback()
+        assert await stored_faults(session_factory) == {ARRAY: None, SCALAR: None}
+        assert notices.on_printer_error.await_count == 2
+    finally:
+        manager.disconnect_all()
