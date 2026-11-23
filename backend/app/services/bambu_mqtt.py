@@ -1255,8 +1255,12 @@ _TRAY_REPORT_FIELDS = ("ams_id", "slot_id", "tray_id", "extruder_id")
 _COMMAND_REPORT_FIELDS = {
     "ams_change_filament": (*_TRAY_REPORT_FIELDS, "target", "curr_temp", "tar_temp"),
     "ams_control": (),
-    "ams_filament_setting": _TRAY_REPORT_FIELDS,
+    "ams_filament_setting": (*_TRAY_REPORT_FIELDS, "reason"),
     "extrusion_cali_sel": (*_TRAY_REPORT_FIELDS, "cali_idx"),
+    "extrusion_cali_set": (*_TRAY_REPORT_FIELDS, "cali_idx", "reason"),
+    "extrusion_cali_del": (*_TRAY_REPORT_FIELDS, "cali_idx", "reason"),
+    "ams_filament_drying": ("ams_id", "temp", "cooling_temp", "duration", "mode", "reason"),
+    "ams_get_rfid": (*_TRAY_REPORT_FIELDS, "reason"),
 }
 
 
@@ -1287,6 +1291,12 @@ def _command_report_fields(command: str, report: dict) -> dict[str, int | str]:
     if command == "ams_control" and report.get("param") in ("resume", "reset", "pause", "done", "abort"):
         summary["param"] = report["param"]
     return summary
+
+
+def _log_command_verdict(serial: str, report: dict, label: str = "response") -> None:
+    command = report["command"]
+    fields = _command_report_fields(command, report)
+    logger.info("[%s] %s %s: %s", serial, command, label, " ".join(f"{key}={value}" for key, value in fields.items()))
 
 
 def _print_error_severity(error: int) -> int:
@@ -3544,12 +3554,12 @@ class BambuMQTTClient:
                 self.state.current_project_url = url
                 self.state.last_project_url = url
             if "ams_mapping" in print_data:
-                self._captured_ams_mapping = self._resolve_captured_mapping(print_data)
-                logger.info(
-                    "[%s] Captured ams_mapping from print command: %s",
-                    self.serial_number,
-                    self._captured_ams_mapping,
-                )
+                mapping = self._resolve_captured_mapping(print_data)
+                self._captured_ams_mapping = mapping
+                if isinstance(mapping, list):
+                    # Keep slot positions and replace non-tray values in the log projection.
+                    trays = [tray if type(tray) is int and -1 <= tray <= 255 else None for tray in mapping[:256]]
+                    logger.info("[%s] Captured ams_mapping from print command: %s", self.serial_number, trays)
             # ⚠️ ``param`` is the plate, and for a slicer-launched print it is
             # the ONLY place it appears: the printer announces such a print by
             # container name alone (``<name>.gcode.3mf``, no plate in it) and
@@ -3559,11 +3569,12 @@ class BambuMQTTClient:
             param = print_data.get("param")
             if isinstance(param, str) and param:
                 self._captured_print_param = param
-                logger.info(
-                    "[%s] Captured plate param from print command: %s",
-                    self.serial_number,
-                    param,
-                )
+                if len(param) <= 1024:
+                    from backend.app.services.printer_manager import parse_plate_id
+
+                    plate_id = parse_plate_id(param)
+                    if plate_id is not None and 1 <= plate_id <= 65535:
+                        logger.info("[%s] Captured plate from print command: plate=%d", self.serial_number, plate_id)
             # Diagnostic for upstream #1162 follow-up (X2D + FTS routing): when a
             # slicer-launched project_file passes through, log the dispatch
             # source and print flags together with the mapping logged above.
@@ -4027,20 +4038,10 @@ class BambuMQTTClient:
                         and isinstance(result, str)
                         and result.lower() != "success"
                     ):
-                        logger.info(
-                            "[%s] ams_filament_setting refused: result=%s reason=%s ams_id=%s tray_id=%s",
-                            self.serial_number,
-                            result,
-                            print_data.get("reason", ""),
-                            print_data.get("ams_id"),
-                            print_data.get("tray_id"),
-                        )
-                # AMS drying responses are rare (user-initiated only) and the
-                # full payload — including `result` and any `reason` code —
-                # is the only way to diagnose silent rejections like #1447.
-                # INFO level so the body lands in support bundles by default.
+                        _log_command_verdict(self.serial_number, print_data, "refused")
                 elif cmd == "ams_filament_drying":
-                    logger.info("[%s] ams_filament_drying response: %s", self.serial_number, print_data)
+                    # Drying replies are infrequent and useful in an INFO-level bundle.
+                    _log_command_verdict(self.serial_number, print_data)
                 elif cmd == "ams_get_rfid":
                     self._route_rfid_ack(print_data)
                 # Check for developer mode probe response
@@ -8310,21 +8311,18 @@ class BambuMQTTClient:
         result = data.get("result", "")
         reason = data.get("reason", "")
 
-        if result == "failed" and "verify failed" in reason:
+        if result == "failed" and isinstance(reason, str) and "verify failed" in reason:
             self.state.developer_mode = False
             self._dev_mode_from_hms = False
-            logger.info("[%s] Developer mode probe: DISABLED (reason=%r)", self.serial_number, reason)
+            logger.info("[%s] Developer mode probe: DISABLED (verification failed)", self.serial_number)
         elif result == "success":
             self.state.developer_mode = True
             self._dev_mode_from_hms = False
             logger.info("[%s] Developer mode probe: ENABLED (result=%r)", self.serial_number, result)
         else:
             logger.info(
-                "[%s] Developer mode probe: UNKNOWN — the printer answered without saying either way "
-                "(result=%r, reason=%r). Leaving it undetermined rather than inferring a pass.",
+                "[%s] Developer mode probe: UNKNOWN — the printer answered without a recognized verdict",
                 self.serial_number,
-                result,
-                reason,
             )
             return
 
@@ -10380,7 +10378,7 @@ class BambuMQTTClient:
         # Log the full wire JSON at INFO so support bundles capture exactly
         # what we sent — needed to diagnose silent rejections (#1447) where
         # the printer ACKs the command but never starts/stops drying.
-        # Paired with the ams_filament_drying response-payload INFO log so
+        # Paired with the ams_filament_drying verdict INFO log so
         # both halves of the conversation land in the bundle by default.
         wire_json = json.dumps(command)
         self._client.publish(self.topic_publish, wire_json, qos=1)
@@ -11159,15 +11157,7 @@ class BambuMQTTClient:
         # made, and while it sat at DEBUG the one line explaining a failed save
         # was absent from every support bundle. Same reasoning that put
         # ams_filament_drying at INFO.
-        logger.info(
-            "[%s] %s response: result=%s reason=%s seq=%s",
-            self.serial_number,
-            print_data.get("command"),
-            print_data.get("result"),
-            print_data.get("reason", ""),
-            print_data.get("sequence_id"),
-        )
-        logger.debug("[%s] %s full response: %s", self.serial_number, print_data.get("command"), print_data)
+        _log_command_verdict(self.serial_number, print_data)
         # This connection answers K writes — whoever sent the write. Read by
         # ``answers_cali_writes``; a new connection has a new generation.
         self._cali_ack_generation = getattr(self.state, "connection_generation", None)
@@ -12566,13 +12556,7 @@ class BambuMQTTClient:
 
         Runs on the MQTT thread; ``await_rfid_refresh`` only reads the slot.
         """
-        logger.info(
-            "[%s] ams_get_rfid response: result=%s reason=%s seq=%s",
-            self.serial_number,
-            print_data.get("result"),
-            print_data.get("reason", ""),
-            print_data.get("sequence_id"),
-        )
+        _log_command_verdict(self.serial_number, print_data)
         ack_seq = str(print_data.get("sequence_id", ""))
         # Only a slot somebody is waiting on — the topic is shared with the
         # printer's screen and the Bambu app.

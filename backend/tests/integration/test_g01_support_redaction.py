@@ -180,10 +180,11 @@ def bundle_log_dir(test_engine, tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.mark.parametrize("model", ["X1C", "A1"])
 async def test_bundle_preserves_catalog_model_in_typed_fields(
-    async_client, db_session, printer_factory, bundle_log_dir, monkeypatch
+    model, async_client, db_session, printer_factory, bundle_log_dir, monkeypatch
 ):
-    printer = await printer_factory(name="X1C", model="X1C")
+    printer = await printer_factory(name=model, model=model)
     state = SimpleNamespace(
         connected=True,
         state="IDLE",
@@ -192,7 +193,7 @@ async def test_bundle_preserves_catalog_model_in_typed_fields(
         hms_errors=[],
         developer_mode=False,
         nozzle_rack=[],
-        raw_data={"label": "X1C"},
+        raw_data={"label": model},
     )
     monkeypatch.setattr(support.printer_manager, "get_all_statuses", lambda: {printer.id: state})
     await printer_factory(name="Named workshop", model="P1S", access_code="92513048")
@@ -206,27 +207,37 @@ async def test_bundle_preserves_catalog_model_in_typed_fields(
     await db_session.commit()
     log = entry(f"connected to {printer.name} ({printer.serial_number}) using {printer.access_code}")
     log += entry("Named workshop on 192.168.1.102; Custom identity")
+    if model == "A1":
+        log += entry("Compared BA1, A12, rack_A1 and [A1]")
     (bundle_log_dir / "bamdude.log").write_text(log, encoding="utf-8")
     response = await async_client.get("/api/v1/support/bundle")
     assert response.status_code == 200, response.text
     with zipfile.ZipFile(io.BytesIO(response.content)) as bundle:
         info = json.loads(bundle.read("support-info.json"))
-        assert [row["model"] for row in info["printers"]] == ["X1C", "[REDACTED]", "[PRINTER]"]
+        assert [row["model"] for row in info["printers"]] == [model, "[REDACTED]", "[PRINTER]"]
         snapshot = json.loads(bundle.read("push-status/printer-1.json"))
-        assert snapshot["model"] == "X1C"
+        assert snapshot["model"] == model
         assert snapshot["raw_data"]["label"] == "[PRINTER]"
         text = bundle.read("bamdude.log").decode()
         assert "connected to [PRINTER] ([SERIAL]) using [ACCESS_CODE]" in text
         assert "Named workshop" not in text
         assert "192.168.1.102" not in text
         assert "Custom identity" not in text
+        if model == "A1":
+            assert "Compared BA1, A12, rack_A1 and [[PRINTER]]" in text
 
 
-async def test_bundle_masks_current_and_previous_virtual_printer_serials(async_client, db_session, bundle_log_dir):
+async def test_bundle_masks_configured_virtual_printer_names_and_serials(
+    async_client, db_session, bundle_log_dir, printer_factory
+):
+    name = "Synthetic virtual printer"
+    access_code = "92513048"
+    await printer_factory(access_code=access_code)
     db_session.add_all(
         [
             Settings(key="debug_logging_enabled", value="true"),
-            VirtualPrinter(name="Synthetic virtual printer", model="N9", serial_suffix="801112345"),
+            VirtualPrinter(name=name, model="N9", serial_suffix="801112345"),
+            VirtualPrinter(name=access_code, model="N9", serial_suffix="801112347"),
         ]
     )
     await db_session.commit()
@@ -234,6 +245,8 @@ async def test_bundle_masks_current_and_previous_virtual_printer_serials(async_c
     previous = "22E00A801112345"
     control = "22E00A801112346"
     log = entry(f"certificate for {current}; old certificate for {previous}; control {control}")
+    log += entry(f"[VP {name}] Received file: test.3mf from 192.0.2.11")
+    log += entry(f"[VP {access_code}] Received file: test.3mf from 192.0.2.11")
     (bundle_log_dir / "bamdude.log").write_text(log, encoding="utf-8")
     response = await async_client.get("/api/v1/support/bundle")
     assert response.status_code == 200, response.text
@@ -242,5 +255,9 @@ async def test_bundle_masks_current_and_previous_virtual_printer_serials(async_c
         assert f"certificate for [SERIAL]; old certificate for [SERIAL]; control {control}" in text
         assert current not in text
         assert previous not in text
+        assert f"[VP {name}]" not in text
+        assert access_code not in text
+        assert "[VP [PRINTER]] Received file" in text
+        assert "[VP [ACCESS_CODE]] Received file" in text
         info = json.loads(bundle.read("support-info.json"))
-        assert [(row["model"], row["model_name"]) for row in info["virtual_printers"]] == [("N9", "A2L")]
+        assert [(row["model"], row["model_name"]) for row in info["virtual_printers"]] == [("N9", "A2L")] * 2

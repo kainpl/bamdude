@@ -162,8 +162,9 @@ class TestTheAnswerIsRead:
             await _refresh(client, 0, 1, ("ams_get_rfid", "fail", "tray is busy"))
 
         assert any(
-            "ams_get_rfid response" in r.getMessage() and "tray is busy" in r.getMessage() for r in caplog.records
+            "ams_get_rfid response" in r.getMessage() and "result=fail" in r.getMessage() for r in caplog.records
         )
+        assert "tray is busy" not in caplog.text
 
 
 @pytest.mark.asyncio

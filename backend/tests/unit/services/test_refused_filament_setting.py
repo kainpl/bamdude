@@ -48,15 +48,13 @@ class TestARefusalIsReported:
 
         assert len(_refusals(caplog)) == 1
 
-    def test_it_carries_what_the_printer_said(self, client, caplog):
-        """The verdict alone is not diagnosable — the reason and the slot are
-        what tell one refusal from another."""
+    def test_it_carries_the_numeric_verdict_and_slot(self, client, caplog):
         with caplog.at_level(logging.INFO, logger="backend.app.services.bambu_mqtt"):
-            _reply(client, result="fail", reason="invalid tray_id", ams_id=1, tray_id=3)
+            _reply(client, result="fail", reason="123", ams_id=1, tray_id=3)
 
         message = _refusals(caplog)[0]
         assert "result=fail" in message
-        assert "invalid tray_id" in message
+        assert "reason=123" in message
         assert "ams_id=1" in message
         assert "tray_id=3" in message
 

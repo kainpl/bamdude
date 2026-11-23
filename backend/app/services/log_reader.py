@@ -94,30 +94,39 @@ def _known_value_spellings(value: str) -> set[str]:
 
 
 def _known_value_replacer(sensitive_strings: dict[str, str]):
-    variants: dict[str, str] = {}
+    variants: dict[str, tuple[str, str]] = {}
     for value, label in sensitive_strings.items():
-        if not value or (len(value) < 3 and label != "[REDACTED]"):
+        if not value or (len(value) < 3 and label not in ("[REDACTED]", "[PRINTER]")):
             continue
+        boundary = r"[\w.]" if label == "[IP]" else ""
+        if label == "[PRINTER]" and len(value) < 3:
+            boundary = r"\w"
         for spelling in _known_value_spellings(value):
-            variants[spelling] = label
+            if label == "[PRINTER]":
+                variants.setdefault(spelling, (label, boundary))
+            else:
+                variants[spelling] = (label, boundary)
     if not variants:
         return lambda content: content
-    pattern = re.compile(
-        "|".join(
-            (r"(?<![\w.])" + re.escape(value) + r"(?![\w.])") if variants[value] == "[IP]" else re.escape(value)
-            for value in sorted(variants, key=len, reverse=True)
-        )
-    )
+    parts = []
+    for spelling in sorted(variants, key=len, reverse=True):
+        _, boundary = variants[spelling]
+        literal = re.escape(spelling)
+        parts.append(f"(?<!{boundary}){literal}(?!{boundary})" if boundary else literal)
+    pattern = re.compile("|".join(parts))
+
+    def label_for(match):
+        return variants[match[0]][0]
 
     def replace(content):
-        sanitized = pattern.sub(lambda match: variants[match[0]], content)
+        sanitized = pattern.sub(label_for, content)
         candidate = sanitized
         changed = False
         for _ in range(4):
             decoded = _unescape_log_text(candidate)
             if decoded == candidate:
                 break
-            candidate = pattern.sub(lambda match: variants[match[0]], decoded)
+            candidate = pattern.sub(label_for, decoded)
             changed = changed or candidate != decoded
         return candidate if changed else sanitized
 
@@ -515,7 +524,7 @@ def write_sanitized_log_snapshot(
 async def collect_sensitive_strings(db: AsyncSession) -> dict[str, str]:
     """Collect known sensitive values from the database for log redaction.
 
-    Covers printer names, physical and virtual serial numbers, IP addresses,
+    Covers physical and virtual printer names and serial numbers, IP addresses,
     access codes, auth usernames, and the Bambu Cloud email. Pass the result to
     :func:`sanitize_log_content`.
     """
@@ -525,7 +534,7 @@ async def collect_sensitive_strings(db: AsyncSession) -> dict[str, str]:
     result = await db.execute(select(Printer.name, Printer.serial_number, Printer.ip_address, Printer.access_code))
     for name, serial, ip_address, access_code in result.all():
         if name:
-            sensitive_strings[name] = "[PRINTER]"
+            sensitive_strings.setdefault(name, "[PRINTER]")
         if serial:
             sensitive_strings[serial] = "[SERIAL]"
         if ip_address:
@@ -537,7 +546,10 @@ async def collect_sensitive_strings(db: AsyncSession) -> dict[str, str]:
     # model, so use every supported prefix as well as the fallback prefix.
     from backend.app.services.virtual_printer.manager import MODEL_SERIAL_PREFIXES, _get_serial_for_model
 
-    for suffix in (await db.execute(select(VirtualPrinter.serial_suffix))).scalars():
+    result = await db.execute(select(VirtualPrinter.name, VirtualPrinter.serial_suffix))
+    for name, suffix in result.all():
+        if name:
+            sensitive_strings.setdefault(name, "[PRINTER]")
         if suffix:
             for model in (*MODEL_SERIAL_PREFIXES, ""):
                 sensitive_strings[_get_serial_for_model(model, suffix)] = "[SERIAL]"
