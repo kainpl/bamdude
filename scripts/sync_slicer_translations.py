@@ -46,7 +46,7 @@ def main():
     for option in schema.values():
         for field in ("label", "tooltip", "sidetext"):
             text = option.get(field)
-            if text and "->" not in text and "::" not in text:
+            if text and not re.fullmatch(r"[A-Za-z_][\w:]*->[A-Za-z_]\w*", text):
                 strings.add(text)
         strings.update(option.get("enum_labels", []))
     for page in tree:

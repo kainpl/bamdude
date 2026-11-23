@@ -25,7 +25,7 @@ describe('OrcaSlicer parameter translations', () => {
     for (const option of Object.values(schema)) {
       for (const field of ['label', 'tooltip', 'sidetext'] as const) {
         const text = (option as { label: string; tooltip?: string; sidetext?: string })[field];
-        if (text && !text.includes('->') && !text.includes('::')) expect(translations[text], text).toBeTruthy();
+        if (text && !/^[A-Za-z_][\w:]*->[A-Za-z_]\w*$/.test(text)) expect(translations[text], text).toBeTruthy();
       }
       for (const label of (option as { enum_labels?: string[] }).enum_labels ?? []) {
         expect(translations[label], label).toBeTruthy();
@@ -65,7 +65,7 @@ describe('OrcaSlicer parameter translations', () => {
     expect(onChange).toHaveBeenLastCalledWith({ layer_height: '0.28' });
     const calls = onChange.mock.calls.length;
     await act(() => i18n.changeLanguage('uk'));
-    expect(screen.getByLabelText(/^Висота шару/)).toBe(layer);
+    expect(await screen.findByLabelText(/^Висота шару/)).toBe(layer);
     expect(layer).toHaveValue(0.28);
     await act(() => i18n.changeLanguage('en'));
     expect(screen.getByLabelText(/^Layer height/)).toBe(layer);
@@ -84,5 +84,21 @@ describe('OrcaSlicer parameter translations', () => {
     expect(screen.getByLabelText('Висота шару')).toBeInTheDocument();
     fireEvent.change(search, { target: { value: 'Гіроїд' } });
     await waitFor(() => expect(screen.getByRole('option', { name: 'Гіроїд' })).toHaveValue('gyroid'));
+  });
+
+  it('distinguishes lattice angles and translates prose containing a literal function name', async () => {
+    await act(() => i18n.changeLanguage('uk'));
+    render(<Harness onChange={vi.fn()} />);
+    await screen.findByLabelText('Висота шару');
+    fireEvent.click(screen.getByRole('button', { name: 'Розширений' }));
+    const search = screen.getByRole('searchbox');
+    fireEvent.change(search, { target: { value: 'lateral_lattice_angle' } });
+    expect(screen.getByLabelText('Кут решітки 1').id).toContain('lateral_lattice_angle_1');
+    expect(screen.getByLabelText('Кут решітки 2').id).toContain('lateral_lattice_angle_2');
+    fireEvent.change(search, { target: { value: 'fuzzy_skin_mode' } });
+    const field = screen.getByLabelText(translations[schema.fuzzy_skin_mode.label]);
+    expect(field.closest('.group')).toHaveAttribute('title', translations[schema.fuzzy_skin_mode.tooltip]);
+    expect(field.closest('.group')?.getAttribute('title')).toContain('Режим утворення ворсистої поверхні');
+    expect(field.closest('.group')?.getAttribute('title')).toContain('Flow::spacing()');
   });
 });

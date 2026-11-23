@@ -9,7 +9,7 @@
  * Ukrainian option text comes from OrcaSlicer's pinned gettext catalog,
  * with reviewed supplements for this schema version (see data/slicer/README.md).
  * Text is translated only for display: schema keys, enum values and overrides
- * remain in the slicer's own form. The catalog loads with the panel metadata.
+ * remain in the slicer's own form. The optional catalog never gates the form.
  *
  * Values are held sparsely: only options the user actually changed are tracked
  * and sent, so a slice with an untouched panel is byte-identical to one from
@@ -30,7 +30,6 @@ interface SlicerData {
   schema: ProcessSchema;
   tree: ProcessUiTree;
   toggles: ToggleRules;
-  uk: Record<string, string>;
 }
 
 interface Props {
@@ -132,6 +131,8 @@ export default function SlicerSettingsPanel({
 }: Props) {
   const { t, i18n } = useTranslation();
   const [data, setData] = useState<SlicerData | null>(null);
+  const [uk, setUk] = useState<Record<string, string>>({});
+  const language = i18n.resolvedLanguage ?? i18n.language;
   const [mode, setMode] = useState<OptionMode>('simple');
   const [page, setPage] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -144,14 +145,12 @@ export default function SlicerSettingsPanel({
       import('../data/slicer/process-schema.json'),
       import('../data/slicer/process-ui-tree.json'),
       import('../data/slicer/process-toggle-rules.json'),
-      import('../data/slicer/process-uk.json'),
-    ]).then(([schema, tree, toggles, uk]) => {
+    ]).then(([schema, tree, toggles]) => {
       if (cancelled) return;
       setData({
         schema: (schema.default ?? schema) as unknown as ProcessSchema,
         tree: (tree.default ?? tree) as unknown as ProcessUiTree,
         toggles: (toggles.default ?? toggles) as unknown as ToggleRules,
-        uk: (uk.default ?? uk) as Record<string, string>,
       });
     });
     return () => {
@@ -159,10 +158,21 @@ export default function SlicerSettingsPanel({
     };
   }, []);
 
-  const language = i18n.resolvedLanguage ?? i18n.language;
+  useEffect(() => {
+    if (language?.split('-')[0] !== 'uk') return;
+    let cancelled = false;
+    import('../data/slicer/process-uk.json').then((catalog) => {
+      if (!cancelled) setUk(catalog.default ?? catalog);
+    }).catch(() => {
+      // A display-only translation cannot prevent editing or discard values.
+      if (!cancelled) setUk({});
+    });
+    return () => { cancelled = true; };
+  }, [language]);
+
   const localize = useCallback((source: string) =>
-    language?.split('-')[0] === 'uk' ? (data?.uk[source] ?? source) : source,
-  [data, language]);
+    language?.split('-')[0] === 'uk' ? (uk[source] ?? source) : source,
+  [uk, language]);
 
   // What this slice will actually run with, in the precedence the rows display:
   // the picked preset underneath, the designer's value for each key that is

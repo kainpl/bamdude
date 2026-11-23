@@ -70,7 +70,7 @@
 
 ### Added
 
-- **Slicer parameters follow the Ukrainian interface language.** Process-setting tabs, groups, labels, tooltips, choices and units use OrcaSlicer’s Ukrainian catalog, with reviewed translations for descriptions specific to the vendored schema. Search accepts Ukrainian text and original English keys; changing language keeps edits and sends the same slicer keys and values. The catalog is loaded only with the parameter panel.
+- **Slicer parameters follow the Ukrainian interface language.** Process-setting tabs, groups, labels, tooltips, choices and units use OrcaSlicer’s Ukrainian catalog, with reviewed translations for descriptions specific to the vendored schema. Search accepts Ukrainian text and original English keys; changing language keeps edits and sends the same slicer keys and values. The optional catalog loads independently and falls back to English on failure without blocking the panel. Reviewed corrections distinguish lattice angles and translate tooltips containing literal function names.
 
 - **Edit a project assembly and try again.** After a completed or failed assembly, return to the same inputs and change settings for another attempt. The operator starts the new job explicitly and chooses whether to move previous outputs to the trash.
 

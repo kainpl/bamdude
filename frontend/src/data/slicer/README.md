@@ -34,7 +34,11 @@ fails on missing coverage or unused supplements. Review numerical limits and
 conditions especially carefully: newer Orca descriptions can differ from the
 schema even when their first sentence is identical.
 
-The panel loads this catalog alongside its metadata and translates display text,
+The panel loads this optional catalog independently when Ukrainian is selected;
+a slow or failed catalog never blocks the editor and falls back to English.
+The generator excludes only whole metadata references, not prose containing
+literal function names such as `Flow::spacing()`. Reviewed overrides distinguish
+the two lateral lattice angles. The panel translates display text,
 tooltips and enum labels only. Search accepts translated text and English keys.
 Language changes preserve edited values; the submitted process settings retain
 their original keys and values. Printer and user preset names are not translated.
