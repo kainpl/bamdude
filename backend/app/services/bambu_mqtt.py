@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import os
+import re
 import ssl
 import threading
 import time
@@ -1250,37 +1251,42 @@ def _hms_severity_from_code(code: int) -> int:
     return HMS_LEVEL_SERIOUS
 
 
-_SECRET_KEYS = frozenset({"password", "passwd", "access_code", "token", "bind_code", "secret", "key"})
+_TRAY_REPORT_FIELDS = ("ams_id", "slot_id", "tray_id", "extruder_id")
+_COMMAND_REPORT_FIELDS = {
+    "ams_change_filament": (*_TRAY_REPORT_FIELDS, "target", "curr_temp", "tar_temp"),
+    "ams_control": (),
+    "ams_filament_setting": _TRAY_REPORT_FIELDS,
+    "extrusion_cali_sel": (*_TRAY_REPORT_FIELDS, "cali_idx"),
+}
 
 
-def _loggable(payload: dict, _limit: int = 2000) -> str:
-    """A command payload as text, with anything credential-shaped masked.
+def _command_report_fields(command: str, report: dict) -> dict[str, int | str]:
+    """Keep command correlation and bounded wire values used to diagnose tray and tool actions."""
+    if command in ("push_status", "project_file"):
+        return {}
 
-    ⚠️ A printer payload is not automatically safe to write down. ``url`` carries
-    userinfo on some transfer commands, and an operator pasting a debug log into
-    an issue would be handing over their printer with it. Masked by key name
-    rather than by value shape: a heuristic that decides what *looks* like a
-    secret fails silently on the one that does not.
+    fields = ("sequence_id",)
+    if command in _COMMAND_REPORT_FIELDS:
+        fields += (*_COMMAND_REPORT_FIELDS[command], "err_code")
 
-    Truncated, because a single ``pushall`` response is tens of kilobytes and
-    would bury the thing the log is being read for.
-    """
+    summary = {}
+    for name in fields:
+        value = report.get(name)
+        if (type(value) is int and -(2**31) <= value < 2**32) or (
+            isinstance(value, str) and re.fullmatch(r"-?[0-9]{1,10}", value)
+        ):
+            summary[name] = value
 
-    def clean(value: object) -> object:
-        if isinstance(value, dict):
-            return {k: ("***" if k.lower() in _SECRET_KEYS else clean(v)) for k, v in value.items()}
-        if isinstance(value, list):
-            return [clean(v) for v in value]
-        if isinstance(value, str) and "://" in value and "@" in value:
-            scheme, _, rest = value.partition("://")
-            return f"{scheme}://***@{rest.rpartition('@')[2]}"
-        return value
-
-    try:
-        text = json.dumps(clean(payload), ensure_ascii=False, sort_keys=True)
-    except (TypeError, ValueError):
-        text = repr(payload)
-    return text if len(text) <= _limit else f"{text[:_limit]}… ({len(text)} chars)"
+    result = report.get("result")
+    if (
+        command in _COMMAND_REPORT_FIELDS
+        and isinstance(result, str)
+        and result.lower() in ("success", "fail", "failed")
+    ):
+        summary["result"] = result
+    if command == "ams_control" and report.get("param") in ("resume", "reset", "pause", "done", "abort"):
+        summary["param"] = report["param"]
+    return summary
 
 
 def _print_error_severity(error: int) -> int:
@@ -3559,8 +3565,9 @@ class BambuMQTTClient:
                     param,
                 )
             # Diagnostic for upstream #1162 follow-up (X2D + FTS routing): when a
-            # slicer-launched project_file passes through, log the full payload
-            # so Studio's field set can be diffed against ours. Ours is the job
+            # slicer-launched project_file passes through, log the dispatch
+            # source and print flags together with the mapping logged above.
+            # The download URL can be signed. Ours is the job
             # we remembered at dispatch, consumed once per topic — NOT
             # ``sequence_id == "20000"``: slicers count up from that same base,
             # so whichever of their dispatches landed on it was filed as ours
@@ -3569,11 +3576,12 @@ class BambuMQTTClient:
             if self._own_project_file_keys.get(source) == key:
                 self._own_project_file_keys.pop(source, None)
             else:
-                logger.info(
-                    "[%s] External project_file payload: %s",
-                    self.serial_number,
-                    json.dumps(print_data),
-                )
+                flags = {
+                    key: print_data[key]
+                    for key in ("use_ams", "bed_leveling", "flow_cali", "vibration_cali", "layer_inspect", "timelapse")
+                    if type(print_data.get(key)) is bool
+                }
+                logger.info("[%s] External project_file payload: source=%s flags=%s", self.serial_number, source, flags)
 
     def _resolve_captured_mapping(self, print_data: dict) -> object:
         """A ``project_file``'s ``ams_mapping`` with its external holders named again from its
@@ -3974,13 +3982,10 @@ class BambuMQTTClient:
             if "command" in print_data:
                 cmd = print_data.get("command")
                 logger.debug("[%s] Received command response: %s", self.serial_number, cmd)
-                # ⚠️ The name alone cannot answer the question this logging exists
-                # for: whether a command we are watching is fresh or a replay of
-                # one already answered. ``sequence_id`` is what separates them,
-                # and it lives in the payload — so at DEBUG the whole thing goes
-                # to the log, credentials masked (see _loggable).
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug("[%s]   payload: %s", self.serial_number, _loggable(print_data))
+                if isinstance(cmd, str) and logger.isEnabledFor(logging.DEBUG):
+                    fields = _command_report_fields(cmd, print_data)
+                    if fields:
+                        logger.debug("[%s]   fields: %s", self.serial_number, json.dumps(fields))
                 # One router for every command's verdict, ahead of the per-command
                 # branches below. BS runs the same check once for all commands
                 # (DeviceManager.cpp, guarded by is_studio_cmd/is_cloud_cmd)
@@ -3991,7 +3996,6 @@ class BambuMQTTClient:
                 elif cmd in ("extrusion_cali_set", "extrusion_cali_del"):
                     self._route_ack(print_data)
                 elif cmd in ("extrusion_cali_sel", "ams_filament_setting"):
-                    logger.debug("[%s] %s response: %s", self.serial_number, cmd, print_data)
                     # ⚠️ A REFUSED ams_filament_setting is the printer's verdict
                     # on a write the user just made, and at DEBUG it never
                     # reached a support bundle: six manual Configure Slot

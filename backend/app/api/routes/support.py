@@ -56,9 +56,12 @@ from backend.app.services.log_reader import (
 from backend.app.services.network_utils import get_network_interfaces
 from backend.app.services.printer_manager import printer_manager
 from backend.app.utils.http import build_content_disposition
+from backend.app.utils.printer_models import PRINTER_MODEL_ID_MAP, PRINTER_MODEL_MAP
 
 router = APIRouter(prefix="/support", tags=["support"])
 logger = logging.getLogger(__name__)
+
+_BUNDLE_MODEL_NAMES = frozenset((*PRINTER_MODEL_MAP, *PRINTER_MODEL_MAP.values(), *PRINTER_MODEL_ID_MAP))
 
 
 class DebugLoggingState(BaseModel):
@@ -1688,6 +1691,16 @@ def _redact_raw_push_status(raw: dict) -> dict:
     return out
 
 
+def _restore_bundle_model(source: dict, sanitized: dict, field: str, sensitive_strings: dict[str, str]) -> None:
+    model = source.get(field)
+    if isinstance(model, str) and model in _BUNDLE_MODEL_NAMES and sensitive_strings.get(model) == "[PRINTER]":
+        # A catalog model is public in these typed fields. A printer with the
+        # same display name still needs redaction in free text. Keep every
+        # other known value (including secrets) in the sanitizer.
+        other_values = {value: label for value, label in sensitive_strings.items() if value != model}
+        sanitized[field] = sanitize_log_content(model, other_values)
+
+
 @router.get("/bundle")
 async def generate_support_bundle(
     request: Request = None,
@@ -1735,9 +1748,12 @@ async def generate_support_bundle(
         # Add support info JSON
         from backend.app.services.diagnostic_snapshot import _sanitize_recursive
 
-        zf.writestr(
-            "support-info.json", json.dumps(_sanitize_recursive(support_info, sensitive_strings), indent=2, default=str)
-        )
+        sanitized_info = _sanitize_recursive(support_info, sensitive_strings)
+        for section, fields in (("printers", ("model",)), ("virtual_printers", ("model", "model_name"))):
+            for source, sanitized in zip(support_info.get(section, []), sanitized_info.get(section, []), strict=True):
+                for field in fields:
+                    _restore_bundle_model(source, sanitized, field, sensitive_strings)
+        zf.writestr("support-info.json", json.dumps(sanitized_info, indent=2, default=str))
 
         # MQTT recordings, only the ones explicitly asked for.
         #
@@ -1782,7 +1798,9 @@ async def generate_support_bundle(
             # Belt-and-suspenders: pass the JSON text through the string-based
             # sanitizer so any user-named string (printer name, serial baked into
             # a tray uuid) the structural pass missed still gets caught.
-            snapshot_json = json.dumps(_sanitize_recursive(snapshot, sensitive_strings), indent=2, default=str)
+            sanitized_snapshot = _sanitize_recursive(snapshot, sensitive_strings)
+            _restore_bundle_model(snapshot, sanitized_snapshot, "model", sensitive_strings)
+            snapshot_json = json.dumps(sanitized_snapshot, indent=2, default=str)
             zf.writestr(f"push-status/printer-{index}.json", snapshot_json)
 
         # Add log file

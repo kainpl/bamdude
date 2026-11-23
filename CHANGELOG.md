@@ -322,6 +322,14 @@
 
 ### Fixed
 
+- **Support bundles keep catalog printer models visible.** A display name
+  that matches a catalog model no longer hides the model in printer summaries.
+  Sanitized exports also mask current and previous serials of configured
+  virtual printers.
+- **Printer command debug logs show selected tray and tool fields.** Command
+  summaries keep bounded action parameters and sequence IDs while omitting
+  URLs, credentials, and other arbitrary payload data.
+
 - **Partial reports keep AMS and external spool state.** The A2L printer
   card shows the regular AMS and AMS Lite together and keeps their other
   slots when a report updates one slot. External spool configuration on A1

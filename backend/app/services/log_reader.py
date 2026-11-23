@@ -34,6 +34,7 @@ from backend.app.core.sensitive_settings import redact_setting_in_log, sensitive
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
+from backend.app.models.virtual_printer import VirtualPrinter
 
 logger = logging.getLogger(__name__)
 
@@ -514,8 +515,8 @@ def write_sanitized_log_snapshot(
 async def collect_sensitive_strings(db: AsyncSession) -> dict[str, str]:
     """Collect known sensitive values from the database for log redaction.
 
-    Covers printer names, serial numbers, IP addresses, access codes, auth
-    usernames, and the Bambu Cloud email. Pass the result to
+    Covers printer names, physical and virtual serial numbers, IP addresses,
+    access codes, auth usernames, and the Bambu Cloud email. Pass the result to
     :func:`sanitize_log_content`.
     """
     sensitive_strings: dict[str, str] = {}
@@ -531,6 +532,15 @@ async def collect_sensitive_strings(db: AsyncSession) -> dict[str, str]:
             sensitive_strings[ip_address] = "[IP]"
         if access_code:
             sensitive_strings[access_code] = "[ACCESS_CODE]"
+
+    # A log can contain a certificate issued before a virtual printer changed
+    # model, so use every supported prefix as well as the fallback prefix.
+    from backend.app.services.virtual_printer.manager import MODEL_SERIAL_PREFIXES, _get_serial_for_model
+
+    for suffix in (await db.execute(select(VirtualPrinter.serial_suffix))).scalars():
+        if suffix:
+            for model in (*MODEL_SERIAL_PREFIXES, ""):
+                sensitive_strings[_get_serial_for_model(model, suffix)] = "[SERIAL]"
 
     # Auth usernames
     result = await db.execute(select(User.username))

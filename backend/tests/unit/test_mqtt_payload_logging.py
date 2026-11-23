@@ -1,67 +1,78 @@
-"""What a command payload may and may not carry into a log file.
-
-The logging exists for one open question — whether a command is fresh or a
-replay of one already answered — and only ``sequence_id`` separates those, so
-the payload has to be written down whole.
-
-⚠️ Which makes masking load-bearing. A debug log is the thing an operator
-pastes into an issue, and ``url`` carries userinfo on some transfer commands.
-A leak here is silent: nobody reads their own logs closely enough to notice a
-password in them until it is already public.
-"""
+"""The raw debug log of an inbound printer report keeps bounded diagnostic fields."""
 
 from __future__ import annotations
 
 import json
+import logging
+from types import SimpleNamespace
 
-from backend.app.services.bambu_mqtt import _loggable
+import pytest
 
-
-class TestWhatGetsMasked:
-    def test_a_credential_key_never_reaches_the_log(self) -> None:
-        out = _loggable({"command": "project_file", "access_code": "12345678", "password": "hunter2"})
-
-        assert "12345678" not in out
-        assert "hunter2" not in out
-        assert out.count("***") == 2
-
-    def test_masking_is_by_key_name_at_any_depth(self) -> None:
-        """Nested, because a printer payload is nested — ``print.upload.password``
-        is exactly the shape that a top-level-only sweep would miss."""
-        out = _loggable({"print": {"upload": {"password": "hunter2", "host": "192.168.1.10"}}})
-
-        assert "hunter2" not in out
-        assert "192.168.1.10" in out, "masking must not swallow the fields being investigated"
-
-    def test_userinfo_in_a_url_is_stripped_but_the_host_survives(self) -> None:
-        """⚠️ The host is the point of logging a URL at all: it says whether the
-        job came from us, from the cloud, or from somebody's Studio."""
-        out = _loggable({"url": "ftp://bblp:secretcode@192.168.1.10/model.3mf"})
-
-        assert "secretcode" not in out
-        assert "bblp" not in out
-        assert "192.168.1.10/model.3mf" in out
-
-    def test_an_ordinary_payload_passes_through_intact(self) -> None:
-        payload = {"command": "extrusion_cali_get", "sequence_id": "2031", "filament_id": ""}
-
-        assert json.loads(_loggable(payload)) == payload
+from backend.app.services.bambu_mqtt import BambuMQTTClient
 
 
-class TestKeepingTheLogReadable:
-    def test_a_huge_payload_is_truncated_and_says_so(self) -> None:
-        """A single pushall response is tens of kilobytes. Left whole it buries
-        the line the log is being read for."""
-        out = _loggable({"data": ["x" * 100 for _ in range(200)]})
+@pytest.mark.parametrize(
+    ("command", "fields", "expected"),
+    [
+        (
+            "ams_change_filament",
+            {
+                "target": 255,
+                "slot_id": 255,
+                "ams_id": 0,
+                "extruder_id": "1",
+                "curr_temp": 215,
+                "tar_temp": "220",
+                "result": "success",
+                "err_code": 0,
+            },
+            {
+                "target": 255,
+                "slot_id": 255,
+                "ams_id": 0,
+                "extruder_id": "1",
+                "curr_temp": 215,
+                "tar_temp": "220",
+                "result": "success",
+                "err_code": 0,
+                "sequence_id": "0",
+            },
+        ),
+        ("ams_control", {"param": "resume"}, {"param": "resume", "sequence_id": "0"}),
+        ("ams_control", {"param": "OPAQUE_PARAM_CANARY"}, {"sequence_id": "0"}),
+        ("ams_change_filament", {"target": True, "slot_id": ["OPAQUE_SLOT_CANARY"]}, {"sequence_id": "0"}),
+        (
+            "ams_filament_setting",
+            {"ams_id": 1, "tray_id": "2", "result": "success"},
+            {"ams_id": 1, "tray_id": "2", "result": "success", "sequence_id": "0"},
+        ),
+        ("some_new_command", {"target": 255, "param": "OPAQUE_PARAM_CANARY"}, {"sequence_id": "0"}),
+        ("push_status", {"target": 255}, None),
+        ("project_file", {"result": "fail"}, None),
+        ("project_file", {"result": "success", "use_ams": True}, None),
+    ],
+)
+def test_report_debug_logs_only_selected_diagnostic_fields(caplog, command, fields, expected):
+    client = BambuMQTTClient(ip_address="192.0.2.11", serial_number="TEST123", access_code="53296742")
+    report = {
+        "print": {
+            "command": command,
+            "sequence_id": "0",
+            "url": "https://example.invalid/model.gcode?grant=OPAQUE_URL_CANARY",
+            "access_code": "OPAQUE_ACCESS_CANARY",
+            "metadata": {"reference": "OPAQUE_NESTED_CANARY"},
+            **fields,
+        }
+    }
+    msg = SimpleNamespace(topic=client.topic_subscribe, payload=json.dumps(report).encode())
+    with caplog.at_level(logging.DEBUG, logger="backend.app.services.bambu_mqtt"):
+        client._on_message(None, None, msg)
 
-        assert len(out) < 2200
-        assert "chars)" in out
-
-    def test_something_json_cannot_encode_is_still_logged(self) -> None:
-        """⚠️ Falls back to repr rather than raising. This runs inside the MQTT
-        message handler: an exception here would cost the message, and losing
-        state updates to a *logging* call is a far worse trade than an ugly line.
-        """
-        out = _loggable({"command": "x", "when": object()})
-
-        assert "command" in out
+    messages = [record.getMessage() for record in caplog.records if record.name.endswith(".bambu_mqtt")]
+    assert any(f"Received command response: {command}" in line for line in messages)
+    assert all("OPAQUE_" not in line and "https://" not in line for line in messages)
+    summaries = [json.loads(line.split("  fields: ", 1)[1]) for line in messages if "  fields: " in line]
+    assert summaries == ([] if expected is None else [expected])
+    if command == "project_file" and fields["result"] == "success":
+        assert any("source=report flags={'use_ams': True}" in line for line in messages)
+        assert client.state.current_project_url == report["print"]["url"]
