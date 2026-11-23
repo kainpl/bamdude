@@ -184,3 +184,23 @@ async def test_support_binding_follows_merged_mqtt_updates(db_session, printer_f
 
     mqtt._handle_ams_data({"ams": report})
     assert len(frames) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_partial_support_report_keeps_the_rfid_fingerprint(db_session, printer_factory, main_db):
+    tray_uuid = "A" * 32
+    printer, _spool = await _assign(
+        db_session, printer_factory, material="PLA", filament_family_id="GFS05", tray_uuid=tray_uuid
+    )
+    report = _slot("PLA")
+    tray = report[0]["tray"][0]
+    tray.update({"tray_info_idx": "GFS05", "tray_uuid": tray_uuid})
+    await _push(printer.id, report)
+
+    del tray["tray_type"]
+    tray["tray_color"] = ""
+    await _push(printer.id, report)
+
+    row = await db_session.scalar(select(SpoolAssignment).where(SpoolAssignment.printer_id == printer.id))
+    assert (row.fingerprint_type, row.fingerprint_color) == ("PLA-S", "E0E0E0FF")

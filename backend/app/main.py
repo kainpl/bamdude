@@ -3641,7 +3641,10 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                     if spool_matches:
                         # Same BL spool still in slot - keep assignment, update fingerprint if needed
                         cur_color = current_tray.get("tray_color", "")
-                        cur_type = support_slot_type(current_tray.get("tray_type"), current_tray.get("tray_info_idx"))
+                        raw_type = current_tray.get("tray_type") or ""
+                        if slot_reported_no_filament(raw_type, current_tray.get("state")):
+                            continue
+                        cur_type = support_slot_type(raw_type, current_tray.get("tray_info_idx"))
                         fp_color = assignment.fingerprint_color or ""
                         fp_type = assignment.fingerprint_type or ""
                         if cur_color.upper() != fp_color.upper() or cur_type.upper() != fp_type.upper():
