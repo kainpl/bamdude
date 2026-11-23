@@ -198,6 +198,7 @@ async def test_bundle_preserves_catalog_model_in_typed_fields(
     monkeypatch.setattr(support.printer_manager, "get_all_statuses", lambda: {printer.id: state})
     await printer_factory(name="Named workshop", model="P1S", access_code="92513048")
     await printer_factory(name="Custom identity", model="Custom identity")
+    await printer_factory(name="Spare station", model="A1 Mini")
     db_session.add_all(
         [
             Settings(key="debug_logging_enabled", value="true"),
@@ -214,7 +215,7 @@ async def test_bundle_preserves_catalog_model_in_typed_fields(
     assert response.status_code == 200, response.text
     with zipfile.ZipFile(io.BytesIO(response.content)) as bundle:
         info = json.loads(bundle.read("support-info.json"))
-        assert [row["model"] for row in info["printers"]] == [model, "[REDACTED]", "[PRINTER]"]
+        assert [row["model"] for row in info["printers"]] == [model, "[REDACTED]", "[PRINTER]", "A1 Mini"]
         snapshot = json.loads(bundle.read("push-status/printer-1.json"))
         assert snapshot["model"] == model
         assert snapshot["raw_data"]["label"] == "[PRINTER]"

@@ -1693,11 +1693,10 @@ def _redact_raw_push_status(raw: dict) -> dict:
 
 def _restore_bundle_model(source: dict, sanitized: dict, field: str, sensitive_strings: dict[str, str]) -> None:
     model = source.get(field)
-    if isinstance(model, str) and model in _BUNDLE_MODEL_NAMES and sensitive_strings.get(model) == "[PRINTER]":
-        # A catalog model is public in these typed fields. A printer with the
-        # same display name still needs redaction in free text. Keep every
-        # other known value (including secrets) in the sanitizer.
-        other_values = {value: label for value, label in sensitive_strings.items() if value != model}
+    if isinstance(model, str) and model in _BUNDLE_MODEL_NAMES and sanitized.get(field) != model:
+        # Catalog labels are public in these typed fields. Ignore printer
+        # names here, including short names inside a longer label (A1 Mini).
+        other_values = {value: label for value, label in sensitive_strings.items() if label != "[PRINTER]"}
         sanitized[field] = sanitize_log_content(model, other_values)
 
 
