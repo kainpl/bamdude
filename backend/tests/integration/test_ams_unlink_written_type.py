@@ -204,3 +204,77 @@ async def test_partial_support_report_keeps_the_rfid_fingerprint(db_session, pri
 
     row = await db_session.scalar(select(SpoolAssignment).where(SpoolAssignment.printer_id == printer.id))
     assert (row.fingerprint_type, row.fingerprint_color) == ("PLA-S", "E0E0E0FF")
+
+    tray["tray_color"] = "202020FF"
+    await _push(printer.id, report)
+    assert (row.fingerprint_type, row.fingerprint_color) == ("PLA-S", "202020FF")
+
+    del tray["tray_color"]
+    tray.update({"tray_type": "PLA", "tray_info_idx": "GFA00"})
+    await _push(printer.id, report)
+    assert (row.fingerprint_type, row.fingerprint_color) == ("PLA", "202020FF")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("tagged", [False, True], ids=["untagged", "same-rfid"])
+async def test_support_reconnect_without_color_preserves_the_binding(db_session, printer_factory, main_db, tagged):
+    tray_uuid = "A" * 32 if tagged else _NOT_BAMBU
+    printer, spool = await _assign(
+        db_session, printer_factory, material="PLA", filament_family_id="GFS05", tray_uuid=tray_uuid if tagged else None
+    )
+    frames = []
+
+    def client():
+        mqtt = BambuMQTTClient("127.0.0.1", "SYNTHETIC", "00000000", model="P1P")
+        mqtt.on_ams_change = lambda units: frames.append(deepcopy(units))
+        return mqtt
+
+    async def binding():
+        row = await db_session.scalar(select(SpoolAssignment).where(SpoolAssignment.printer_id == printer.id))
+        return (row.spool_id, row.fingerprint_type, row.fingerprint_color) if row else None
+
+    initial = _slot("PLA")
+    initial[0]["tray"][0].update({"tray_info_idx": "GFS05", "remain": -1, "tray_uuid": tray_uuid})
+    client()._handle_ams_data({"ams": initial})
+    await _push(printer.id, frames.pop())
+    expected = (spool.id, "PLA-S", "E0E0E0FF")
+    assert await binding() == expected
+
+    mqtt = client()
+    partial = deepcopy(initial)
+    del partial[0]["tray"][0]["tray_color"]
+    mqtt._handle_ams_data({"ams": partial})
+    assert len(frames) == 1
+    assert frames[0][0]["tray"][0]["tray_type"] == "PLA"
+    assert "tray_color" not in frames[0][0]["tray"][0]
+    await _push(printer.id, frames.pop())
+    assert await binding() == expected
+
+    # No other field suggests a change when the printer finally reports color.
+    colored = deepcopy(initial)
+    colored[0]["tray"][0]["tray_color"] = "202020FF"
+    mqtt._handle_ams_data({"ams": colored})
+    assert len(frames) == 1
+    await _push(printer.id, frames.pop())
+    assert await binding() == ((spool.id, "PLA-S", "202020FF") if tagged else None)
+
+    mqtt._handle_ams_data({"ams": colored})
+    assert not frames
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_support_family_change_still_unlinks_without_color(db_session, printer_factory, main_db):
+    printer, spool = await _assign(db_session, printer_factory, material="PLA", filament_family_id="GFS05")
+    initial = _slot("PLA")
+    initial[0]["tray"][0]["tray_info_idx"] = "GFS05"
+    await _push(printer.id, initial)
+    assert await _links(db_session, printer.id) == [(spool.id, "PLA-S")]
+
+    replacement = _slot("PLA")
+    tray = replacement[0]["tray"][0]
+    tray["tray_info_idx"] = "GFA00"
+    del tray["tray_color"]
+    await _push(printer.id, replacement)
+    assert await _links(db_session, printer.id) == []

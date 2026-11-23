@@ -5708,6 +5708,8 @@ class BambuMQTTClient:
         # this removal and left the spool bound to the empty slot (upstream #2670).
         # Include the filament family: support and ordinary PLA can have the
         # same reported tray_type but require different slot types.
+        # Color can arrive after the first tray report and affect spool identity
+        # even when the other fields stay the same.
         #
         # merged_ams also always spans every unit, so a partial single-unit
         # update cannot hash differently from a full pushall carrying the same
@@ -5719,6 +5721,7 @@ class BambuMQTTClient:
                 ams_hash_data.append(
                     f"{ams_unit.get('id')}:{tray.get('id')}:"
                     f"{tray.get('tray_type')}:{tray.get('tag_uid')}:{tray.get('remain')}:{tray.get('tray_info_idx') or ''}"
+                    f":{wire_tray_color(tray.get('tray_color'))}"
                 )
         ams_hash = hashlib.md5(":".join(ams_hash_data).encode(), usedforsecurity=False).hexdigest()
 
