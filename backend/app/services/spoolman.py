@@ -912,9 +912,13 @@ class SpoolmanClient:
         color_hex: str,
         label_weight: int,
         color_name: str | None = None,
+        *,
+        filament_name: str | None = None,
     ) -> int:
         """Return the filament ID matching material/name/brand/color, creating it if absent."""
-        name = f"{material} {subtype}".strip() if subtype else material
+        name = (
+            filament_name if filament_name is not None else (f"{material} {subtype}".strip() if subtype else material)
+        )
         # One value in both roles: the key the loop below compares on and the
         # value a new filament is created with are the same string, so an opaque
         # spool keys and stores as six characters, a translucent one as eight,
@@ -952,8 +956,12 @@ class SpoolmanClient:
             # new filament with the colour while the inventory list kept
             # showing the synth fallback from the old one. Upstream
             # Bambuddy #1357 / commit 4a98914d.
-            f_subtype_part = _filament_subtype_part(f.get("name") or "", material)
-            name_match = f_subtype_part == composed_subtype
+            f_name = f.get("name") or ""
+            name_match = (
+                f_name == filament_name
+                if filament_name is not None
+                else _filament_subtype_part(f_name, material) == composed_subtype
+            )
             color_match = f_color == color
             vendor_match = (not brand) or f_vendor_name == brand_norm
 

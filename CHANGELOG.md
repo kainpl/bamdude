@@ -314,6 +314,10 @@
 
 ### Fixed
 
+- **Read the finish and color from Spoolman product names.** For example,
+  Matte Scarlet Red shows Matte as the subtype and Scarlet Red as the color.
+  Editing a spool keeps its catalog name when the material and subtype stay the same.
+
 - **Empty Bambu Cloud preset categories no longer break Slice or Cloud
   Profiles.** Local presets and available cloud presets still load.
 - **Clear a filament family or legacy slicer preset from the spool editor.**

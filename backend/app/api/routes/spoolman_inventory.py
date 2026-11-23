@@ -31,6 +31,7 @@ from backend.app.api.routes._spoolman_helpers import (
     _safe_optional_float,
     assert_safe_spoolman_url,
     cost_per_kg_to_spoolman_price,
+    split_filament_product_name,
     spoolman_cost_per_kg,
     spoolman_label_weight,
     spoolman_price_weight,
@@ -849,11 +850,8 @@ async def update_spool(
     cur_filament: dict = current.get("filament") or {}
     cur_vendor: dict = cur_filament.get("vendor") or {}
     cur_mat: str = (cur_filament.get("material") or "").strip()
-    cur_name: str = (cur_filament.get("name") or "").strip()
-    if cur_mat and cur_name.upper().startswith(cur_mat.upper()):
-        cur_subtype: str = cur_name[len(cur_mat) :].strip()
-    else:
-        cur_subtype = cur_name
+    cur_name: str = cur_filament.get("name") or ""
+    cur_subtype = split_filament_product_name(cur_mat, cur_name)[0] or ""
 
     # Resolve final values: use request value if provided, else keep current
     material = data.material if data.material is not None else cur_mat
@@ -915,6 +913,13 @@ async def update_spool(
     # a singleton (only this spool links to it, archived spools included).
     cur_filament_id = cur_filament.get("id")
     desired_name = f"{material} {subtype}".strip() if subtype else material
+    preserve_name = (
+        bool(cur_name.strip())
+        and material.strip().casefold() == cur_mat.casefold()
+        and (subtype or "").strip() == cur_subtype
+    )
+    if preserve_name:
+        desired_name = cur_name
     # Compare the stored shapes, not raw strings and not bare RGB prefixes: raw
     # strings PATCH the filament on every no-op edit of an opaque spool, bare
     # prefixes make an alpha-only edit invisible (#2912).
@@ -926,7 +931,7 @@ async def update_spool(
     # relinked the spool to a new duplicate one (upstream #3194).
     metadata_unchanged = (
         cur_filament_id
-        and (cur_filament.get("name") or "").strip() == desired_name
+        and cur_name == desired_name
         and (cur_filament.get("material") or "").upper() == material.upper()
         and cur_color_norm == (color_hex or "").upper()
         and cur_vendor_name.lower() == ((brand or "").strip().lower())
@@ -967,6 +972,7 @@ async def update_spool(
                     color_hex=color_hex,
                     label_weight=label_weight,
                     color_name=color_name,
+                    filament_name=cur_name if preserve_name else None,
                 )
     if not filament_id:
         raise HTTPException(status_code=500, detail="Failed to find or create filament in Spoolman")

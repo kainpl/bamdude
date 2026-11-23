@@ -468,3 +468,63 @@ async def test_copy_with_an_unregistered_preset_field_does_not_create_spools(
         response = await async_client.post(f"{API}/spools/bulk", json={"spool": fields, "quantity": quantity})
     assert response.status_code == (502 if quantity == 1 else 500), response.text
     assert not spoolman.spools
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("name", "subtype", "color"),
+    [
+        ("Matte Scarlet Red", "Matte", "Scarlet Red"),
+        ("Silk+ Baby Blue", "Silk+", "Baby Blue"),
+        ("Gold - Basic PLA", "Basic", "Gold"),
+        ("PLA Dual Color Red/Blue", "Dual Color", "Red/Blue"),
+        ("PLA Engineering", "Engineering", "Engineering"),
+    ],
+)
+async def test_product_name_exposes_finish_and_color(async_client: AsyncClient, spoolman, name, subtype, color):
+    spoolman.filaments[7]["name"] = name
+    spoolman.add_spool(42, 7)
+    response = await async_client.get(f"{API}/spools/42")
+    assert response.status_code == 200, response.text
+    row = response.json()
+    assert (row["subtype"], row["color_name"]) == (subtype, color)
+    assert row["color_name_is_synthesized"] is (name == "PLA Engineering")
+    assert row["slicer_filament_name"] == name
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("shared", [False, True])
+async def test_edit_preserves_spoolman_product_name(async_client: AsyncClient, spoolman, shared):
+    product_name = "Matte Scarlet Red"
+    spoolman.filaments[7]["name"] = product_name
+    spoolman.add_spool(42, 7, used_weight=50)
+    if shared:
+        spoolman.add_spool(43, 7)
+
+    url = f"{API}/spools/42"
+    saved = await async_client.patch(url, json={"subtype": "Matte", "note": "Shelf A"})
+    assert saved.status_code == 200, saved.text
+    assert spoolman.view(42)["filament"]["id"] == 7
+    assert spoolman.filaments[7]["name"] == product_name
+    assert not spoolman.bodies("PATCH", "/filament/7")
+    assert not spoolman.bodies("POST", "/filament")
+
+    changed = await async_client.patch(url, json={"rgba": "110000FF", "color_name": "Custom Red"})
+    assert changed.status_code == 200, changed.text
+    raw = spoolman.view(42)
+    assert raw["filament"]["name"] == product_name
+    assert raw["filament"]["color_hex"] == "110000"
+    assert raw["used_weight"] == 50
+    assert (raw["filament"]["id"] != 7) is shared
+    if shared:
+        assert spoolman.view(43)["filament"]["color_hex"] == "FF0000"
+    reopened = await async_client.get(url)
+    assert reopened.json()["color_name"] == "Custom Red"
+
+    subtype_edit = await async_client.patch(url, json={"subtype": "Basic"})
+    assert subtype_edit.status_code == 200, subtype_edit.text
+    assert spoolman.view(42)["filament"]["name"] == "PLA Basic"
+    if shared:
+        assert spoolman.view(43)["filament"]["name"] == product_name
