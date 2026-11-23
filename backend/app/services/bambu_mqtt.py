@@ -1700,6 +1700,8 @@ class PrinterState:
     # be empty by the time anyone asks.
     last_project_url: str | None = None
     hms_errors: list = field(default_factory=list)  # List of HMSError
+    hms_array_reported: bool = False
+    hms_scalar_reported: bool = False
     # ``hms[]`` entries the operator chose to hide on this printer, kept apart
     # from ``hms_errors`` so every reader of that list goes quiet together while
     # the modal can still show and un-hide them — see services/hms_mute.
@@ -7129,11 +7131,22 @@ class BambuMQTTClient:
                 target = self.state.temperatures.get("bed_target", 0)
                 self.state.temperatures["bed_heating"] = target > 0 and current < target
 
+        if new_print_boundary:
+            # Drop the previous run's local projection before the current frame
+            # is parsed. Only its own reports prove what the firmware cleared.
+            self.state.hms_errors = []
+            self.state.hms_array_reported = False
+            self.state.hms_scalar_reported = False
+
         # Parse HMS (Health Management System) errors
         if "hms" in data:
             hms_list = data["hms"]
             logger.debug("[%s] HMS data received: %s", self.serial_number, hms_list)
             self.state.hms_errors = []
+            self.state.hms_array_reported = isinstance(hms_list, list)
+            # An array rebuild drops the cached scalar. Only a register report
+            # can establish whether the printer really cleared that fault.
+            self.state.hms_scalar_reported = False
             # Reconciled against the whole list once it is rebuilt, below: a
             # verdict on "is the printer refusing our commands" has to be drawn
             # from the absence of the code as much as from its presence.
@@ -7231,6 +7244,7 @@ class BambuMQTTClient:
                 _pe_short = f"{(print_error >> 16) & 0xFFFF:04X}_{print_error & 0xFFFF:04X}"
                 _busy_noise = _pe_short == _DEVICE_BUSY_CODE and self.state.state in _ACTIVE_PRINT_STATES
             if not _busy_noise:
+                self.state.hms_scalar_reported = True
                 self.state.hms_errors = [e for e in self.state.hms_errors if len(e.full_code or "") != 8]
                 # The register moved: an earlier cancel echo no longer stands (set again below when
                 # this value is one).
@@ -7903,8 +7917,6 @@ class BambuMQTTClient:
 
         # Track RUNNING state for more robust completion detection
         if new_print_boundary:
-            # Clear any old HMS errors when a new print starts
-            self.state.hms_errors = []
             # Reset completion tracking for new print
             self._was_running = True
             self._completion_triggered = False
@@ -11304,6 +11316,8 @@ class BambuMQTTClient:
         command = {"print": {"command": "clean_print_error", "sequence_id": "0"}}
         self._client.publish(self.topic_publish, json.dumps(command), qos=1)
         self.state.hms_errors = []
+        self.state.hms_array_reported = False
+        self.state.hms_scalar_reported = False
         logger.info("[%s] Sent clear HMS errors command", self.serial_number)
         return True
 

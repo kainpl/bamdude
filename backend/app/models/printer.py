@@ -27,6 +27,7 @@ class Printer(Base):
     connector_identity: Mapped[str] = mapped_column(
         String(36), nullable=False, unique=True, index=True, default=lambda: str(uuid.uuid4())
     )
+    hms_notified_faults: Mapped[dict[str, float | None] | None] = mapped_column(JSON)
     name: Mapped[str] = mapped_column(String(100))
     serial_number: Mapped[str] = mapped_column(String(50), unique=True)
     ip_address: Mapped[str] = mapped_column(String(253))

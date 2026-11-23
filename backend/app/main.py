@@ -5,7 +5,7 @@ import os
 import re
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -122,7 +122,7 @@ from backend.app.services.ams_slot_presence import spool_present
 from backend.app.services.archive import ArchiveService
 from backend.app.services.auto_queue_scheduler import auto_queue_scheduler
 from backend.app.services.background_dispatch import background_dispatch, delete_internal_by_name
-from backend.app.services.bambu_mqtt import HMS_SEVERITY_NOTIFY_THRESHOLD, PrinterState
+from backend.app.services.bambu_mqtt import HMS_SEVERITY_NOTIFY_THRESHOLD, HMSError, PrinterState
 from backend.app.services.forecast_engine import ForecastSourceUnavailable
 from backend.app.services.git_backup import git_backup_service
 from backend.app.services.ha_sensor_manager import ha_sensor_manager
@@ -568,9 +568,9 @@ _RUN_ADOPTION_WAIT_SECONDS = 30.0
 # {printer_id: {fault key: timestamp}}. Kept per FAULT, not per printer: one set
 # for the whole stack was forgotten only when the stack emptied, so a fault that
 # flickers beside one that stays was announced on every return (upstream #3226).
-# The window is long because measured gaps reach 64 s. In process memory on
-# purpose: a restart announces a standing fault again (owner, 2026-08-29).
-_notified_hms_errors: dict[int, dict[str, float]] = {}
+# The window is long because measured gaps reach 64 s. A restored standing fault
+# has no last-seen timestamp until the printer reports its source.
+_notified_hms_errors: dict[int, dict[str, float | None]] = {}
 _HMS_CLEAR_GRACE_SECONDS = 600.0
 # The print state each printer was last seen in, and the faults recorded before
 # it last changed -- those are forgotten as soon as they are gone, without the
@@ -709,7 +709,13 @@ def _hms_notify_key(error) -> str:
 
 
 def _take_new_hms_fault_keys(
-    printer_id: int, errors: list, print_state: str | None = None, *, now: float | None = None
+    printer_id: int,
+    errors: Sequence[HMSError],
+    print_state: str | None = None,
+    *,
+    reported: tuple[bool, bool] = (True, True),
+    cleared: set[str] | None = None,
+    now: float | None = None,
 ) -> set[str]:
     """The faults on this printer not announced yet; records them as announced.
 
@@ -736,9 +742,14 @@ def _take_new_hms_fault_keys(
         _hms_print_state[printer_id] = print_state
 
     for key, last_seen in list(seen.items()):
-        # A fault still on the stack has its time refreshed by every frame, so one
-        # past the window was absent that long -- whether or not a frame said so.
-        if now - last_seen >= _HMS_CLEAR_GRACE_SECONDS or (key not in current and key in forget_when_gone):
+        if key not in current and not reported[len(key) == 8]:
+            continue
+        if last_seen is None:
+            last_seen = seen[key] = now
+        # A gap between reports does not clear a fault known to be standing.
+        absent = key not in current
+        expired = now - last_seen >= _HMS_CLEAR_GRACE_SECONDS and (absent or cleared is None or key in cleared)
+        if expired or (absent and key in forget_when_gone):
             del seen[key]
             forget_when_gone.discard(key)
 
@@ -750,6 +761,96 @@ def _take_new_hms_fault_keys(
     if not forget_when_gone:
         _hms_forget_when_gone.pop(printer_id, None)
     return new
+
+
+@dataclass
+class _HmsNotificationStorage:
+    lock: asyncio.Lock
+    recorded: dict[str, float | None] | None = None
+
+
+_hms_notification_storage: dict[int, _HmsNotificationStorage] = {}
+
+
+async def _record_hms_faults(
+    printer_id: int,
+    errors: Sequence[HMSError],
+    print_state: str | None,
+    reported: tuple[bool, bool],
+    *,
+    muted_errors: Sequence[HMSError] = (),
+    now: float | None = None,
+) -> set[str]:
+    """Keep announced faults across a restart without treating partial reports as clears."""
+    if not printer_manager.session_still_lives(printer_id) or not (errors or any(reported)):
+        return set()
+
+    from backend.app.models.printer import Printer
+
+    life = printer_manager.printer_life(printer_id)
+    storage = _hms_notification_storage.get(printer_id)
+    if storage is None:
+        storage = _hms_notification_storage[printer_id] = _HmsNotificationStorage(asyncio.Lock())
+    async with storage.lock:
+        if not printer_manager.session_still_lives(printer_id) or not printer_manager.life_holds(printer_id, life):
+            return set()
+        if storage.recorded is None:
+            try:
+                async with async_session() as db:
+                    row = (
+                        await db.execute(select(Printer.hms_notified_faults).where(Printer.id == printer_id))
+                    ).one_or_none()
+                if not printer_manager.life_holds(printer_id, life):
+                    return set()
+                if row is None:
+                    return set()
+                storage.recorded = row[0] or {}
+                if storage.recorded:
+                    seen = _notified_hms_errors.setdefault(printer_id, {})
+                    for key, observed_at in storage.recorded.items():
+                        seen.setdefault(key, observed_at)
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Could not load HMS notification state for printer %s", printer_id, exc_info=True
+                )
+                if not printer_manager.life_holds(printer_id, life):
+                    return set()
+
+        now = time.time() if now is None else now
+        known = _notified_hms_errors.get(printer_id, {})
+        if muted_errors and reported[0]:
+            # Hiding a standing fault is not a clear. A fault first seen
+            # muted stays eligible if the operator later chooses to show it.
+            errors = [*errors, *(error for error in muted_errors if _hms_notify_key(error) in known)]
+        stored = storage.recorded or {}
+        cleared = {key for key, last_seen in stored.items() if last_seen is not None}
+        new = _take_new_hms_fault_keys(printer_id, errors, print_state, reported=reported, cleared=cleared, now=now)
+        current = {_hms_notify_key(error) for error in errors}
+        # A standing fault has no expiry. Once its source reports it absent,
+        # retain its last-seen time through a restart for the existing grace.
+        active = _notified_hms_errors.get(printer_id, {})
+        saved = {
+            key: None if key in current else last_seen if reported[len(key) == 8] else stored.get(key)
+            for key, last_seen in active.items()
+        }
+        if saved != stored:
+            try:
+                async with async_session() as db:
+                    if not await printer_manager.hold_record(db, printer_id, life=life):
+                        return set()
+                    await db.execute(
+                        update(Printer)
+                        .where(Printer.id == printer_id)
+                        .values(hms_notified_faults=saved, updated_at=Printer.updated_at)
+                    )
+                    await db.commit()
+                storage.recorded = saved
+            except Exception:
+                # Preserve in-process deduplication and retry persistence on a later report.
+                logging.getLogger(__name__).warning(
+                    "Could not persist HMS notification state for printer %s", printer_id, exc_info=True
+                )
+        return new if printer_manager.life_holds(printer_id, life) else set()
 
 
 def _hms_label(full_code: str | None, short_code: str) -> str:
@@ -2710,13 +2811,48 @@ def _printer_status_effect_key(state: PrinterState) -> str:
     )
 
 
-async def on_printer_status_change(printer_id: int, state: PrinterState):
+@dataclass(frozen=True)
+class _HmsStatusObservation:
+    errors: tuple[HMSError, ...]
+    muted_errors: tuple[HMSError, ...]
+    print_state: str
+    reported: tuple[bool, bool]
+    observed_at: float
+
+
+def on_printer_status_change(printer_id: int, state: PrinterState) -> Coroutine[None, None, None]:
+    # PrinterManager calls this on the producer thread before queuing the
+    # coroutine. The next packet can replace any of these fields immediately.
+    hms = _HmsStatusObservation(
+        errors=tuple(getattr(state, "hms_errors", None) or ()),
+        muted_errors=tuple(getattr(state, "hms_muted", None) or ()),
+        print_state=state.state,
+        reported=(getattr(state, "hms_array_reported", False), getattr(state, "hms_scalar_reported", False)),
+        observed_at=time.time(),
+    )
+    return _handle_printer_status_change(printer_id, state, hms)
+
+
+async def _handle_printer_status_change(printer_id: int, state: PrinterState, hms: _HmsStatusObservation) -> None:
     """Handle printer status changes - broadcast via WebSocket."""
     # Before the dedup below: a printer whose interrupted-dispatch recheck waits for a fresh
     # idle status gets it even when nothing on its card changes (post-rebuild I-R3).
     from backend.app.services import interrupted_dispatch
 
     interrupted_dispatch.on_status(printer_id, state)
+
+    # Enter the per-printer HMS lock before this task can yield to the next
+    # queued report. Notification delivery happens after releasing that lock.
+    new_error_codes = await _record_hms_faults(
+        printer_id,
+        hms.errors,
+        hms.print_state,
+        hms.reported,
+        muted_errors=hms.muted_errors,
+        now=hms.observed_at,
+    )
+    if not printer_manager.session_still_lives(printer_id):
+        return
 
     temps = state.temperatures or {}
     # Auto-detect dual-nozzle printers from MQTT temperature data
@@ -2836,7 +2972,8 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
 
     if _last_status_broadcast.get(printer_id) == status_key:
         await _broadcast_printer_status_projection(printer_id, state)
-        return  # No change, skip WebSocket broadcast
+        await _deliver_hms_notifications(printer_id, hms.errors, new_error_codes)
+        return
 
     _last_status_broadcast[printer_id] = status_key
 
@@ -2908,145 +3045,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     if not printer_manager.session_still_lives(printer_id):
         return
 
-    # HMS error codes that should not trigger notifications even though they
-    # have known descriptions (e.g. user-initiated actions, not real errors).
-    _HMS_NOTIFICATION_SUPPRESS = {
-        "0500_400E",  # Printing was cancelled (user action, not an error)
-    }
-
-    # Check for new HMS errors and send notifications
-    current_hms_errors = getattr(state, "hms_errors", []) or []
-    if current_hms_errors:
-        # Recorded before anything is sent, so a concurrent callback cannot
-        # announce the same fault twice.
-        new_error_codes = _take_new_hms_fault_keys(printer_id, current_hms_errors, state.state)
-
-        if new_error_codes:
-            # Get the actual new errors for the notification
-            # Notify on FATAL (1) and SERIOUS (2) only. **Lower is worse** in
-            # BS's HMSMessageLevel, so the old ``>= 2`` had this exactly
-            # backwards: it dropped every FATAL and kept every INFO. The
-            # frontend has always used ``<= 2`` for its red pip, so the two
-            # halves of the product disagreed about which faults mattered.
-            new_errors = [
-                e
-                for e in current_hms_errors
-                if _hms_notify_key(e) in new_error_codes and e.severity <= HMS_SEVERITY_NOTIFY_THRESHOLD
-            ]
-
-            try:
-                from backend.app.models.printer import Printer
-
-                # Read the printer in a short session and release the connection
-                # BEFORE the ~15s camera snapshot below (#2572).
-                async with async_session() as db:
-                    result = await db.execute(select(Printer).where(Printer.id == printer_id))
-                    printer = result.scalar_one_or_none()
-
-                printer_name = printer.name if printer else f"Printer {printer_id}"
-
-                # ⚠️ The notification title used to name the module — a table of
-                # five guesses. Measured against Bambu's catalogue, four were
-                # wrong: 0x03 is bed and heating (not Print/Task), 0x05 is media,
-                # camera, USB and cloud (not Nozzle/Extruder), 0x0C is the
-                # toolhead camera (not the motion controller), 0x12 is AMS slot
-                # motors (not the chamber). Only 0x07 was right, and two modules
-                # bigger than most of the table were absent — AMS-HT and the X2D
-                # hotend rack. That is how "Device is busy" reached an operator
-                # titled "Nozzle/Extruder Error" and sent them to look at a
-                # nozzle.
-                #
-                # Renaming the five would fix today's list and break on the next
-                # model, because the table guesses what the catalogue KNOWS. The
-                # title now carries the code, which is exact and searchable, and
-                # the body carries the catalogue's own description — which
-                # already names its subsystem ("Toolhead Camera is offline").
-                from backend.app.services.hms_catalogue import describe
-
-                hms_device = hms_device_of(printer_id)
-
-                # Capture camera snapshot once for all error notifications (no DB held).
-                error_image_data = await _capture_snapshot_for_notification(
-                    printer_id, printer, logging.getLogger(__name__)
-                )
-
-                if not printer_manager.session_still_lives(printer_id):
-                    return
-                # The send loop + MQTT relay run in a fresh session (the read one
-                # was released before the snapshot).
-                async with async_session() as db:
-                    sent_count = 0
-                    for error in new_errors:
-                        # Build short code like "0700_8010"
-                        # Mask to 16 bits to handle printers that send larger values
-                        error_code_int = int(error.code.replace("0x", ""), 16) if error.code else 0
-                        error_code_masked = error_code_int & 0xFFFF
-                        short_code = f"{(error.attr >> 16) & 0xFFFF:04X}_{error_code_masked:04X}"
-
-                        # ⚠️ Severity decides whether to notify, and it already
-                        # did — ``new_errors`` above is filtered on
-                        # HMS_SEVERITY_NOTIFY_THRESHOLD. The second gate here
-                        # was "do we have a description", which is the same
-                        # mistake the printer card made: "we have text" is not
-                        # "this is real". A fatal fault fully documented by
-                        # Bambu stayed silent because our smaller table had
-                        # never heard of it.
-                        if short_code in _HMS_NOTIFICATION_SUPPRESS:
-                            continue
-
-                        description = describe(
-                            hms_device, getattr(error, "full_code", None), short_code.replace("_", "")
-                        )
-                        error_type = _hms_label(getattr(error, "full_code", None), short_code)
-                        # ⚠️ Not `description or short_code`. The title already
-                        # carries the code, so falling back to it printed the
-                        # same eight characters twice with the printer name
-                        # between them and told the operator nothing:
-                        #
-                        #     Помилка принтера: 12FF_0001
-                        #     3DP-030-102
-                        #     12FF_0001
-                        #
-                        # An uncatalogued code gets a place to look it up
-                        # instead. It is rare now that a code missing from the
-                        # model's own catalogue falls through to the consensus
-                        # of the others.
-                        error_detail = description or "https://wiki.bambulab.com/en/hms/home"
-
-                        await notification_service.on_printer_error(
-                            printer_id, printer_name, error_type, db, error_detail, image_data=error_image_data
-                        )
-                        sent_count += 1
-
-                    if sent_count:
-                        logging.getLogger(__name__).info(
-                            f"[HMS] Sent notification for {sent_count} error(s) on printer {printer_id}"
-                        )
-
-                    # Also publish to MQTT relay
-                    printer_info = printer_manager.get_printer(printer_id)
-                    if printer_info:
-                        errors_data = [
-                            {
-                                "code": e.code,
-                                "attr": e.attr,
-                                "module": e.module,
-                                "severity": e.severity,
-                            }
-                            for e in new_errors
-                        ]
-                        await mqtt_relay.on_printer_error(
-                            printer_id, printer_info.name, printer_info.serial_number, errors_data
-                        )
-
-            except Exception as e:
-                logging.getLogger(__name__).warning(f"HMS error notification failed: {e}")
-
-    else:
-        # Nothing to send, but faults gone long enough -- or gone across a print
-        # state change -- are forgotten. Some codes (chamber temperature
-        # regulation during a PETG print) toggle every few seconds.
-        _take_new_hms_fault_keys(printer_id, [], state.state)
+    await _deliver_hms_notifications(printer_id, hms.errors, new_error_codes)
 
     if not printer_manager.session_still_lives(printer_id):
         return
@@ -3056,6 +3055,135 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         # A display-only publication may have peeked this frame with the old
         # Repeat value. It must not consume this real status's fresh payload.
         await _broadcast_printer_status_projection(printer_id, state, deduplicate=False)
+
+
+async def _deliver_hms_notifications(
+    printer_id: int, current_hms_errors: Sequence[HMSError], new_error_codes: set[str]
+) -> None:
+    if not current_hms_errors or not new_error_codes or not printer_manager.session_still_lives(printer_id):
+        return
+
+    # HMS error codes that should not trigger notifications even though they
+    # have known descriptions (e.g. user-initiated actions, not real errors).
+    _HMS_NOTIFICATION_SUPPRESS = {
+        "0500_400E",  # Printing was cancelled (user action, not an error)
+    }
+
+    # Get the actual new errors for the notification
+    # Notify on FATAL (1) and SERIOUS (2) only. **Lower is worse** in
+    # BS's HMSMessageLevel, so the old ``>= 2`` had this exactly
+    # backwards: it dropped every FATAL and kept every INFO. The
+    # frontend has always used ``<= 2`` for its red pip, so the two
+    # halves of the product disagreed about which faults mattered.
+    new_errors = [
+        e
+        for e in current_hms_errors
+        if _hms_notify_key(e) in new_error_codes and e.severity <= HMS_SEVERITY_NOTIFY_THRESHOLD
+    ]
+
+    try:
+        from backend.app.models.printer import Printer
+
+        # Read the printer in a short session and release the connection
+        # BEFORE the ~15s camera snapshot below (#2572).
+        async with async_session() as db:
+            result = await db.execute(select(Printer).where(Printer.id == printer_id))
+            printer = result.scalar_one_or_none()
+
+        printer_name = printer.name if printer else f"Printer {printer_id}"
+
+        # ⚠️ The notification title used to name the module — a table of
+        # five guesses. Measured against Bambu's catalogue, four were
+        # wrong: 0x03 is bed and heating (not Print/Task), 0x05 is media,
+        # camera, USB and cloud (not Nozzle/Extruder), 0x0C is the
+        # toolhead camera (not the motion controller), 0x12 is AMS slot
+        # motors (not the chamber). Only 0x07 was right, and two modules
+        # bigger than most of the table were absent — AMS-HT and the X2D
+        # hotend rack. That is how "Device is busy" reached an operator
+        # titled "Nozzle/Extruder Error" and sent them to look at a
+        # nozzle.
+        #
+        # Renaming the five would fix today's list and break on the next
+        # model, because the table guesses what the catalogue KNOWS. The
+        # title now carries the code, which is exact and searchable, and
+        # the body carries the catalogue's own description — which
+        # already names its subsystem ("Toolhead Camera is offline").
+        from backend.app.services.hms_catalogue import describe
+
+        hms_device = hms_device_of(printer_id)
+
+        # Capture camera snapshot once for all error notifications (no DB held).
+        error_image_data = await _capture_snapshot_for_notification(printer_id, printer, logging.getLogger(__name__))
+
+        if not printer_manager.session_still_lives(printer_id):
+            return
+        # The send loop + MQTT relay run in a fresh session (the read one
+        # was released before the snapshot).
+        async with async_session() as db:
+            sent_count = 0
+            for error in new_errors:
+                # Build short code like "0700_8010"
+                # Mask to 16 bits to handle printers that send larger values
+                error_code_int = int(error.code.replace("0x", ""), 16) if error.code else 0
+                error_code_masked = error_code_int & 0xFFFF
+                short_code = f"{(error.attr >> 16) & 0xFFFF:04X}_{error_code_masked:04X}"
+
+                # ⚠️ Severity decides whether to notify, and it already
+                # did — ``new_errors`` above is filtered on
+                # HMS_SEVERITY_NOTIFY_THRESHOLD. The second gate here
+                # was "do we have a description", which is the same
+                # mistake the printer card made: "we have text" is not
+                # "this is real". A fatal fault fully documented by
+                # Bambu stayed silent because our smaller table had
+                # never heard of it.
+                if short_code in _HMS_NOTIFICATION_SUPPRESS:
+                    continue
+
+                description = describe(hms_device, getattr(error, "full_code", None), short_code.replace("_", ""))
+                error_type = _hms_label(getattr(error, "full_code", None), short_code)
+                # ⚠️ Not `description or short_code`. The title already
+                # carries the code, so falling back to it printed the
+                # same eight characters twice with the printer name
+                # between them and told the operator nothing:
+                #
+                #     Помилка принтера: 12FF_0001
+                #     3DP-030-102
+                #     12FF_0001
+                #
+                # An uncatalogued code gets a place to look it up
+                # instead. It is rare now that a code missing from the
+                # model's own catalogue falls through to the consensus
+                # of the others.
+                error_detail = description or "https://wiki.bambulab.com/en/hms/home"
+
+                await notification_service.on_printer_error(
+                    printer_id, printer_name, error_type, db, error_detail, image_data=error_image_data
+                )
+                sent_count += 1
+
+            if sent_count:
+                logging.getLogger(__name__).info(
+                    f"[HMS] Sent notification for {sent_count} error(s) on printer {printer_id}"
+                )
+
+            # Also publish to MQTT relay
+            printer_info = printer_manager.get_printer(printer_id)
+            if printer_info:
+                errors_data = [
+                    {
+                        "code": e.code,
+                        "attr": e.attr,
+                        "module": e.module,
+                        "severity": e.severity,
+                    }
+                    for e in new_errors
+                ]
+                await mqtt_relay.on_printer_error(
+                    printer_id, printer_info.name, printer_info.serial_number, errors_data
+                )
+
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"HMS error notification failed: {e}")
 
 
 _last_projection_broadcast: dict[int, tuple] = {}
