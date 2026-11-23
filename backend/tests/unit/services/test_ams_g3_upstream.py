@@ -274,9 +274,9 @@ class TestAssignmentVerification:
         fired = []
         client.on_assignment_verified = lambda *a: fired.append(a)
         client.register_assignment_verification(255, 0, "GFA00", "FF0000FF", None)
-        client.state.raw_data["vt_tray"] = [{"id": 254, "tray_info_idx": "GFA00"}]
-
-        client._check_assignment_verifications()
+        client._process_message(
+            {"print": {"command": "push_status", "vt_tray": [{"id": 254, "tray_info_idx": "GFA00"}]}}
+        )
 
         assert fired[0][2] is True
 

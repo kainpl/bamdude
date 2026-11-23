@@ -14,7 +14,7 @@ spool was unlinked from the slot it had just been assigned to, on the first push
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from sqlalchemy import select
@@ -72,8 +72,9 @@ def _record_ams_reports(frames):
     return mqtt
 
 
-async def _push(printer_id, ams_data):
-    status = SimpleNamespace(state="IDLE", raw_data={})
+async def _push(printer_id, ams_data, *, status=None):
+    if status is None:
+        status = SimpleNamespace(state="IDLE", raw_data={})
     with (
         patch("backend.app.services.ams_backup_compatibility_apply.rebuild_once", new=AsyncMock()),
         patch.object(main_module.printer_manager, "get_status", return_value=status),
@@ -92,6 +93,97 @@ async def _links(db_session, printer_id):
 async def _binding(db_session, printer_id):
     row = await db_session.scalar(select(SpoolAssignment).where(SpoolAssignment.printer_id == printer_id))
     return (row.spool_id, row.fingerprint_type, row.fingerprint_color) if row else None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_external_colour_delta_keeps_the_database_binding_until_readback(db_session, printer_factory, main_db):
+    printer, spool = await _assign(db_session, printer_factory, material="PLA")
+    printer.model = "A1 Mini"
+    assignment = await db_session.scalar(select(SpoolAssignment).where(SpoolAssignment.printer_id == printer.id))
+    assignment.ams_id = 255
+    assignment.tray_id = 0
+    await db_session.commit()
+
+    mqtt = BambuMQTTClient("127.0.0.1", "SYNTHETIC", "00000000", model="A1 Mini")
+    reports = []
+    mqtt.on_ams_change = lambda units: reports.append(deepcopy(units))
+    verified = Mock()
+    mqtt.on_assignment_verified = verified
+    before = {"id": 254, "tray_type": "PLA", "tray_info_idx": "GFL99", "tray_color": "000000FF"}
+    mqtt._process_message({"print": {"command": "push_status", "gcode_state": "IDLE", "vt_tray": before}})
+    mqtt.register_assignment_verification(255, 0, "GFA00", "E0E0E0FF", None)
+
+    mqtt._process_message({"print": {"command": "push_status", "vt_tray": {"tray_color": "E0E0E0FF"}}})
+    await _push(printer.id, reports[-1], status=mqtt.state)
+    assert await _binding(db_session, printer.id) == (spool.id, "PLA", "E0E0E0FF")
+    verified.assert_not_called()
+
+    after = {**before, "tray_info_idx": "GFA00", "tray_color": "E0E0E0FF"}
+    mqtt._process_message({"print": {"command": "push_status", "vt_tray": after}})
+    await _push(printer.id, reports[-1], status=mqtt.state)
+    verified.assert_called_once_with(255, 0, True, {"tray_info_idx": "GFA00", "kprofile_applied": True})
+    assert await _binding(db_session, printer.id) == (spool.id, "PLA", "E0E0E0FF")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a2l_partial_units_keep_both_database_bindings(db_session, printer_factory, main_db):
+    printer, standard_spool = await _assign(db_session, printer_factory, material="PETG")
+    printer.model = "A2L"
+    lite_spool = Spool(label_weight=1000, weight_used=0, rgba="E0E0E0FF", color_name="white", material="PLA")
+    db_session.add(lite_spool)
+    await db_session.flush()
+    db_session.add(
+        SpoolAssignment(
+            spool_id=lite_spool.id,
+            printer_id=printer.id,
+            ams_id=6,
+            tray_id=1,
+            fingerprint_color="E0E0E0FF",
+            fingerprint_type="PLA",
+        )
+    )
+    await db_session.commit()
+
+    mqtt = BambuMQTTClient("127.0.0.1", "SYNTHETIC", "00000000", model="A2L")
+    reports = []
+    mqtt.on_ams_change = lambda units: reports.append(deepcopy(units))
+    standard = {**_slot("PETG")[0], "id": "0"}
+    lite = {**_slot("PLA")[0], "id": "16"}
+    mqtt._process_message(
+        {
+            "print": {
+                "command": "push_status",
+                "gcode_state": "IDLE",
+                "ams": {"ams": [standard, lite], "ams_exist_bits": "1001", "tray_exist_bits": "2000002"},
+            }
+        }
+    )
+    for unit_id, filament in ((0, "GFG99"), ("6", "GFA00")):
+        mqtt._process_message(
+            {
+                "print": {
+                    "command": "push_status",
+                    "ams": {
+                        "ams": [
+                            {
+                                "id": unit_id,
+                                "tray": [
+                                    {"id": "1", "tray_info_idx": filament},
+                                ],
+                            }
+                        ]
+                    },
+                }
+            }
+        )
+        await _push(printer.id, reports[-1], status=mqtt.state)
+        result = await db_session.scalars(select(SpoolAssignment).where(SpoolAssignment.printer_id == printer.id))
+        assert {(row.ams_id, row.tray_id, row.spool_id) for row in result} == {
+            (0, 1, standard_spool.id),
+            (6, 1, lite_spool.id),
+        }
 
 
 @pytest.mark.asyncio

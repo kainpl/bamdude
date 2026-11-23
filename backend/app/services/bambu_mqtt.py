@@ -352,6 +352,15 @@ def normalize_am_unit_id(ams_id: int) -> int:
     return A2L_LITE_NORMALIZED_AMS_ID if ams_id == A2L_LITE_PHYSICAL_AMS_ID else ams_id
 
 
+def _ams_address_key(entry: dict) -> tuple[int, str]:
+    """Match and order MQTT unit and tray IDs regardless of their wire type."""
+    raw = entry.get("id")
+    try:
+        return int(raw), ""
+    except (TypeError, ValueError):
+        return 1 << 30, str(raw)
+
+
 def wire_tray_color(tray_color: str | None) -> str:
     """Normalise a colour to the form AMS firmware actually parses: UPPERCASE hex.
 
@@ -3883,6 +3892,7 @@ class BambuMQTTClient:
 
             # Handle vir_slot (H2-series external spool data) - list of external trays
             # Process vir_slot FIRST so it takes priority over vt_tray
+            external_trays = None
             if "vir_slot" in print_data:
                 vir_slot = print_data["vir_slot"]
                 if isinstance(vir_slot, list) and vir_slot:
@@ -3890,9 +3900,14 @@ class BambuMQTTClient:
                     # external slot with id=255 in vir_slot, but tray_now=254 when active.
                     # Remap id=255→254 for single-slot printers so active detection works.
                     # Dual-nozzle (H2D) has 2 slots: id=254 (Ext-L) and id=255 (Ext-R).
-                    if len(vir_slot) == 1 and str(vir_slot[0].get("id", "")) == "255":
+                    if (
+                        len(vir_slot) == 1
+                        and str(vir_slot[0].get("id", "")) == "255"
+                        and not (self._is_dual_nozzle or is_dual_nozzle_model(self.model))
+                    ):
                         vir_slot[0]["id"] = "254"
                     self.state.raw_data["vt_tray"] = _merge_vt_tray(self.state.raw_data.get("vt_tray"), vir_slot)
+                    external_trays = vir_slot
 
             # Handle vt_tray (virtual tray / external spool) data
             # Only use vt_tray if vir_slot is NOT in this message AND we don't already
@@ -3904,10 +3919,11 @@ class BambuMQTTClient:
                 # Don't let a single-spool vt_tray dict overwrite multi-slot vir_slot data
                 if isinstance(vt_tray, dict) and isinstance(existing, list) and len(existing) > 1:
                     pass  # Keep the vir_slot data
-                else:
+                elif isinstance(vt_tray, (dict, list)):
                     if isinstance(vt_tray, dict):
                         vt_tray = [vt_tray]
                     self.state.raw_data["vt_tray"] = _merge_vt_tray(existing, vt_tray)
+                    external_trays = vt_tray
 
             # The AMS change-hash in _handle_ams_data sees AMS units only, and
             # _handle_ams_data already ran above — so a change to the external
@@ -3923,6 +3939,9 @@ class BambuMQTTClient:
                 self._maybe_trigger_external_spool_change()
             except Exception as e:
                 logger.error("[%s] Error detecting external-spool change: %s", self.serial_number, e)
+
+            if external_trays and self._pending_assignments and is_printer_status_frame(print_data):
+                self._check_assignment_verifications(external_trays=external_trays)
 
             # Parse ams_status directly from print data (NOT from print.ams)
             # ams_status is a combined value: lower 8 bits = sub status, bits 8-15 = main status
@@ -5341,23 +5360,28 @@ class BambuMQTTClient:
         if not isinstance(existing_ams, list):
             existing_ams = []
         existing_by_id = {
-            ams.get("id"): ams for ams in existing_ams if isinstance(ams, dict) and ams.get("id") is not None
+            _ams_address_key(ams): ams for ams in existing_ams if isinstance(ams, dict) and ams.get("id") is not None
         }
 
         # Update existing units with new data, add new units
         for ams_unit in ams_list:
             ams_id = ams_unit.get("id")
             if ams_id is not None:
-                existing_unit = existing_by_id.get(ams_id)
+                unit_key = _ams_address_key(ams_unit)
+                existing_unit = existing_by_id.get(unit_key)
+                if existing_unit:
+                    ams_unit = {**ams_unit, "id": existing_unit["id"]}
                 if existing_unit and "tray" in ams_unit:
                     # Deep merge trays to preserve fields from previous updates
-                    existing_trays = {t.get("id"): t for t in existing_unit.get("tray", []) if t.get("id") is not None}
+                    existing_trays = {
+                        _ams_address_key(t): t for t in existing_unit.get("tray", []) if t.get("id") is not None
+                    }
                     merged_trays = []
                     for new_tray in ams_unit.get("tray", []):
-                        tray_id = new_tray.get("id")
-                        if tray_id is not None and tray_id in existing_trays:
+                        previous_tray = existing_trays.pop(_ams_address_key(new_tray), None)
+                        if previous_tray is not None:
                             # Merge: start with existing, update with new non-empty values
-                            merged_tray = existing_trays[tray_id].copy()
+                            merged_tray = previous_tray.copy()
                             # Detect slot-clearing updates (spool removal):
                             # When tray_type is explicitly empty, clear everything
                             # including RFID data (tag_uid/tray_uuid).
@@ -5396,7 +5420,7 @@ class BambuMQTTClient:
                                     "[%s] AMS %s tray %s: state=%s (not loaded) - clearing stale tray data",
                                     self.serial_number,
                                     ams_id,
-                                    tray_id,
+                                    new_tray.get("id"),
                                     tray_state,
                                 )
                                 slot_clearing = True
@@ -5453,6 +5477,10 @@ class BambuMQTTClient:
                             merged_trays.append(merged_tray)
                         else:
                             merged_trays.append(new_tray)
+                    if merged_trays:
+                        # A nonempty delta can report just the slot that changed.
+                        merged_trays.extend(existing_trays.values())
+                        merged_trays.sort(key=_ams_address_key)
                     # Update ams_unit with merged trays. Spread existing_unit
                     # FIRST so top-level fields the partial update omits —
                     # dry_time, info (which drives dry_status / dry_sub_status),
@@ -5466,7 +5494,7 @@ class BambuMQTTClient:
                     # Partial update without tray data: merge new fields into existing
                     # unit to preserve tray, sn, sw_ver, and other accumulated data.
                     ams_unit = {**existing_unit, **ams_unit}
-                existing_by_id[ams_id] = ams_unit
+                existing_by_id[unit_key] = ams_unit
 
         # The merge keeps a unit the push does not list, so an AMS unplugged
         # while we run stayed on the card until a restart (upstream ad62d1063,
@@ -5474,14 +5502,15 @@ class BambuMQTTClient:
         # only when the push carried a unit list at all: a presence-only push
         # reaches here with a list we made up.
         if isinstance(ams_data, dict) and isinstance(ams_data.get("ams"), list):
-            listed = {unit.get("id") for unit in ams_list if isinstance(unit, dict)}
-            for gone_id in [uid for uid in existing_by_id if uid not in listed]:
+            listed = {_ams_address_key(unit) for unit in ams_list if isinstance(unit, dict)}
+            for gone_key in existing_by_id.keys() - listed:
+                gone_id = existing_by_id[gone_key]["id"]
                 if unit_reported_absent(gone_id, ams_list, ams_data.get("ams_exist_bits")):
                     logger.info("[%s] AMS %s is no longer attached; leaving the card", self.serial_number, gone_id)
-                    del existing_by_id[gone_id]
+                    del existing_by_id[gone_key]
 
         # Convert back to list, sorted by ID for consistent ordering
-        merged_ams = sorted(existing_by_id.values(), key=lambda x: x.get("id", 0))
+        merged_ams = [existing_by_id[key] for key in sorted(existing_by_id)]
 
         # Empty-slot cleanup via tray_exist_bits (#147, #1322, #765, #1365).
         # Shared with the VP bridge cache so the slicer-facing view stays in
@@ -5912,20 +5941,34 @@ class BambuMQTTClient:
         if pending is not None:
             pending["cali_idx"] = cali_idx
 
-    def _find_verify_tray(self, ams_id: int, tray_id: int) -> dict | None:
+    def _find_verify_tray(self, ams_id: int, tray_id: int, external_trays: list | None = None) -> dict | None:
         """Locate the live tray dict for a pending verification.
 
-        External spools (``ams_id`` 255) live in ``vt_tray`` under global ids
-        254/255; regular and HT AMS trays live under ``ams[].tray[]``. HT units
+        External spools (``ams_id`` 255) are matched in the current status
+        report by global IDs 254/255. Regular and HT trays live in the AMS cache. HT units
         report a single tray whose id may not equal the logical ``tray_id``, so
         fall back to the sole tray when an id match fails.
         """
         raw = self.state.raw_data or {}
         if ams_id == 255:
-            want_ext = 254 + tray_id
-            for vt in raw.get("vt_tray", []) or []:
-                if isinstance(vt, dict) and str(vt.get("id")) == str(want_ext):
+            want_ext = str(254 + tray_id)
+            for vt in external_trays or []:
+                if isinstance(vt, dict) and str(vt.get("id")) == want_ext:
                     return vt
+            if self._is_dual_nozzle or is_dual_nozzle_model(self.model):
+                return None
+            cached = raw.get("vt_tray") or []
+            if (
+                external_trays
+                and len(external_trays) == len(cached) == 1
+                and isinstance(external_trays[0], dict)
+                and external_trays[0].get("id") is None
+                and isinstance(cached[0], dict)
+                and str(cached[0].get("id")) == want_ext
+            ):
+                # The cached slot addresses an ID-less delta. Its preset is not
+                # an observation in this frame.
+                return external_trays[0]
             return None
         for unit in raw.get("ams", []) or []:
             if str(unit.get("id")) != str(ams_id):
@@ -5939,19 +5982,22 @@ class BambuMQTTClient:
             return None
         return None
 
-    def _check_assignment_verifications(self) -> None:
+    def _check_assignment_verifications(self, *, external_trays: list | None = None) -> None:
         """Compare each pending assignment against live tray telemetry and fire
         ``on_assignment_verified`` on a match or once the deadline passes.
 
-        Runs on every AMS push. Non-matching-but-still-within-window entries are
-        left in place for the next push. The timeout branch only fires when a
-        later push arrives after the deadline; if the printer goes silent we
-        simply never confirm, which is preferable to inventing a failure.
+        An AMS push checks internal slots. An external status report checks only
+        the external slots it names or unambiguously updates. Only current
+        external preset evidence can confirm the assignment.
         """
         now = time.monotonic()
         for key, want in list(self._pending_assignments.items()):
             ams_id, tray_id = key
-            tray = self._find_verify_tray(ams_id, tray_id)
+            if (ams_id == 255) != (external_trays is not None):
+                continue
+            tray = self._find_verify_tray(ams_id, tray_id, external_trays)
+            if ams_id == 255 and tray is None:
+                continue
             actual_idx = str((tray or {}).get("tray_info_idx") or "").strip().upper()
             if tray is not None and actual_idx:
                 want["last_seen_idx"] = actual_idx

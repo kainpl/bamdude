@@ -322,6 +322,11 @@
 
 ### Fixed
 
+- **Partial reports keep AMS and external spool state.** The A2L printer
+  card shows the regular AMS and AMS Lite together and keeps their other
+  slots when a report updates one slot. External spool configuration on A1
+  and A1 mini confirms the preset from the external slot's status report.
+
 - **Printer presets prioritize the farm model and nozzle.** If the selected source has no matching profile, the picker offers matching profiles from other sources and explains why. The current selection stays available. The farm-model filter matches configured models exactly. Filament lists keep the loaded-filament filter whenever a matching profile is available after relaxing the source filter.
 
 - **API-key spool assignments use the owner's allowed cloud preset.**
