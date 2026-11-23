@@ -148,6 +148,31 @@ async def test_an_a1_refused_ftp_421_does_not_try_another_data_mode(tmp_path, mo
     ftp.login.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_ftp_421_after_stor_preserves_queue_reason_without_retry(tmp_path, monkeypatch):
+    from backend.app.services.background_dispatch import _upload_failure_message
+
+    path = tmp_path / "job.3mf"
+    path.write_bytes(b"fixture")
+    control = MagicMock()
+    control.sock.gettimeout.return_value = 10
+    control.voidresp.side_effect = ftplib.error_temp("421 Too many connections")
+    control.size.side_effect = OSError("control session closed")
+    factory = MagicMock(return_value=control)
+    monkeypatch.setattr(bambu_ftp, "ImplicitFTP_TLS", factory)
+    monkeypatch.setattr(BambuFTPClient, "_mode_cache", {})
+    report = bambu_ftp.UploadReport()
+
+    assert not await bambu_ftp.upload_file_async(
+        "127.0.0.1", "00000000", path, "/cache/job.3mf", printer_model="A1", report=report
+    )
+
+    assert _upload_failure_message("external", report) == "FTP 421"
+    assert report.failure.code == "421"
+    factory.assert_called_once()
+    control.size.assert_not_called()
+
+
 def test_only_a_cleartext_answer_is_probed():
     """A protocol-version alert means the peer DID speak TLS — nothing to read."""
     alert = ssl.SSLError(1, "[SSL: TLSV1_ALERT_PROTOCOL_VERSION] tlsv1 alert protocol version")

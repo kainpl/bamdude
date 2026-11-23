@@ -44,7 +44,7 @@ from backend.app.services.mqtt_relay import mqtt_relay
 from backend.app.services.mqtt_smart_plug import subscribe_plug_to_mqtt
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.rest_smart_plug import rest_smart_plug_service
-from backend.app.services.smart_plug_manager import plug_switched, smart_plug_manager
+from backend.app.services.smart_plug_manager import can_auto_turn_off, plug_switched, smart_plug_manager
 from backend.app.services.tasmota import tasmota_service
 
 logger = logging.getLogger(__name__)
@@ -936,6 +936,8 @@ async def update_smart_plug(
 
         # Track old MQTT settings for comparison
         old_plug_type = plug.plug_type
+        old_off_target = (plug.plug_type, plug.printer_id)
+        could_auto_off = plug.enabled and can_auto_turn_off(plug)
         old_mqtt_config = {
             "power_topic": plug.mqtt_power_topic or plug.mqtt_topic,
             "power_path": plug.mqtt_power_path,
@@ -951,6 +953,15 @@ async def update_smart_plug(
         for field, value in update_data.items():
             setattr(plug, field, value)
 
+        retire_pending_off = None
+        if old_off_target != (plug.plug_type, plug.printer_id) or (
+            could_auto_off and (not plug.enabled or not can_auto_turn_off(plug))
+        ):
+            # A restart must also discard a pending shutdown for the former target.
+            plug.auto_off_pending = False
+            plug.auto_off_pending_since = None
+            retire_pending_off = smart_plug_manager.pending_off_retirement(plug.id)
+
         # What the readings mean changed: a new measurement source, with a strict cutoff, in the same
         # step as the flush's token check (spec plug-meter-watchdog W2). A rename rotates nothing.
         rotated = identity_of(plug) != identity_before
@@ -965,9 +976,9 @@ async def update_smart_plug(
                 await rotate_source(db, plug)
             else:
                 await reset_watch_cursor(db, plug.id)
-            await db.commit()
-        else:
-            await db.commit()
+        await db.commit()
+        if retire_pending_off is not None:
+            retire_pending_off()
     await db.refresh(plug)
     await db.commit()
     if rotated and plug.plug_type == "zigbee":

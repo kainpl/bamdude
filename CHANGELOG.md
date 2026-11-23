@@ -1,7 +1,7 @@
 ## [Unreleased]
 
-- **MQTT plugs in monitoring mode stay out of power automation.** The queues skip them when looking for a switch, and Obico reports whether a mains switch succeeded. The meters still contribute energy readings for prints.
-- **Background timelapse scans back off when the printer stops answering FTP listings.** A queue upload refused because the printer has run out of file-transfer sessions reports `FTP 421`.
+- **MQTT plugs in monitoring mode stay out of power automation.** The queues skip them when looking for a switch, and Obico reports whether a mains switch succeeded. The meters still contribute energy readings for prints. Changing a plug's type or linked printer cancels a pending automatic shutdown.
+- **Background timelapse scans back off when the printer stops answering FTP listings.** This includes a timeout while checking a parent directory. A queue upload reports confirmed `FTP 421` session exhaustion even when the refusal arrives after file data was sent.
 
 - **Windows ZIP backups keep their managed files accessible after restore on Linux and macOS.** Archive and library paths use the destination separators when the backup carries the corresponding file.
 - **Backup and restore keep the server responsive during staging cleanup.** The operation keeps its lock until cleanup finishes, including when the request is cancelled.

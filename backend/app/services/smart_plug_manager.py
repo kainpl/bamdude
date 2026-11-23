@@ -745,44 +745,37 @@ class SmartPlugManager:
             self._delayed_off(
                 plug.id,
                 plug.plug_type,
-                plug.ip_address,
-                plug.ha_entity_id,
-                plug.username,
-                plug.password,
                 printer_id,
                 delay_seconds,
                 may_run=may_run,
-                controls_printer_power=plug.controls_printer_power,
-                rest_off_url=plug.rest_off_url if plug.plug_type == "rest" else None,
-                rest_off_body=plug.rest_off_body if plug.plug_type == "rest" else None,
-                rest_method=plug.rest_method if plug.plug_type == "rest" else None,
-                rest_headers=plug.rest_headers if plug.plug_type == "rest" else None,
             )
         )
         self._pending_off[plug.id] = task
         self._pending_off_printers[plug.id] = printer_id
         spawn_background_task(
-            self._mark_auto_off_pending(plug.id, True, may_run=lambda: self._pending_off.get(plug.id) is task),
+            self._mark_auto_off_pending(
+                plug.id,
+                True,
+                may_run=lambda: self._pending_off.get(plug.id) is task,
+                target=(plug.plug_type, printer_id),
+            ),
             name=f"mark-auto-off-pending-{plug.id}",
         )
 
     @staticmethod
-    async def _off_target(plug):
-        if plug.plug_type != "mqtt":
-            return plug
-
-        # Read the current MQTT command channel, including changes since scheduling.
+    async def _off_target(plug_id: int, plug_type: str, printer_id: int) -> "SmartPlug | None":
+        """Check the scheduled binding before reading the current control configuration."""
         from backend.app.core.database import async_session
         from backend.app.models.smart_plug import SmartPlug
 
         async with async_session() as db:
-            current = await db.get(SmartPlug, plug.id)
+            current = await db.get(SmartPlug, plug_id)
             if (
                 current
                 and current.enabled
-                and current.printer_id == plug.printer_id
-                and current.plug_type == "mqtt"
-                and not is_monitor_only(current)
+                and current.printer_id == printer_id
+                and current.plug_type == plug_type
+                and can_auto_turn_off(current)
             ):
                 return current
         return None
@@ -791,21 +784,10 @@ class SmartPlugManager:
         self,
         plug_id: int,
         plug_type: str,
-        ip_address: str | None,
-        ha_entity_id: str | None,
-        username: str | None,
-        password: str | None,
         printer_id: int,
         delay_seconds: int,
         *,
         may_run: Callable[[], bool] | None = None,
-        # False for an accessory plug — don't blank the printer's state (#2629).
-        # Defaults True so a caller that predates the flag keeps today's behaviour.
-        controls_printer_power: bool = True,
-        rest_off_url: str | None = None,
-        rest_off_body: str | None = None,
-        rest_method: str | None = None,
-        rest_headers: str | None = None,
     ):
         """Wait and turn off."""
         try:
@@ -828,26 +810,7 @@ class SmartPlugManager:
                 await self._mark_auto_off_pending(plug_id, False)
                 return
 
-            # Create a minimal plug-like object for the service
-            class PlugInfo:
-                def __init__(self):
-                    self.plug_type = plug_type
-                    self.ip_address = ip_address
-                    self.ha_entity_id = ha_entity_id
-                    self.username = username
-                    self.password = password
-                    self.name = f"plug_{plug_id}"
-                    # REST fields
-                    self.rest_off_url = rest_off_url
-                    self.rest_off_body = rest_off_body
-                    self.rest_method = rest_method
-                    self.rest_headers = rest_headers
-                    # What plug_switched reads
-                    self.id = plug_id
-                    self.printer_id = printer_id
-                    self.controls_printer_power = controls_printer_power
-
-            plug_info = await self._off_target(PlugInfo())
+            plug_info = await self._off_target(plug_id, plug_type, printer_id)
             if plug_info is None:
                 await self._mark_auto_off_pending(plug_id, False, may_run=may_run)
                 return
@@ -887,24 +850,20 @@ class SmartPlugManager:
             self._temp_based_off(
                 plug.id,
                 plug.plug_type,
-                plug.ip_address,
-                plug.ha_entity_id,
-                plug.username,
-                plug.password,
                 printer_id,
                 temp_threshold,
                 may_run=may_run,
-                controls_printer_power=plug.controls_printer_power,
-                rest_off_url=plug.rest_off_url if plug.plug_type == "rest" else None,
-                rest_off_body=plug.rest_off_body if plug.plug_type == "rest" else None,
-                rest_method=plug.rest_method if plug.plug_type == "rest" else None,
-                rest_headers=plug.rest_headers if plug.plug_type == "rest" else None,
             )
         )
         self._pending_off[plug.id] = task
         self._pending_off_printers[plug.id] = printer_id
         spawn_background_task(
-            self._mark_auto_off_pending(plug.id, True, may_run=lambda: self._pending_off.get(plug.id) is task),
+            self._mark_auto_off_pending(
+                plug.id,
+                True,
+                may_run=lambda: self._pending_off.get(plug.id) is task,
+                target=(plug.plug_type, printer_id),
+            ),
             name=f"mark-auto-off-pending-{plug.id}",
         )
 
@@ -912,20 +871,10 @@ class SmartPlugManager:
         self,
         plug_id: int,
         plug_type: str,
-        ip_address: str | None,
-        ha_entity_id: str | None,
-        username: str | None,
-        password: str | None,
         printer_id: int,
         temp_threshold: int,
         *,
         may_run: Callable[[], bool] | None = None,
-        # False for an accessory plug — don't blank the printer's state (#2629).
-        controls_printer_power: bool = True,
-        rest_off_url: str | None = None,
-        rest_off_body: str | None = None,
-        rest_method: str | None = None,
-        rest_headers: str | None = None,
     ):
         """Poll temperature until below threshold, then turn off.
 
@@ -978,26 +927,7 @@ class SmartPlugManager:
                             elapsed += check_interval
                             continue
 
-                        # All nozzles are below threshold, turn off
-                        class PlugInfo:
-                            def __init__(self):
-                                self.plug_type = plug_type
-                                self.ip_address = ip_address
-                                self.ha_entity_id = ha_entity_id
-                                self.username = username
-                                self.password = password
-                                self.name = f"plug_{plug_id}"
-                                # REST fields
-                                self.rest_off_url = rest_off_url
-                                self.rest_off_body = rest_off_body
-                                self.rest_method = rest_method
-                                self.rest_headers = rest_headers
-                                # What plug_switched reads
-                                self.id = plug_id
-                                self.printer_id = printer_id
-                                self.controls_printer_power = controls_printer_power
-
-                        plug_info = await self._off_target(PlugInfo())
+                        plug_info = await self._off_target(plug_id, plug_type, printer_id)
                         if plug_info is None:
                             await self._mark_auto_off_pending(plug_id, False, may_run=may_run)
                             return
@@ -1038,20 +968,30 @@ class SmartPlugManager:
                 self._pending_off.pop(plug_id, None)
                 self._pending_off_printers.pop(plug_id, None)
 
-    async def _mark_auto_off_pending(self, plug_id: int, pending: bool, *, may_run=None):
+    async def _mark_auto_off_pending(
+        self, plug_id: int, pending: bool, *, may_run=None, target: tuple[str, int] | None = None
+    ):
         """Mark a plug as having a pending auto-off (survives restarts)."""
         try:
+            from backend.app.core.credential_config import lock_credential_config
             from backend.app.core.database import async_session
             from backend.app.models.smart_plug import SmartPlug
 
             async with async_session() as db:
+                if target is not None:
+                    await lock_credential_config(db)
                 result = await db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
                 plug = result.scalar_one_or_none()
-                if plug and (may_run is None or may_run()):
-                    plug.auto_off_pending = pending
-                    plug.auto_off_pending_since = datetime.now(timezone.utc) if pending else None
-                    await db.commit()
-                    logger.debug("Marked plug %s auto_off_pending=%s", plug_id, pending)
+                if plug is None or (may_run is not None and not may_run()):
+                    return
+                if target is not None and (
+                    (plug.plug_type, plug.printer_id) != target or not plug.enabled or not can_auto_turn_off(plug)
+                ):
+                    return
+                plug.auto_off_pending = pending
+                plug.auto_off_pending_since = datetime.now(timezone.utc) if pending else None
+                await db.commit()
+                logger.debug("Marked plug %s auto_off_pending=%s", plug_id, pending)
         except Exception as e:
             logger.warning("Failed to update plug %s pending state: %s", plug_id, e)
 
@@ -1080,7 +1020,7 @@ class SmartPlugManager:
         except Exception as e:
             logger.warning("Failed to update plug %s after auto-off: %s", plug_id, e)
 
-    def _cancel_pending_off(self, plug_id: int):
+    def _cancel_pending_off(self, plug_id: int, *, clear_persisted: bool = True):
         """Cancel any pending off task for this plug."""
         if plug_id in self._pending_off:
             logger.debug("Cancelling pending turn-off for plug %s", plug_id)
@@ -1088,10 +1028,21 @@ class SmartPlugManager:
             del self._pending_off[plug_id]
             self._pending_off_printers.pop(plug_id, None)
             # Clear pending state in database
-            spawn_background_task(
-                self._mark_auto_off_pending(plug_id, False, may_run=lambda: plug_id not in self._pending_off),
-                name=f"mark-auto-off-pending-{plug_id}",
-            )
+            if clear_persisted:
+                spawn_background_task(
+                    self._mark_auto_off_pending(plug_id, False, may_run=lambda: plug_id not in self._pending_off),
+                    name=f"mark-auto-off-pending-{plug_id}",
+                )
+
+    def pending_off_retirement(self, plug_id: int) -> Callable[[], None]:
+        """Capture the task a configuration edit will retire when it commits."""
+        task = self._pending_off.get(plug_id)
+
+        def retire() -> None:
+            if task is not None and self._pending_off.get(plug_id) is task:
+                self._cancel_pending_off(plug_id, clear_persisted=False)
+
+        return retire
 
     async def stop_auto_off_tasks(self, printer_id: int | None = None):
         tasks = {
@@ -1132,7 +1083,7 @@ class SmartPlugManager:
                 pending_plugs = result.scalars().all()
 
                 for plug in pending_plugs:
-                    if is_monitor_only(plug):
+                    if not plug.enabled or not can_auto_turn_off(plug):
                         plug.auto_off_pending = False
                         plug.auto_off_pending_since = None
                         await db.commit()

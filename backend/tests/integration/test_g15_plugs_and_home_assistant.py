@@ -9,9 +9,11 @@
 4. The Home Assistant connection test names why it failed, as a code of a closed set.
 """
 
+import asyncio
 import logging
 import ssl
 from datetime import datetime as real_datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -274,25 +276,15 @@ class TestLinkedScriptsOnAutomaticSwitch:
         assert farm.ran() == ["script.shutdown", "script.wake"]
 
     async def test_the_delayed_off_runs_them(self, farm):
-        await smart_plug_manager._delayed_off(
-            farm.mains.id, "tasmota", farm.mains.ip_address, None, None, None, farm.printer.id, 0
-        )
+        await smart_plug_manager._delayed_off(farm.mains.id, "tasmota", farm.printer.id, 0)
 
         farm.tasmota.turn_off.assert_awaited_once()
         assert farm.ran() == ["script.shutdown"]
 
-    async def test_the_delayed_off_of_an_accessory_runs_none(self, farm):
-        await smart_plug_manager._delayed_off(
-            farm.mains.id,
-            "tasmota",
-            farm.mains.ip_address,
-            None,
-            None,
-            None,
-            farm.printer.id,
-            0,
-            controls_printer_power=False,
-        )
+    async def test_the_delayed_off_of_an_accessory_runs_none(self, farm, db_session):
+        farm.mains.controls_printer_power = False
+        await db_session.commit()
+        await smart_plug_manager._delayed_off(farm.mains.id, "tasmota", farm.printer.id, 0)
 
         farm.tasmota.turn_off.assert_awaited_once()
         assert farm.ran() == []
@@ -301,12 +293,79 @@ class TestLinkedScriptsOnAutomaticSwitch:
         status = type("Status", (), {"temperatures": {"nozzle": 30}, "state": "IDLE"})()
         monkeypatch.setattr(plug_module.printer_manager, "get_status", lambda printer_id: status)
 
-        await smart_plug_manager._temp_based_off(
-            farm.mains.id, "tasmota", farm.mains.ip_address, None, None, None, farm.printer.id, 70
-        )
+        await smart_plug_manager._temp_based_off(farm.mains.id, "tasmota", farm.printer.id, 70)
 
         farm.tasmota.turn_off.assert_awaited_once()
         assert farm.ran() == ["script.shutdown"]
+
+    @pytest.mark.parametrize("mode", ["time", "temperature"])
+    @pytest.mark.parametrize("change", ["type", "printer"])
+    async def test_committed_edit_retires_pending_auto_off(
+        self, farm, async_client, db_session, printer_factory, monkeypatch, mode, change
+    ):
+        plug = farm.mains
+        captured = (plug.id, plug.plug_type, plug.printer_id)
+        plug.auto_off_pending = True
+        await db_session.commit()
+
+        fields = {"plug_type": "mqtt", "mqtt_power_topic": "meter/watts"}
+        if change == "printer":
+            fields = {"printer_id": (await printer_factory()).id}
+        response = await async_client.patch(f"/api/v1/smart-plugs/{plug.id}", json=fields)
+        assert response.status_code == 200, response.text
+        await smart_plug_manager._mark_auto_off_pending(plug.id, True, target=captured[1:])
+        await db_session.refresh(plug)
+        assert not plug.auto_off_pending
+        assert plug.auto_off_pending_since is None
+
+        if mode == "time":
+            await smart_plug_manager._delayed_off(*captured, 0)
+        else:
+            status = type("Status", (), {"temperatures": {"nozzle": 30}, "state": "IDLE"})()
+            monkeypatch.setattr(plug_module.printer_manager, "get_status", lambda _: status)
+            await smart_plug_manager._temp_based_off(*captured, 70)
+        await smart_plug_manager.resume_pending_auto_offs()
+
+        farm.tasmota.turn_off.assert_not_awaited()
+        assert farm.ran() == []
+
+    async def test_committed_edit_cancels_the_registered_auto_off(self, async_client, farm, monkeypatch):
+        task = asyncio.create_task(asyncio.sleep(3600))
+        monkeypatch.setitem(smart_plug_manager._pending_off, farm.mains.id, task)
+        try:
+            response = await async_client.patch(f"/api/v1/smart-plugs/{farm.mains.id}", json={"printer_id": None})
+            assert response.status_code == 200, response.text
+            assert farm.mains.id not in smart_plug_manager._pending_off
+            assert task.cancelling()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_pending_mqtt_off_uses_topic_from_committed_edit(
+        self, async_client, db_session, farm, smart_plug_factory, monkeypatch
+    ):
+        plug = await smart_plug_factory(
+            plug_type="mqtt",
+            printer_id=farm.printer.id,
+            mqtt_power_topic="meter/watts",
+            mqtt_command_topic="old/set",
+            controls_printer_power=False,
+        )
+        await smart_plug_manager._mark_auto_off_pending(plug.id, True, target=("mqtt", farm.printer.id))
+        response = await async_client.patch(f"/api/v1/smart-plugs/{plug.id}", json={"mqtt_command_topic": "new/set"})
+        assert response.status_code == 200, response.text
+        await db_session.refresh(plug)
+        assert plug.auto_off_pending
+        received = []
+
+        async def turn_off(current):
+            received.append(current.mqtt_command_topic)
+            return True
+
+        driver = SimpleNamespace(turn_off=turn_off)
+        monkeypatch.setattr(smart_plug_manager, "get_service_for_plug", AsyncMock(return_value=driver))
+        await smart_plug_manager._delayed_off(plug.id, "mqtt", farm.printer.id, 0)
+        assert received == ["new/set"]
 
     async def test_an_auto_off_resumed_after_a_restart_runs_them(self, farm, db_session):
         farm.mains.auto_off_pending = True

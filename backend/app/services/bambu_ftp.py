@@ -914,6 +914,8 @@ class BambuFTPClient:
                 if child.name in names:
                     return listing  # present but refused: unreadable, not missing
                 return DirectoryListing(path, LISTING_MISSING, reason=f"absent from {parent}")
+            if parent_listing.status == LISTING_SLOW or parent_listing.reason == "sessions":
+                return DirectoryListing(path, parent_listing.status, reason=parent_listing.reason)
             if parent_listing.status != LISTING_UNREADABLE:
                 return listing
             child = parent
@@ -1395,6 +1397,8 @@ class BambuFTPClient:
                 finally:
                     self._ftp.sock.settimeout(old_timeout)
             except ftplib.Error as e:
+                if isinstance(e, ftplib.error_temp) and _session_limit(str(e)):
+                    raise  # The upload's temporary-refusal handler records FTP 421.
                 # The printer's FTP server explicitly told us the transfer
                 # failed (e.g. 426 "Failure reading network stream" seen on
                 # some P2S firmware revisions). Two interpretations exist:

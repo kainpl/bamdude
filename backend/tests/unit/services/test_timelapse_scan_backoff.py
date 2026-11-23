@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import ftplib
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
-from backend.app.services import timelapse_files
+from backend.app.services import bambu_ftp, timelapse_files
 from backend.app.services.bambu_ftp import LISTING_COMPLETE, LISTING_SLOW, LISTING_UNAVAILABLE, DirectoryListing
 
 
@@ -107,3 +109,39 @@ async def test_list_timeout_backs_off_only_automatic_scans(monkeypatch):
     assert timelapse_files.last_listing_answered(printer.id)
     await timelapse_files.list_timelapse_videos(printer, automatic=True)
     assert len(calls) == 1 + 2 * len(timelapse_files.FTP_TIMELAPSE_DIRS)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure", [TimeoutError("LIST stalled"), ftplib.error_temp("421 Too many connections")], ids=["timeout", "421"]
+)
+async def test_550_parent_list_failure_backs_off_and_manual_answer_clears_it(monkeypatch, failure):
+    healthy = False
+    control = MagicMock()
+
+    def cwd(path):
+        if path == "/timelapse" and not healthy:
+            raise ftplib.error_perm("550 path unavailable")
+
+    def list_entries(*_):
+        if not healthy:
+            raise failure
+
+    control.cwd.side_effect = cwd
+    control.retrlines.side_effect = list_entries
+    factory = MagicMock(return_value=control)
+    monkeypatch.setattr(bambu_ftp, "ImplicitFTP_TLS", factory)
+    monkeypatch.setattr(timelapse_files, "_supports_internal_timelapse", lambda _: False)
+    printer = _printer()
+
+    for _ in range(2):
+        assert await timelapse_files.list_timelapse_videos(printer, automatic=True) == ([], None)
+        assert not timelapse_files.last_listing_answered(printer.id)
+    factory.assert_called_once()
+    assert [call.args[0] for call in control.cwd.call_args_list] == ["/timelapse", "/"]
+
+    healthy = True
+    assert await timelapse_files.list_timelapse_videos(printer) == ([], None)
+    assert timelapse_files.last_listing_answered(printer.id)
+    await timelapse_files.list_timelapse_videos(printer, automatic=True)
+    assert factory.call_count == 1 + 2 * len(timelapse_files.FTP_TIMELAPSE_DIRS)
