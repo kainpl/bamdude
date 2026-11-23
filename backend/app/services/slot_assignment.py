@@ -202,6 +202,7 @@ async def build_slot_assignment(
     preset_owner_identity: str | None = None,
 ) -> SlotAssignmentPlan:
     owner_user_id = None
+    owner_identity = None
     if scope_cloud_presets and preset_owner_identity:
         owner = await db.scalar(
             select(User)
@@ -210,6 +211,7 @@ async def build_slot_assignment(
         )
         if owner is not None and owner.has_permission(Permission.CLOUD_AUTH.value):
             owner_user_id = owner.id
+            owner_identity = owner.account_identity
 
     warnings: list[str] = []
     degraded: str | None = None
@@ -309,11 +311,29 @@ async def build_slot_assignment(
     if supports_user_preset and not preset_setting_id and catalog.get_family(family_id) is None:
         user_preset, temps_preset = _user_presets_for_printer(
             await family_user_presets(
-                db, family_id, owner_user_id=owner_user_id, scope_cloud_presets=scope_cloud_presets
+                db,
+                family_id,
+                owner_user_id=owner_user_id,
+                owner_identity=owner_identity,
+                scope_cloud_presets=scope_cloud_presets,
             ),
             printer_model,
             nozzle_diameter,
         )
+
+    if (
+        scope_cloud_presets
+        and family_id.startswith("P")
+        and not (preset_setting_id or user_preset or (resolved and resolved.setting_id))
+    ):
+        stand_in, fam_type = _stand_in(fam_type or material_override or "")
+        if stand_in is None:
+            raise ValueError(f"no available preset or fallback for family {family_id!r}")
+        warnings.append(f"no available preset for {family_id}; using {stand_in.filament_id} for {fam_type!r}")
+        degraded = "family_unresolved"
+        family_id = stand_in.filament_id
+        preset = _pick_preset(family_id, candidates)
+        resolved = temps_preset = None
 
     # setting_id precedence: an explicit request > the user's own preset made
     # for this printer > the identity's own (a mirrored cloud preset keeps its

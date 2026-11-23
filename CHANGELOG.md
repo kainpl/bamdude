@@ -319,9 +319,11 @@
 ### Fixed
 
 - **API-key spool assignments use the owner's allowed cloud preset.**
-  The same account is used for an empty slot's deferred configuration while
-  its cloud access remains available. Shared and Generic presets cover slots
-  without an available private preset.
+  The owner is checked again when an empty slot is configured after insertion.
+  A local preset's Bambu Cloud copy is available to the account that pushed it.
+  If the assignment has no usable private preset, it can use a shared preset
+  or the material's Generic profile. K-profile selection uses the family
+  selected for the slot before AMS backup compatibility is applied.
 
 - **Read the finish and color from Spoolman product names.** For example,
   Matte Scarlet Red shows Matte as the subtype and Scarlet Red as the color.

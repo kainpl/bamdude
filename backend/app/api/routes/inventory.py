@@ -283,10 +283,6 @@ async def apply_spool_to_slot_via_mqtt(
     for note in plan.warnings:
         logger.info("Spool assign: %s", note)
 
-    # The K-profile half below keys off the ACTUAL family, never the advertised
-    # one — the spool's own calibration is what should be printed with.
-    effective_tray_info_idx = plan.tray_info_idx
-
     # a. Project under the printer's policy, set the filament setting (and
     # register its read-back verification), remember what was masked. One
     # helper for all three assignment paths — the actual plan stays the spool's
@@ -316,21 +312,16 @@ async def apply_spool_to_slot_via_mqtt(
     # b. Push extrusion calibration via the unified helper. The helper
     # re-resolves cali_idx live (stable-identity match) and fires
     # extrusion_cali_sel; stored cali_idx is just a hint.
-    from backend.app.services.calibration_service import (
-        apply_active_calibration_to_slot,
-        derive_effective_filament_id,
-    )
+    from backend.app.services.calibration_service import apply_active_calibration_to_slot
 
-    effective_filament_id = await derive_effective_filament_id(
-        spool=spool, slot_tray_info_idx=effective_tray_info_idx or None, db=db
-    )
-    if effective_filament_id and kprofile_allowed(projection):
+    # Bind the family from the authorized plan before compatibility masking.
+    if plan.tray_info_idx and kprofile_allowed(projection):
         await apply_active_calibration_to_slot(
             db=db,
             printer_id=printer_id,
             ams_id=ams_id,
             slot_id=tray_id,
-            filament_id=effective_filament_id,
+            filament_id=plan.tray_info_idx,
             nozzle_diameter=nozzle.diameter_float,
             nozzle_volume_type=nozzle.flow_or_standard,
             extruder_id=nozzle.extruder_or_default,

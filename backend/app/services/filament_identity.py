@@ -162,14 +162,13 @@ async def resolve_raw(
         )
     elif owner_user_id is not None:
         query = query.where(UserFilamentPreset.owner_user_id == owner_user_id)
-    row = (await db.execute(query)).scalars().first()
-    if row is None and value.isdigit():
-        row = (
-            (await db.execute(select(UserFilamentPreset).where(UserFilamentPreset.local_preset_id == int(value))))
-            .scalars()
-            .first()
-        )
-    if row is not None:
+    if not scope_cloud_presets:
+        query = query.limit(1)
+    rows = (await db.execute(query)).scalars().all()
+    if not rows and value.isdigit():
+        local_query = select(UserFilamentPreset).where(UserFilamentPreset.local_preset_id == int(value))
+        rows = (await db.execute(local_query)).scalars().all()
+    for row in rows:
         resolved = await _resolve_mirror_row(db, row)
         if resolved.family:
             return resolved
@@ -211,7 +210,12 @@ def bambu_preset_id(row: UserFilamentPreset) -> str | None:
 
 
 async def family_user_presets(
-    db: AsyncSession, family_id: str, *, owner_user_id: int | None = None, scope_cloud_presets: bool = False
+    db: AsyncSession,
+    family_id: str,
+    *,
+    owner_user_id: int | None = None,
+    owner_identity: str | None = None,
+    scope_cloud_presets: bool = False,
 ) -> list[UserFilamentPreset]:
     """The user's own presets of a family that a printer can be told about, newest first.
 
@@ -226,6 +230,11 @@ async def family_user_presets(
     if scope_cloud_presets:
         owner = UserFilamentPreset.owner_user_id
         query = query.where(or_(owner.is_(None), owner == owner_user_id))
+        # A shared local preset's Bambu copy is private to its push owner.
+        copy_owner = UserFilamentPreset.bambu_pushed_owner_identity
+        query = query.where(
+            or_(UserFilamentPreset.source != "local", copy_owner.is_not(None) & (copy_owner == owner_identity))
+        )
     rows = (await db.execute(query)).scalars().all()
     usable = [row for row in rows if bambu_preset_id(row) is not None]
     return sorted(
