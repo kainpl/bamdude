@@ -7,6 +7,7 @@ full after a counter reset" is observed on the Spoolman side, not inferred
 from which client method was called.
 """
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -398,30 +399,72 @@ async def test_clearing_the_preset_preserves_the_catalog_filament(async_client: 
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-@pytest.mark.parametrize("stored_name", [None, "PLA Basic"], ids=["catalog-only", "saved-name-matches-catalog"])
-async def test_copying_a_spool_uses_only_the_stored_preset_name(async_client: AsyncClient, spoolman, stored_name):
-    spoolman.add_spool(42, 7)
-    if stored_name is not None:
-        updated = await async_client.patch(f"{API}/spools/42", json={"slicer_filament_name": stored_name})
-        assert updated.status_code == 200, updated.text
-    source = await async_client.get(f"{API}/spools/42")
+@pytest.mark.parametrize("quantity", [1, 2])
+@pytest.mark.parametrize(
+    ("code", "name", "clear"),
+    [
+        (None, None, False),
+        (None, "PLA Basic", False),
+        ("GFL99", "Legacy PLA", False),
+        ("GFL99", None, False),
+        ("GFL99", "Legacy PLA", True),
+    ],
+    ids=["catalog-only", "name-only", "code-and-name", "code-only", "explicit-clear"],
+)
+async def test_copying_a_spool_retains_the_saved_preset(
+    async_client: AsyncClient, spoolman, quantity, code, name, clear
+):
+    spoolman.add_spool(42, 7, used_weight=456)
+    url = f"{API}/spools/42"
+    if code is not None or name is not None:
+        saved = await async_client.patch(url, json={"slicer_filament": code, "slicer_filament_name": name})
+        assert saved.status_code == 200, saved.text
+    source = await async_client.get(url)
     assert source.status_code == 200, source.text
-    assert source.json()["slicer_filament"] is None
-    assert source.json()["slicer_filament_name"] == "PLA Basic"
-    assert source.json()["stored_slicer_filament_name"] == stored_name
+    assert source.json()["slicer_filament"] == code
+    assert source.json()["stored_slicer_filament_name"] == name
 
-    copied = await async_client.post(
-        f"{API}/spools",
-        json={"spoolman_filament_id": 7, "slicer_filament_name": source.json()["stored_slicer_filament_name"]},
-    )
-    assert copied.status_code == 200, copied.text
-    reopened = await async_client.get(f"{API}/spools/{copied.json()['id']}")
-    assert reopened.status_code == 200, reopened.text
-    assert reopened.json()["slicer_filament"] is None
-    assert reopened.json()["slicer_filament_name"] == "PLA Basic"
-    assert reopened.json()["stored_slicer_filament_name"] == stored_name
-    extra = spoolman.view(copied.json()["id"])["extra"]
-    if stored_name is None:
-        assert "bambu_slicer_filament_name" not in extra
+    expected_code, expected_name = (None, None) if clear else (code, name)
+    fields = {"spoolman_filament_id": 7, "slicer_filament": expected_code, "slicer_filament_name": expected_name}
+    if quantity == 1:
+        response = await async_client.post(f"{API}/spools", json=fields)
     else:
-        assert extra["bambu_slicer_filament_name"] == '"PLA Basic"'
+        response = await async_client.post(f"{API}/spools/bulk", json={"spool": fields, "quantity": quantity})
+    assert response.status_code == 200, response.text
+    copies = [response.json()] if quantity == 1 else response.json()
+    assert len(copies) == quantity
+    assert len({row["id"] for row in copies}) == quantity
+    expected_extra = {
+        key: json.dumps(value)
+        for key, value in (("bambu_slicer_filament", expected_code), ("bambu_slicer_filament_name", expected_name))
+        if value is not None
+    }
+    for copy in copies:
+        assert copy["slicer_filament"] == expected_code
+        assert copy["stored_slicer_filament_name"] == expected_name
+        reopened = await async_client.get(f"{API}/spools/{copy['id']}")
+        assert reopened.status_code == 200, reopened.text
+        assert reopened.json()["slicer_filament"] == expected_code
+        assert reopened.json()["stored_slicer_filament_name"] == expected_name
+        assert reopened.json()["slicer_filament_name"] == (expected_name or "PLA Basic")
+        raw = spoolman.view(copy["id"])
+        assert raw["extra"] == expected_extra
+        assert raw["filament"]["id"] == 7
+        assert raw["used_weight"] == 0
+    assert spoolman.view(42)["used_weight"] == 456
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("quantity", [1, 2])
+async def test_copy_with_an_unregistered_preset_field_does_not_create_spools(
+    async_client: AsyncClient, spoolman, quantity
+):
+    spoolman.field_status = 503
+    fields = {"spoolman_filament_id": 7, "slicer_filament_name": "My PLA"}
+    if quantity == 1:
+        response = await async_client.post(f"{API}/spools", json=fields)
+    else:
+        response = await async_client.post(f"{API}/spools/bulk", json={"spool": fields, "quantity": quantity})
+    assert response.status_code == (502 if quantity == 1 else 500), response.text
+    assert not spoolman.spools

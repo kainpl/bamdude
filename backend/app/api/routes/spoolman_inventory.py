@@ -653,6 +653,15 @@ def _named_tare(data: SpoolmanInventoryCreate) -> float | None:
     return float(data.core_weight) if "core_weight" in data.model_fields_set else None
 
 
+def _preset_create_extra(data: SpoolmanInventoryCreate) -> dict[str, str]:
+    """Encode the preset fields that Spoolman stores on a new spool."""
+    fields = (
+        ("bambu_slicer_filament", data.slicer_filament),
+        ("bambu_slicer_filament_name", data.slicer_filament_name),
+    )
+    return {key: json.dumps(value) for key, value in fields if value is not None}
+
+
 @router.post("/spools")
 async def create_spool(
     data: SpoolmanInventoryCreate,
@@ -688,6 +697,7 @@ async def create_spool(
                 # not say (upstream #3194).
                 initial_weight=(float(data.label_weight) if "label_weight" in data.model_fields_set else None),
                 spool_weight=_named_tare(data),
+                extra=_preset_create_extra(data),
             )
     except HTTPException as exc:
         if exc.status_code == 404 and data.spoolman_filament_id is not None:
@@ -699,35 +709,15 @@ async def create_spool(
 
     spool, price_warnings = await _apply_price_if_set(client, spool, data.cost_per_kg)
 
-    # Persist slicer_filament AND color_name under the spool's extra dict
-    # (mirror update_spool). Spoolman has no ``color_name`` field on
-    # Filament (#1357 — confirmed against FilamentUpdateParameters), so we
-    # own the round-trip ourselves via ``spool.extra.bambu_color_name``.
-    if data.slicer_filament is not None or data.slicer_filament_name is not None or data.color_name is not None:
-        # Ensure extra fields are registered before write.
-        if data.slicer_filament is not None:
-            await client.ensure_extra_field("bambu_slicer_filament")
-        if data.slicer_filament_name is not None:
-            await client.ensure_extra_field("bambu_slicer_filament_name")
-        if data.color_name is not None:
-            await client.ensure_extra_field("bambu_color_name")
-        new_extra: dict = {}
-        if data.slicer_filament is not None:
-            new_extra["bambu_slicer_filament"] = json.dumps(data.slicer_filament)
-        if data.slicer_filament_name is not None:
-            new_extra["bambu_slicer_filament_name"] = json.dumps(data.slicer_filament_name)
-        if data.color_name is not None:
-            new_extra["bambu_color_name"] = json.dumps(data.color_name)
-        if new_extra:
-            try:
-                async with _translate_spoolman_errors():
-                    spool = await client.merge_spool_extra(spool["id"], new_extra)
-            except HTTPException:
-                # Best-effort — the spool already exists, log and continue.
-                logger.warning(
-                    "Failed to persist slicer_filament/color_name for spool %s",
-                    spool.get("id"),
-                )
+    # Spoolman has no color_name field on Filament, so keep the name in
+    # the spool's extra fields. A rejected color write leaves the created spool.
+    if data.color_name is not None:
+        await client.ensure_extra_field("bambu_color_name")
+        try:
+            async with _translate_spoolman_errors():
+                spool = await client.merge_spool_extra(spool["id"], {"bambu_color_name": json.dumps(data.color_name)})
+        except HTTPException:
+            logger.warning("Failed to persist color_name for spool %s", spool.get("id"))
 
     result = _map_spoolman_spool(spool)
     await ws_manager.broadcast({"type": "inventory_changed"})
@@ -769,6 +759,7 @@ async def bulk_create_spools(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     remaining = max(0.0, data.label_weight - data.weight_used)
+    preset_extra = _preset_create_extra(data)
     created: list[dict] = []
     failures: list[str] = []
     for _ in range(payload.quantity):
@@ -780,6 +771,7 @@ async def bulk_create_spools(
                 location=storage_location or None,
                 initial_weight=(float(data.label_weight) if "label_weight" in data.model_fields_set else None),
                 spool_weight=_named_tare(data),
+                extra=preset_extra,
             )
         except (SpoolmanUnavailableError, SpoolmanClientError, SpoolmanNotFoundError) as exc:
             logger.warning("Bulk spool creation: one spool failed: %s", exc)

@@ -39,6 +39,7 @@ vi.mock('../../api/client', () => ({
     getPrinters: vi.fn().mockResolvedValue([]),
     getSpoolUsageHistory: vi.fn().mockResolvedValue([]),
     createSpoolmanInventorySpool: vi.fn().mockResolvedValue({ id: 99 }),
+    bulkCreateSpoolmanInventorySpools: vi.fn().mockResolvedValue([{ id: 99 }, { id: 100 }]),
     createSpool: vi.fn().mockResolvedValue({ id: 99 }),
     updateSpool: vi.fn().mockResolvedValue({ id: 1 }),
     saveSpoolKProfiles: vi.fn().mockResolvedValue([]),
@@ -764,10 +765,13 @@ describe('SpoolFormModal preset identity', () => {
   });
 
   it.each([
-    { title: 'omits a catalog-only name', storedName: null, clear: false, expectedName: null },
-    { title: 'copies a saved name that matches the catalog', storedName: 'PLA Basic', clear: false, expectedName: 'PLA Basic' },
-    { title: 'omits a saved name after an explicit clear', storedName: 'My PLA', clear: true, expectedName: null },
-  ])('Spoolman Copy Spool $title', async ({ storedName, clear, expectedName }) => {
+    { quantity: 1, title: 'leaves a catalog-only name behind', storedName: null, clear: false, expectedName: null },
+    { quantity: 1, title: 'preserves a saved catalog-matching name', storedName: 'PLA Basic', clear: false, expectedName: 'PLA Basic' },
+    { quantity: 1, title: 'clears the copied name on request', storedName: 'My PLA', clear: true, expectedName: null },
+    { quantity: 2, title: 'leaves a catalog-only name behind', storedName: null, clear: false, expectedName: null },
+    { quantity: 2, title: 'preserves a saved catalog-matching name', storedName: 'PLA Basic', clear: false, expectedName: 'PLA Basic' },
+    { quantity: 2, title: 'clears the copied name on request', storedName: 'My PLA', clear: true, expectedName: null },
+  ])('Spoolman Copy Spool with quantity $quantity $title', async ({ quantity, storedName, clear, expectedName }) => {
     vi.mocked(api.getSpoolmanInventoryFilaments).mockResolvedValueOnce([{
       id: 7, name: 'PLA Basic', material: 'PLA', color_hex: 'FF0000', color_name: null,
       vendor: { id: 3, name: 'Bambu Lab' }, weight: 1000, spool_weight: null,
@@ -787,11 +791,24 @@ describe('SpoolFormModal preset identity', () => {
     }
     fireEvent.click(await screen.findByRole('button', { name: /spoolman filament catalog/i }));
     fireEvent.click(await screen.findByText('Bambu Lab — PLA Basic'));
+    if (quantity > 1) {
+      const toggle = screen.getByText('Quick Add (Stock)').parentElement!.parentElement!.querySelector('button')!;
+      fireEvent.click(toggle);
+      const quantityInput = screen.getByText('Quantity').parentElement!.querySelector('input')!;
+      fireEvent.change(quantityInput, { target: { value: String(quantity) } });
+      fireEvent.blur(quantityInput);
+    }
     fireEvent.click(screen.getByRole('button', { name: 'Copy Spool' }));
-    await waitFor(() => expect(api.createSpoolmanInventorySpool).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(api.createSpoolmanInventorySpool).mock.calls[0][0]).toMatchObject({
+    const expected = expect.objectContaining({
       spoolman_filament_id: 7, filament_family_id: null, slicer_filament: null, slicer_filament_name: expectedName,
     });
+    if (quantity === 1) {
+      await waitFor(() => expect(api.createSpoolmanInventorySpool).toHaveBeenCalledWith(expected));
+      expect(api.bulkCreateSpoolmanInventorySpools).not.toHaveBeenCalled();
+    } else {
+      await waitFor(() => expect(api.bulkCreateSpoolmanInventorySpools).toHaveBeenCalledWith(expected, quantity));
+      expect(api.createSpoolmanInventorySpool).not.toHaveBeenCalled();
+    }
   });
 
   it('allows an explicit clear when copying a legacy spool', async () => {
