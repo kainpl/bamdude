@@ -230,3 +230,13 @@ def test_a_colour_only_projection_always_keeps_its_k_profile(knob, monkeypatch):
 
     monkeypatch.setattr(compat, "GENERIC_MODE_KPROFILE", knob)
     assert compat.kprofile_allowed(ColorOnly()) is True
+
+
+@pytest.mark.asyncio
+async def test_backup_does_not_advertise_support_as_ordinary_pla(db_session):
+    actual = await build_slot_assignment(db_session, family_id="GFS05", material_override="PLA", **P1S)
+    projected = await _project(
+        db_session, actual, compat.BackupCompatibilityPolicy(generic_base_material=True), material="PLA"
+    )
+    assert (projected.advertised.tray_info_idx, projected.advertised.tray_type) == ("GFS05", "PLA-S")
+    assert projected.reasons == (compat.REASON_BASE_MATERIAL,)

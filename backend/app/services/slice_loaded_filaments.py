@@ -50,7 +50,7 @@ from backend.app.schemas.slicer_presets import (
 from backend.app.services import cloud_credentials
 from backend.app.services.bambu_cloud_credentials import get_stored_token
 from backend.app.utils import filament_catalog as catalog
-from backend.app.utils.filament_types import filament_types_compatible
+from backend.app.utils.filament_types import filament_types_compatible, support_slot_type
 from backend.app.utils.model_compatibility import compatible_models
 from backend.app.utils.printer_models import normalize_model_name
 
@@ -357,7 +357,7 @@ async def loaded_filaments(
             fid = (source.variant or "").strip()
             family_id = fid if fid in recognised else None
             family = (catalog.get_family(fid) or user_families.get(fid)) if family_id else None
-            family_type = family.filament_type if family else None
+            family_type = support_slot_type(family.filament_type, fid) if family else ""
             by_material = (
                 family_id is None
                 or family_id in generic

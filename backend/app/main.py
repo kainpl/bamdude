@@ -175,6 +175,7 @@ from backend.app.services.timelapse_files import (
 from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.failure_reasons import OTHER as FAILURE_OTHER, USER_CANCELLED
 from backend.app.utils.filament_remaining import grams_used
+from backend.app.utils.filament_types import support_slot_type
 from backend.app.utils.print_jobs import is_internal_printer_job
 
 
@@ -3639,13 +3640,20 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                             spool_matches = True
                     if spool_matches:
                         # Same BL spool still in slot - keep assignment, update fingerprint if needed
-                        cur_color = current_tray.get("tray_color", "")
-                        cur_type = current_tray.get("tray_type", "")
+                        cur_color = (current_tray.get("tray_color") or "").strip()
+                        raw_type = (current_tray.get("tray_type") or "").strip()
                         fp_color = assignment.fingerprint_color or ""
                         fp_type = assignment.fingerprint_type or ""
-                        if cur_color.upper() != fp_color.upper() or cur_type.upper() != fp_type.upper():
-                            assignment.fingerprint_color = cur_color
-                            assignment.fingerprint_type = cur_type
+                        cur_type = support_slot_type(
+                            raw_type, current_tray.get("tray_info_idx"), fingerprint_type=fp_type
+                        )
+                        color_changed = bool(cur_color) and cur_color.upper() != fp_color.upper()
+                        type_changed = bool(cur_type) and cur_type.upper() != fp_type.upper()
+                        if color_changed or type_changed:
+                            if color_changed:
+                                assignment.fingerprint_color = cur_color
+                            if type_changed:
+                                assignment.fingerprint_type = cur_type
                             logger.debug(
                                 "Auto-unlink: spool %d AMS%d-T%d - same BL spool, updated fingerprint",
                                 assignment.spool_id,
@@ -3663,11 +3671,12 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                     )
                     stale.append(assignment)
                 else:
-                    cur_color = current_tray.get("tray_color", "")
-                    cur_type = current_tray.get("tray_type", "")
+                    cur_color = (current_tray.get("tray_color") or "").strip()
+                    raw_type = current_tray.get("tray_type") or ""
                     cur_state = current_tray.get("state")
                     fp_color = assignment.fingerprint_color or ""
                     fp_type = assignment.fingerprint_type or ""
+                    cur_type = support_slot_type(raw_type, current_tray.get("tray_info_idx"), fingerprint_type=fp_type)
 
                     # Pre-config replay: empty fingerprint_type means the slot
                     # was empty when the user pre-assigned (Bambu firmware
@@ -3739,7 +3748,8 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                                 assignment.ams_id,
                                 assignment.tray_id,
                             )
-                        assignment.fingerprint_color = cur_color
+                        if cur_color:
+                            assignment.fingerprint_color = cur_color
                         assignment.fingerprint_type = cur_type
                         continue
 
@@ -3747,7 +3757,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                     # AFTER the pre-config replay above: that branch fires on
                     # state==11 with a still-blank type and is about *gaining* a
                     # filament, not losing one.
-                    if slot_reported_no_filament(cur_type, cur_state):
+                    if slot_reported_no_filament(raw_type, cur_state):
                         logger.info(
                             "Auto-unlink skipped: spool %d AMS%d-T%d reported no filament type "
                             "(state=%s colour=%r fp=%s/%s) — absence is not a swap",
@@ -3761,7 +3771,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                         )
                         continue
 
-                    if not cur_type.strip():
+                    if not raw_type.strip():
                         # The firmware DID say the slot is empty — one of
                         # ``_FIRMWARE_EMPTY_STATES`` with cleared content is the
                         # only blank that gets past the guard above. Empty means
@@ -3833,7 +3843,10 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                         stale.append(assignment)
                         continue
 
-                    if not _colors_similar(cur_color, fp_color) or cur_type.upper() != fp_type.upper():
+                    # A partial report may have a material without a color.
+                    # Only a reported color can differ from the fingerprint.
+                    color_changed = bool(cur_color) and not _colors_similar(cur_color, fp_color)
+                    if color_changed or cur_type.upper() != fp_type.upper():
                         # The tray may have been reconfigured to what WE
                         # advertised (backup-compatibility emulation): under
                         # colour mode the printer echoes the canonical colour,
@@ -3859,7 +3872,8 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                                 _entry.advertised_variant,
                                 _entry.advertised_color,
                             )
-                            assignment.fingerprint_color = cur_color
+                            if cur_color:
+                                assignment.fingerprint_color = cur_color
                             assignment.fingerprint_type = cur_type
                             continue
                         # Fingerprint mismatch - but check if tray now matches the
@@ -3877,7 +3891,9 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                             spool_types = await tray_types_written_for(
                                 db, spool, printer_id, assignment.ams_id, assignment.tray_id
                             )
-                            if _colors_similar(cur_color, spool_color) and cur_type.upper() in spool_types:
+                            if cur_type.upper() in spool_types and (
+                                not cur_color or _colors_similar(cur_color, spool_color)
+                            ):
                                 # Tray was reconfigured to match the spool - update fingerprint
                                 logger.info(
                                     "Auto-unlink: spool %d AMS%d-T%d - fingerprint mismatch but tray matches spool, updating fp",
@@ -3885,7 +3901,8 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                                     assignment.ams_id,
                                     assignment.tray_id,
                                 )
-                                assignment.fingerprint_color = cur_color
+                                if cur_color:
+                                    assignment.fingerprint_color = cur_color
                                 assignment.fingerprint_type = cur_type
                                 continue
                         logger.info(

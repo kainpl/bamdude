@@ -57,3 +57,31 @@ def canonical_filament_type(ftype: str | None) -> str:
 def filament_types_compatible(a: str | None, b: str | None) -> bool:
     """Whether two filament types may stand in for one another."""
     return canonical_filament_type(a) == canonical_filament_type(b)
+
+
+# Bambu Studio's get_filament_type uses the support flag for these PLA and PA
+# families. The catalog keeps the preset's base type for authoring.
+_SUPPORT_BY_FAMILY = {
+    "GFS00": "PLA-S",  # Support W
+    "GFS01": "PA-S",  # Support G
+    "GFS02": "PLA-S",  # Support For PLA
+    "GFS03": "PA-S",  # Support For PA/PET
+    "GFS05": "PLA-S",  # Support For PLA/PETG
+}
+SUPPORT_SLOT_TYPES = frozenset(_SUPPORT_BY_FAMILY.values())
+
+
+def support_slot_type(material: str | None, family_id: str | None, *, fingerprint_type: str | None = None) -> str:
+    """Resolve a support type from the family or a compatible slot fingerprint."""
+    base = (material or "").strip().upper()
+    family = (family_id or "").strip().upper()
+    known = _SUPPORT_BY_FAMILY.get(family)
+    if known and base in (known, known.removesuffix("-S")):
+        return known
+    # A reconnect report can supply the base type before the family needed to
+    # distinguish support from ordinary filament. Retain the known type until
+    # the printer supplies a family ID or a different material.
+    previous = (fingerprint_type or "").upper()
+    if not family and previous in SUPPORT_SLOT_TYPES and base == previous.removesuffix("-S"):
+        return previous
+    return material or ""

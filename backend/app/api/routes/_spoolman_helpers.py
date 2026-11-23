@@ -16,6 +16,7 @@ from typing_extensions import TypedDict
 from backend.app.api.routes._url_safety import assert_safe_lan_service_url
 from backend.app.services.spoolman import native_tag_uids
 from backend.app.services.spoolman_weights import spool_net_weight, spool_price_per_gram
+from backend.app.utils.filament_effects import EFFECT_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +307,36 @@ def parse_spoolman_multi_colors(filament: dict) -> list[str]:
     return [cleaned for token in tokens if (cleaned := token.strip().lstrip("#"))]
 
 
+# Longer finishes take precedence over their component words. A trailing
+# plus is part of product names such as Silk+.
+_FINISH_WORDS = "|".join(
+    r"\s+".join(re.escape(part) for part in word.split())
+    for word in sorted(
+        {name.replace("-", " ") for name in EFFECT_TYPES}
+        | {"aero", "basic", "clear", "hf", "high flow", "high speed", "lite", "tough", "transparent"},
+        key=lambda word: (-len(word), word),
+    )
+)
+_PRODUCT_FINISH = re.compile(rf"(?<![\w+-])(?:{_FINISH_WORDS})\+?(?![\w+-])", re.IGNORECASE)
+_NAME_SEPARATORS = " \t-–—,/|()[]:;"
+
+
+def split_filament_product_name(material: str, name: str) -> tuple[str | None, str | None]:
+    """Read a known finish and the color around it, keeping legacy subtypes."""
+    remainder = name.strip()
+    if material:
+        token = rf"(?<![\w+-]){re.escape(material)}(?![\w+-])"
+        remainder = re.sub(token, " ", remainder, count=1, flags=re.IGNORECASE).strip(_NAME_SEPARATORS)
+    finishes = [" ".join(match.group().split()) for match in _PRODUCT_FINISH.finditer(remainder)]
+    if finishes:
+        color = " ".join(_PRODUCT_FINISH.sub(" ", remainder).split()).strip(_NAME_SEPARATORS)
+        return " ".join(finishes), color or None
+    if _PRODUCT_FINISH.search(material):
+        return None, remainder or None
+    # e.g. PLA Engineering or a vendor's subtype without a recognized finish.
+    return remainder or None, None
+
+
 def _map_spoolman_spool(spool: dict) -> MappedSpoolFields:
     """Convert a raw Spoolman spool dict to the InventorySpool-compatible format."""
     raw_id = spool.get("id")
@@ -343,10 +374,7 @@ def _map_spoolman_spool(spool: dict) -> MappedSpoolFields:
 
     material: str = (filament.get("material") or "").strip()
     filament_name: str = (filament.get("name") or "").strip()
-    if material and filament_name.upper().startswith(material.upper()):
-        subtype: str | None = filament_name[len(material) :].strip() or None
-    else:
-        subtype = filament_name or None
+    subtype, product_color = split_filament_product_name(material, filament_name)
 
     raw_color = (filament.get("color_hex") or "").upper().removeprefix("#")
     color_hex: str = raw_color if _COLOR_HEX_RE.match(raw_color) else "808080"
@@ -417,7 +445,8 @@ def _map_spoolman_spool(spool: dict) -> MappedSpoolFields:
     #   2. ``filament.color_name`` — forward-compat for any future Spoolman
     #      release that adds the field, or for admins who registered the
     #      field themselves via a custom extra.
-    #   3. ``subtype`` — synth fallback so the inventory list isn't a sea
+    #   3. color stated in a product name with a recognized finish.
+    #   4. ``subtype`` — synth fallback so the inventory list isn't a sea
     #      of "Unknown color" entries on installs with neither set.
     #
     # ``color_name_is_synthesized`` is True only when we fell back to
@@ -425,7 +454,7 @@ def _map_spoolman_spool(spool: dict) -> MappedSpoolFields:
     # user doesn't round-trip the synth value back as a real edit
     # (upstream #1319).
     extra_color_name = _extract_extra_str(extra, "bambu_color_name") or None
-    stored_color_name = extra_color_name or (filament.get("color_name") or None)
+    stored_color_name = extra_color_name or filament.get("color_name") or product_color
     color_name: str | None = stored_color_name or subtype or None
     color_name_is_synthesized: bool = stored_color_name is None and color_name is not None
 

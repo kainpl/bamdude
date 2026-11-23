@@ -29,7 +29,7 @@ from backend.app.services.filament_identity import (
     resolve_tray,
 )
 from backend.app.utils import filament_catalog as catalog
-from backend.app.utils.filament_types import filament_types_compatible
+from backend.app.utils.filament_types import SUPPORT_SLOT_TYPES, filament_types_compatible, support_slot_type
 from backend.app.utils.printer_models import PRINTER_MODEL_MAP
 
 logger = logging.getLogger(__name__)
@@ -85,9 +85,19 @@ def _stand_in(material: str) -> tuple[catalog.CatalogFamily | None, str]:
     preset and temperatures, and the type is written as the spool gives it: the
     old answer took the generic's type too, and the slot said ASA.
     """
+    typed_support = {"PLA-S": "GFS00", "PA-S": "GFS01"}.get(material.strip().upper())
+    if typed_support:
+        return catalog.get_family(typed_support), material.strip().upper()
+
     family = catalog.family_for_material(material)
+    # Spoolman catalogs can omit the vendor prefix from a Bambu product name.
+    if material.strip().casefold().startswith("support "):
+        alias = f"Bambu {material.strip()}"
+        named = catalog.family_for_material(alias)
+        if named and named.alias.casefold() == alias.casefold():
+            family = named
     if family is not None:
-        return family, family.filament_type or material.strip()
+        return family, support_slot_type(family.filament_type or material.strip(), family.filament_id)
     # Nylon / PA6 / PA12 borrow Generic PA inside ``generic_family_for_material``
     # (owner decision Р26); the type stays the spool's — the same rule as above.
     return catalog.generic_family_for_material(material), material.strip()
@@ -104,7 +114,9 @@ def _preset_is_of_material(preset_type: str | None, material: str | None) -> boo
     if not (material or "").strip() or not (preset_type or "").strip():
         return True
     _, spool_type = _stand_in(material)
-    return filament_types_compatible(preset_type, spool_type)
+    return filament_types_compatible(preset_type, spool_type) or (
+        preset_type in SUPPORT_SLOT_TYPES and filament_types_compatible(preset_type.removesuffix("-S"), spool_type)
+    )
 
 
 def _pick_preset(family_id: str, candidates: list[str]) -> catalog.CatalogPreset | None:
@@ -217,7 +229,10 @@ async def build_slot_assignment(
     from_stored_preset = False
     if (resolved is None or not resolved.family) and stored_preset:
         candidate = await resolve_raw(db, stored_preset)
-        if candidate.family and _preset_is_of_material(candidate.filament_type, material_override):
+        if candidate.family and _preset_is_of_material(
+            support_slot_type(candidate.filament_type, candidate.family.filament_id),
+            material_override,
+        ):
             resolved, from_stored_preset = candidate, True
         elif candidate.family:
             warnings.append(
@@ -238,6 +253,7 @@ async def build_slot_assignment(
         family_id = stand_in.filament_id
     else:
         family_id = resolved.family.filament_id
+        fam_type = support_slot_type(fam_type, family_id)
         # A family minted under one of OrcaSlicer's own "OF…" ids (the sync only
         # takes it out of the picker; a spool may still name it): the slot is told
         # Bambu's id for that filament, or — an id the table lacks — the

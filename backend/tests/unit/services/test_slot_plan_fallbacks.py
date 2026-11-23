@@ -210,3 +210,12 @@ async def test_every_other_spool_gets_the_plan_it_got_before(db_session, spool):
     with patch.object(slot_assignment.catalog, "bambu_filament_id", lambda value: value):
         assert await build_slot_assignment(db_session, spool=spool, printer_model="P1S") == plan
         assert await derive_effective_filament_id(spool=spool, db=db_session) == key
+
+
+@pytest.mark.asyncio
+async def test_configure_publishes_support_type_to_mqtt(async_client, printer_factory):
+    printer = await printer_factory(name="P1S", model="P1S")
+    client, body = await _configure(async_client, printer, tray_info_idx="GFS05", tray_type="PLA")
+    published = client.ams_set_filament_setting.call_args.kwargs
+    assert (published["tray_info_idx"], published["tray_type"]) == ("GFS05", "PLA-S")
+    assert body["warnings"] == []

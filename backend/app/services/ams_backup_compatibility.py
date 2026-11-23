@@ -16,6 +16,7 @@ from typing import Literal
 from backend.app.services.slot_assignment import SlotAssignmentPlan, build_slot_assignment
 from backend.app.services.spool_tag_matcher import is_valid_tag
 from backend.app.utils import filament_catalog as catalog
+from backend.app.utils.filament_types import SUPPORT_SLOT_TYPES
 from backend.app.utils.rgba import normalize_opaque_rgba
 
 NAMESPACE = "backup_compatibility"
@@ -205,7 +206,8 @@ async def project_slot_assignment(
     reasons: list[str] = []
 
     if policy.generic_base_material:
-        generic = generic_family_for_base_material(material or actual.tray_type)
+        base = actual.tray_type if actual.tray_type in SUPPORT_SLOT_TYPES else (material or actual.tray_type)
+        generic = generic_family_for_base_material(base)
         if generic is None:
             reasons.append(REASON_BASE_MATERIAL)
         else:

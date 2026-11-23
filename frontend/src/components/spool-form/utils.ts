@@ -122,26 +122,27 @@ export function calibrationSelectionKey(printerId: number | string, cal: Calibra
   return profileSelectionKey(printerId, cal.cali_idx, cal.extruder_id, cal.nozzle_diameter, cal.nozzle_flow);
 }
 
-// Fallback filament presets when cloud is not available
+// Offline fallback uses the family IDs and names from the Bambu catalog.
 const FALLBACK_PRESETS: FilamentOption[] = [
-  { code: 'GFL00', name: 'Bambu PLA Basic', displayName: 'Bambu PLA Basic', isCustom: false, allCodes: ['GFL00'] },
-  { code: 'GFL01', name: 'Bambu PLA Matte', displayName: 'Bambu PLA Matte', isCustom: false, allCodes: ['GFL01'] },
-  { code: 'GFL05', name: 'Generic PLA', displayName: 'Generic PLA', isCustom: false, allCodes: ['GFL05'] },
-  { code: 'GFG00', name: 'Bambu PETG Basic', displayName: 'Bambu PETG Basic', isCustom: false, allCodes: ['GFG00'] },
-  { code: 'GFG05', name: 'Generic PETG', displayName: 'Generic PETG', isCustom: false, allCodes: ['GFG05'] },
-  { code: 'GFB00', name: 'Bambu ABS Basic', displayName: 'Bambu ABS Basic', isCustom: false, allCodes: ['GFB00'] },
-  { code: 'GFB05', name: 'Generic ABS', displayName: 'Generic ABS', isCustom: false, allCodes: ['GFB05'] },
-  { code: 'GFA00', name: 'Bambu ASA Basic', displayName: 'Bambu ASA Basic', isCustom: false, allCodes: ['GFA00'] },
-  { code: 'GFU00', name: 'Bambu TPU 95A', displayName: 'Bambu TPU 95A', isCustom: false, allCodes: ['GFU00'] },
-  { code: 'GFU05', name: 'Generic TPU', displayName: 'Generic TPU', isCustom: false, allCodes: ['GFU05'] },
-  { code: 'GFC00', name: 'Bambu PC Basic', displayName: 'Bambu PC Basic', isCustom: false, allCodes: ['GFC00'] },
-  { code: 'GFN00', name: 'Bambu PA Basic', displayName: 'Bambu PA Basic', isCustom: false, allCodes: ['GFN00'] },
-  { code: 'GFN05', name: 'Generic PA', displayName: 'Generic PA', isCustom: false, allCodes: ['GFN05'] },
-  { code: 'GFS00', name: 'Bambu PLA-CF', displayName: 'Bambu PLA-CF', isCustom: false, allCodes: ['GFS00'] },
-  { code: 'GFT00', name: 'Bambu PETG-CF', displayName: 'Bambu PETG-CF', isCustom: false, allCodes: ['GFT00'] },
-  { code: 'GFNC0', name: 'Bambu PA-CF', displayName: 'Bambu PA-CF', isCustom: false, allCodes: ['GFNC0'] },
-  { code: 'GFV00', name: 'Bambu PVA', displayName: 'Bambu PVA', isCustom: false, allCodes: ['GFV00'] },
-];
+  ['GFA00', 'Bambu PLA Basic'],
+  ['GFA01', 'Bambu PLA Matte'],
+  ['GFL99', 'Generic PLA'],
+  ['GFG00', 'Bambu PETG Basic'],
+  ['GFG99', 'Generic PETG'],
+  ['GFB00', 'Bambu ABS'],
+  ['GFB99', 'Generic ABS'],
+  ['GFB01', 'Bambu ASA'],
+  ['GFU01', 'Bambu TPU 95A'],
+  ['GFU99', 'Generic TPU'],
+  ['GFC00', 'Bambu PC'],
+  ['GFN99', 'Generic PA'],
+  ['GFA50', 'Bambu PLA-CF'],
+  ['GFG50', 'Bambu PETG-CF'],
+  ['GFN03', 'Bambu PA-CF'],
+  ['GFS04', 'Bambu PVA'],
+  ['GFS00', 'Bambu Support W'],
+  ['GFS01', 'Bambu Support G'],
+].map(([code, name]) => ({ code, name, displayName: name, isCustom: false, allCodes: [code] }));
 
 // Parse a slicer preset name to extract brand, material, and variant
 export function parsePresetName(name: string): { brand: string; material: string; variant: string } {

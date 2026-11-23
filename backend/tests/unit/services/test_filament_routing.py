@@ -755,3 +755,13 @@ def test_an_unknown_fact_is_never_a_pass():
     guard = a_guard(RoutingPolicy(), snapshot(source))
     with pytest.raises(RoutingDeferred, match="fts_state_unavailable"):
         validate(guard, snapshot(source, fts_pending_confirmation=True))
+
+
+def test_routing_separates_support_and_plain_pla_even_with_legacy_channel_types():
+    job = requirements({"tray_info_idx": "GFS05"}, {})
+    support = feed(1, kind="ams", material="PLA-S", variant="GFS05")
+    ordinary = feed(0, kind="ams", material="PLA", variant="GFA00")
+    result = resolve_filament_routing(job, RoutingPolicy(), snapshot(ordinary, support))
+    assert result.status == "compatible"
+    assert result.plan.mapping == [1, 0]
+    assert resolve_filament_routing(job, RoutingPolicy(), snapshot(ordinary)).status == "incompatible"

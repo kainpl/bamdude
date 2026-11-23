@@ -197,7 +197,12 @@ async def tray_types_written_for(
         plan = await spool_slot_plan(db, spool, printer_id, ams_id, tray_id)
     except ValueError:
         return written
-    written.add((plan.tray_type or material).upper())
+    from backend.app.utils.filament_types import SUPPORT_SLOT_TYPES
+
+    wire_type = (plan.tray_type or material).upper()
+    if wire_type in SUPPORT_SLOT_TYPES:
+        return {wire_type}
+    written.add(wire_type)
     return written
 
 

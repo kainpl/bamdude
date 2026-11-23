@@ -86,3 +86,71 @@ async def test_custom_family_k_profiles_are_matchable(db_session):
     await db_session.commit()
     spool = SimpleNamespace(filament_family_id="P122e532", bambu_filament_id=None, slicer_filament="PFUS_CUSTOM_ROOT")
     assert await derive_effective_filament_id(spool=spool, db=db_session) == "P122e532"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("family_id", "material", "wire_type"),
+    [
+        ("GFS00", "PLA", "PLA-S"),
+        ("GFS01", "PA", "PA-S"),
+        ("GFS05", "PLA", "PLA-S"),
+        ("GFS04", "PVA", "PVA"),
+        ("GFS06", "ABS", "ABS"),
+        ("GFA00", "PLA", "PLA"),
+    ],
+)
+async def test_selected_family_uses_the_bambu_studio_slot_type(db_session, family_id, material, wire_type):
+    manual = await build_slot_assignment(db_session, family_id=family_id, material_override=material)
+    spooled = await build_slot_assignment(db_session, stored_preset=family_id, material_override=material)
+    assert (manual.tray_info_idx, manual.tray_type) == (family_id, wire_type)
+    assert (spooled.tray_info_idx, spooled.tray_type, spooled.from_stored_preset) == (family_id, wire_type, True)
+
+
+@pytest.mark.asyncio
+async def test_support_slot_preserves_the_bound_preset_for_suffixed_material(db_session):
+    plan = await build_slot_assignment(db_session, stored_preset="GFS02", material_override="PLA-S")
+    assert (plan.tray_info_idx, plan.tray_type, plan.from_stored_preset) == ("GFS02", "PLA-S", True)
+    unrelated = await build_slot_assignment(db_session, stored_preset="GFS02", material_override="PETG")
+    assert (unrelated.tray_info_idx, unrelated.tray_type, unrelated.from_stored_preset) == ("GFG99", "PETG", False)
+
+
+@pytest.mark.asyncio
+async def test_support_family_requirements_keep_the_slicer_wire_types(db_session):
+    from backend.app.services.filament_intake import enrich_family_filament_rows
+
+    rows = await enrich_family_filament_rows(
+        db_session,
+        [
+            {"tray_info_idx": "GFS05", "filament_type": "PLA-S"},
+            {"tray_info_idx": "GFS03", "filament_type": "PA-S"},
+            {"tray_info_idx": "GFA00", "filament_type": "PLA"},
+        ],
+    )
+    assert [row["filament_type"] for row in rows] == ["PLA-S", "PA-S", "PLA"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("material", ["PLA", "PA", "PLA-S", "PA-S"])
+async def test_custom_family_keeps_its_declared_type_in_slot_and_3mf(db_session, material):
+    from backend.app.services.filament_intake import enrich_family_filament_rows
+
+    family_id = "P122e532"
+    db_session.add(
+        UserFilamentFamily(
+            filament_id=family_id,
+            ecosystem="bambu",
+            alias="PLA Support Interface Test",
+            vendor="test",
+            filament_type=material,
+            origin="cloud_bambu",
+        )
+    )
+    await db_session.commit()
+
+    plan = await build_slot_assignment(
+        db_session, family_id=family_id, printer_model="A1 Mini", supports_user_preset=True
+    )
+    rows = await enrich_family_filament_rows(db_session, [{"tray_info_idx": family_id, "filament_type": material}])
+
+    assert ((plan.tray_info_idx, plan.tray_type), rows[0]["filament_type"]) == ((family_id, material), material)

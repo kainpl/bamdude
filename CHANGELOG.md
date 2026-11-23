@@ -314,6 +314,12 @@
 
 ### Fixed
 
+- **Read the finish and color from Spoolman product names.** For example,
+  Matte Scarlet Red shows Matte as the subtype and Scarlet Red as the color.
+  This includes Aero, Lite and High Speed, even with extra spaces between
+  the words of a finish.
+  Editing a spool keeps its catalog name when the material and subtype stay the same.
+
 - **Empty Bambu Cloud preset categories no longer break Slice or Cloud
   Profiles.** Local presets and available cloud presets still load.
 - **Clear a filament family or legacy slicer preset from the spool editor.**
@@ -355,6 +361,14 @@
 - **A print whose plate the swap changed by itself is no longer "Not checked".** On a printer in swap mode nobody takes the print off the plate, yet every one waited in Archives for somebody to check its result: the "Not checked" badge, the Unchecked filter, the banner in the edit dialog and the optional reminder. When the table-change macro answers successfully, or the file's own swap sequence clears the plate, the print now counts as checked with no defects at that moment. A swap that failed or was held, one settled by hand, and a print started from the printer's screen or a slicer keep the mark — somebody has to go to that printer anyway, and can grade the print there. Earlier prints whose plate was swapped successfully are marked on upgrade. The Telegram buttons stay: defects can still be recorded afterwards.
 
 - **The Statistics page speaks the interface language throughout.** In Ukrainian it still wrote English units and names: hours as "500.5h", weights as "kg" and "g", energy as "kWh", the hours of the day as "12am…11pm", weekdays as "Mon…Sun", months in English, the trend chart's "Week of …", "N avg", "colors", "+N more", the activity legend's "Less / More", "N prints" in the calendar and heat-map tooltips, the print-duration ranges, and the widget buttons ("Hide widget", "Drag to reorder"). All of them now follow the interface language — units, hours, weekdays and dates included — and the success-streak line no longer repeats the number beside it.
+
+- **Keep support filament types distinct in AMS slots and print matching.**
+  Support for PLA and PA use the same PLA-S and PA-S types as Bambu Studio.
+  Custom profiles retain their declared material even if their names say
+  "Support". On a partial reconnect report, AMS keeps the spool link if the
+  reported details still match. A matching base material preserves the known
+  support type until the family ID arrives. AMS checks again as details arrive.
+  Offline preset choices use the corresponding Bambu family IDs.
 
 - **No more daily "Stock break risk" for a filament whose spools are all archived.** A colour whose last spool was used up and archived stays in the forecast for 90 days with no stock, so it was announced every day as "will run out before replenishment arrives — 0 g left", for every brand a farm had stopped buying, while kilograms of the same colour from another brand sat on the shelf. Such a filament is now silent while the same material, subtype and colour is on the shelf under another brand; otherwise it is announced once, as "Out of stock", in its own words (a new, editable template), to the same recipients a stock break reaches — and not repeated. Its forecast row stays as it was.
 
