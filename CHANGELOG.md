@@ -2,6 +2,8 @@
 
 ### Security
 
+- The part thumbnail renderer uses Node.js 24.22.3 on 64-bit platforms and 22.23.5 on 32-bit ARM. Both updates include Node.js security fixes.
+
 - **Removing a user from Administrators takes effect on their next request.** This also clears their legacy admin role. BamDude refuses changes that would leave no active administrator.
 
 - **Queueing or re-slicing an archive needs the right to reprint it.** Adding an archive to a printer's queue or to AutoQueue and re-slicing it created new print work with only the right to read the archive, while Reprint asked its own permission. They now ask the same, and an API key can no longer re-slice archives its owner may not see. The default Operators group now holds "reprint any archive" (on new installs and after update; custom or renamed groups are not changed), so operators can reprint, queue and re-slice prints started at the printer's screen or by a colleague.
