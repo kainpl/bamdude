@@ -357,3 +357,28 @@ class TestWeightSyncs:
             weights = await scheduler._inventory_label_weights(db_session, printer.id, loaded)
 
         assert weights == {0: 1000.0, 1: 250.0}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_clearing_the_preset_preserves_the_catalog_filament(async_client: AsyncClient, spoolman):
+    spoolman.add_spool(42, 7, used_weight=456.0)
+    url = f"{API}/spools/42"
+    linked = await async_client.patch(url, json={"slicer_filament": "GFL99", "slicer_filament_name": "My PLA"})
+    assert linked.status_code == 200, linked.text
+    assert linked.json()["slicer_filament"] == "GFL99"
+    assert linked.json()["slicer_filament_name"] == "My PLA"
+
+    cleared = await async_client.patch(
+        url, json={"filament_family_id": None, "slicer_filament": None, "slicer_filament_name": None}
+    )
+    assert cleared.status_code == 200, cleared.text
+    reopened = await async_client.get(url)
+    assert reopened.status_code == 200, reopened.text
+    assert reopened.json()["slicer_filament"] is None
+    assert reopened.json()["slicer_filament_name"] == "PLA Basic"
+    saved = spoolman.view(42)
+    assert saved["filament"]["id"] == 7
+    assert saved["used_weight"] == 456.0
+    assert saved["extra"]["bambu_slicer_filament"] == '""'
+    assert saved["extra"]["bambu_slicer_filament_name"] == '""'

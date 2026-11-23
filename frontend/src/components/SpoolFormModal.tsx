@@ -114,7 +114,8 @@ export function SpoolFormModal({
 
   // Cloud presets
   const [cloudPresets, setCloudPresets] = useState<SlicerSetting[]>([]);
-  const [pickedFamily, setPickedFamily] = useState<FilamentFamily | null>(null);
+  // undefined means untouched. null means explicitly cleared.
+  const [pickedFamily, setPickedFamily] = useState<FilamentFamily | null>();
   const [createFamilyOpen, setCreateFamilyOpen] = useState(false);
 
   // Spool catalog
@@ -408,7 +409,7 @@ export function SpoolFormModal({
           })(),
           spoolman_filament_id: null,
         });
-        setPickedFamily(null);
+        setPickedFamily(undefined);
 
         // Load K-profiles for this spool
         if (spool.k_profiles && spool.k_profiles.length > 0) {
@@ -424,7 +425,7 @@ export function SpoolFormModal({
         }
       } else {
         setFormData(defaultFormData);
-        setPickedFamily(null);
+        setPickedFamily(undefined);
         setSelectedProfiles(new Set());
         setQuickAdd(false);
         setQuantity(1);
@@ -451,12 +452,6 @@ export function SpoolFormModal({
     }
   }, [isOpen, spool, storageLocations, formData.location_id, locationIdTouched]);
 
-  // Keep the preset input in sync with the resolved preset once options load.
-  // The reset effect above runs before the async preset queries settle, so on
-  // open the code may not resolve to an option yet; when it does, show the real
-  // name (the denormalized ``slicer_filament_name`` can be stale). Depends only
-  // on the resolved option, so it never clobbers the user's live search text
-  // (typing changes the input, not ``slicer_filament`` → not this option).
   // Expand all printers in PA profile section when calibrations are available
   useEffect(() => {
     if (isOpen && resolvedCalibrations.length > 0) {
@@ -792,6 +787,18 @@ export function SpoolFormModal({
 
   if (!isOpen) return null;
 
+  const setFamilyIdentity = (id: string | null, family: FilamentFamily | null) => {
+    updateField('filament_family_id', id ?? '');
+    updateField('slicer_filament', id ?? '');
+    setPickedFamily(family);
+  };
+
+  const presetName = pickedFamily === undefined ? spool?.slicer_filament_name : pickedFamily?.alias;
+  // Spoolman may return the catalog filament name when no preset is stored.
+  const presetHint = formData.slicer_filament
+    ? presetName || formData.slicer_filament
+    : (!spoolmanMode && presetName) || undefined;
+
   const handleSubmit = () => {
     const validation = validateForm(formData, quickAdd, spoolmanMode, resolvedMode);
     if (!validation.isValid) {
@@ -802,6 +809,7 @@ export function SpoolFormModal({
       return;
     }
 
+    const presetCode = formData.slicer_filament || formData.filament_family_id || null;
     const data: Record<string, unknown> = {
       material: formData.material || null,
       subtype: formData.subtype || null,
@@ -817,19 +825,16 @@ export function SpoolFormModal({
           ? { core_weight: formData.core_weight }
           : {})
         : { core_weight: formData.core_weight, core_weight_catalog_id: formData.core_weight_catalog_id }),
-      // ONE identity control (spec A §5.1): the family. The legacy columns get
-      // the family's own id + alias — exactly the format an RFID-scanned Bambu
-      // spool historically wrote there, so every legacy consumer (Inventory
-      // column, search, spool naming) keeps working. A spool edited without
-      // touching the picker keeps its stored legacy values, and the family
-      // derives from them so old-style spools stay linked.
-      slicer_filament: formData.filament_family_id || formData.slicer_filament || null,
-      slicer_filament_name:
-        pickedFamily?.alias ?? (spool?.slicer_filament_name || null),
-      filament_family_id:
-        formData.filament_family_id
-        || resolveTargetFilamentId(formData.slicer_filament, resolveCloudDetailQuery.data)
-        || null,
+      // An untouched edit leaves the stored preset alone. An explicit clear
+      // sends null for the family and both legacy preset fields.
+      ...(!isEditing || pickedFamily !== undefined ? {
+        slicer_filament: presetCode,
+        slicer_filament_name: presetName || null,
+        filament_family_id:
+          formData.filament_family_id
+          || resolveTargetFilamentId(formData.slicer_filament, resolveCloudDetailQuery.data)
+          || null,
+      } : {}),
       nozzle_temp_min: null,
       nozzle_temp_max: null,
       note: formData.note || null,
@@ -1014,8 +1019,7 @@ export function SpoolFormModal({
                 <FamilyPicker
                   value={formData.filament_family_id || null}
                   onChange={(id, family) => {
-                    updateField('filament_family_id', id || '');
-                    setPickedFamily(family);
+                    setFamilyIdentity(id, family);
                     // BS-style prefill: the family carries vendor + material.
                     if (family?.filament_type && !formData.material) {
                       updateField('material', family.filament_type);
@@ -1024,17 +1028,16 @@ export function SpoolFormModal({
                       updateField('brand', family.vendor);
                     }
                   }}
-                  legacyHint={spool?.slicer_filament_name || undefined}
+                  legacyHint={presetHint}
                   onCreateNew={() => setCreateFamilyOpen(true)}
                 />
                 <CreateFilamentFamilyModal
                   open={createFamilyOpen}
                   onClose={() => setCreateFamilyOpen(false)}
                   onCreated={(fid, alias) => {
-                    updateField('filament_family_id', fid);
                     // Synthetic row until the families query refetches — the
                     // submit path reads alias from here.
-                    setPickedFamily({
+                    setFamilyIdentity(fid, {
                       filament_id: fid,
                       ecosystem: 'local',
                       alias,

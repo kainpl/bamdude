@@ -63,3 +63,36 @@ async def test_an_explicit_unknown_family_is_still_refused(async_client: AsyncCl
     assert refused.status_code == 422
     assert refused.json()["detail"] == "unknown filament family"
     await db_session.rollback()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_metadata_edit_preserves_preset_and_explicit_clear_persists(async_client: AsyncClient):
+    created = await async_client.post(
+        "/api/v1/inventory/spools",
+        json={"material": "PLA", "brand": "Bambu Lab", "slicer_filament": "GFL99", "slicer_filament_name": "My PLA"},
+    )
+    assert created.status_code == 200, created.text
+    spool = created.json()
+    assert spool["filament_family_id"] == "GFL99"
+    url = f"/api/v1/inventory/spools/{spool['id']}"
+
+    updated = await async_client.patch(url, json={"note": "Keep this note"})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["filament_family_id"] == "GFL99"
+    assert updated.json()["slicer_filament"] == "GFL99"
+    assert updated.json()["slicer_filament_name"] == "My PLA"
+
+    cleared = await async_client.patch(
+        url, json={"filament_family_id": None, "slicer_filament": None, "slicer_filament_name": None}
+    )
+    assert cleared.status_code == 200, cleared.text
+    reopened = await async_client.get(url)
+    assert reopened.status_code == 200, reopened.text
+    saved = reopened.json()
+    assert saved["filament_family_id"] is None
+    assert saved["slicer_filament"] is None
+    assert saved["slicer_filament_name"] is None
+    assert saved["material"] == "PLA"
+    assert saved["brand"] == "Bambu Lab"
+    assert saved["note"] == "Keep this note"

@@ -250,3 +250,38 @@ class TestTheUserCredential:
 
         assert await renew_for_service(cloud, captured) == bambu_cloud.RENEWED
         assert await _stored(db_session, user.id) == ("acc-2", "ref-2", False)
+
+
+@pytest.mark.parametrize("path", ["/api/v1/slicer/presets", "/api/v1/cloud/settings"], ids=["slice", "profiles"])
+@pytest.mark.parametrize("empty_type", ["filament", "printer", "print"])
+async def test_null_cloud_preset_types_and_tiers_keep_slice_and_profiles_available(
+    async_client, db_session, bambu, path, empty_type
+):
+    from backend.app.models.local_preset import LocalPreset
+
+    await _sign_in(db_session)
+    db_session.add(LocalPreset(name="Local PLA", preset_type="filament", setting="{}"))
+    await db_session.commit()
+
+    listing = {
+        key: {
+            "private": [{"setting_id": f"own-{key}", "name": f"My {key}"}] if key != "print" else None,
+            "public": [{"setting_id": "stock-process", "name": "Stock process"}] if key == "print" else None,
+        }
+        for key in ("filament", "printer", "print")
+    }
+    listing[empty_type] = None
+    bambu({("GET", SETTINGS): (200, listing)})
+
+    response = await async_client.get(path)
+    assert response.status_code == 200, response.text
+    presets = response.json()
+    if path == "/api/v1/slicer/presets":
+        assert presets["cloud_status"] == "ok"
+        assert [preset["name"] for preset in presets["local"]["filament"]] == ["Local PLA"]
+        presets = presets["cloud"]
+
+    expected = {"filament": ["My filament"], "printer": ["My printer"], "print": ["Stock process"]}
+    expected[empty_type] = []
+    for cloud_type, slot in (("filament", "filament"), ("printer", "printer"), ("print", "process")):
+        assert [preset["name"] for preset in presets[slot]] == expected[cloud_type]

@@ -3129,6 +3129,7 @@ export default {
 
   // Settings page
   familyPicker: {
+    clear: 'Clear filament family or preset',
     placeholder: 'Link a filament family…',
     search: 'Search families…',
     custom: 'custom',

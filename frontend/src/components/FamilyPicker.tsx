@@ -105,6 +105,7 @@ export function FamilyPicker({ value, onChange, disabled, legacyHint, onCreateNe
   }, [open, measure]);
 
   const rows = families || [];
+  const canClear = !!(value || legacyHint) && !disabled;
 
   const list = box ? (
     <div
@@ -181,9 +182,9 @@ export function FamilyPicker({ value, onChange, disabled, legacyHint, onCreateNe
         aria-expanded={open}
         disabled={disabled}
         onClick={() => setOpen((o) => !o)}
-        className="w-full text-left py-2.5 pl-2.5 pr-2 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark flex items-center gap-2 disabled:opacity-50"
+        className={`relative w-full text-left py-2.5 pl-2.5 ${canClear ? 'pr-14' : 'pr-8'} rounded-lg border border-bambu-dark-tertiary bg-bambu-dark disabled:opacity-50`}
       >
-        <span className="flex-1 min-w-0">
+        <span className="block min-w-0">
           {selected ? (
             <>
               <span className="block text-sm text-white truncate">{selected.alias}</span>
@@ -203,17 +204,22 @@ export function FamilyPicker({ value, onChange, disabled, legacyHint, onCreateNe
             </>
           )}
         </span>
-        {value && !disabled && (
-          <X
-            className="w-4 h-4 text-bambu-gray hover:text-white shrink-0"
-            onClick={(e) => {
-              e.stopPropagation();
-              onChange(null, null);
-            }}
-          />
-        )}
-        <ChevronDown className="w-4 h-4 text-bambu-gray shrink-0" />
+        <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />
       </button>
+      {canClear && (
+        <button
+          type="button"
+          aria-label={t('familyPicker.clear')}
+          title={t('familyPicker.clear')}
+          className="absolute right-7 top-1/2 -translate-y-1/2 rounded p-1 text-bambu-gray hover:text-white focus-visible:outline focus-visible:outline-bambu-green"
+          onClick={() => {
+            onChange(null, null);
+            setOpen(false);
+          }}
+        >
+          <X className="w-4 h-4" aria-hidden="true" />
+        </button>
+      )}
       {open && createPortal(list, document.body)}
     </div>
   );

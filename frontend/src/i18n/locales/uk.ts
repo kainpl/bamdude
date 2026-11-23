@@ -3155,6 +3155,7 @@ export default {
 
   // Settings page
   familyPicker: {
+    clear: 'Очистити сім’ю або пресет філаменту',
     placeholder: 'Привʼязати сімʼю філаменту…',
     search: 'Пошук сімей…',
     custom: 'кастомна',
