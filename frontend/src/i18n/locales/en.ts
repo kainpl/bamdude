@@ -920,7 +920,7 @@ export default {
     addPreflight: {
       checking: 'Checking connection...',
       warning: 'Some connection checks failed. This printer may show as offline. Review the checks below, fix what you can, or save anyway.',
-      back: 'Back',
+      checkAgain: 'Check again',
       saveAnyway: 'Save anyway',
     },
     bulk: {

@@ -8008,6 +8008,47 @@ function MacrosPanel({
 }
 
 
+// A diagnostic applies only to the connection settings checked by that request.
+function usePrinterPreflight(onPassed: () => void) {
+  const revision = useRef(0);
+  const save = useRef(onPassed);
+  const [checkingSave, setCheckingSave] = useState(false);
+  const [saveWarning, setSaveWarning] = useState<PrinterDiagnosticResult | null>(null);
+
+  useLayoutEffect(() => {
+    save.current = onPassed;
+  }, [onPassed]);
+  useLayoutEffect(() => () => { revision.current += 1; }, []);
+
+  const reset = () => {
+    revision.current += 1;
+    setCheckingSave(false);
+    setSaveWarning(null);
+  };
+
+  const check = async (connection: Parameters<typeof api.diagnoseConnection>[0]) => {
+    const request = ++revision.current;
+    setCheckingSave(true);
+    setSaveWarning(null);
+    let warning: PrinterDiagnosticResult | null = null;
+    try {
+      const result = await api.diagnoseConnection(connection);
+      if (result.checks.some((item) => item.status === 'fail')) warning = result;
+    } catch {
+      // Diagnostic infrastructure failed. Keep the save available.
+    }
+    if (request !== revision.current) return;
+    setCheckingSave(false);
+    if (warning) {
+      setSaveWarning(warning);
+      return;
+    }
+    save.current();
+  };
+
+  return { checkingSave, saveWarning, reset, check };
+}
+
 export function AddPrinterModal({
   onClose,
   onAdd,
@@ -8063,32 +8104,15 @@ export function AddPrinterModal({
   const [scanProgress, setScanProgress] = useState({ scanned: 0, total: 0 });
   const [showDiagnostic, setShowDiagnostic] = useState(false);
 
-  // Setup-time pre-flight: run the connection diagnostic on save and warn
-  // (not block) when checks fail, so the user doesn't add a printer that
-  // immediately shows offline. checkingSave = probe in flight; saveWarning =
-  // failed result awaiting an explicit "save anyway".
-  const [checkingSave, setCheckingSave] = useState(false);
-  const [saveWarning, setSaveWarning] = useState<PrinterDiagnosticResult | null>(null);
+  const preflight = usePrinterPreflight(() => onAdd(form));
 
-  const handleAddSubmit = async (e: React.FormEvent) => {
+  const handleAddSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setCheckingSave(true);
-    try {
-      const result = await api.diagnoseConnection({
-        ip_address: form.ip_address.trim(),
-        serial_number: form.serial_number.trim() || undefined,
-        access_code: form.access_code || undefined,
-      });
-      if (result.checks.some((c) => c.status === 'fail')) {
-        setSaveWarning(result);
-        return;
-      }
-    } catch {
-      // Diagnostic infrastructure failed — never block the save on it.
-    } finally {
-      setCheckingSave(false);
-    }
-    onAdd(form);
+    void preflight.check({
+      ip_address: form.ip_address.trim(),
+      serial_number: form.serial_number.trim() || undefined,
+      access_code: form.access_code || undefined,
+    });
   };
 
   // Fetch discovery info on mount + restore the last custom CIDR the user
@@ -8202,6 +8226,7 @@ export function AddPrinterModal({
   const selectPrinter = (printer: DiscoveredPrinter) => {
     // Don't pre-fill serial if it's a placeholder (unknown-*) - user needs to enter actual serial
     const serialNumber = printer.serial.startsWith('unknown-') ? '' : printer.serial;
+    preflight.reset();
     setForm({
       ...form,
       name: printer.name || '',
@@ -8375,7 +8400,10 @@ export function AddPrinterModal({
                   pattern="(\d{1,3}(\.\d{1,3}){3}|[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*)"
                   className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   value={form.ip_address}
-                  onChange={(e) => setForm({ ...form, ip_address: e.target.value })}
+                  onChange={(e) => {
+                    preflight.reset();
+                    setForm({ ...form, ip_address: e.target.value });
+                  }}
                   placeholder="192.168.1.100 or printer.local"
                 />
               </div>
@@ -8386,7 +8414,10 @@ export function AddPrinterModal({
                   required
                   className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   value={form.serial_number}
-                  onChange={(e) => setForm({ ...form, serial_number: e.target.value })}
+                  onChange={(e) => {
+                    preflight.reset();
+                    setForm({ ...form, serial_number: e.target.value });
+                  }}
                   placeholder="01P00A000000000"
                 />
               </div>
@@ -8398,14 +8429,17 @@ export function AddPrinterModal({
                     required
                     className="w-full px-3 py-1.5 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     value={form.access_code}
-                    onChange={(e) => setForm({ ...form, access_code: e.target.value })}
+                    onChange={(e) => {
+                      preflight.reset();
+                      setForm({ ...form, access_code: e.target.value });
+                    }}
                     placeholder={t('printers.modal.fromPrinterSettings')}
                   />
                   <button
                     type="button"
                     onClick={() => setShowAccessCode(!showAccessCode)}
                     className="absolute right-2.5 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white transition-colors"
-                    tabIndex={-1}
+                    aria-label={showAccessCode ? t('virtualPrinter.accessCode.hide') : t('virtualPrinter.accessCode.reveal')}
                   >
                     {showAccessCode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -8613,16 +8647,16 @@ export function AddPrinterModal({
           </button>
           {/* Buttons - full width. On a failed pre-flight, swap in a warning
               with the failing checks + an explicit "save anyway". */}
-          {saveWarning ? (
+          {preflight.saveWarning ? (
             <div className="mt-3 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-300 dark:border-amber-500/30 p-3 space-y-3">
               <div className="flex items-start gap-2">
                 <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-600 dark:text-amber-400" />
                 <p className="text-sm text-amber-700 dark:text-amber-300">{t('printers.addPreflight.warning')}</p>
               </div>
-              <DiagnosticChecklist result={saveWarning} />
+              <DiagnosticChecklist result={preflight.saveWarning} />
               <div className="flex gap-3">
-                <Button type="button" variant="secondary" onClick={() => setSaveWarning(null)} className="flex-1">
-                  {t('printers.addPreflight.back')}
+                <Button type="submit" variant="secondary" className="flex-1">
+                  {t('printers.addPreflight.checkAgain')}
                 </Button>
                 <Button type="button" onClick={() => onAdd(form)} className="flex-1">
                   {t('printers.addPreflight.saveAnyway')}
@@ -8634,8 +8668,8 @@ export function AddPrinterModal({
               <Button type="button" variant="secondary" onClick={onClose} className="flex-1">
                 {t('common.cancel')}
               </Button>
-              <Button type="submit" disabled={checkingSave} className="flex-1">
-                {checkingSave ? t('printers.addPreflight.checking') : t('printers.addPrinter')}
+              <Button type="submit" disabled={preflight.checkingSave} className="flex-1">
+                {preflight.checkingSave ? t('printers.addPreflight.checking') : t('printers.addPrinter')}
               </Button>
             </div>
           )}
@@ -8989,11 +9023,6 @@ export function EditPrinterModal({
 
   const [showAccessCode, setShowAccessCode] = useState(false);
 
-  // Setup-time pre-flight — same warn-on-save as the Add-Printer dialog, so an
-  // edit that breaks connectivity (e.g. a mistyped IP) is caught before save.
-  const [checkingSave, setCheckingSave] = useState(false);
-  const [saveWarning, setSaveWarning] = useState<PrinterDiagnosticResult | null>(null);
-
   const updateMutation = useMutation({
     mutationFn: (data: Partial<PrinterCreate>) => api.updatePrinter(printer.id, data),
     onSuccess: () => {
@@ -9030,25 +9059,15 @@ export function EditPrinterModal({
     updateMutation.mutate(data);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const preflight = usePrinterPreflight(doSave);
+
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setCheckingSave(true);
-    try {
-      const result = await api.diagnoseConnection({
-        ip_address: form.ip_address.trim(),
-        serial_number: printer.serial_number,
-        access_code: form.access_code || undefined,
-      });
-      if (result.checks.some((c) => c.status === 'fail')) {
-        setSaveWarning(result);
-        return;
-      }
-    } catch {
-      // Diagnostic infrastructure failed — never block the save on it.
-    } finally {
-      setCheckingSave(false);
-    }
-    doSave();
+    void preflight.check({
+      ip_address: form.ip_address.trim(),
+      serial_number: printer.serial_number,
+      access_code: form.access_code || undefined,
+    });
   };
 
   return (
@@ -9078,7 +9097,10 @@ export function EditPrinterModal({
                   pattern="(\d{1,3}(\.\d{1,3}){3}|[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*)"
                   className="w-full px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   value={form.ip_address}
-                  onChange={(e) => setForm({ ...form, ip_address: e.target.value })}
+                  onChange={(e) => {
+                    preflight.reset();
+                    setForm({ ...form, ip_address: e.target.value });
+                  }}
                   placeholder="192.168.1.100 or printer.local"
                 />
               </div>
@@ -9099,14 +9121,17 @@ export function EditPrinterModal({
                     type={showAccessCode ? 'text' : 'password'}
                     className="w-full px-3 py-1.5 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     value={form.access_code}
-                    onChange={(e) => setForm({ ...form, access_code: e.target.value })}
+                    onChange={(e) => {
+                      preflight.reset();
+                      setForm({ ...form, access_code: e.target.value });
+                    }}
                     placeholder={t('printers.accessCodePlaceholder')}
                   />
                   <button
                     type="button"
                     onClick={() => setShowAccessCode(!showAccessCode)}
                     className="absolute right-2.5 top-1/2 -translate-y-1/2 text-bambu-gray hover:text-white transition-colors"
-                    tabIndex={-1}
+                    aria-label={showAccessCode ? t('virtualPrinter.accessCode.hide') : t('virtualPrinter.accessCode.reveal')}
                   >
                     {showAccessCode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -9351,16 +9376,16 @@ export function EditPrinterModal({
 
           {/* Buttons - full width. On a failed pre-flight, swap in a warning
               with the failing checks + an explicit "save anyway". */}
-          {saveWarning ? (
+          {preflight.saveWarning ? (
             <div className="rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-300 dark:border-amber-500/30 p-3 space-y-3">
               <div className="flex items-start gap-2">
                 <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-600 dark:text-amber-400" />
                 <p className="text-sm text-amber-700 dark:text-amber-300">{t('printers.addPreflight.warning')}</p>
               </div>
-              <DiagnosticChecklist result={saveWarning} />
+              <DiagnosticChecklist result={preflight.saveWarning} />
               <div className="flex gap-3">
-                <Button type="button" variant="secondary" onClick={() => setSaveWarning(null)} className="flex-1">
-                  {t('printers.addPreflight.back')}
+                <Button type="submit" variant="secondary" className="flex-1">
+                  {t('printers.addPreflight.checkAgain')}
                 </Button>
                 <Button type="button" onClick={doSave} className="flex-1" disabled={updateMutation.isPending}>
                   {t('printers.addPreflight.saveAnyway')}
@@ -9372,8 +9397,8 @@ export function EditPrinterModal({
               <Button type="button" variant="secondary" onClick={onClose} className="flex-1">
                 {t('common.cancel')}
               </Button>
-              <Button type="submit" className="flex-1" disabled={updateMutation.isPending || checkingSave}>
-                {checkingSave
+              <Button type="submit" className="flex-1" disabled={updateMutation.isPending || preflight.checkingSave}>
+                {preflight.checkingSave
                   ? t('printers.addPreflight.checking')
                   : updateMutation.isPending
                     ? t('common.saving')
