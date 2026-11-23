@@ -1012,7 +1012,19 @@ class BambuCloudService:
             )
         )
         if response.status_code == 200:
-            return _cloud_json(response)
+            listing = _cloud_json(response)
+            # Bambu uses null for an empty category or tier. Repair only this
+            # listing shape, leaving settings details and other fields intact.
+            if isinstance(listing, dict):
+                for preset_type in ("filament", "printer", "print"):
+                    section = listing.get(preset_type, {})
+                    if section is None:
+                        listing[preset_type] = {"private": [], "public": []}
+                    elif isinstance(section, dict):
+                        for tier in ("private", "public"):
+                            if section.get(tier, []) is None:
+                                section[tier] = []
+            return listing
 
         raise BambuCloudError(f"Failed to get settings: {response.status_code}", status_code=response.status_code)
 

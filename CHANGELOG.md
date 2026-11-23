@@ -314,6 +314,14 @@
 
 ### Fixed
 
+- **Empty Bambu Cloud preset categories no longer break Slice or Cloud
+  Profiles.** Local presets and available cloud presets still load.
+- **Clear a filament family or legacy slicer preset from the spool editor.**
+  Searching leaves the saved choice in place until you choose a different
+  family or explicitly clear it. Copying one or several Spoolman spools
+  retains the saved preset, including a name-only preset. A spool with only a
+  catalog filament name is copied without a preset.
+
 - **Retry the connection check when adding or editing a printer.** Changing the address, serial number or access code clears any warning for the previous settings. The access code stays hidden until you choose to show it. Finish saving an edit before checking the connection again.
 
 - **MQTT plugs in monitoring mode stay out of power automation.** The queues skip them when looking for a switch, and Obico reports whether a mains switch succeeded. The meters still contribute energy readings for prints. Changing a plug's type or linked printer cancels a pending automatic shutdown.
