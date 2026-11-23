@@ -230,9 +230,7 @@ async def build_slot_assignment(
     if (resolved is None or not resolved.family) and stored_preset:
         candidate = await resolve_raw(db, stored_preset)
         if candidate.family and _preset_is_of_material(
-            support_slot_type(
-                candidate.filament_type, candidate.family.filament_id, preset_name=candidate.display_name
-            ),
+            support_slot_type(candidate.filament_type, candidate.family.filament_id),
             material_override,
         ):
             resolved, from_stored_preset = candidate, True
@@ -255,7 +253,7 @@ async def build_slot_assignment(
         family_id = stand_in.filament_id
     else:
         family_id = resolved.family.filament_id
-        fam_type = support_slot_type(fam_type, family_id, preset_name=resolved.display_name)
+        fam_type = support_slot_type(fam_type, family_id)
         # A family minted under one of OrcaSlicer's own "OF…" ids (the sync only
         # takes it out of the picker; a spool may still name it): the slot is told
         # Bambu's id for that filament, or — an id the table lacks — the

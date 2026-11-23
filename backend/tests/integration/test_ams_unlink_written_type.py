@@ -12,6 +12,7 @@ spool was unlinked from the slot it had just been assigned to, on the first push
 """
 
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -21,6 +22,7 @@ from sqlalchemy import select
 from backend.app import main as main_module
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
+from backend.app.services.bambu_mqtt import BambuMQTTClient
 
 _NOT_BAMBU = "00000000000000000000000000000000"
 
@@ -139,3 +141,46 @@ async def test_support_echo_keeps_the_binding_but_plain_pla_releases_it(db_sessi
     plain[0]["tray"][0]["tray_info_idx"] = "GFA00"
     await _push(printer.id, plain)
     assert await _links(db_session, printer.id) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize("update", ["partial-reconnect", "family-only-swap", "confirmed-empty"])
+async def test_support_binding_follows_merged_mqtt_updates(db_session, printer_factory, main_db, update):
+    printer, spool = await _assign(db_session, printer_factory, material="PLA", filament_family_id="GFS05")
+    frames = []
+
+    def client():
+        mqtt = BambuMQTTClient("127.0.0.1", "SYNTHETIC", "00000000", model="P1P")
+        mqtt.on_ams_change = lambda units: frames.append(deepcopy(units))
+        return mqtt
+
+    mqtt = client()
+    support = _slot("PLA")
+    support[0]["tray"][0].update({"tray_info_idx": "GFS05", "remain": -1})
+    mqtt._handle_ams_data({"ams": support})
+    assert len(frames) == 1
+    await _push(printer.id, frames.pop())
+    assert await _links(db_session, printer.id) == [(spool.id, "PLA-S")]
+
+    report = deepcopy(support)
+    tray = report[0]["tray"][0]
+    expected = []
+    if update == "partial-reconnect":
+        mqtt = client()
+        del tray["tray_type"]
+        tray["tray_color"] = ""
+        expected = [(spool.id, "PLA-S")]
+    elif update == "family-only-swap":
+        tray["tray_info_idx"] = "GFA00"
+    else:
+        tray.update({"state": 9, "tray_type": "", "tray_color": ""})
+
+    mqtt._handle_ams_data({"ams": report})
+    assert mqtt.state.raw_data["ams"][0]["tray"][0]["tray_info_idx"] == tray["tray_info_idx"]
+    for frame in frames:
+        await _push(printer.id, frame)
+    assert (len(frames), await _links(db_session, printer.id)) == (1, expected)
+
+    mqtt._handle_ams_data({"ams": report})
+    assert len(frames) == 1

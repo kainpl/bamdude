@@ -357,7 +357,7 @@ async def loaded_filaments(
             fid = (source.variant or "").strip()
             family_id = fid if fid in recognised else None
             family = (catalog.get_family(fid) or user_families.get(fid)) if family_id else None
-            family_type = support_slot_type(family.filament_type, fid, preset_name=family.alias) if family else ""
+            family_type = support_slot_type(family.filament_type, fid) if family else ""
             by_material = (
                 family_id is None
                 or family_id in generic

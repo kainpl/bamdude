@@ -5704,10 +5704,10 @@ class BambuMQTTClient:
         # firmware signals ONLY through tray_exist_bits — still echoing the old
         # tray_type, tag_uid and remain in the payload, which is exactly what an
         # AMS-HT does — is cleared in merged_ams by apply_tray_exist_bits above,
-        # while the raw payload's fields sit unchanged. Those three fields are
-        # precisely what this hash is built from, so a raw-based hash never
-        # flipped: on_ams_change never fired and the spool_assignment row stayed
-        # bound to a slot that is now empty (upstream #2670).
+        # while the raw payload's fields sit unchanged. A raw-based hash missed
+        # this removal and left the spool bound to the empty slot (upstream #2670).
+        # Include the filament family: support and ordinary PLA can have the
+        # same reported tray_type but require different slot types.
         #
         # merged_ams also always spans every unit, so a partial single-unit
         # update cannot hash differently from a full pushall carrying the same
@@ -5718,7 +5718,7 @@ class BambuMQTTClient:
                 # Include fields that matter for filament tracking
                 ams_hash_data.append(
                     f"{ams_unit.get('id')}:{tray.get('id')}:"
-                    f"{tray.get('tray_type')}:{tray.get('tag_uid')}:{tray.get('remain')}"
+                    f"{tray.get('tray_type')}:{tray.get('tag_uid')}:{tray.get('remain')}:{tray.get('tray_info_idx') or ''}"
                 )
         ams_hash = hashlib.md5(":".join(ams_hash_data).encode(), usedforsecurity=False).hexdigest()
 
@@ -5739,10 +5739,8 @@ class BambuMQTTClient:
                 self.on_spool_inserted(event)
 
         # Upstream #2582: read-back check runs on EVERY AMS push, not just hash
-        # changes. The change hash keys on tray_type/tag_uid/remain — NOT
-        # tray_info_idx or cali_idx — so an assignment that only swaps the
-        # filament id on an already-loaded slot would not flip the hash, and
-        # gating the check on it would miss exactly the confirmation we're after.
+        # changes. Calibration indices are outside the change hash, and a later
+        # identical report can confirm an assignment already echoed by the tray.
         if self._pending_assignments:
             self._check_assignment_verifications()
 

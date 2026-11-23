@@ -3665,7 +3665,8 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                     stale.append(assignment)
                 else:
                     cur_color = current_tray.get("tray_color", "")
-                    cur_type = support_slot_type(current_tray.get("tray_type"), current_tray.get("tray_info_idx"))
+                    raw_type = current_tray.get("tray_type") or ""
+                    cur_type = support_slot_type(raw_type, current_tray.get("tray_info_idx"))
                     cur_state = current_tray.get("state")
                     fp_color = assignment.fingerprint_color or ""
                     fp_type = assignment.fingerprint_type or ""
@@ -3748,7 +3749,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                     # AFTER the pre-config replay above: that branch fires on
                     # state==11 with a still-blank type and is about *gaining* a
                     # filament, not losing one.
-                    if slot_reported_no_filament(cur_type, cur_state):
+                    if slot_reported_no_filament(raw_type, cur_state):
                         logger.info(
                             "Auto-unlink skipped: spool %d AMS%d-T%d reported no filament type "
                             "(state=%s colour=%r fp=%s/%s) — absence is not a swap",
@@ -3762,7 +3763,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                         )
                         continue
 
-                    if not cur_type.strip():
+                    if not raw_type.strip():
                         # The firmware DID say the slot is empty — one of
                         # ``_FIRMWARE_EMPTY_STATES`` with cleared content is the
                         # only blank that gets past the guard above. Empty means

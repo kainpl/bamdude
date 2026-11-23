@@ -358,6 +358,9 @@
 
 - **Keep support filament types distinct in AMS slots and print matching.**
   Support for PLA and PA use the same PLA-S and PA-S types as Bambu Studio.
+  Custom profiles retain their declared material even if their names say
+  "Support". AMS keeps the spool link on incomplete reconnect reports and
+  detects a change from support PLA to ordinary PLA by its family ID.
   Offline preset choices use the corresponding Bambu family IDs.
 
 - **No more daily "Stock break risk" for a filament whose spools are all archived.** A colour whose last spool was used up and archived stays in the forecast for 90 days with no stock, so it was announced every day as "will run out before replenishment arrives — 0 g left", for every brand a farm had stopped buying, while kilograms of the same colour from another brand sat on the shelf. Such a filament is now silent while the same material, subtype and colour is on the shelf under another brand; otherwise it is announced once, as "Out of stock", in its own words (a new, editable template), to the same recipients a stock break reaches — and not repeated. Its forecast row stays as it was.

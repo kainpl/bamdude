@@ -128,3 +128,29 @@ async def test_support_family_requirements_keep_the_slicer_wire_types(db_session
         ],
     )
     assert [row["filament_type"] for row in rows] == ["PLA-S", "PA-S", "PLA"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("material", ["PLA", "PA", "PLA-S", "PA-S"])
+async def test_custom_family_keeps_its_declared_type_in_slot_and_3mf(db_session, material):
+    from backend.app.services.filament_intake import enrich_family_filament_rows
+
+    family_id = "P122e532"
+    db_session.add(
+        UserFilamentFamily(
+            filament_id=family_id,
+            ecosystem="bambu",
+            alias="PLA Support Interface Test",
+            vendor="test",
+            filament_type=material,
+            origin="cloud_bambu",
+        )
+    )
+    await db_session.commit()
+
+    plan = await build_slot_assignment(
+        db_session, family_id=family_id, printer_model="A1 Mini", supports_user_preset=True
+    )
+    rows = await enrich_family_filament_rows(db_session, [{"tray_info_idx": family_id, "filament_type": material}])
+
+    assert ((plan.tray_info_idx, plan.tray_type), rows[0]["filament_type"]) == ((family_id, material), material)

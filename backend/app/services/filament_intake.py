@@ -50,9 +50,7 @@ async def enrich_family_filament_rows(db, filaments: Iterable[dict]) -> list[dic
             declared_type.removesuffix("-S"), filament_type
         ):
             filament_type = declared_type
-        filament_type = support_slot_type(
-            filament_type, resolved.family.filament_id if resolved.family else None, preset_name=resolved.display_name
-        )
+        filament_type = support_slot_type(filament_type, resolved.family.filament_id if resolved.family else None)
         if not filament_type:
             enriched.append(filament)
             continue

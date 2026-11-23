@@ -16,8 +16,6 @@ of tidy.
 
 from __future__ import annotations
 
-import re
-
 # Types within a group are interchangeable on the printer side; Bambu Lab
 # firmware treats them as the same material. The first entry is canonical.
 #
@@ -71,15 +69,12 @@ _SUPPORT_BY_FAMILY = {
     "GFS05": "PLA-S",  # Support For PLA/PETG
 }
 SUPPORT_SLOT_TYPES = frozenset(_SUPPORT_BY_FAMILY.values())
-_SUPPORT_NAME = re.compile(r"\bsupport\b", re.IGNORECASE)
 
 
-def support_slot_type(material: str | None, family_id: str | None, *, preset_name: str | None = None) -> str:
-    """The wire type of a resolved support preset or a legacy tray reading."""
+def support_slot_type(material: str | None, family_id: str | None) -> str:
+    """Refine a reported base material using a known Bambu support family."""
     base = (material or "").strip().upper()
     known = _SUPPORT_BY_FAMILY.get((family_id or "").strip().upper())
-    if known and base in ("", known, known.removesuffix("-S")):
+    if known and base in (known, known.removesuffix("-S")):
         return known
-    if base in {"PLA", "PA"} and _SUPPORT_NAME.search(preset_name or ""):
-        return f"{base}-S"
     return material or ""
