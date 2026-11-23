@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, replace
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.user_filament import UserFilamentFamily, UserFilamentPreset
@@ -128,7 +128,13 @@ async def _resolve_mirror_row(db: AsyncSession, row: UserFilamentPreset) -> Reso
     return _UNKNOWN
 
 
-async def resolve_raw(db: AsyncSession, raw: str | None, *, owner_user_id: int | None = None) -> ResolvedFilament:
+async def resolve_raw(
+    db: AsyncSession,
+    raw: str | None,
+    *,
+    owner_user_id: int | None = None,
+    scope_cloud_presets: bool = False,
+) -> ResolvedFilament:
     """Decode the legacy union column: GF*/GFS* ids, PFUS*/uuid cloud ids,
     LocalPreset int PKs, bare material names — the ONE place the old formats
     are still understood. (owner_user_id narrows mirror hits when given.)"""
@@ -149,16 +155,20 @@ async def resolve_raw(db: AsyncSession, raw: str | None, *, owner_user_id: int |
 
     # 2) Mirrors: cloud id (PFUS… / Orca uuid) or local preset PK.
     query = select(UserFilamentPreset).where(UserFilamentPreset.cloud_id == base)
-    if owner_user_id is not None:
-        query = query.where(UserFilamentPreset.owner_user_id == owner_user_id)
-    row = (await db.execute(query)).scalars().first()
-    if row is None and value.isdigit():
-        row = (
-            (await db.execute(select(UserFilamentPreset).where(UserFilamentPreset.local_preset_id == int(value))))
-            .scalars()
-            .first()
+    if scope_cloud_presets:
+        owner = UserFilamentPreset.owner_user_id
+        query = query.where(or_(owner.is_(None), owner == owner_user_id)).order_by(
+            owner.is_(None), UserFilamentPreset.id
         )
-    if row is not None:
+    elif owner_user_id is not None:
+        query = query.where(UserFilamentPreset.owner_user_id == owner_user_id)
+    if not scope_cloud_presets:
+        query = query.limit(1)
+    rows = (await db.execute(query)).scalars().all()
+    if not rows and value.isdigit():
+        local_query = select(UserFilamentPreset).where(UserFilamentPreset.local_preset_id == int(value))
+        rows = (await db.execute(local_query)).scalars().all()
+    for row in rows:
         resolved = await _resolve_mirror_row(db, row)
         if resolved.family:
             return resolved
@@ -199,7 +209,14 @@ def bambu_preset_id(row: UserFilamentPreset) -> str | None:
     return None
 
 
-async def family_user_presets(db: AsyncSession, family_id: str) -> list[UserFilamentPreset]:
+async def family_user_presets(
+    db: AsyncSession,
+    family_id: str,
+    *,
+    owner_user_id: int | None = None,
+    owner_identity: str | None = None,
+    scope_cloud_presets: bool = False,
+) -> list[UserFilamentPreset]:
     """The user's own presets of a family that a printer can be told about, newest first.
 
     A spool's identity is its family (the spool form writes nothing finer), so
@@ -209,16 +226,27 @@ async def family_user_presets(db: AsyncSession, family_id: str) -> list[UserFila
     (:func:`bambu_preset_id`). Newest first so a duplicate for the same printer
     resolves to the one saved last, deterministically.
     """
-    rows = (
-        (await db.execute(select(UserFilamentPreset).where(UserFilamentPreset.family_filament_id == family_id)))
-        .scalars()
-        .all()
-    )
+    query = select(UserFilamentPreset).where(UserFilamentPreset.family_filament_id == family_id)
+    if scope_cloud_presets:
+        owner = UserFilamentPreset.owner_user_id
+        query = query.where(or_(owner.is_(None), owner == owner_user_id))
+        # A shared local preset's Bambu copy is private to its push owner.
+        copy_owner = UserFilamentPreset.bambu_pushed_owner_identity
+        query = query.where(
+            or_(UserFilamentPreset.source != "local", copy_owner.is_not(None) & (copy_owner == owner_identity))
+        )
+    rows = (await db.execute(query)).scalars().all()
     usable = [row for row in rows if bambu_preset_id(row) is not None]
-    return sorted(usable, key=lambda row: (row.updated_time or "", row.id), reverse=True)
+    return sorted(
+        usable,
+        key=lambda row: (scope_cloud_presets and row.owner_user_id is not None, row.updated_time or "", row.id),
+        reverse=True,
+    )
 
 
-async def resolve_spool(db: AsyncSession, spool) -> ResolvedFilament:
+async def resolve_spool(
+    db: AsyncSession, spool, *, owner_user_id: int | None = None, scope_cloud_presets: bool = False
+) -> ResolvedFilament:
     """Family link -> RFID -> legacy string (spec A §5.1 precedence)."""
     family_id = getattr(spool, "filament_family_id", None)
     if family_id:
@@ -230,4 +258,9 @@ async def resolve_spool(db: AsyncSession, spool) -> ResolvedFilament:
         resolved = await resolve_tray(db, rfid)
         if resolved.family:
             return resolved
-    return await resolve_raw(db, getattr(spool, "slicer_filament", None))
+    return await resolve_raw(
+        db,
+        getattr(spool, "slicer_filament", None),
+        owner_user_id=owner_user_id,
+        scope_cloud_presets=scope_cloud_presets,
+    )

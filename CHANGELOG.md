@@ -170,6 +170,10 @@
 
 ### Changed
 
+- **The cloud preset editor offers material types for your preferred slicer.**
+  Bambu Studio and OrcaSlicer have their own choices. An imported type stays
+  selected even if the other slicer's list omits it.
+
 - **AutoQueue shows filament types and exact colours for the channels the selected plate uses.** With **Drain the emptiest spool first** enabled, the lower known filament level breaks a tie between otherwise equally ranked printers.
 
 - **Returning a print to AutoQueue keeps its filament choices.** The preview shows changes to feed, matching rules and individual slots. The operator can carry those choices back to the existing AutoQueue job.
@@ -319,6 +323,14 @@
 ### Fixed
 
 - **Printer presets prioritize the farm model and nozzle.** If the selected source has no matching profile, the picker offers matching profiles from other sources and explains why. The current selection stays available. The farm-model filter matches configured models exactly. Filament lists keep the loaded-filament filter whenever a matching profile is available after relaxing the source filter.
+
+- **API-key spool assignments use the owner's allowed cloud preset.**
+  The owner is checked again when an empty slot is configured after insertion.
+  A local preset's Bambu Cloud copy is available to the account that pushed it.
+  An Orca Cloud preset can identify the filament family for a Bambu slot.
+  If the assignment has no usable private preset, it can use a shared preset
+  or the material's Generic profile. K-profile selection uses the family
+  selected for the slot before AMS backup compatibility is applied.
 
 - **Read the finish and color from Spoolman product names.** For example,
   Matte Scarlet Red shows Matte as the subtype and Scarlet Red as the color.

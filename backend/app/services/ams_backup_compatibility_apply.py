@@ -193,7 +193,9 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
             continue
         common = common_for(row.ams_id, row.tray_id)
         try:
-            actual = await build_slot_assignment(db, spool=spool, **common)
+            actual = await build_slot_assignment(
+                db, spool=spool, scope_cloud_presets=True, preset_owner_identity=row.preset_owner_identity, **common
+            )
         except ValueError as exc:
             logger.info("bulk projection: skipping AMS%d-T%d: %s", row.ams_id, row.tray_id, exc)
             continue

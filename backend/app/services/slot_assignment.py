@@ -19,8 +19,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+from backend.app.core.permissions import Permission
+from backend.app.models.user import User
 from backend.app.services.filament_identity import (
     bambu_preset_id,
     family_user_presets,
@@ -194,7 +198,21 @@ async def build_slot_assignment(
     color_rgba: str = "FFFFFFFF",
     extra_colors: str | None = None,
     temp_overrides: tuple[int | None, int | None] = (None, None),
+    scope_cloud_presets: bool = False,
+    preset_owner_identity: str | None = None,
 ) -> SlotAssignmentPlan:
+    owner_user_id = None
+    owner_identity = None
+    if scope_cloud_presets and preset_owner_identity:
+        owner = await db.scalar(
+            select(User)
+            .where(User.account_identity == preset_owner_identity, User.is_active.is_(True))
+            .options(selectinload(User.groups))
+        )
+        if owner is not None and owner.has_permission(Permission.CLOUD_AUTH.value):
+            owner_user_id = owner.id
+            owner_identity = owner.account_identity
+
     warnings: list[str] = []
     degraded: str | None = None
     # What the caller NAMED, before any resolution — to tell "named and not
@@ -206,7 +224,7 @@ async def build_slot_assignment(
         # The spool's own resolution is used AS the resolved identity — it may
         # carry the mirrored cloud preset's setting_id and temps, which a
         # re-resolution through the bare family id would lose.
-        resolved = await resolve_spool(db, spool)
+        resolved = await resolve_spool(db, spool, owner_user_id=owner_user_id, scope_cloud_presets=scope_cloud_presets)
         family_id = resolved.family.filament_id if resolved.family else None
         material_override = material_override or getattr(spool, "material", None)
         color_rgba = getattr(spool, "rgba", None) or color_rgba
@@ -228,7 +246,9 @@ async def build_slot_assignment(
     # (PLA Basic on a spool that is now PETG) would tell the slot PLA.
     from_stored_preset = False
     if (resolved is None or not resolved.family) and stored_preset:
-        candidate = await resolve_raw(db, stored_preset)
+        candidate = await resolve_raw(
+            db, stored_preset, owner_user_id=owner_user_id, scope_cloud_presets=scope_cloud_presets
+        )
         if candidate.family and _preset_is_of_material(
             support_slot_type(candidate.filament_type, candidate.family.filament_id),
             material_override,
@@ -290,17 +310,43 @@ async def build_slot_assignment(
     user_preset = temps_preset = None
     if supports_user_preset and not preset_setting_id and catalog.get_family(family_id) is None:
         user_preset, temps_preset = _user_presets_for_printer(
-            await family_user_presets(db, family_id), printer_model, nozzle_diameter
+            await family_user_presets(
+                db,
+                family_id,
+                owner_user_id=owner_user_id,
+                owner_identity=owner_identity,
+                scope_cloud_presets=scope_cloud_presets,
+            ),
+            printer_model,
+            nozzle_diameter,
         )
 
+    # Orca Cloud mirrors can identify the material family but their UUIDs
+    # cannot name a Bambu preset. A replacement family needs its own preset.
+    resolved_setting_id = (
+        resolved.setting_id if resolved and resolved.origin in ("system", "cloud_bambu") and degraded is None else None
+    )
+    if (
+        scope_cloud_presets
+        and family_id.startswith("P")
+        and not (preset_setting_id or user_preset or resolved_setting_id)
+    ):
+        stand_in, fam_type = _stand_in(fam_type or material_override or "")
+        if stand_in is None:
+            raise ValueError(f"no available preset or fallback for family {family_id!r}")
+        warnings.append(f"no available preset for {family_id}; using {stand_in.filament_id} for {fam_type!r}")
+        degraded = "family_unresolved"
+        family_id = stand_in.filament_id
+        preset = _pick_preset(family_id, candidates)
+        resolved = temps_preset = None
+
     # setting_id precedence: an explicit request > the user's own preset made
-    # for this printer > the identity's own (a mirrored cloud preset keeps its
-    # PFUS/uuid — the #1815 guarantee) > the catalog preset picked for this
-    # printer.
+    # for this printer > the identity's Bambu setting (including a mirrored
+    # PFUS, #1815) > the catalog preset picked for this printer.
     setting_id = (
         (preset_setting_id or None)
         or (bambu_preset_id(user_preset) if user_preset is not None else None)
-        or (resolved.setting_id if resolved else None)
+        or resolved_setting_id
         or (preset.setting_id if preset else None)
         or ""
     )

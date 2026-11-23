@@ -27,6 +27,240 @@ from backend.app.models.spool import Spool
 from backend.app.models.user_filament import UserFilamentPreset
 
 
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("cloud_access", "has_mirror", "deferred", "expected_family"),
+    [
+        (True, True, False, "GFA00"),
+        (True, False, False, "GFL99"),
+        (False, True, False, "GFL99"),
+        (True, True, "loaded-later", "GFA00"),
+        (True, True, "owner-disabled", "GFL99"),
+    ],
+    ids=["own", "foreign-only", "cloud-scope-off", "replay", "inactive-owner-replay"],
+)
+async def test_api_key_assignment_uses_only_the_owners_cloud_preset(
+    async_client, printer_factory, spool_factory, db_session, cloud_access, has_mirror, deferred, expected_family
+):
+    from backend.app.core.permissions import Permission
+    from backend.app.main import on_ams_change
+    from backend.tests.integration.test_api_key_owner_authority import _key, _user
+
+    owner = await _user(db_session, "slot-owner", [Permission.INVENTORY_UPDATE.value, Permission.CLOUD_AUTH.value])
+    other = await _user(db_session, "other-mirror-owner", [Permission.CLOUD_AUTH.value])
+    printer = await printer_factory(name="P1S", model="P1S")
+    raw, _ = await _key(
+        db_session, owner=owner, can_manage_inventory=True, can_access_cloud=cloud_access, printer_ids=[printer.id]
+    )
+    preset_id = "PFUS_c29_test"
+    spool = await spool_factory(slicer_filament=preset_id, material="PLA")
+    for user_id, family in [(other.id, "GFL05"), *([(owner.id, "GFA00")] if has_mirror else [])]:
+        db_session.add(
+            UserFilamentPreset(
+                owner_user_id=user_id,
+                ecosystem="bambu",
+                source="cloud_bambu",
+                cloud_id=preset_id,
+                name="Cloud PLA",
+                family_filament_id=family,
+                filament_type="PLA",
+            )
+        )
+    await db_session.commit()
+
+    loaded = [{"id": 0, "tray": [{"id": 0, "state": 11, "tray_type": "PLA", "tray_color": "FF0000FF"}]}]
+    empty = [{"id": 0, "tray": [{"id": 0, "state": 9, "tray_type": ""}]}]
+    mqtt = MagicMock()
+    mqtt.ams_set_filament_setting.return_value = True
+    with (
+        patch("backend.app.services.printer_manager.printer_manager") as pm,
+        patch("backend.app.main.printer_manager", new=MagicMock()) as main_pm,
+        patch("backend.app.main.mqtt_relay.on_ams_change", new=AsyncMock()),
+        patch("backend.app.main.ws_manager.send_printer_status", new=AsyncMock()),
+        patch("backend.app.main.ws_manager.broadcast", new=AsyncMock()),
+    ):
+        pm.get_client.return_value = main_pm.get_client.return_value = mqtt
+        pm.get_model.return_value = main_pm.get_model.return_value = "P1S"
+        pm.get_status.return_value = _make_mock_status(ams_data=empty if deferred else loaded)
+        pm.get_status.return_value.state = "IDLE"
+        response = await async_client.post(
+            "/api/v1/inventory/assignments",
+            headers={"X-API-Key": raw},
+            json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 0, "tray_id": 0},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["pending_config"] is bool(deferred)
+
+        if deferred:
+            mqtt.ams_set_filament_setting.assert_not_called()
+            if deferred == "owner-disabled":
+                owner.is_active = False
+                await db_session.commit()
+            pm.get_status.return_value = main_pm.get_status.return_value = _make_mock_status(ams_data=loaded)
+            pm.get_status.return_value.state = "IDLE"
+            await on_ams_change(printer.id, loaded)
+
+    mqtt.ams_set_filament_setting.assert_called_once()
+    sent = mqtt.ams_set_filament_setting.call_args.kwargs
+    assert sent["tray_info_idx"] == expected_family
+    if expected_family == "GFA00":
+        assert sent["setting_id"] == preset_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("case", "expected_family", "expected_setting"),
+    [
+        ("pushed-own", "P122e532", "PFUS_slot_local"),
+        ("pushed-foreign", "GFL99", "GFSL99"),
+        ("pushed-unknown", "GFL99", "GFSL99"),
+        ("pushed-cloud-scope-off", "GFL99", "GFSL99"),
+        ("pushed-owner-disabled-on-replay", "GFL99", "GFSL99"),
+        ("own-calibration", "GFA00", "PFUS_slot_cloud"),
+        ("custom-family-missing-preset", "GFL99", "GFSL99"),
+        ("shared-after-unusable", "GFA00", "PFUS_slot_cloud"),
+        ("orca-only", "GFL99", "GFSL99"),
+        ("orca-with-bambu", "P122e532", "PFUS_slot_cloud"),
+        ("orca-system-family", "GFA00", "GFSA00_34"),
+        ("bambu-unsupported", "GFL99", "GFSL99"),
+    ],
+)
+async def test_api_key_assignment_publishes_an_authorized_preset_and_uses_its_family(
+    async_client, printer_factory, spool_factory, db_session, case, expected_family, expected_setting
+):
+    from backend.app.core.permissions import Permission
+    from backend.app.main import on_ams_change
+    from backend.app.models.user_filament import UserFilamentFamily
+    from backend.tests.integration.test_api_key_owner_authority import _key, _user
+
+    owner = await _user(
+        db_session,
+        "slot-review-owner",
+        [Permission.INVENTORY_UPDATE.value, Permission.CLOUD_AUTH.value, Permission.ORCA_CLOUD_AUTH.value],
+    )
+    other = await _user(db_session, "slot-review-peer", [Permission.CLOUD_AUTH.value])
+    printer = await printer_factory(name="P1S", model="P1S")
+    raw, _ = await _key(
+        db_session,
+        owner=owner,
+        can_manage_inventory=True,
+        can_access_cloud=case != "pushed-cloud-scope-off",
+        printer_ids=[printer.id],
+    )
+    custom_family = "P122e532"
+    cloud_setting = "PFUS_slot_cloud"
+    stored_setting = cloud_setting
+    family_id = custom_family if case.startswith("pushed-") or case == "custom-family-missing-preset" else None
+
+    def add_mirror(user_id, family):
+        db_session.add(
+            UserFilamentPreset(
+                owner_user_id=user_id,
+                ecosystem="bambu",
+                source="cloud_bambu",
+                cloud_id=cloud_setting,
+                name="Cloud PLA @BBL P1S",
+                family_filament_id=family,
+                filament_type="PLA",
+            )
+        )
+
+    if family_id or case in {"orca-only", "orca-with-bambu", "bambu-unsupported"}:
+        db_session.add(
+            UserFilamentFamily(
+                filament_id=custom_family, ecosystem="orca", alias="Custom PLA", filament_type="PLA", origin="local"
+            )
+        )
+    if case.startswith("orca-"):
+        stored_setting = "2202bc2b-2bba-4fcb-a4d4-681fd391f11f"
+        db_session.add(
+            UserFilamentPreset(
+                owner_user_id=owner.id,
+                ecosystem="orca",
+                source="cloud_orca",
+                cloud_id=stored_setting,
+                name="Orca PLA",
+                family_filament_id="GFA00" if case == "orca-system-family" else custom_family,
+                filament_type="PLA",
+            )
+        )
+        if case == "orca-with-bambu":
+            add_mirror(owner.id, custom_family)
+    elif case.startswith("pushed-"):
+        pushed_identity = {
+            "pushed-foreign": other.account_identity,
+            "pushed-unknown": None,
+        }.get(case, owner.account_identity)
+        db_session.add(
+            UserFilamentPreset(
+                ecosystem="orca",
+                source="local",
+                name="Local PLA @Bambu Lab P1S 0.4 nozzle",
+                family_filament_id=family_id,
+                filament_type="PLA",
+                pushed_cloud_id="PFUS_slot_local",
+                bambu_pushed_owner_identity=pushed_identity,
+            )
+        )
+    elif case == "custom-family-missing-preset":
+        add_mirror(other.id, custom_family)
+    elif case == "bambu-unsupported":
+        add_mirror(owner.id, custom_family)
+    elif case == "own-calibration":
+        add_mirror(other.id, "GFL05")
+        await db_session.flush()
+        add_mirror(owner.id, "GFA00")
+    else:
+        add_mirror(owner.id, None)
+        add_mirror(None, "GFA00")
+    await db_session.commit()
+
+    spool = await spool_factory(slicer_filament=stored_setting, filament_family_id=family_id, material="PLA")
+    deferred = case == "pushed-owner-disabled-on-replay"
+    loaded = [{"id": 0, "tray": [{"id": 0, "state": 11, "tray_type": "PLA", "tray_color": "FF0000FF"}]}]
+    empty = [{"id": 0, "tray": [{"id": 0, "state": 9, "tray_type": ""}]}]
+    mqtt = MagicMock()
+    mqtt.ams_set_filament_setting.return_value = True
+    with (
+        patch("backend.app.services.printer_manager.printer_manager") as pm,
+        patch("backend.app.main.printer_manager", new=MagicMock()) as main_pm,
+        patch("backend.app.main.mqtt_relay.on_ams_change", new=AsyncMock()),
+        patch("backend.app.main.ws_manager.send_printer_status", new=AsyncMock()),
+        patch("backend.app.main.ws_manager.broadcast", new=AsyncMock()),
+        patch(
+            "backend.app.services.calibration_service.apply_active_calibration_to_slot", new_callable=AsyncMock
+        ) as calibration,
+    ):
+        pm.get_client.return_value = main_pm.get_client.return_value = mqtt
+        pm.get_model.return_value = main_pm.get_model.return_value = "P1S"
+        pm.get_status.return_value = _make_mock_status(ams_data=empty if deferred else loaded)
+        pm.get_status.return_value.state = "IDLE"
+        pm.get_status.return_value.support_user_preset = case != "bambu-unsupported"
+        response = await async_client.post(
+            "/api/v1/inventory/assignments",
+            headers={"X-API-Key": raw},
+            json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 0, "tray_id": 0},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["pending_config"] is deferred
+        if deferred:
+            mqtt.ams_set_filament_setting.assert_not_called()
+            owner.is_active = False
+            await db_session.commit()
+            pm.get_status.return_value = main_pm.get_status.return_value = _make_mock_status(ams_data=loaded)
+            pm.get_status.return_value.state = "IDLE"
+            pm.get_status.return_value.support_user_preset = True
+            await on_ams_change(printer.id, loaded)
+
+    mqtt.ams_set_filament_setting.assert_called_once()
+    sent = mqtt.ams_set_filament_setting.call_args.kwargs
+    assert (sent["tray_info_idx"], sent["setting_id"]) == (expected_family, expected_setting)
+    calibration.assert_awaited_once()
+    assert calibration.await_args.kwargs["filament_id"] == sent["tray_info_idx"]
+
+
 class _PrinterManagerPatch:
     def __init__(self, target, **kwargs):
         self._patcher = _orig_patch(target, **kwargs)
