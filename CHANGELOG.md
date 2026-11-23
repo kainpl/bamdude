@@ -326,6 +326,7 @@
   card shows the regular AMS and AMS Lite together and keeps their other
   slots when a report updates one slot. External spool configuration on A1
   and A1 mini confirms the preset from the external slot's status report.
+  A report for one H2D external holder keeps the other visible.
 
 - **Printer presets prioritize the farm model and nozzle.** If the selected source has no matching profile, the picker offers matching profiles from other sources and explains why. The current selection stays available. The farm-model filter matches configured models exactly. Filament lists keep the loaded-filament filter whenever a matching profile is available after relaxing the source filter.
 

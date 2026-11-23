@@ -1092,7 +1092,7 @@ def apply_tray_exist_bits(
     return cleared
 
 
-def _merge_vt_tray(existing: object, incoming: list) -> list:
+def _merge_vt_tray(existing: object, incoming: list, *, preserve_other_slots: bool = False) -> list:
     """Overlay an external-spool report onto what we already know, per slot.
 
     The AMS trays next door have always been merged field-by-field; ``vt_tray``
@@ -1173,6 +1173,10 @@ def _merge_vt_tray(existing: object, incoming: list) -> list:
                 continue
             combined[field_name] = value
         merged.append(combined)
+    if preserve_other_slots and merged and all(_slot_key(entry) is not None for entry in merged):
+        # An addressed vir_slot delta may mention just one of the two holders.
+        previous.update((str(entry["id"]), entry) for entry in merged)
+        return sorted(previous.values(), key=_ams_address_key)
     return merged
 
 
@@ -3896,17 +3900,16 @@ class BambuMQTTClient:
             if "vir_slot" in print_data:
                 vir_slot = print_data["vir_slot"]
                 if isinstance(vir_slot, list) and vir_slot:
+                    dual_nozzle = self._is_dual_nozzle or is_dual_nozzle_model(self.model)
                     # Fix: single-nozzle printers (X1C, P1S, A1) report their single
                     # external slot with id=255 in vir_slot, but tray_now=254 when active.
                     # Remap id=255→254 for single-slot printers so active detection works.
                     # Dual-nozzle (H2D) has 2 slots: id=254 (Ext-L) and id=255 (Ext-R).
-                    if (
-                        len(vir_slot) == 1
-                        and str(vir_slot[0].get("id", "")) == "255"
-                        and not (self._is_dual_nozzle or is_dual_nozzle_model(self.model))
-                    ):
+                    if len(vir_slot) == 1 and str(vir_slot[0].get("id", "")) == "255" and not dual_nozzle:
                         vir_slot[0]["id"] = "254"
-                    self.state.raw_data["vt_tray"] = _merge_vt_tray(self.state.raw_data.get("vt_tray"), vir_slot)
+                    self.state.raw_data["vt_tray"] = _merge_vt_tray(
+                        self.state.raw_data.get("vt_tray"), vir_slot, preserve_other_slots=dual_nozzle
+                    )
                     external_trays = vir_slot
 
             # Handle vt_tray (virtual tray / external spool) data

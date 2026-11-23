@@ -7,6 +7,10 @@ import pytest
 
 from backend.app.services.bambu_mqtt import BambuMQTTClient
 from backend.app.services.printer_diagnostic import _external_storage_check
+from backend.app.services.printer_manager import vt_trays_for
+
+_H2D_LEFT = {"id": 254, "tray_type": "PETG", "tray_info_idx": "GFG99", "tray_color": "28C780FF"}
+_H2D_RIGHT = {"id": 255, "tray_type": "PLA", "tray_info_idx": "GFL99", "tray_color": "000000FF"}
 
 
 def _client(model):
@@ -67,22 +71,41 @@ def test_external_readback_ignores_cached_id_and_command_echo():
     verified.assert_called_once_with(255, 0, True, {"tray_info_idx": "GFA00", "kprofile_applied": True})
 
 
-def test_a_right_external_slot_report_cannot_confirm_the_left_slot():
+@pytest.mark.parametrize("reported_id", [254, 255], ids=["left", "right"])
+def test_addressed_external_report_keeps_the_other_holder_and_does_not_confirm_it(reported_id):
     client = _client("H2D")
-    left = {"id": 254, "tray_info_idx": "GFA00"}
-    right = {"id": 255, "tray_info_idx": "GFA00"}
-    _status(client, vir_slot=[left, right])
+    _status(client, vir_slot=[dict(_H2D_LEFT), dict(_H2D_RIGHT)])
     verified = Mock()
     client.on_assignment_verified = verified
-    for tray_id in (0, 1):
-        client.register_assignment_verification(255, tray_id, "GFA00", "FFFFFFFF", None)
+    reported_side = reported_id - 254
+    other = _H2D_RIGHT if reported_side == 0 else _H2D_LEFT
+    client.register_assignment_verification(255, reported_side, "GFA00", "FFFFFFFF", None)
+    client.register_assignment_verification(255, 1 - reported_side, other["tray_info_idx"], other["tray_color"], None)
 
     _status(client, vt_tray=[{"tray_info_idx": "GFA00"}])
     verified.assert_not_called()
 
-    _status(client, vir_slot=[right])
-    verified.assert_called_once_with(255, 1, True, {"tray_info_idx": "GFA00", "kprofile_applied": True})
-    assert (255, 0) in client._pending_assignments
+    _status(client, vir_slot=[{"id": reported_id, "tray_info_idx": "GFA00", "tray_color": "FFFFFFFF"}])
+    verified.assert_called_once_with(255, reported_side, True, {"tray_info_idx": "GFA00", "kprofile_applied": True})
+    assert set(client._pending_assignments) == {(255, 1 - reported_side)}
+    projected = vt_trays_for(client.state)
+    assert [tray.id for tray in projected] == [254, 255]
+    unchanged = projected[1 - reported_side]
+    assert (unchanged.tray_type, unchanged.tray_info_idx, unchanged.tray_color) == (
+        other["tray_type"],
+        other["tray_info_idx"],
+        other["tray_color"],
+    )
+
+
+def test_an_explicit_external_holder_clear_keeps_the_neighbour():
+    client = _client("H2D")
+    _status(client, vir_slot=[dict(_H2D_LEFT), dict(_H2D_RIGHT)])
+    clear = {"id": 254, "tray_type": "", "tray_color": "", "tray_info_idx": ""}
+
+    _status(client, vir_slot=[clear])
+
+    assert client.state.raw_data["vt_tray"] == [clear, _H2D_RIGHT]
 
 
 def _mixed_status(client, lite_id):
