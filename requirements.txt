@@ -97,7 +97,9 @@ mapbox-earcut>=1.0.0
 # writes the Bambu project 3MF. Our own library (kainpl/platenest, AGPL-3.0); needs
 # only numpy and opencv-python-headless, both already here. Pinned exactly because
 # BamDude writes files with it and reads them back for re-layout.
-platenest[optimize] @ https://github.com/UVCXanth/platenest/archive/bb878c3014baa33c811e3835889560d15f9c6ba0.tar.gz
+# Temporary immutable review build; replace with the exact maintained release
+# after kainpl/platenest#3 is merged and published (maintainer release step).
+platenest[optimize] @ https://github.com/UVCXanth/platenest/archive/94898d553cc521f09f6d8382f68ba95bd7826846.tar.gz
 matplotlib>=3.8.0
 fast-simplification>=0.1.0
 # trimesh's 3MF loader imports lxml lazily inside the 3MF code path (model.xml

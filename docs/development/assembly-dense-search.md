@@ -1,7 +1,8 @@
 # Optional dense assembly search
 
-`layout.long_search` defaults to false. New UI forms select rotation step `-1`
-(arbitrary Z angles); API clients omitting the step still get 90 degrees.
+`layout.long_search` defaults to false. Fresh UI forms and API requests omitting
+the step both use 90 degrees. Finer steps and `-1` (arbitrary Z angles during
+long search) remain explicit choices; stored project values are preserved.
 Old version-1 assembly records without the new flag remain readable.
 
 The existing assembly child owns the search, under the existing process,

@@ -163,7 +163,8 @@ def _pack_printer(
 
     def progress(p) -> None:
         now = time.monotonic()
-        if now - last[0] < _PROGRESS_SECONDS:
+        diagnostic = getattr(p, "diagnostic", None)
+        if now - last[0] < _PROGRESS_SECONDS and not diagnostic:
             return
         last[0] = now
         payload = {
@@ -179,6 +180,8 @@ def _pack_printer(
                 search_attempt=p.attempt,
                 search_engine=1 if p.engine == "sparrow" else 0,
             )
+            if diagnostic:
+                payload["search_diagnostic"] = diagnostic
         else:
             payload.update(run=p.run, runs=p.runs, placed=p.placed, total=p.total, fill_part=p.fill_part)
         try:

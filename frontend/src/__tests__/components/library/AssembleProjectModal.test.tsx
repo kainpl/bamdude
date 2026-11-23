@@ -92,11 +92,52 @@ const part = (index: number) => screen.getByTestId(`assemble-part-${index}`);
 const target = (index: number) => screen.getByTestId(`assemble-target-${index}`);
 
 describe('long layout search', () => {
+  it('finishes two explicitly submitted searches after editing, each by its own job ID', async () => {
+    let nextId = 31;
+    const finishes: number[] = [];
+    const done = new Set<number>();
+    server.use(
+      http.post('/api/v1/library/assemble', async ({ request }) => {
+        const id = nextId++;
+        posted.push({ url: '/api/v1/library/assemble', body: await request.json() as Record<string, unknown> });
+        return HttpResponse.json({ job_id: id, status: 'pending', status_url: `/api/v1/slice-jobs/${id}` }, { status: 202 });
+      }),
+      http.get('/api/v1/slice-jobs/:id', ({ params }) => HttpResponse.json({
+        job_id: Number(params.id), kind: 'assembly', status: done.has(Number(params.id)) ? 'completed' : 'running',
+        progress: { stage: 'packing', printer_index: 0, printer_count: 1, search_best_plates: 1, search_best_copies: 4 },
+        result: done.has(Number(params.id)) ? okResult() : null,
+      })),
+      http.post('/api/v1/slice-jobs/:id/finish-search', ({ params }) => {
+        finishes.push(Number(params.id)); done.add(Number(params.id));
+        return new HttpResponse(null, { status: 204 });
+      }),
+      http.delete('/api/v1/slice-jobs/:id', () => { cancelled += 1; return new HttpResponse(null, { status: 204 }); }),
+    );
+    open();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Assemble' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Search for a denser layout — up to 5 minutes' }));
+    for (const id of [31, 32]) {
+      fireEvent.click(screen.getByRole('button', { name: 'Assemble' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Stop searching and use the best layout' }));
+      await screen.findByTestId('assemble-summary', {}, { timeout: 5_000 });
+      expect(finishes).toEqual(id === 31 ? [31] : [31, 32]);
+      if (id === 31) {
+        fireEvent.click(screen.getByRole('button', { name: 'Edit and try again' }));
+        await screen.findByTestId('assemble-part-0');
+        expect(posted).toHaveLength(1);
+        fireEvent.change(screen.getByLabelText('Gap between parts, mm'), { target: { value: '3' } });
+      }
+    }
+    expect(posted).toHaveLength(2);
+    expect(cancelled).toBe(0);
+  }, 15_000);
+
   it('offers the visible opt-in and sends any-angle search explicitly', async () => {
     open();
     const dialog = await screen.findByRole('dialog', { name: 'Assemble project' });
     const checkbox = await within(dialog).findByRole('checkbox', { name: 'Search for a denser layout — up to 5 minutes' });
     expect(checkbox).not.toBeChecked();
+    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Rotation of parts on the plate' }), { target: { value: '-1' } });
     fireEvent.click(checkbox);
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Assemble' })).toBeEnabled());
     fireEvent.click(within(dialog).getByRole('button', { name: 'Assemble' }));
@@ -221,7 +262,7 @@ describe('AssembleProjectModal', () => {
           nozzle: 1,
         },
       ],
-      layout: { spacing: 3, rotation_step: -1, centre: true, split_plates: true },
+      layout: { spacing: 3, rotation_step: 90, centre: true, split_plates: true },
       name: 'jar +1',
     });
     expect(within(summary).getByText('The project is assembled.')).toBeInTheDocument();

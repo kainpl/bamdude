@@ -83,7 +83,7 @@ export function initialForm(files: { id: number; filename: string }[]): Assemble
     })),
     targets: [emptyTarget()],
     spacing: '2',
-    rotationStep: -1,
+    rotationStep: 90,
     centre: true,
     splitPlates: false,
     trashPrevious: true,

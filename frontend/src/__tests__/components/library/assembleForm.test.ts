@@ -47,7 +47,8 @@ describe('assembleForm', () => {
     ]);
     expect(form.targets).toHaveLength(1);
     expect(form.targets[0]).toMatchObject({ printer: null, process: null, filament: null, nozzle: 1 });
-    expect(form).toMatchObject({ spacing: '2', rotationStep: -1, centre: true, splitPlates: false, longSearch: false });
+    expect(form).toMatchObject({ spacing: '2', rotationStep: 90, centre: true, splitPlates: false, longSearch: false });
+    expect(toRequest(ready()).layout).toMatchObject({ rotation_step: 90 });
   });
 
   it('refuses what the server would refuse, by field', () => {
@@ -93,7 +94,7 @@ describe('assembleForm', () => {
         { file_id: 9, quantity: 1, fill: true, orientation: 'x+90' },
       ],
       targets: [{ printer_preset: ref('1'), process_preset: ref('2'), filament_preset: ref('3'), nozzle: 2 }],
-      layout: { spacing: 1.5, rotation_step: -1, centre: true, split_plates: true },
+      layout: { spacing: 1.5, rotation_step: 90, centre: true, split_plates: true },
       name: 'jars',
     });
   });
