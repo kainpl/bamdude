@@ -479,6 +479,10 @@ async def test_copy_with_an_unregistered_preset_field_does_not_create_spools(
         ("Silk+ Baby Blue", "Silk+", "Baby Blue"),
         ("Gold - Basic PLA", "Basic", "Gold"),
         ("PLA Dual Color Red/Blue", "Dual Color", "Red/Blue"),
+        ("PLA Aero White", "Aero", "White"),
+        ("PLA Lite Jade White", "Lite", "Jade White"),
+        ("PLA High Speed Black", "High Speed", "Black"),
+        ("PLA Dual   Color Red/Blue", "Dual Color", "Red/Blue"),
         ("PLA Engineering", "Engineering", "Engineering"),
     ],
 )

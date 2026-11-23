@@ -310,10 +310,10 @@ def parse_spoolman_multi_colors(filament: dict) -> list[str]:
 # Longer finishes take precedence over their component words. A trailing
 # plus is part of product names such as Silk+.
 _FINISH_WORDS = "|".join(
-    re.escape(word)
+    r"\s+".join(re.escape(part) for part in word.split())
     for word in sorted(
         {name.replace("-", " ") for name in EFFECT_TYPES}
-        | {"basic", "tough", "hf", "high flow", "transparent", "clear"},
+        | {"aero", "basic", "clear", "hf", "high flow", "high speed", "lite", "tough", "transparent"},
         key=lambda word: (-len(word), word),
     )
 )
@@ -327,7 +327,7 @@ def split_filament_product_name(material: str, name: str) -> tuple[str | None, s
     if material:
         token = rf"(?<![\w+-]){re.escape(material)}(?![\w+-])"
         remainder = re.sub(token, " ", remainder, count=1, flags=re.IGNORECASE).strip(_NAME_SEPARATORS)
-    finishes = [match.group() for match in _PRODUCT_FINISH.finditer(remainder)]
+    finishes = [" ".join(match.group().split()) for match in _PRODUCT_FINISH.finditer(remainder)]
     if finishes:
         color = " ".join(_PRODUCT_FINISH.sub(" ", remainder).split()).strip(_NAME_SEPARATORS)
         return " ".join(finishes), color or None

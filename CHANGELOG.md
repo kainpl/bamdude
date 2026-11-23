@@ -316,6 +316,8 @@
 
 - **Read the finish and color from Spoolman product names.** For example,
   Matte Scarlet Red shows Matte as the subtype and Scarlet Red as the color.
+  This includes Aero, Lite and High Speed, even with extra spaces between
+  the words of a finish.
   Editing a spool keeps its catalog name when the material and subtype stay the same.
 
 - **Empty Bambu Cloud preset categories no longer break Slice or Cloud
