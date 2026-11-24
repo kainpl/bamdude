@@ -17,6 +17,7 @@ from typing import Any
 from backend.app.models.spool import Spool
 from backend.app.services.label_barcode import BarcodeError, spool_ean13
 from backend.app.services.label_template import PLACEHOLDERS
+from backend.app.services.spool_label_identity import local_spool_label_link
 from backend.app.services.spoolman_weights import spool_net_weight, spool_price_per_gram
 
 
@@ -131,7 +132,7 @@ def spool_context(
         "lot": str(spool.lot) if spool.lot is not None else "",
         "material_number": getattr(spool, "material_number", None) or "",
         "display_name": name or (spool.material or ""),
-        "deeplink": f"{deeplink_base}/inventory?spool={spool.id}",
+        "deeplink": local_spool_label_link(deeplink_base, spool.id, getattr(spool, "label_identity", None)),
         "ean": ean,
         "storage_location": getattr(spool, "storage_location", None) or "",
         # The spool's OWN range — what its form holds. A family's or a preset's

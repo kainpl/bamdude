@@ -4,7 +4,7 @@ import json
 import logging
 import math
 from datetime import date, datetime, timedelta, timezone
-from typing import Literal
+from typing import Annotated, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
@@ -92,6 +92,12 @@ from backend.app.services.spool_csv import (
     ImportResult,
     parse_and_validate,
     serialize,
+)
+from backend.app.services.spool_label_identity import (
+    LABEL_KEY_PATTERN,
+    SpoolLabelChangedError,
+    lock_spool_for_label,
+    matches_label_key,
 )
 from backend.app.services.spoolman import SpoolmanClient, get_spoolman_client, init_spoolman_client
 from backend.app.services.tag_conflict import tag_already_linked
@@ -2111,15 +2117,32 @@ async def auto_stock_groups(
     return await available_groups(db)
 
 
+def _spool_label_changed() -> HTTPException:
+    return HTTPException(
+        409,
+        detail={
+            "error": "spool_label_changed",
+            "message": "This label no longer matches an active spool.",
+        },
+    )
+
+
 @router.get("/spools/{spool_id}", response_model=SpoolResponse)
 async def get_spool(
     spool_id: int,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
+    label_key: Annotated[str | None, Query(pattern=LABEL_KEY_PATTERN)] = None,
 ):
     """Get a single spool with k_profiles."""
+    if label_key is not None:
+        await _refuse_in_spoolman_mode(db)
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == spool_id))
     spool = result.scalar_one_or_none()
+    if label_key is not None and (
+        spool is None or spool.archived_at or not matches_label_key(spool_id, spool.label_identity, label_key)
+    ):
+        raise _spool_label_changed()
     if not spool:
         raise HTTPException(404, "Spool not found")
     return spool
@@ -2437,10 +2460,16 @@ async def update_spool(
     spool_data: SpoolUpdate,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+    label_key: Annotated[str | None, Query(pattern=LABEL_KEY_PATTERN)] = None,
 ):
     """Update a spool."""
     try:
+        if label_key is not None:
+            await _refuse_in_spoolman_mode(db)
+            await lock_spool_for_label(db, spool_id, label_key)
         return await inventory_service.update_spool(db, spool_id, spool_data)
+    except SpoolLabelChangedError:
+        raise _spool_label_changed() from None
     except inventory_service.SpoolNotFoundError:
         raise HTTPException(404, "Spool not found") from None
     except ValueError as exc:
@@ -2986,6 +3015,11 @@ async def _assign_spool(
     )
 
     # 1. Validate spool exists and is not archived
+    if data.label_key is not None:
+        try:
+            await lock_spool_for_label(db, data.spool_id, data.label_key)
+        except SpoolLabelChangedError:
+            raise _spool_label_changed() from None
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == data.spool_id))
     spool = result.scalar_one_or_none()
     if not spool:

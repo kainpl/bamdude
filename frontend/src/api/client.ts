@@ -13843,7 +13843,8 @@ export const api = {
   /** The stats bar, aggregated server-side (task 5). Farm-wide and
    *  unfiltered — the memo it replaced read the whole feed, not the filter. */
   getInventoryStats: () => request<InventoryStats>('/inventory/stats'),
-  getSpool: (id: number) => request<InventorySpool>(`/inventory/spools/${id}`),
+  getSpool: (id: number, labelKey?: string) =>
+    request<InventorySpool>(`/inventory/spools/${id}${labelKey ? `?label_key=${encodeURIComponent(labelKey)}` : ''}`),
   // ── CSV import/export (#1576) ────────────────────────────────────────────
   // dry_run=true → preview (no write); omitted → real import. Both share one
   // multipart upload helper; see `uploadSpoolsCsv` above.
@@ -13915,8 +13916,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ spool_ids: spoolIds }),
     }),
-  updateSpool: (id: number, data: Partial<Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'>>) =>
-    request<InventorySpool>(`/inventory/spools/${id}`, {
+  updateSpool: (id: number, data: Partial<Omit<InventorySpool, 'id' | 'archived_at' | 'created_at' | 'updated_at' | 'k_profiles'>>, labelKey?: string) =>
+    request<InventorySpool>(`/inventory/spools/${id}${labelKey ? `?label_key=${encodeURIComponent(labelKey)}` : ''}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
@@ -14089,6 +14090,7 @@ export const api = {
     request<SpoolAssignment[]>(`/inventory/assignments${printerId ? `?printer_id=${printerId}` : ''}`),
   assignSpool: (data: {
     spool_id: number;
+    label_key?: string;
     printer_id: number;
     ams_id: number;
     tray_id: number;

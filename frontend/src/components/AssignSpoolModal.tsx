@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Loader2, Package, Search } from 'lucide-react';
+import { Loader2, Package, QrCode, Search } from 'lucide-react';
 import { api } from '../api/client';
 import type { InventorySpool, SpoolAssignment, SpoolPickerMiss } from '../api/client';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
 import { Modal } from './Modal';
+import { SpoolLabelScanner, type ScannedSpool } from './SpoolLabelScanner';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { DEFAULT_SPOOL_DISPLAY_TEMPLATE, formatSpoolDisplayName } from '../utils/spoolName';
@@ -14,6 +15,8 @@ import { exactSpoolId, filterSpoolsByQuery } from '../utils/inventorySearch';
 import { formatSlotLabel } from '../utils/amsHelpers';
 import { compareByOrder, parseSpoolSortOrder } from '../utils/spoolSort';
 import { getSwatchStyle, resolveSpoolColorName } from '../utils/colors';
+
+type AssignmentTarget = { spoolId?: number; spoolmanId?: number; labelKey?: string };
 
 interface AssignSpoolModalProps {
   isOpen: boolean;
@@ -60,13 +63,15 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   const { hasPermission } = useAuth();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const [showScanner, setShowScanner] = useState(false);
+  const [scannedSpool, setScannedSpool] = useState<ScannedSpool | null>(null);
   const [selectedSpoolId, setSelectedSpoolId] = useState<number | null>(null);
   const [selectedSpoolmanSpoolId, setSelectedSpoolmanSpoolId] = useState<number | null>(null);
   const [searchFilter, setSearchFilter] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [pickerPage, setPickerPage] = useState(1);
   const [disableFiltering, setDisableFiltering] = useState(false);
-  const [pendingAssignId, setPendingAssignId] = useState<number | null>(null);
+  const [pendingAssign, setPendingAssign] = useState<{ spoolId: number; labelKey?: string } | null>(null);
   const [showMismatchConfirm, setShowMismatchConfirm] = useState(false);
   const [mismatchDetails, setMismatchDetails] = useState<{
     type: 'material' | 'partial' | 'material_profile' | 'partial_profile';
@@ -80,10 +85,10 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   // correction (the new spool owns the whole print). Both replacement
   // windows — paused right now, or running with a pause behind the print —
   // ask through the same modal; only the wording differs.
-  const [replacementPrompt, setReplacementPrompt] = useState<{ spoolId?: number; spoolmanId?: number } | null>(null);
+  const [replacementPrompt, setReplacementPrompt] = useState<AssignmentTarget | null>(null);
   // What "Assign" acts on: the operator's pick from the list, or the spool the
   // dialog was opened for.
-  const pickedSpoolId = fixedSpool ? (fixedSpool.source === 'inventory' ? fixedSpool.id : null) : selectedSpoolId;
+  const pickedSpoolId = fixedSpool ? (fixedSpool.source === 'inventory' ? fixedSpool.id : null) : (scannedSpool?.spool.id ?? selectedSpoolId);
   const pickedSpoolmanSpoolId = fixedSpool
     ? (fixedSpool.source === 'spoolman' ? fixedSpool.id : null)
     : selectedSpoolmanSpoolId;
@@ -98,7 +103,12 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     setSelectedSpoolId(null);
     setSelectedSpoolmanSpoolId(null);
     setPickerPage(1);
-  }, [spoolmanEnabled, printerId, amsId, trayId, currentSpool?.id]);
+    setScannedSpool(null);
+    setShowScanner(false);
+    setShowMismatchConfirm(false);
+    setPendingAssign(null);
+    setReplacementPrompt(null);
+  }, [isOpen, spoolmanEnabled, printerId, amsId, trayId, currentSpool?.id]);
 
   // Reset filtering when modal opens
   useEffect(() => {
@@ -215,15 +225,17 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   const spoolDisplayTemplate = settings?.spool_display_template || DEFAULT_SPOOL_DISPLAY_TEMPLATE;
   const pickedDisplayName = (id: number, list: InventorySpool[] | undefined) => {
     if (fixedSpool?.id === id) return fixedSpool.displayName;
+    if (scannedSpool?.spool.id === id) return formatSpoolDisplayName(scannedSpool.spool, spoolDisplayTemplate);
     const picked = list?.find((spool: InventorySpool) => spool.id === id)
       ?? (selectedSpoolRecord?.id === id ? selectedSpoolRecord : undefined);
     return picked ? formatSpoolDisplayName(picked, spoolDisplayTemplate) : `#${id}`;
   };
 
   const assignMutation = useMutation({
-    mutationFn: ({ spoolId, midPrintReplacement }: { spoolId: number; midPrintReplacement: boolean }) =>
+    mutationFn: ({ spoolId, midPrintReplacement, labelKey }: { spoolId: number; midPrintReplacement: boolean; labelKey?: string }) =>
       api.assignSpool({
         spool_id: spoolId,
+        ...(labelKey ? { label_key: labelKey } : {}),
         printer_id: printerId,
         ams_id: amsId,
         tray_id: trayId,
@@ -260,7 +272,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
         showToast(t(`configureAmsSlot.warnings.${newAssignment.slot_degraded}`, { defaultValue: newAssignment.slot_degraded }), 'warning');
       }
       setShowMismatchConfirm(false);
-      setPendingAssignId(null);
+      setPendingAssign(null);
       setMismatchDetails(null);
       onAssigned?.();
       onClose();
@@ -431,7 +443,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   // The single funnel every assignment goes through. Inside either
   // replacement window with no answer yet, ask first; the answer re-enters
   // with the flag decided.
-  const fireAssign = (target: { spoolId?: number; spoolmanId?: number }, midPrintReplacement?: boolean) => {
+  const fireAssign = (target: AssignmentTarget, midPrintReplacement?: boolean) => {
     if (midPrintReplacement === undefined && (windowMode === 'prompt' || windowMode === 'optin')) {
       setReplacementPrompt(target);
       return;
@@ -442,7 +454,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     if (target.spoolmanId !== undefined) {
       assignSpoolmanMutation.mutate({ spoolmanSpoolId: target.spoolmanId, midPrintReplacement: !!midPrintReplacement });
     } else if (target.spoolId !== undefined) {
-      assignMutation.mutate({ spoolId: target.spoolId, midPrintReplacement: !!midPrintReplacement });
+      assignMutation.mutate({ spoolId: target.spoolId, labelKey: target.labelKey, midPrintReplacement: !!midPrintReplacement });
     }
   };
 
@@ -452,13 +464,16 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
       return;
     }
     if (!pickedSpoolId) return;
+    const target = { spoolId: pickedSpoolId, labelKey: scannedSpool?.key };
     let selectedSpool: InventorySpool;
     try {
-      selectedSpool = await queryClient.fetchQuery({
-        queryKey: ['inventory-spools', 'selected', pickedSpoolId],
-        queryFn: () => api.getSpool(pickedSpoolId),
-        staleTime: 0,
-      });
+      selectedSpool = target.labelKey
+        ? await api.getSpool(target.spoolId, target.labelKey)
+        : await queryClient.fetchQuery({
+          queryKey: ['inventory-spools', 'selected', target.spoolId],
+          queryFn: () => api.getSpool(target.spoolId),
+          staleTime: 0,
+        });
     } catch {
       showToast(t('inventory.assignFailed'), 'error');
       return;
@@ -493,7 +508,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
           mismatchType = 'partial';
         }
 
-        setPendingAssignId(pickedSpoolId);
+        setPendingAssign(target);
         setMismatchDetails({
           type: mismatchType,
           spoolMaterial: selectedSpool.material || '',
@@ -505,26 +520,29 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
         return;
       }
     }
-    fireAssign({ spoolId: pickedSpoolId });
+    fireAssign(target);
   };
 
   const handleConfirmMismatch = async () => {
-    if (!pendingAssignId) return;
+    if (!pendingAssign) return;
+    const { spoolId, labelKey } = pendingAssign;
     try {
-      const current = await queryClient.fetchQuery({
-        queryKey: ['inventory-spools', 'selected', pendingAssignId],
-        queryFn: () => api.getSpool(pendingAssignId),
-        staleTime: 0,
-      });
+      const current = labelKey
+        ? await api.getSpool(spoolId, labelKey)
+        : await queryClient.fetchQuery({
+          queryKey: ['inventory-spools', 'selected', spoolId],
+          queryFn: () => api.getSpool(spoolId),
+          staleTime: 0,
+        });
       if (current.archived_at) throw new Error('archived');
     } catch {
       showToast(t('inventory.assignFailed'), 'error');
       setShowMismatchConfirm(false);
       return;
     }
-    fireAssign({ spoolId: pendingAssignId });
+    fireAssign(pendingAssign);
     setShowMismatchConfirm(false);
-    setPendingAssignId(null);
+    setPendingAssign(null);
   };
 
   return (
@@ -586,6 +604,32 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
             />
           </div>
 
+          {!spoolmanEnabled && hasPermission('inventory:read') && hasPermission('inventory:update') && (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="secondary" size="sm" onClick={() => setShowScanner(true)}>
+                <QrCode className="w-4 h-4" />
+                {t('inventory.qrScan.scan')}
+              </Button>
+              {scannedSpool && (
+                <p className="text-sm text-bambu-green">
+                  {formatSpoolDisplayName(scannedSpool.spool, spoolDisplayTemplate)} · #{scannedSpool.spool.id}
+                </p>
+              )}
+            </div>
+          )}
+          {isOpen && showScanner && !spoolmanEnabled && hasPermission('inventory:read') && hasPermission('inventory:update') && (
+            <SpoolLabelScanner
+              key={`${printerId}:${amsId}:${trayId}`}
+              target={trayInfo?.location || formatSlotLabel(amsId, trayId, amsId >= 128, amsId === 254 || amsId === 255)}
+              onClose={() => setShowScanner(false)}
+              onScan={(selection) => {
+                setScannedSpool(selection);
+                setSelectedSpoolId(null);
+                setShowScanner(false);
+              }}
+            />
+          )}
+
           {/* Spool list */}
           <div className="space-y-3">
             {!spoolmanEnabled && (isLoading ? (
@@ -597,7 +641,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                 {filteredSpools.map((spool: InventorySpool) => (
                   <button
                     key={spool.id}
-                    onClick={() => { setSelectedSpoolId(spool.id); setSelectedSpoolmanSpoolId(null); }}
+                    onClick={() => { setScannedSpool(null); setSelectedSpoolId(spool.id); setSelectedSpoolmanSpoolId(null); }}
                     title={spool.note || undefined}
                     className={`p-2.5 rounded-lg border text-left transition-colors ${
                       selectedSpoolId === spool.id
@@ -793,7 +837,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
 
       </Modal>
 
-      {showMismatchConfirm && trayInfo && pickedSpoolId && mismatchDetails && (() => {
+      {showMismatchConfirm && trayInfo && pendingAssign && mismatchDetails && (() => {
         let message = '';
 
         if (mismatchDetails.type === 'material') {
@@ -847,7 +891,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
             onCancel={() => {
               if (!assignMutation.isPending) {
                 setShowMismatchConfirm(false);
-                setPendingAssignId(null);
+                setPendingAssign(null);
                 setMismatchDetails(null);
               }
             }}

@@ -46,6 +46,7 @@ import { getCurrencySymbol } from '../utils/currency';
 import { formatDateInput, parseUTCDate, type DateFormat } from '../utils/date';
 import { formatSlotLabel } from '../utils/amsHelpers';
 import { aggregateGroupSpool } from '../utils/inventoryGrouping';
+import { parseSpoolLabel } from '../utils/spoolLabel';
 import {
   loadFilters,
   saveFilters,
@@ -1235,6 +1236,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
   // Prefer the already-loaded spool list (no extra API call); fall back to a
   // targeted fetch for the rare case where the full list hasn't arrived yet.
   const _rawSpoolParam = searchParams.get('spool');
+  const isVersionedSpoolLink = searchParams.has('v') || searchParams.has('key');
+  const versionedSpoolLabel = isVersionedSpoolLink ? parseSpoolLabel(searchParams) : null;
+  const invalidSpoolLabel = isVersionedSpoolLink && (!versionedSpoolLabel || spoolmanMode);
   // Only accept strings of digits representing a positive integer — guards against
   // NaN (Number('abc')), 0, negatives, and floats like '1.5' that would produce
   // an invalid path parameter and trigger unnecessary 422 responses from the API.
@@ -1246,30 +1250,42 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
   // always takes the targeted fetch below — its paged rows are slim (no
   // k_profiles), and the edit dialog initializes its K-profile links from
   // the spool it is handed (spec §3.2: dialogs ride the detail fetch).
-  const deepLinkInList = spoolmanMode ? (spools?.find((s) => s.id === deepLinkSpoolId) ?? null) : null;
+  const deepLinkInList = spoolmanMode && !isVersionedSpoolLink ? (spools?.find((s) => s.id === deepLinkSpoolId) ?? null) : null;
 
   const clearDeepLinkParam = useCallback(() => {
     deepLinkHandled.current = true;
-    setSearchParams((prev) => { prev.delete('spool'); return prev; }, { replace: true });
+    setSearchParams((prev) => {
+      ['spool', 'src', 'v', 'key'].forEach((field) => prev.delete(field));
+      return prev;
+    }, { replace: true });
   }, [setSearchParams]);
 
   // Targeted fetch — only fires when mode is known and spool isn't in the list yet
-  const { data: deepLinkSpool, isError: deepLinkFetchFailed, error: deepLinkError } = useQuery({
+  const {
+    data: deepLinkSpool, isFetching: deepLinkFetching, isError: deepLinkFetchFailed, error: deepLinkError,
+  } = useQuery({
     queryKey: spoolmanMode
       ? ['spoolman-inventory-spool', deepLinkSpoolId]
-      : ['inventory-spool', deepLinkSpoolId],
+      : ['inventory-spool', deepLinkSpoolId, versionedSpoolLabel?.key],
     queryFn: () =>
       spoolmanMode
         ? api.getSpoolmanInventorySpool(deepLinkSpoolId!)
-        : api.getSpool(deepLinkSpoolId!),
-    enabled: spoolmanModeReady && deepLinkSpoolId !== null && deepLinkInList === null,
-    staleTime: Infinity,
+        : versionedSpoolLabel
+          ? api.getSpool(versionedSpoolLabel.spoolId, versionedSpoolLabel.key)
+          : api.getSpool(deepLinkSpoolId!),
+    enabled: spoolmanModeReady && deepLinkSpoolId !== null && deepLinkInList === null && !invalidSpoolLabel,
+    staleTime: versionedSpoolLabel ? 0 : Infinity,
     retry: (failureCount, error) =>
-      failureCount < 2 && !(error instanceof ApiError && error.status === 404),
+      failureCount < 2 && !(error instanceof ApiError && [404, 409].includes(error.status)),
   });
 
   useEffect(() => {
     if (deepLinkHandled.current) return;
+    if (spoolmanModeReady && _rawSpoolParam !== null && invalidSpoolLabel) {
+      clearDeepLinkParam();
+      showToast(t('inventory.qrScan.missingSpool'), 'error');
+      return;
+    }
 
     // Case 1: spool is already in the fetched list
     if (spoolmanModeReady && deepLinkSpoolId && deepLinkInList) {
@@ -1279,7 +1295,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
     }
 
     // Case 2: spool was fetched individually
-    if (deepLinkSpool) {
+    if (deepLinkSpool && (!isVersionedSpoolLink || (!deepLinkFetching && !deepLinkFetchFailed))) {
       clearDeepLinkParam();
       setFormModal({ spool: deepLinkSpool, mode: 'edit' });
       return;
@@ -1288,16 +1304,22 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
     // Case 3: fetch failed
     if (deepLinkFetchFailed) {
       clearDeepLinkParam();
-      const is404 = deepLinkError instanceof ApiError && deepLinkError.status === 404;
-      showToast(t(is404 ? 'inventory.deepLinkSpoolNotFound' : 'inventory.deepLinkFetchFailed'), 'error');
+      const status = deepLinkError instanceof ApiError ? deepLinkError.status : undefined;
+      const message = status === 409 ? 'inventory.qrScan.missingSpool'
+        : status === 404 ? 'inventory.deepLinkSpoolNotFound' : 'inventory.deepLinkFetchFailed';
+      showToast(t(message), 'error');
     }
   }, [
     spoolmanModeReady,
     deepLinkSpoolId,
     deepLinkInList,
     deepLinkSpool,
+    isVersionedSpoolLink,
+    deepLinkFetching,
     deepLinkFetchFailed,
     deepLinkError,
+    invalidSpoolLabel,
+    _rawSpoolParam,
     clearDeepLinkParam,
     showToast,
     t,
@@ -3395,6 +3417,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
 
       <LocationsModal
         open={locationsModalOpen}
+        canScanSpools={spoolmanModeReady && !spoolmanMode && hasPermission('inventory:read') && hasPermission('inventory:update')}
         onClose={() => setLocationsModalOpen(false)}
         onPickLocation={(id) => setStorageLocationFilter(String(id))}
       />

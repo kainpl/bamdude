@@ -1,8 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { render } from '../utils';
 import { AssignSpoolModal } from '../../components/AssignSpoolModal';
 import { api } from '../../api/client';
+
+vi.mock('../../components/SpoolLabelScanner', () => ({
+  SpoolLabelScanner: ({ onScan }: { onScan: (selection: { spool: typeof manualSpool; key: string }) => void }) => (
+    <button onClick={() => onScan({ spool: manualSpool, key: 'b'.repeat(32) })}>Read label</button>
+  ),
+}));
 
 vi.mock('../../api/client', () => ({
   setAuthToken: vi.fn(),
@@ -86,6 +92,20 @@ describe('AssignSpoolModal', () => {
     (api.getSpool as ReturnType<typeof vi.fn>).mockImplementation(async (id: number) =>
       [manualSpool, blSpool, anotherManualSpool].find(spool => spool.id === id));
     (api.getAssignments as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+  });
+
+  it('keeps the label proof in the explicit assignment', async () => {
+    vi.mocked(api.assignSpool).mockResolvedValue({ id: 1, spool_id: manualSpool.id } as Awaited<ReturnType<typeof api.assignSpool>>);
+    render(<AssignSpoolModal {...defaultProps} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Scan spool label' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Read label' }));
+    expect(api.assignSpool).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Assign Spool' }));
+
+    await waitFor(() => expect(api.assignSpool).toHaveBeenCalledWith(expect.objectContaining({
+      spool_id: manualSpool.id, printer_id: 1, ams_id: 0, tray_id: 0, label_key: 'b'.repeat(32),
+    })));
+    expect(api.getSpool).toHaveBeenCalledWith(manualSpool.id, 'b'.repeat(32));
   });
 
   it('renders nothing when closed', () => {

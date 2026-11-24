@@ -1,4 +1,5 @@
 from datetime import datetime
+from uuid import uuid4
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -12,6 +13,10 @@ class Spool(Base):
     __tablename__ = "spool"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # The same numeric id can name a different row after deletion on SQLite.
+    label_identity: Mapped[str | None] = mapped_column(
+        String(36), default=lambda: str(uuid4()), unique=True, index=True
+    )
     material: Mapped[str] = mapped_column(String(50))  # PLA, PETG, ABS, etc.
     subtype: Mapped[str | None] = mapped_column(String(50))  # Basic, Matte, Silk, etc.
     color_name: Mapped[str | None] = mapped_column(String(100))  # "Jade White"

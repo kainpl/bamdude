@@ -10101,6 +10101,21 @@ export default {
     // added 2026-08-29 while the fetch-before-edit path made them common.
     deepLinkSpoolNotFound: 'That spool no longer exists',
     deepLinkFetchFailed: 'Could not load the spool',
+    qrScan: {
+      scanAt: 'Scan a spool label for {{location}}',
+      scan: 'Scan spool label',
+      camera: 'Use camera',
+      stopCamera: 'Stop camera',
+      photo: 'Choose photo',
+      invalidLabel: 'Scan a current BamDude inventory label. Reprint older labels from Inventory.',
+      missingSpool: 'This label no longer matches an active spool.',
+      cameraUnavailable: 'The camera is unavailable. Choose a photo of the label.',
+      photoTooLarge: 'Choose a photo smaller than 25 MB.',
+      noCode: 'No QR code found. Try a clearer photo or move closer to the label.',
+      photoFailed: 'Could not read this photo.',
+      move: 'Move {{spool}} to {{location}}?',
+      moved: 'Spool moved to {{location}}.',
+    },
     bulk: {
       selectRow: 'Select this spool',
       selectGroup: 'Select every spool in this group',

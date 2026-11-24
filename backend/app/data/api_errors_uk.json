@@ -1220,6 +1220,7 @@
   "This job changed before it could be skipped. It may have started already; nothing was skipped.": "Завдання змінилося, перш ніж його вдалося пропустити. Можливо, воно вже почало друкуватися; нічого не пропущено.",
   "This job changed or started while it was being edited. Nothing was saved; refresh and try again.": "Це завдання змінилося або почало друкуватися, поки його редагували. Нічого не збережено; оновіть і спробуйте ще раз.",
   "This job is no longer the one that was being sent: it was sent again, moved or finished before the stop was recorded. Nothing was changed; check the queue.": "Це вже не те завдання, яке надсилалося: його надіслали знову, перемістили або воно завершилося до того, як зупинку записано. Нічого не змінено; перевірте чергу.",
+  "This label no longer matches an active spool.": "Ця етикетка більше не відповідає активній котушці.",
   "This library file has no verified content hash yet. Scan its folder, or upload it again as a new copy, then inspect it.": "Для цього файлу бібліотеки ще немає перевіреного хешу вмісту. Проскануйте його теку або завантажте його знову як нову копію, а потім перевірте.",
   "This library file is not a MakerWorld import": "Цей файл бібліотеки не є імпортом з MakerWorld",
   "This line's stock has moved; take more from stock instead": "Склад цієї позиції вже рухався — додайте, взявши зі складу",

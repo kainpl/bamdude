@@ -1,11 +1,13 @@
 import { useState, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { MapPin, Plus, Loader2, Pencil, Trash2 } from 'lucide-react';
+import { MapPin, Plus, Loader2, Pencil, QrCode, Trash2 } from 'lucide-react';
 import { api, type StorageLocation } from '../api/client';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
 import { Modal } from './Modal';
+import { SpoolLabelScanner, type ScannedSpool } from './SpoolLabelScanner';
+import { formatSpoolDisplayName } from '../utils/spoolName';
 import { useToast } from '../contexts/ToastContext';
 import { inventoryLocationsQueryKey, invalidateInventoryLocations } from '../utils/inventoryQueries';
 import { StorageLocationConditions } from './zigbee/StorageLocationConditions';
@@ -15,9 +17,10 @@ interface LocationsModalProps {
   onClose: () => void;
   onPickLocation?: (locationId: number) => void;
   startCreating?: boolean;
+  canScanSpools?: boolean;
 }
 
-export function LocationsModal({ open, onClose, onPickLocation, startCreating = false }: LocationsModalProps) {
+export function LocationsModal({ open, onClose, onPickLocation, startCreating = false, canScanSpools = false }: LocationsModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -25,6 +28,8 @@ export function LocationsModal({ open, onClose, onPickLocation, startCreating = 
   const [editorOpen, setEditorOpen] = useState(startCreating);
   const [editing, setEditing] = useState<StorageLocation | null>(null);
   const [name, setName] = useState('');
+  const [scanTarget, setScanTarget] = useState<StorageLocation | null>(null);
+  const [scanSelection, setScanSelection] = useState<ScannedSpool | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<StorageLocation | null>(null);
 
   const { data: locations = [], isLoading } = useQuery({
@@ -73,6 +78,29 @@ export function LocationsModal({ open, onClose, onPickLocation, startCreating = 
     },
   });
 
+  const clearScan = () => {
+    setScanSelection(null);
+    setScanTarget(null);
+  };
+
+  const moveSpoolMutation = useMutation({
+    mutationFn: ({ location, selection }: { location: StorageLocation; selection: ScannedSpool }) =>
+      api.updateSpool(selection.spool.id, { location_id: location.id }, selection.key),
+    onSuccess: (_spool, { location }) => {
+      showToast(t('inventory.qrScan.moved', { location: location.name }), 'success');
+      invalidate();
+      clearScan();
+    },
+    onError: (error: Error) => {
+      showToast(error.message, 'error');
+    },
+  });
+
+  const closeLocations = () => {
+    clearScan();
+    onClose();
+  };
+
   const openCreate = () => {
     setEditing(null);
     setName('');
@@ -105,7 +133,7 @@ export function LocationsModal({ open, onClose, onPickLocation, startCreating = 
   return (
     <>
       <Modal
-        onClose={onClose}
+        onClose={closeLocations}
         labelledBy={modalTitleId}
         closeDisabled={saveMutation.isPending || deleteMutation.isPending}
         header={
@@ -151,7 +179,7 @@ export function LocationsModal({ open, onClose, onPickLocation, startCreating = 
                     onClick={() => {
                       if (onPickLocation) {
                         onPickLocation(loc.id);
-                        onClose();
+                        closeLocations();
                       }
                     }}
                   >
@@ -162,6 +190,17 @@ export function LocationsModal({ open, onClose, onPickLocation, startCreating = 
                     </td>
                     <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1">
+                        {canScanSpools && (
+                          <button
+                            type="button"
+                            className="p-1.5 text-bambu-gray hover:text-bambu-green rounded"
+                            onClick={() => setScanTarget(loc)}
+                            title={t('inventory.qrScan.scan')}
+                            aria-label={t('inventory.qrScan.scanAt', { location: loc.name })}
+                          >
+                            <QrCode className="w-4 h-4" />
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="p-1.5 text-bambu-gray hover:text-bambu-green rounded"
@@ -190,6 +229,21 @@ export function LocationsModal({ open, onClose, onPickLocation, startCreating = 
             </table>
           )}
         </div>
+        {canScanSpools && scanTarget && (scanSelection ? (
+          <ConfirmModal
+            title={scanTarget.name}
+            message={t('inventory.qrScan.move', {
+              spool: `${formatSpoolDisplayName(scanSelection.spool, undefined)} · #${scanSelection.spool.id}`,
+              location: scanTarget.name,
+            })}
+            confirmText={t('common.confirm')}
+            isLoading={moveSpoolMutation.isPending}
+            onConfirm={() => moveSpoolMutation.mutate({ location: scanTarget, selection: scanSelection })}
+            onCancel={clearScan}
+          />
+        ) : (
+          <SpoolLabelScanner target={scanTarget.name} onClose={clearScan} onScan={setScanSelection} />
+        ))}
       </Modal>
 
       {editorOpen && (

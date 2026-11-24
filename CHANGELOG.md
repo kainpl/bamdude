@@ -70,6 +70,8 @@
 
 ### Added
 
+- **Assign a spool by scanning its label.** Pick an AMS slot or storage location, scan a current BamDude inventory label with the camera or from a photo, and confirm the spool. New labels stay tied to their original record even when a spool number is reused. Reprint older labels to use the scanner.
+
 - **Slicer sidecars can publish their ports on one host address.** Set
   `SIDECAR_BIND` in the sidecar stack's `.env` to choose the address for both
   OrcaSlicer and BambuStudio. Existing port numbers and defaults still work.

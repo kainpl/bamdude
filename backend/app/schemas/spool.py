@@ -430,6 +430,7 @@ class InventoryStatsResponse(BaseModel):
 
 class SpoolAssignmentCreate(BaseModel):
     spool_id: int
+    label_key: str | None = Field(None, pattern=r"^[a-f0-9]{32}$")
     printer_id: int
     ams_id: int
     tray_id: int
