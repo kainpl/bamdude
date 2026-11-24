@@ -70,7 +70,8 @@ function renderCard() {
 async function hoverBlankSlot(index: number) {
   await screen.findByText('AMS-A', {}, { timeout: 5000 });
   const slots = await screen.findAllByTestId('empty-slot');
-  fireEvent.mouseEnter(slots[index]);
+  const enter = new MouseEvent('pointerover', { bubbles: true, relatedTarget: document.body });
+  fireEvent(slots[index], Object.assign(enter, { pointerType: 'mouse' }));
   return within(await screen.findByTestId('empty-slot-hover-card'));
 }
 

@@ -250,7 +250,8 @@ class TextElement(_Box):
     #: a thermal head — and truncates with an ellipsis from there. ``clip`` keeps
     #: the authored size and cuts, for anyone who would rather have consistent
     #: type than complete text.
-    fit: Literal["shrink", "clip"] = "shrink"
+    #: ``wrap`` uses additional lines inside the same box at the authored size.
+    fit: Literal["shrink", "clip", "wrap"] = "shrink"
 
 
 class QrElement(_Box):

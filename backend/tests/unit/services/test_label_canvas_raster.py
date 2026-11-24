@@ -240,3 +240,16 @@ def test_a_swatch_draws_nothing_on_a_thermal_head():
     )
     assert _ink(img, (0, 0, img.width, img.height)) == 0
     assert not warnings
+
+
+def test_stock_box_prints_the_continuation_in_the_raster():
+    from backend.app.services.label_seed import BUILTIN_TEMPLATES
+
+    raw = next(t for t in BUILTIN_TEMPLATES if t["builtin_key"] == "box_40x30")
+    spec = LabelTemplateSpec(**{key: raw[key] for key in ("name", "width_mm", "height_mm", "elements")})
+    name = next(e for e in raw["elements"] if e["content"] == "{display_name}")
+    img, warnings = render_template_raster(spec, {"display_name": "Magenta Orchid"}, dots_per_mm=DPMM)
+    assert not warnings
+    assert img.mode == "1"
+    x, y, width, size = (round(name[key] * DPMM) for key in ("x_mm", "y_mm", "w_mm", "size_mm"))
+    assert _ink(img, (x, y + size + 2, width, size)) > 0.02

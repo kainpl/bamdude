@@ -322,6 +322,13 @@
 
 ### Fixed
 
+- **Long spool names can continue onto a second line.** Factory label layouts
+  use spare space for the name while keeping the QR and spool number in place.
+  The label editor offers Wrap for text boxes in PDF and thermal layouts.
+- **AMS slot cards open on the first tap and from the keyboard.** Tap the slot
+  again, tap outside or press Escape to close it. On small screens the card
+  scrolls when its actions need more room.
+
 - **Support bundles keep catalog printer models visible.** A display name
   that matches a catalog model no longer hides the model in printer summaries.
   Sanitized exports mask configured printer names, including short names

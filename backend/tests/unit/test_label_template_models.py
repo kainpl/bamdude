@@ -135,16 +135,14 @@ def test_a_builtin_carries_every_field_the_layout_it_replaces_drew():
         assert any(e["type"] == "swatch" for e in row["elements"]), row["builtin_key"]
 
 
-def test_a_builtin_truncates_rather_than_shrinking():
-    """⚠️ The layout these replace keeps its type size and cuts. Shrinking
-    instead inverts the hierarchy on real data — a long brand shrinks below the
-    short material line under it — so the label reads as though the material
-    were the more important field. Found by looking at a render.
-    """
+def test_a_builtin_keeps_text_size_and_reserves_space_for_wrapping():
     for row in BUILTIN_TEMPLATES:
-        for element in row["elements"]:
-            if element["type"] == "text":
-                assert element.get("fit") == "clip", (row["builtin_key"], element["content"])
+        elements = [e for e in row["elements"] if e["type"] == "text"]
+        for element in elements:
+            expected = "wrap" if element["content"] == "{display_name}" else "clip"
+            assert element["fit"] == expected
+        for here, below in zip(elements, elements[1:], strict=False):
+            assert here["y_mm"] + here["h_mm"] <= below["y_mm"]
 
 
 def test_every_sheet_grid_fits_its_page():

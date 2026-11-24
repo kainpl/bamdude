@@ -314,3 +314,24 @@ def test_the_offset_applies_to_the_first_page_only():
     # And 31 spools from position 1 still fit in two.
     pdf, _ = render_template_sheet_pdf(spec, [CONTEXT] * 31, _avery_5160(), starting_position=1)
     assert len(re.findall(rb"/Type\s*/Page[^s]", pdf)) == 2
+
+
+def test_stock_box_prints_a_long_spool_name_on_two_lines(monkeypatch):
+    from reportlab.pdfgen.canvas import Canvas
+
+    from backend.app.services.label_seed import BUILTIN_TEMPLATES
+
+    raw = next(t for t in BUILTIN_TEMPLATES if t["builtin_key"] == "box_40x30")
+    spec = LabelTemplateSpec(**{key: raw[key] for key in ("name", "width_mm", "height_mm", "elements")})
+    draw_string = Canvas.drawString
+    drawn = []
+
+    def capture(canvas, x, y, text, *args, **kw):
+        drawn.append(text)
+        return draw_string(canvas, x, y, text, *args, **kw)
+
+    monkeypatch.setattr(Canvas, "drawString", capture)
+    pdf, warnings = render_template_pdf(spec, [{"display_name": "Magenta Orchid", "note": "Shelf", "id": "42"}])
+    assert pdf.startswith(b"%PDF-")
+    assert not warnings
+    assert drawn == ["Magenta", "Orchid", "Shelf", "#42"]

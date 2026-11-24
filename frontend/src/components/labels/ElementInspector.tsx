@@ -129,13 +129,14 @@ export function ElementInspector({
                 size="sm"
                 className="w-full mt-1"
                 value={element.fit}
-                onChange={(e) => patch({ fit: e.target.value as 'shrink' | 'clip' })}
+                onChange={(e) => patch({ fit: e.target.value as typeof element.fit })}
               >
                 {/* ⚠️ Shrinking inverts the type hierarchy on real data — a long
                     brand ends up smaller than the short material line under it.
                     Both are offered because both are sometimes right. */}
                 <option value="shrink">{t('labelEditor.fitShrink')}</option>
                 <option value="clip">{t('labelEditor.fitClip')}</option>
+                <option value="wrap">{t('labelEditor.fitWrap')}</option>
               </Select>
             </label>
           </div>

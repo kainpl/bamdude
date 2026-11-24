@@ -14,6 +14,8 @@ there is nothing left to reconcile and only the primitives differ.
 from __future__ import annotations
 
 import logging
+from bisect import bisect_right
+from collections.abc import Callable
 from typing import Protocol
 
 from PIL import Image
@@ -26,6 +28,36 @@ logger = logging.getLogger(__name__)
 
 #: x, y, width, height — millimetres, from the top-left of the label.
 Box = tuple[float, float, float, float]
+
+
+def wrapped_text(
+    text: str, *, width: float, height: float, size: float, measure: Callable[[str], float]
+) -> tuple[list[str], float]:
+    """Fit up to three lines inside the authored box using the backend's font metrics."""
+    step = size * 1.15
+    max_lines = max(1, min(3, 1 + int((height - size) // step)))
+    lines = []
+    rest = text
+    for index in range(max_lines):
+        if measure(rest) <= width:
+            lines.append(rest)
+            break
+        last = index == max_lines - 1
+        ending = "…" if last else ""
+        if measure(ending) > width:
+            break
+        count = bisect_right(range(len(rest) + 1), width, key=lambda count: measure(rest[:count] + ending)) - 1
+        if last:
+            lines.append(rest[:count].rstrip() + ending)
+            break
+        if count <= 0:
+            break
+        at = rest.rfind(" ", 0, count + 1)
+        if at <= 0:
+            at = count
+        lines.append(rest[:at].rstrip())
+        rest = rest[at:].lstrip()
+    return lines, step
 
 
 class LabelCanvas(Protocol):

@@ -272,3 +272,40 @@ class TestTheNameOnTheLabel:
         )
         assert response.status_code == 200
         assert len(response.content) > 1000
+
+
+async def test_factory_wrap_upgrade_keeps_edited_layouts(db_session):
+    from datetime import datetime
+
+    from backend.app.migrations.m259_wrap_factory_label_names import upgrade
+    from backend.app.models.label_template import LabelTemplate
+    from backend.app.services.label_seed import BUILTIN_TEMPLATES, _roomy_elements
+
+    rows = []
+    previous = {}
+    for raw in BUILTIN_TEMPLATES[:3]:
+        values = dict(raw)
+        layout = _roomy_elements(values["width_mm"], values["height_mm"], wrap_name=False)
+        previous[raw["builtin_key"]] = layout
+        values["elements"] = layout
+        rows.append(LabelTemplate(**values))
+    # Edited by an operator, and externally imported geometry without a timestamp.
+    rows[1].updated_at = datetime(2026, 1, 1)
+    rows[2].elements = [dict(element) for element in rows[2].elements]
+    rows[2].elements[0]["x_mm"] += 0.5
+    imported = rows[2].elements
+    db_session.add_all(rows)
+    await db_session.flush()
+    connection = await db_session.connection()
+    await upgrade(connection)
+    await upgrade(connection)
+    for row in rows:
+        await db_session.refresh(row)
+
+    assert rows[0].elements == BUILTIN_TEMPLATES[0]["elements"]
+    assert rows[1].elements == previous[rows[1].builtin_key]
+    assert rows[2].elements == imported
+    for content in ("{deeplink}", "#{id}"):
+        assert next(e for e in rows[0].elements if e["content"] == content) == next(
+            e for e in previous[rows[0].builtin_key] if e["content"] == content
+        )

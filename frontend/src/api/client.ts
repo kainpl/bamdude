@@ -8958,8 +8958,8 @@ export interface LabelTextElement extends LabelElementBox {
   italic: boolean;
   align: 'left' | 'center' | 'right';
   valign: 'top' | 'middle' | 'bottom';
-  /** `shrink` fits by reducing type; `clip` keeps the size and truncates. */
-  fit: 'shrink' | 'clip';
+  /** Text fitting inside the element's box. */
+  fit: 'shrink' | 'clip' | 'wrap';
 }
 
 export interface LabelQrElement extends LabelElementBox {

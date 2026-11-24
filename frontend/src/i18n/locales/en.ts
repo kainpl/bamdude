@@ -3284,6 +3284,7 @@ export default {
     fit: 'When it does not fit',
     fitShrink: 'Make it smaller',
     fitClip: 'Cut it off',
+    fitWrap: 'Wrap',
     align: 'Align',
     alignLeft: 'Left',
     alignCenter: 'Centre',
@@ -10557,6 +10558,7 @@ export default {
   // Timelapse
   // AMS
   ams: {
+    slotDetails: 'Slot details',
     emptySlot: 'Empty slot',
     slotLoadedUnconfigured: 'Spool loaded — slot not configured',
     assignedNotConfigured: 'Assigned in BamDude; the printer has not taken it yet. A slot that is feeding a print gets its setting once the print is over.',

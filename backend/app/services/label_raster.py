@@ -30,9 +30,9 @@ from __future__ import annotations
 import io
 from typing import Literal
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-from backend.app.services.label_canvas import Box, draw_template
+from backend.app.services.label_canvas import Box, draw_template, wrapped_text
 from backend.app.services.label_qr import render_qr
 from backend.app.services.label_raster_fonts import font_at
 from backend.app.services.label_renderer import LabelData
@@ -284,25 +284,43 @@ class RasterCanvas:
             size = max(_MIN_FONT_PX, min(size, box_h))
             font = font_at(size, bold=bold, italic=italic)
 
-        # ⚠️ Truncation applies to both fits. It is what guarantees the text
-        # cannot run past its box into whatever the operator put beside it.
-        drawn = _truncate(self._draw, text, font, box_w)
-        if not drawn:
+        draw = self._draw
+        clip_x = clip_y = 0
+        tile = None
+        if fit == "wrap":
+            lines, step = wrapped_text(
+                text, width=box_w, height=box_h, size=size, measure=lambda line: draw.textlength(line, font=font)
+            )
+            # Clip in label pixels, even for an element partly outside the paper.
+            clip_x, clip_y = max(0, x), max(0, y)
+            clip_w = min(self._img.width, x + box_w) - clip_x
+            clip_h = min(self._img.height, y + box_h) - clip_y
+            if clip_w <= 0 or clip_h <= 0:
+                return
+            tile = Image.new("1", (clip_w, clip_h), 1)
+            draw = ImageDraw.Draw(tile)
+        else:
+            lines, step = [_truncate(draw, text, font, box_w)], size
+        if not lines or not lines[0]:
             return
 
-        width = self._draw.textlength(drawn, font=font)
-        left = {
-            "left": x,
-            "center": x + (box_w - width) / 2,
-            "right": x + box_w - width,
-        }.get(align, x)
+        block_h = size + (len(lines) - 1) * step
         top = {
             "top": y,
-            "middle": y + (box_h - size) / 2,
-            "bottom": y + box_h - size,
+            "middle": y + (box_h - block_h) / 2,
+            "bottom": y + box_h - block_h,
         }.get(valign, y)
-
-        self._draw.text((left, top), drawn, font=font, fill=0)
+        for line in lines:
+            width = draw.textlength(line, font=font)
+            left = {
+                "left": x,
+                "center": x + (box_w - width) / 2,
+                "right": x + box_w - width,
+            }.get(align, x)
+            draw.text((left - clip_x, top - clip_y), line, font=font, fill=0)
+            top += step
+        if tile is not None:
+            self._img.paste(tile, (clip_x, clip_y), ImageOps.invert(tile))
 
     def swatch(self, colours: list[str], *, box_mm: Box, shape: str = "rect") -> None:
         """Nothing, on purpose.

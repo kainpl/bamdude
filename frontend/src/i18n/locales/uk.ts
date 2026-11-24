@@ -3310,6 +3310,7 @@ export default {
     fit: 'Якщо не влазить',
     fitShrink: 'Зменшити',
     fitClip: 'Обрізати',
+    fitWrap: 'Перенести на наступний рядок',
     align: 'Вирівнювання',
     alignLeft: 'Ліворуч',
     alignCenter: 'По центру',
@@ -10785,6 +10786,7 @@ export default {
   // Timelapse
   // AMS
   ams: {
+    slotDetails: 'Деталі слота',
     emptySlot: 'Порожній слот',
     slotLoadedUnconfigured: 'Котушку завантажено — слот не налаштовано',
     assignedNotConfigured: 'Призначено в BamDude, але принтер ще не отримав налаштування. Слот, з якого йде друк, отримає його після завершення друку.',

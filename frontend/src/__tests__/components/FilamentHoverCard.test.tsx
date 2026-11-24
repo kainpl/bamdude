@@ -18,11 +18,24 @@ const baseFilamentData = {
   trayUuid: 'A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4',
 };
 
+function pointer(target: Element, type: string, pointerType: 'mouse' | 'touch' | 'pen') {
+  const event = new MouseEvent(type, { bubbles: true, relatedTarget: document.body });
+  fireEvent(target, Object.assign(event, { pointerType }));
+}
+
+function mouseEnter(target: Element) { pointer(target, 'pointerover', 'mouse'); }
+function mouseLeave(target: Element) { pointer(target, 'pointerout', 'mouse'); }
+
+function tap(target: Element) {
+  pointer(target, 'pointerdown', 'touch');
+  fireEvent.click(target);
+}
+
 function renderWithHover(ui: React.ReactElement) {
   const result = render(ui);
   // Trigger hover to show the card
   const trigger = result.container.firstElementChild as HTMLElement;
-  fireEvent.mouseEnter(trigger);
+  mouseEnter(trigger);
   return result;
 }
 
@@ -203,8 +216,8 @@ describe('FilamentHoverCard', () => {
       // finds an inner wrapper instead, and `mouseenter` does not bubble — so
       // that version of this test passed with the handlers deleted, which is
       // worse than not having it.
-      fireEvent.mouseLeave(container.firstElementChild as HTMLElement);
-      fireEvent.mouseEnter(screen.getByTestId('filament-hover-card'));
+      mouseLeave(container.firstElementChild as HTMLElement);
+      mouseEnter(screen.getByTestId('filament-hover-card'));
       vi.advanceTimersByTime(500);
 
       expect(screen.getByText('PLA Basic')).toBeInTheDocument();
@@ -234,7 +247,7 @@ describe('FilamentHoverCard', () => {
       trigger.getBoundingClientRect = () => rect(300) as DOMRect;
       Object.defineProperty(window, 'scrollY', { configurable: true, value: 500 });
       try {
-        fireEvent.mouseEnter(trigger);
+        mouseEnter(trigger);
         vi.advanceTimersByTime(100);
         const card = await screen.findByTestId(testId);
         await waitFor(() => expect(card.style.visibility).toBe('visible'));
@@ -263,8 +276,8 @@ describe('FilamentHoverCard', () => {
       await waitFor(() => expect(screen.getByText('PLA Basic')).toBeInTheDocument());
 
       const card = screen.getByTestId('filament-hover-card');
-      fireEvent.mouseEnter(card);
-      fireEvent.mouseLeave(card);
+      mouseEnter(card);
+      mouseLeave(card);
       vi.advanceTimersByTime(500);
 
       await waitFor(() => expect(screen.queryByText('PLA Basic')).not.toBeInTheDocument());
@@ -306,7 +319,7 @@ describe('FilamentHoverCard', () => {
 
       // Re-enter queues an 80ms show timer; the dismiss must clear it, otherwise
       // the card pops back over the dialog it just opened.
-      fireEvent.mouseEnter(result.container.firstElementChild as HTMLElement);
+      mouseEnter(result.container.firstElementChild as HTMLElement);
       fireEvent.click(screen.getByTitle('Configure Slot'));
       vi.advanceTimersByTime(200);
 
@@ -368,7 +381,7 @@ describe('FilamentHoverCard', () => {
         <div>trigger</div>
       </EmptySlotHoverCard>
     );
-    fireEvent.mouseEnter(result.container.firstElementChild as HTMLElement);
+    mouseEnter(result.container.firstElementChild as HTMLElement);
     vi.advanceTimersByTime(100);
     await waitFor(() => expect(screen.getByText('Acme PETG Grey')).toBeInTheDocument());
 
@@ -385,7 +398,7 @@ describe('FilamentHoverCard', () => {
         <div>trigger</div>
       </EmptySlotHoverCard>
     );
-    fireEvent.mouseEnter(result.container.firstElementChild as HTMLElement);
+    mouseEnter(result.container.firstElementChild as HTMLElement);
     vi.advanceTimersByTime(100);
     await waitFor(() => expect(screen.getByText('Acme PETG Grey')).toBeInTheDocument());
 
@@ -402,7 +415,7 @@ describe('FilamentHoverCard', () => {
         <div>trigger</div>
       </EmptySlotHoverCard>
     );
-    fireEvent.mouseEnter(result.container.firstElementChild as HTMLElement);
+    mouseEnter(result.container.firstElementChild as HTMLElement);
     vi.advanceTimersByTime(100);
     await waitFor(() => expect(screen.getByText(/assign spool/i)).toBeInTheDocument());
 
@@ -753,5 +766,88 @@ describe('FilamentHoverCard — assigned spool swatch (#2967)', () => {
     vi.advanceTimersByTime(100);
     await waitFor(() => expect(screen.getByText('Mist')).toBeInTheDocument());
     expect(header().style.backgroundImage).toBe('');
+  });
+});
+
+
+describe('slot activation without a hover', () => {
+  it.each(['filled', 'empty'])('opens the %s slot on the first touch of its text', (kind) => {
+    render(kind === 'filled'
+      ? <FilamentHoverCard data={baseFilamentData}><span>Slot text</span></FilamentHoverCard>
+      : <EmptySlotHoverCard><span>Slot text</span></EmptySlotHoverCard>);
+
+    const target = screen.getByText('Slot text');
+    tap(target);
+
+    expect(screen.getByTestId(kind === 'filled' ? 'filament-hover-card' : 'empty-slot-hover-card')).toBeVisible();
+  });
+
+  it('opens a slot from the keyboard', () => {
+    render(<FilamentHoverCard data={baseFilamentData}><span>Slot text</span></FilamentHoverCard>);
+    const trigger = screen.getByText('Slot text').parentElement!;
+    fireEvent.keyDown(trigger, { key: 'Enter' });
+    expect(screen.getByTestId('filament-hover-card')).toBeVisible();
+  });
+});
+
+
+describe('slot card dismissal and actions', () => {
+  it('ignores emulated mouse hover, toggles by tap and closes outside', async () => {
+    render(<FilamentHoverCard data={baseFilamentData}><span>Touch slot</span></FilamentHoverCard>);
+    const text = screen.getByText('Touch slot');
+    const tile = screen.getByRole('button', { name: 'Touch slot' });
+    pointer(tile, 'pointerover', 'touch');
+    fireEvent.mouseEnter(tile);
+    tap(text);
+    expect(tile).toHaveAttribute('aria-expanded', 'true');
+    const card = screen.getByRole('dialog', { name: 'Slot details' });
+    expect(tile).toHaveAttribute('aria-controls', card.id);
+
+    tap(screen.getByText('PLA Basic'));
+    expect(card).toBeVisible();
+    tap(text);
+    expect(tile).toHaveAttribute('aria-expanded', 'false');
+    expect(card).not.toBeInTheDocument();
+
+    tap(text);
+    pointer(document.body, 'pointerdown', 'touch');
+    expect(screen.queryByRole('dialog', { name: 'Slot details' })).not.toBeInTheDocument();
+  });
+
+  it.each(['filled', 'empty'])('focuses a usable %s-slot action and returns on Escape', async (kind) => {
+    const configure = vi.fn();
+    const config = { enabled: true, onConfigure: configure };
+    render(kind === 'filled'
+      ? <FilamentHoverCard data={baseFilamentData} configureSlot={config}><span>Slot label</span></FilamentHoverCard>
+      : <EmptySlotHoverCard configureSlot={config}><span>Slot label</span></EmptySlotHoverCard>);
+    const tile = screen.getByRole('button', { name: 'Slot label' });
+    tile.focus();
+    fireEvent.keyDown(tile, { key: ' ' });
+    const dialog = screen.getByRole('dialog', { name: 'Slot details' });
+    await waitFor(() => expect(dialog).toContainElement(document.activeElement as HTMLElement));
+
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    expect(dialog).not.toBeInTheDocument();
+    expect(tile).toHaveFocus();
+
+    tap(tile);
+    tap(screen.getByRole('button', { name: 'Configure' }));
+    expect(configure).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog', { name: 'Slot details' })).not.toBeInTheDocument();
+  });
+
+  it('places a tall empty-slot card below a trigger near the top and limits its height', () => {
+    render(<EmptySlotHoverCard assigned={{ label: 'Long inventory name' }}><span>Compact slot</span></EmptySlotHoverCard>);
+    const tile = screen.getByRole('button', { name: 'Compact slot' });
+    tile.getBoundingClientRect = () => ({ top: 75, bottom: 99, left: 18, right: 42, width: 24, height: 24 }) as DOMRect;
+    const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(1_000);
+    try {
+      tap(tile);
+      const card = screen.getByRole('dialog', { name: 'Slot details' });
+      expect(card.style.top).toBe('107px');
+      expect((card.firstElementChild as HTMLElement).style.maxHeight).toBe(String(window.innerHeight - 115) + 'px');
+    } finally {
+      height.mockRestore();
+    }
   });
 });

@@ -57,7 +57,7 @@ from reportlab.pdfbase.pdfmetrics import stringWidth as c_stringWidth
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas as rl_canvas
 
-from backend.app.services.label_canvas import draw_template
+from backend.app.services.label_canvas import draw_template, wrapped_text
 from backend.app.services.label_template import LabelSheetSpec, LabelTemplateSpec
 
 logger = logging.getLogger(__name__)
@@ -642,26 +642,39 @@ class PdfCanvas:
         else:
             size = max(_MIN_TEXT_PT, min(size, box_h))
 
-        # Truncation applies to both fits: it is what keeps text inside its box
-        # rather than running over whatever sits beside it.
-        drawn = _truncate_to_width(self._c, text, font, size, box_w)
-        if not drawn:
+        if fit == "wrap":
+            lines, step = wrapped_text(
+                text, width=box_w, height=box_h, size=size, measure=lambda line: c_stringWidth(line, font, size)
+            )
+        else:
+            lines, step = [_truncate_to_width(self._c, text, font, size, box_w)], size
+        if not lines or not lines[0]:
             return
 
-        width = c_stringWidth(drawn, font, size)
-        x = {"left": left, "center": left + (box_w - width) / 2, "right": left + box_w - width}.get(align, left)
-        # The baseline sits an ascender below the top of the box, so that `top`
-        # means the same thing here as it does on the raster.
+        # Align the whole block vertically and each line horizontally.
         ascent = size * 0.8
+        block_h = size + (len(lines) - 1) * step
         top_of_box = bottom + box_h
         y = {
             "top": top_of_box - ascent,
-            "middle": bottom + (box_h - size) / 2 + (size - ascent),
-            "bottom": bottom + (size - ascent),
+            "middle": bottom + (box_h + block_h) / 2 - ascent,
+            "bottom": bottom + block_h - ascent,
         }.get(valign, top_of_box - ascent)
-
-        self._c.setFont(font, size)
-        self._c.drawString(x, y, drawn)
+        if fit == "wrap":
+            self._c.saveState()
+            bounds = self._c.beginPath()
+            bounds.rect(left, bottom, box_w, box_h)
+            self._c.clipPath(bounds, stroke=0)
+        try:
+            self._c.setFont(font, size)
+            for line in lines:
+                width = c_stringWidth(line, font, size)
+                x = {"left": left, "center": left + (box_w - width) / 2, "right": left + box_w - width}.get(align, left)
+                self._c.drawString(x, y, line)
+                y -= step
+        finally:
+            if fit == "wrap":
+                self._c.restoreState()
 
     def swatch(self, colours: list[str], *, box_mm, shape: str = "rect") -> None:
         """One band per colour, stacked across the box, inside the given outline.

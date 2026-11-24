@@ -36,7 +36,7 @@ _ID_MM = round(16 * _PT, 2)
 _GAP = 0.45
 
 
-def _roomy_elements(width_mm: float, height_mm: float) -> list[dict[str, Any]]:
+def _roomy_elements(width_mm: float, height_mm: float, *, wrap_name: bool = True) -> list[dict[str, Any]]:
     """The layout every built-in uses, as boxes.
 
     ⚠️ All four built-ins land here. The renderer's other layout, "tight",
@@ -56,6 +56,10 @@ def _roomy_elements(width_mm: float, height_mm: float) -> list[dict[str, Any]]:
     text_w = qr_x - text_x - 1.5
 
     rows: list[dict[str, Any]] = []
+    # Reserve the existing note row and spool ID. Only use space between them.
+    extra_name = round(_NAME_MM * 1.2, 2)
+    used = _PAD + _BRAND_MM + _SUB_MM + 2 * _HEX_MM + _NAME_MM + 5 * _GAP
+    wrap_name = wrap_name and used + extra_name <= height_mm - _PAD - _ID_MM
     y = _PAD
     for content, size, bold, italic in (
         ("{brand}", _BRAND_MM, True, False),
@@ -64,13 +68,15 @@ def _roomy_elements(width_mm: float, height_mm: float) -> list[dict[str, Any]]:
         ("{display_name}", _NAME_MM, True, False),
         ("{note}", _HEX_MM, False, True),
     ):
+        use_wrap = wrap_name and content == "{display_name}"
+        height = round(size + extra_name, 2) if use_wrap else size
         rows.append(
             {
                 "type": "text",
                 "x_mm": round(text_x, 2),
                 "y_mm": round(y, 2),
                 "w_mm": round(text_w, 2),
-                "h_mm": size,
+                "h_mm": height,
                 "content": content,
                 "size_mm": size,
                 "bold": bold,
@@ -81,10 +87,10 @@ def _roomy_elements(width_mm: float, height_mm: float) -> list[dict[str, Any]]:
                 # short material line under it, so the label reads as though
                 # the material were the more important field. Caught by looking
                 # at a render rather than by any test.
-                "fit": "clip",
+                "fit": "wrap" if use_wrap else "clip",
             }
         )
-        y += size + _GAP
+        y += height + _GAP
 
     return [
         {

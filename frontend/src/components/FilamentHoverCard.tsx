@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useLayoutEffect, type ReactNode } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useId, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
@@ -7,7 +7,7 @@ import { isLightColor, resolveSpoolColorName } from '../utils/colors';
 import { buildFilamentBackground, parseStops } from './filamentSwatchHelpers';
 import { Modal } from './Modal';
 
-type CardPlacement = { top: number; left: number; side: 'top' | 'bottom'; arrowLeft: number };
+type CardPlacement = { top: number; left: number; side: 'top' | 'bottom'; arrowLeft: number; maxHeight: number };
 
 /** Where a hover card goes, in DOCUMENT coordinates.
  *
@@ -31,7 +31,6 @@ function useCardPlacement(
   isVisible: boolean,
   triggerRef: React.RefObject<HTMLDivElement | null>,
   cardRef: React.RefObject<HTMLDivElement | null>,
-  { flip = true }: { flip?: boolean } = {},
 ): CardPlacement | null {
   const [placement, setPlacement] = useState<CardPlacement | null>(null);
 
@@ -47,16 +46,17 @@ function useCardPlacement(
 
       const rect = trigger.getBoundingClientRect();
       const cardWidth = card.offsetWidth;
-      const cardHeight = card.offsetHeight;
+      const naturalHeight = Math.max(card.offsetHeight, card.firstElementChild?.scrollHeight ?? 0);
       // The app header is fixed at 56px; space above the trigger excludes it.
       const headerHeight = 56;
       const gap = 8;
       const safeMargin = 8;
 
-      const spaceAbove = rect.top - headerHeight;
-      const spaceBelow = window.innerHeight - rect.bottom;
-      const side: 'top' | 'bottom' =
-        flip && spaceAbove < cardHeight + 12 && spaceBelow > spaceAbove ? 'bottom' : 'top';
+      const spaceAbove = rect.top - headerHeight - gap - safeMargin;
+      const spaceBelow = window.innerHeight - rect.bottom - gap - safeMargin;
+      const side = naturalHeight > spaceAbove && spaceBelow > spaceAbove ? 'bottom' : 'top';
+      const maxHeight = Math.max(0, side === 'top' ? spaceAbove : spaceBelow);
+      const cardHeight = Math.min(maxHeight, naturalHeight);
 
       // Anchor the safe-left edge on `<main>` so the threshold tracks the
       // sidebar's expanded / collapsed / hidden state on its own.
@@ -64,12 +64,13 @@ function useCardPlacement(
       const triggerCenterX = rect.left + rect.width / 2;
       const minLeft = (main ? main.getBoundingClientRect().left : 0) + safeMargin;
       const maxLeft = window.innerWidth - cardWidth - safeMargin;
-      const left = Math.max(minLeft, Math.min(triggerCenterX - cardWidth / 2, maxLeft));
+      const left = Math.max(safeMargin, Math.min(Math.max(minLeft, triggerCenterX - cardWidth / 2), maxLeft));
 
       setPlacement({
         top: (side === 'top' ? rect.top - cardHeight - gap : rect.bottom + gap) + window.scrollY,
         left: left + window.scrollX,
         side,
+        maxHeight,
         // Arrow keeps pointing at the trigger after the card was clamped
         // (both in viewport terms, so the scroll offset cancels out).
         arrowLeft: triggerCenterX - left,
@@ -81,9 +82,126 @@ function useCardPlacement(
     return () => {
       window.removeEventListener('resize', measure);
     };
-  }, [isVisible, flip, triggerRef, cardRef]);
+  }, [isVisible, triggerRef, cardRef]);
 
   return placement;
+}
+
+/**
+ * A mouse may hover a slot while touch, pen and keyboard open it explicitly.
+ * The card is portalled, so its pointer and focus ranges include both roots.
+ */
+function useSlotCard(disabled = false) {
+  const [mode, setMode] = useState<'hover' | 'open' | null>(null);
+  const isVisible = !disabled && mode !== null;
+  const cardId = useId();
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pressType = useRef('');
+  const focusCard = useRef(false);
+
+  const clearTimer = useCallback(() => {
+    if (timer.current !== null) clearTimeout(timer.current);
+    timer.current = null;
+  }, []);
+  const dismiss = useCallback(() => {
+    clearTimer();
+    focusCard.current = false;
+    setMode(null);
+  }, [clearTimer]);
+
+  useEffect(() => clearTimer, [clearTimer]);
+  useEffect(() => {
+    if (disabled) dismiss();
+  }, [disabled, dismiss]);
+
+  useEffect(() => {
+    if (!isVisible) return;
+    const contains = (node: EventTarget | null) =>
+      node instanceof Node && (triggerRef.current?.contains(node) || cardRef.current?.contains(node));
+    const dismissOutside = (event: Event) => {
+      if (!contains(event.target)) dismiss();
+    };
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      const restoreFocus = contains(document.activeElement);
+      dismiss();
+      if (restoreFocus) {
+        event.preventDefault();
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener('pointerdown', dismissOutside, true);
+    document.addEventListener('focusin', dismissOutside);
+    document.addEventListener('keydown', onEscape);
+    return () => {
+      document.removeEventListener('pointerdown', dismissOutside, true);
+      document.removeEventListener('focusin', dismissOutside);
+      document.removeEventListener('keydown', onEscape);
+    };
+  }, [isVisible, dismiss]);
+
+  useEffect(() => {
+    if (!isVisible || mode !== 'open' || !focusCard.current) return;
+    const frame = requestAnimationFrame(() => {
+      focusCard.current = false;
+      const card = cardRef.current;
+      (card?.querySelector<HTMLElement>('button:not([disabled]), a[href], [tabindex="0"]') ?? card)?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [isVisible, mode]);
+
+  const hoverProps = {
+    onPointerEnter: (event: React.PointerEvent<HTMLDivElement>) => {
+      if (disabled || event.pointerType !== 'mouse' || mode === 'open') return;
+      clearTimer();
+      if (mode === null) timer.current = setTimeout(() => setMode('hover'), 80);
+    },
+    onPointerLeave: (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.pointerType !== 'mouse' || mode === 'open') return;
+      clearTimer();
+      if (mode === 'hover') timer.current = setTimeout(dismiss, 100);
+    },
+  };
+
+  function activate(focus: boolean) {
+    clearTimer();
+    if (mode === 'open') {
+      dismiss();
+    } else {
+      focusCard.current = focus;
+      setMode('open');
+    }
+  }
+
+  const triggerProps = {
+    ...hoverProps,
+    ref: triggerRef,
+    role: disabled ? undefined : 'button',
+    tabIndex: disabled ? undefined : 0,
+    'aria-haspopup': disabled ? undefined : ('dialog' as const),
+    'aria-expanded': disabled ? undefined : isVisible,
+    'aria-controls': isVisible ? cardId : undefined,
+    'data-ams-slot-trigger': disabled ? undefined : '',
+    onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.currentTarget.contains(event.target as Node)) pressType.current = event.pointerType;
+    },
+    onClick: (event: React.MouseEvent<HTMLDivElement>) => {
+      // React bubbles portal events through this wrapper even when the DOM does not.
+      if (disabled || !event.currentTarget.contains(event.target as Node)) return;
+      const pointer = pressType.current;
+      pressType.current = '';
+      if (pointer === 'mouse' && mode === 'hover') return;
+      activate(event.detail === 0 && !pointer);
+    },
+    onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (disabled || event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return;
+      event.preventDefault();
+      if (!event.repeat) activate(true);
+    },
+  };
+  return { isVisible, triggerRef, cardRef, cardId, triggerProps, hoverProps, dismiss };
 }
 
 interface FilamentData {
@@ -171,13 +289,9 @@ interface FilamentHoverCardProps {
 export function FilamentHoverCard({ data, children, disabled, className = '', spoolman, inventory, configureSlot }: FilamentHoverCardProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const [isVisible, setIsVisible] = useState(false);
-
+  const { isVisible, triggerRef, cardRef, cardId, triggerProps, hoverProps, dismiss } = useSlotCard(disabled);
   const [copied, setCopied] = useState(false);
   const [showUnlinkConfirm, setShowUnlinkConfirm] = useState(false);
-  const triggerRef = useRef<HTMLDivElement>(null);
-  const cardRef = useRef<HTMLDivElement>(null);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const placement = useCardPlacement(isVisible, triggerRef, cardRef);
 
   const handleCopyUuid = () => {
@@ -215,39 +329,6 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
     document.body.removeChild(textarea);
   };
 
-
-  const handleMouseEnter = () => {
-    if (disabled) return;
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    // Small delay to prevent flicker on quick mouse movements
-    timeoutRef.current = setTimeout(() => setIsVisible(true), 80);
-  };
-
-  const handleMouseLeave = () => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    timeoutRef.current = setTimeout(() => setIsVisible(false), 100);
-  };
-
-  // Dismiss the card immediately, for actions that open a dialog or navigate away.
-  //
-  // The card sits at z-[60] so it can escape sibling printer cards' stacking
-  // contexts, which puts it ABOVE ConfigureAmsSlotModal and LinkSpoolModal at
-  // z-50 — so a card left standing draws over the very dialog it just opened.
-  // Mouseleave is the only thing that normally hides it, and a touch device never
-  // sends one after the tap that opened the card, so on a tablet it stays up
-  // indefinitely (upstream #2631). Clearing the timeout is not optional: a
-  // pending show timer would re-open it.
-  const dismiss = () => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    setIsVisible(false);
-  };
-
-  // Cleanup timeout on unmount
-  useEffect(() => {
-    return () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    };
-  }, []);
 
   // Get fill bar color based on percentage
   const getFillColor = (fill: number): string => {
@@ -298,10 +379,8 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
 
   return (
     <div
-      ref={triggerRef}
+      {...triggerProps}
       className={`relative ${className}`}
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
     >
       {children}
 
@@ -309,15 +388,12 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
       {isVisible && createPortal(
         <div
           ref={cardRef}
-          // ⚠️ The card carries the SAME handlers as the trigger. As a child of
-          // the trigger it stayed open while the pointer was on it, for free;
-          // portalled to <body> it is no longer in that subtree, so leaving the
-          // trigger fires mouseleave and the 100 ms timer would close the card
-          // the moment you reached for Configure or Assign spool. Entering the
-          // card cancels that timer — which is the only reason its buttons are
-          // still clickable.
-          onMouseEnter={handleMouseEnter}
-          onMouseLeave={handleMouseLeave}
+          {...hoverProps}
+          id={cardId}
+          role="dialog"
+          aria-label={t('ams.slotDetails')}
+          tabIndex={-1}
+          data-ams-slot-card=""
           data-testid="filament-hover-card"
           className="absolute z-[60] animate-in fade-in-0 zoom-in-95"
           style={{
@@ -333,15 +409,14 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
             left: placement?.left ?? 0,
             // Hidden until measured: an unmeasured frame paints in the corner.
             visibility: placement ? 'visible' : 'hidden',
-            maxWidth: 'calc(100vw - 24px)',
+            maxWidth: 'calc(100vw - 16px)',
           }}
         >
           {/* Card container */}
           <div className="
-            w-52 bg-bambu-dark-secondary border border-bambu-dark-tertiary
-            rounded-lg shadow-xl overflow-hidden
-            backdrop-blur-sm
-          ">
+            w-52 max-w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary
+            rounded-lg shadow-xl overflow-y-auto backdrop-blur-sm
+          " style={{ maxHeight: placement?.maxHeight }}>
             {/* Color swatch header - the hero element */}
             <div
               className="h-12 relative overflow-hidden"
@@ -711,53 +786,26 @@ interface EmptySlotHoverCardProps {
 
 export function EmptySlotHoverCard({ children, className = '', configureSlot, onAssignSpool, emptyKind, assigned }: EmptySlotHoverCardProps) {
   const { t } = useTranslation();
-  const [isVisible, setIsVisible] = useState(false);
-  const triggerRef = useRef<HTMLDivElement>(null);
-  const cardRef = useRef<HTMLDivElement>(null);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // No flip: this one is a one-line tooltip that always sits above its slot.
-  const placement = useCardPlacement(isVisible, triggerRef, cardRef, { flip: false });
-
-  const handleMouseEnter = () => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    timeoutRef.current = setTimeout(() => setIsVisible(true), 80);
-  };
-
-  const handleMouseLeave = () => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    timeoutRef.current = setTimeout(() => setIsVisible(false), 100);
-  };
-
-  // See FilamentHoverCard.dismiss — same z-[60]-over-a-z-50-dialog problem, and
-  // the same missing mouseleave on touch (upstream #2631).
-  const dismiss = () => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    setIsVisible(false);
-  };
-
-  useEffect(() => {
-    return () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    };
-  }, []);
+  const { isVisible, triggerRef, cardRef, cardId, triggerProps, hoverProps, dismiss } = useSlotCard();
+  const placement = useCardPlacement(isVisible, triggerRef, cardRef);
 
   return (
     <div
-      ref={triggerRef}
+      {...triggerProps}
       className={`relative ${className}`}
       data-testid="empty-slot"
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
     >
       {children}
 
       {isVisible && createPortal(
         <div
           ref={cardRef}
-          // Same handlers as the trigger — see FilamentHoverCard's card for why
-          // a portalled card that does not carry them loses its own buttons.
-          onMouseEnter={handleMouseEnter}
-          onMouseLeave={handleMouseLeave}
+          {...hoverProps}
+          id={cardId}
+          role="dialog"
+          aria-label={t('ams.slotDetails')}
+          tabIndex={-1}
+          data-ams-slot-card=""
           data-testid="empty-slot-hover-card"
           className="absolute z-[60] animate-in fade-in-0 zoom-in-95"
           style={{
@@ -772,25 +820,26 @@ export function EmptySlotHoverCard({ children, className = '', configureSlot, on
             top: placement?.top ?? 0,
             left: placement?.left ?? 0,
             visibility: placement ? 'visible' : 'hidden',
+            maxWidth: 'calc(100vw - 16px)',
           }}
         >
           <div className="
             bg-bambu-dark-secondary border border-bambu-dark-tertiary
-            rounded-md shadow-lg overflow-hidden
-          ">
+            rounded-md shadow-lg overflow-y-auto
+          " style={{ maxHeight: placement?.maxHeight }}>
             {assigned ? (
               <div className="px-3 py-1.5 text-xs space-y-1">
-                <div className="flex items-center gap-1.5 text-white whitespace-nowrap">
+                <div className="flex items-center gap-1.5 text-white">
                   <span
                     className="w-2.5 h-2.5 rounded-full border border-dashed border-amber-500 flex-shrink-0"
                     style={{ backgroundColor: assigned.colorHex ? `#${assigned.colorHex.slice(0, 6)}` : 'transparent' }}
                   />
-                  {assigned.label}
+                  <span className="min-w-0 break-words">{assigned.label}</span>
                 </div>
                 <div className="text-amber-700 dark:text-amber-400 max-w-[14rem] whitespace-normal">{t('ams.assignedNotConfigured')}</div>
               </div>
             ) : (
-              <div className="px-3 py-1.5 text-xs whitespace-nowrap">
+              <div className="px-3 py-1.5 text-xs">
                 {emptyKind === 'reset' ? (
                   <span className="text-amber-700 dark:text-amber-400">{t('ams.slotLoadedUnconfigured')}</span>
                 ) : (
@@ -841,12 +890,14 @@ export function EmptySlotHoverCard({ children, className = '', configureSlot, on
             )}
           </div>
           <div
-            className="
-              absolute -translate-x-1/2 top-full w-0 h-0
+            className={`
+              absolute -translate-x-1/2 w-0 h-0
               border-l-[5px] border-l-transparent
               border-r-[5px] border-r-transparent
-              border-t-[5px] border-t-bambu-dark-tertiary
-            "
+              ${placement?.side === 'bottom'
+                ? 'bottom-full border-b-[5px] border-b-bambu-dark-tertiary'
+                : 'top-full border-t-[5px] border-t-bambu-dark-tertiary'}
+            `}
             style={{ left: `${placement?.arrowLeft ?? 0}px` }}
           />
         </div>,

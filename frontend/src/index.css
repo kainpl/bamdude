@@ -853,3 +853,23 @@ body {
   border: none;
   border-radius: 999px;
 }
+
+
+/* Keep the slot trigger and its actions tappable. Details remain selectable. */
+[data-ams-slot-trigger],
+[data-ams-slot-card] button {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
+}
+
+[data-ams-slot-trigger] {
+  cursor: pointer;
+  border-radius: 0.25rem;
+}
+
+[data-ams-slot-trigger]:focus-visible {
+  outline: 2px solid var(--color-bambu-green);
+  outline-offset: 2px;
+}
