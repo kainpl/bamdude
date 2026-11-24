@@ -2838,16 +2838,16 @@ async def update_procurement(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.ORDERS_UPDATE),
 ):
-    detail = "Purchased part not found in this order"
+    missing_part = HTTPException(status_code=404, detail="Purchased part not found in this order")
     part = await db.get(ProductPart, part_id)
     if part is None or part.kind != "purchased":
-        raise HTTPException(status_code=404, detail=detail)
+        raise missing_part
     product_id = part.product_id
     await product_gate(db, [product_id])
     await order_fulfilment.lock_order(db, project_id)
     part = await db.get(ProductPart, part_id, populate_existing=True)
     if part is None or part.kind != "purchased" or part.product_id != product_id:
-        raise HTTPException(status_code=404, detail=detail)
+        raise missing_part
     project = await _get_project(db, project_id, fresh=True)
     identity = part.composition_identity
     matching = any(
@@ -2861,14 +2861,14 @@ async def update_procurement(
         for line in project.lines
     )
     if not matching or (data.part_identity is not None and data.part_identity != identity):
-        raise HTTPException(status_code=404, detail=detail)
+        raise missing_part
     if data.part_identity is None and any(
         row["id"] == part_id and row["identity"] != identity
         for line in project.lines
         for revision in line.composition_revisions or []
         for row in revision["parts"]
     ):
-        raise HTTPException(status_code=404, detail=detail)
+        raise missing_part
     row = await db.get(ProjectProcurement, {"project_id": project_id, "product_part_id": part_id})
     acquired_before = row.quantity_acquired if row is not None else 0
     if row is None:

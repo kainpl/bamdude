@@ -62,10 +62,6 @@ from backend.app.services.line_composition import (
 )
 
 MAX_COUNT = 9999
-_CLOSED = {
-    "completed": "A completed order's lines cannot be reconfigured",
-    "cancelled": "A cancelled order's lines cannot be reconfigured",
-}
 
 
 class LineConfigError(ValueError):
@@ -490,8 +486,12 @@ def append_revision(
 
 async def require_active(db: AsyncSession, line: ProjectLine) -> None:
     status = await db.scalar(select(Project.status).where(Project.id == line.project_id))
+    if status == "completed":
+        raise LineConfigError("A completed order's lines cannot be reconfigured", 409)
+    if status == "cancelled":
+        raise LineConfigError("A cancelled order's lines cannot be reconfigured", 409)
     if status != "active":
-        raise LineConfigError(_CLOSED.get(status, "This order is closed"), 409)
+        raise LineConfigError("This order is closed", 409)
 
 
 _STALE = "The order line or catalog changed. Review the current values and confirm again"

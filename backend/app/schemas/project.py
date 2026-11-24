@@ -237,11 +237,16 @@ class LineSavedPartOut(BaseModel):
     manual: bool
 
 
-class LineConfigurationOut(BaseModel):
-    """Codes and names only; the frontend composes the caption in the reader's language."""
+class LineConfigurationSummaryOut(BaseModel):
+    """Codes and names for a configuration caption."""
 
     choices: list[LineChoiceOut] = []
     changed_parts: list[LineChangedPartOut] = []
+
+
+class LineConfigurationOut(LineConfigurationSummaryOut):
+    """Saved configuration with the data the order editor needs."""
+
     saved_parts: list[LineSavedPartOut] = []
     count_identities: dict[int, str] = {}
     revision: int | None = None

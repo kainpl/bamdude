@@ -18,7 +18,7 @@ from backend.app.schemas.farm_forecast import EstimateReasonOut
 from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
 from backend.app.schemas.part_image import PartImageRef
 from backend.app.schemas.product import PartSourceOut, ProductListItem, ProductPartVariantOut
-from backend.app.schemas.project import LineConfigurationOut, ProjectListResponse
+from backend.app.schemas.project import LineConfigurationSummaryOut, ProjectListResponse
 from backend.app.schemas.stock import StockListItem
 
 
@@ -239,7 +239,7 @@ class StockIssueSummaryLine(BaseModel):
     quantity: int
     #: The product row's configuration from the line's snapshot — the same the document
     #: names (WS-13 E12 A01); None for a part's row, which has no configuration of its own.
-    configuration: LineConfigurationOut | None = None
+    configuration: LineConfigurationSummaryOut | None = None
 
 
 class StockIssueRow(BaseModel):
@@ -291,7 +291,7 @@ class DispatchNoteLine(BaseModel):
     product_id: int | None = None
     product_name: str
     sku: str | None = None
-    configuration: LineConfigurationOut
+    configuration: LineConfigurationSummaryOut
     part_name: str | None = None
     quantity: int
 
