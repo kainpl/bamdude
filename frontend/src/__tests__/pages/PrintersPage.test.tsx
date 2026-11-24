@@ -96,6 +96,16 @@ const mockPrinterStatus = {
   vt_tray: [],
 };
 
+function enabledCameraControl(title: string) {
+  return waitFor(() => {
+    const printer = document.getElementById('printer-1');
+    expect(printer).not.toBeNull();
+    const control = within(printer!).getByTitle(title);
+    expect(control).toBeEnabled();
+    return control;
+  });
+}
+
 describe('PrintersPage', () => {
   beforeEach(() => {
     server.use(
@@ -230,8 +240,7 @@ describe('PrintersPage', () => {
     try {
       const initial = await screen.findByAltText('Camera stream') as HTMLImageElement;
       expect(initial.src).toContain('/printers/2/');
-      await waitFor(() => expect(screen.getAllByTitle('Open camera overlay')).toHaveLength(3));
-      await userEvent.click(within(document.getElementById('printer-1')!).getByTitle('Open camera overlay'));
+      await userEvent.click(await enabledCameraControl('Open camera overlay'));
       await waitFor(() => expect(screen.getByAltText('Camera stream').getAttribute('src')).toContain('/printers/1/'));
       expect(initial.src).toMatch(/^data:image\/gif;/);
       expect(screen.getAllByAltText('Camera stream')).toHaveLength(1);
@@ -388,16 +397,11 @@ describe('PrintersPage', () => {
       const open = vi.spyOn(window, 'open').mockReturnValue(null);
       const view = render(<PrintersPage />);
       try {
-        const card = await waitFor(() => {
-          const el = document.getElementById('printer-1');
-          expect(el).not.toBeNull();
-          return el!;
-        });
-        await userEvent.click(await within(card).findByTitle('Open camera overlay'));
+        await userEvent.click(await enabledCameraControl('Open camera overlay'));
         expect(await screen.findByAltText('Camera stream')).toBeInTheDocument();
         expect(open).not.toHaveBeenCalled();
 
-        await userEvent.click(within(card).getByRole('button', { name: 'Choose how the camera opens' }));
+        await userEvent.click(await enabledCameraControl('Choose how the camera opens'));
         expect(await screen.findByRole('menuitem', { name: /Embedded Overlay/ })).toBeInTheDocument();
         expect(screen.queryByRole('menuitem', { name: /New Window/ })).not.toBeInTheDocument();
       } finally {
@@ -417,19 +421,31 @@ describe('PrintersPage', () => {
 
     it('a browser that chose the overlay opens it even when the farm default is a window', async () => {
       localStorage.setItem('cameraViewMode', 'embedded');
-      server.use(http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({ camera_view_mode: 'window' })));
+      let reportStatus!: () => void;
+      const statusReady = new Promise<void>((resolve) => { reportStatus = resolve; });
+      server.use(
+        http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({ camera_view_mode: 'window' })),
+        http.get('/api/v1/printers/1/status', async () => {
+          await statusReady;
+          return HttpResponse.json(mockPrinterStatus);
+        }),
+      );
       const openWindow = vi.spyOn(window, 'open').mockReturnValue(null);
       const view = render(<PrintersPage />);
       try {
-        await waitFor(() => expect(screen.getAllByTitle('Open camera overlay')).toHaveLength(3));
-        const card = document.getElementById('printer-1')!;
-        await userEvent.click(within(card).getByTitle('Open camera overlay'));
+        // The preferred title appears before the printer reports a live connection.
+        await waitFor(() => {
+          const card = document.getElementById('printer-1');
+          expect(card).not.toBeNull();
+          expect(within(card!).getByTitle('Open camera overlay')).toBeDisabled();
+        });
+        reportStatus();
 
-        // The toolbar is visible as soon as the overlay opens, independently
-        // of the live stream budget and requests to the camera.
-        expect(await screen.findByTitle('Refresh stream', {}, { timeout: 3000 })).toBeInTheDocument();
+        await userEvent.click(await enabledCameraControl('Open camera overlay'));
+        expect(await screen.findByAltText('Camera stream')).toHaveAttribute('src', expect.stringContaining('/printers/1/'));
         expect(openWindow).not.toHaveBeenCalled();
       } finally {
+        reportStatus();
         view.unmount();
         openWindow.mockRestore();
       }
@@ -439,16 +455,11 @@ describe('PrintersPage', () => {
       server.use(http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({ camera_view_mode: 'window' })));
       const view = render(<PrintersPage />);
       try {
-        const card = await waitFor(() => {
-          const el = document.getElementById('printer-1');
-          expect(el).not.toBeNull();
-          return el!;
-        });
-        await userEvent.click(await within(card).findByRole('button', { name: 'Choose how the camera opens' }));
+        await userEvent.click(await enabledCameraControl('Choose how the camera opens'));
         await userEvent.click(await screen.findByRole('menuitem', { name: /Embedded Overlay/ }));
         expect(await screen.findByAltText('Camera stream')).toBeInTheDocument();
         expect(localStorage.getItem('cameraViewMode')).toBe('embedded');
-        await waitFor(() => expect(within(card).getByTitle('Open camera overlay')).toBeInTheDocument());
+        await enabledCameraControl('Open camera overlay');
         // The farm default is still "window": nothing closes what was just opened.
         await new Promise((resolve) => setTimeout(resolve, 50));
         expect(screen.getByAltText('Camera stream')).toBeInTheDocument();
@@ -462,12 +473,7 @@ describe('PrintersPage', () => {
       const open = vi.spyOn(window, 'open').mockReturnValue(null);
       const view = render(<PrintersPage />);
       try {
-        const card = await waitFor(() => {
-          const el = document.getElementById('printer-1');
-          expect(el).not.toBeNull();
-          return el!;
-        });
-        await userEvent.click(await within(card).findByRole('button', { name: 'Choose how the camera opens' }));
+        await userEvent.click(await enabledCameraControl('Choose how the camera opens'));
         await userEvent.click(await screen.findByRole('menuitem', { name: /New Window/ }));
         expect(open).toHaveBeenCalledTimes(1);
         expect(localStorage.getItem('cameraViewMode')).toBe('window');
