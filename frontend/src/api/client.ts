@@ -97,7 +97,7 @@ export interface PrintStatePreview {
   after: Record<'queue' | 'item' | 'archive', Record<string, unknown>> & {
     delete_item: boolean; runtime?: PrintStateRuntimeRelease;
     members?: { id: number; status: string; completed_at: string; error_code: string }[];
-    settlement?: { stage: string; archive_id: number };
+    settlement?: { stage: string; archive_id: number; pending_only?: boolean };
   };
   /** Present for the in-memory repair only. */
   runtime?: Omit<PrintStateRuntimeView, 'age_seconds'>;

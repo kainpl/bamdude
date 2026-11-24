@@ -225,6 +225,10 @@ export default {
     idleAssertion: "I confirm that this printer is idle.",
     manualSwapAssertion: "I manually removed the print and prepared the plate/mechanism. BamDude must not send this old plate swap.",
     groupExplanation: "Only these queue claims will be cancelled. The archive and its accounting are preserved. Retry and Clone are blocked for these rows.",
+    pendingSwapChange: "This older archive has a queued plate-swap instruction with no recorded claim. The repair records that you physically prepared the plate.",
+    pendingSwapNext: "After applying, release the finished print context in Info. The queue stays paused until you resume it.",
+    pendingSwapRecorded: "Manual plate preparation recorded. The queue is paused.",
+    pendingSwapRuntime: "Open the finished print context",
     settlementChange: "Plate swap: owed → performed manually. The archive outcome and accounting stay unchanged.",
     settlementNext: "Applying this change records the plate swap you performed manually. Then check again and prepare a new preview to cancel stale claims, and resolve any remaining runtime context before resuming.",
     staleClaim: "Cancelled stale queue claim. Check execution archive {{archive}}; Retry and Clone are unavailable.",
@@ -317,6 +321,7 @@ export default {
       current_item_id: 'Current item', is_paused: 'Paused', time_source: 'Time source',
       error_code: 'Failure class', error_message: 'Error message', failure_reason: 'Failure reason' },
     interruptedUncertain: 'This dispatch was interrupted when the BamDude process that owned it stopped. Closing the attempt marks the job and its archive failed; it does not prove that nothing was printed. Check the printer and the plate first.',
+    interruptedSwapNext: 'The queue stays paused. Check the plate and release any finished print context in Info before retrying and resuming the queue.',
     interruptedNext: 'The job stays failed and its queue stops with an error. To print it again, use Retry on the job, then resume the queue.',
     runtime: {
       held: 'The printer is free. Archive #{{archive}} has finished, but its context is still active.',

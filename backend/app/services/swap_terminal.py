@@ -53,7 +53,10 @@ def operator_settlement(extra, archive_identity=None):
         if not isinstance(record["actor"], str) or not record["actor"]:
             return None
         previous = record["previous_effect"]
-        if not isinstance(previous, dict) or previous.get("stage") != "owed" or previous.get("version", 1) != 1:
+        if record.get("pending_only") is True:
+            if previous is not None or record.get("previous_hold") != {"present": False, "value": None}:
+                return None
+        elif not isinstance(previous, dict) or previous.get("stage") != CLAIM_OWED or previous.get("version", 1) != 1:
             return None
         hold = record["previous_hold"]
         if not isinstance(hold, dict) or type(hold.get("present")) is not bool or "value" not in hold:
@@ -72,18 +75,29 @@ def unsettled_hold(extra, archive_identity=None):
     return not (settled and settled["previous_hold"] == {"present": True, "value": extra["swap_hold"]})
 
 
-def settle_by_operator(archive, *, action_identity, actor, at):
+def pending_change_table_without_claim(extra) -> bool:
+    """Recognize the legacy intent without mistaking a malformed claim for an absent one."""
+    if not isinstance(extra, dict) or extra.get("swap_macro_events_pending") != [CHANGE_TABLE_EVENT]:
+        return False
+    effects = extra.get(EFFECTS_KEY, {})
+    return isinstance(effects, dict) and CHANGE_TABLE_EFFECT not in effects and HOLD_KEY not in extra
+
+
+def settle_by_operator(archive, *, action_identity, actor, at, pending_only=False):
     """Caller proved idle/ownership, holds archive+lane/writer, and owns commit/audit."""
     extra = dict(archive.extra_data or {})
     effects = dict(extra.get("bamdude_terminal_effects") or {})
     previous = effects.get("swap_change_table")
     pending = extra.get("swap_macro_events_pending")
-    if (
+    if pending_only:
+        if not pending_change_table_without_claim(extra):
+            raise ValueError("recovery_changed")
+    elif (
         not isinstance(previous, dict)
-        or previous.get("stage") != "owed"
+        or previous.get("stage") != CLAIM_OWED
         or previous.get("version", 1) != 1
         or not isinstance(pending, list)
-        or pending.count("swap_mode_change_table") != 1
+        or pending.count(CHANGE_TABLE_EVENT) != 1
     ):
         raise ValueError("recovery_changed")
     record = {
@@ -93,10 +107,12 @@ def settle_by_operator(archive, *, action_identity, actor, at):
         "action_identity": action_identity,
         "actor": actor,
         "at": at.isoformat(),
-        "previous_effect": dict(previous),
-        "previous_hold": {"present": "swap_hold" in extra, "value": extra.get("swap_hold")},
+        "previous_effect": None if pending_only else dict(previous),
+        "previous_hold": {"present": HOLD_KEY in extra, "value": extra.get(HOLD_KEY)},
     }
-    effects["swap_change_table"] = record
+    if pending_only:
+        record["pending_only"] = True
+    effects[CHANGE_TABLE_EFFECT] = record
     extra["bamdude_terminal_effects"] = effects
     extra["swap_macro_events_pending"] = [e for e in pending if e != "swap_mode_change_table"]
     if operator_settlement(extra, archive.recovery_identity) is None:

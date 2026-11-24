@@ -3739,6 +3739,17 @@ class BackgroundDispatchService:
                     "still be reading it. Check the printer before you retry.",
                 )
             if answer == RESPONSE_NO_ACKNOWLEDGEMENT:
+                from backend.app.services.swap_terminal import CHANGE_TABLE_EVENT
+
+                if job.options.get("execute_swap_macros") and CHANGE_TABLE_EVENT in (
+                    job.options.get("swap_macro_events") or []
+                ):
+                    # A late start may still own the prepared swap cycle. Preserve
+                    # its archive and claim until telemetry or the operator resolves it.
+                    raise DispatchObservationLost(
+                        f"{printer_name} did not acknowledge the start. Check the printer, then close "
+                        "the attempt in Info if it did not start."
+                    )
                 raise DispatchNotStarted(
                     DISPATCH_NO_ACKNOWLEDGEMENT,
                     f"Printer did not acknowledge print command — state still {pre_state}. Check the printer for a "

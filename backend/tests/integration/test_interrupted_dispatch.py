@@ -712,6 +712,36 @@ async def test_info_closes_an_attempt_this_process_stopped_watching(
 
 
 @pytest.mark.asyncio
+async def test_info_closes_an_unacknowledged_swap_only_after_stable_idle(
+    db_session, test_engine, printer_factory, archive_factory, telemetry, owner, no_physical_commands, monkeypatch
+):
+    printer, queue, archive, item, _ = await an_interrupted_job(
+        db_session, printer_factory, archive_factory, phase="sent", boot="this-boot"
+    )
+    archive.extra_data = {"swap_macro_events_pending": ["swap_mode_change_table"], "swap_start_effect": "fired"}
+    await db_session.commit()
+    watched_no_more(printer.id, archive.id)
+    monkeypatch.setattr(store, "_seen_for", lambda *_args: 11)
+    telemetry.state = "FINISH"
+
+    page = await store.list_issues(db_session, None)
+    issue = next(row for row in page["issues"] if row["kind"] == "item")
+    assert not issue["actions"] and "live_unknown" in issue["blocked_reasons"]
+
+    telemetry.state = "IDLE"
+    await close_through_info(db_session, test_engine, printer, item)
+    await reread(db_session, archive, item, queue)
+    assert archive.status == "failed" and queue.is_paused
+    assert "swap_macro_events_pending" not in archive.extra_data
+    assert archive.extra_data["swap_start_effect"] == "fired"
+    assert archive.extra_data["operator_interrupted_dispatch"]["swap_macros_not_run"] == ["swap_mode_change_table"]
+    plan = await store.make_preview(
+        db_session, printer.id, "runtime", archive.id, "clear_terminal_runtime_context", "user:1"
+    )
+    assert plan["after"]["runtime"]["archive_id"] == archive.id
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["printer_running", "another_run", "still_watched"])
 async def test_info_offers_no_close_of_an_unwatched_attempt_without_an_idle_printer(
     db_session, printer_factory, archive_factory, telemetry, owner, case

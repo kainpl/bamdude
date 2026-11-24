@@ -92,7 +92,7 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
       onApplied();
       // The in-memory repair answers with its outcome, which the operator must read before leaving:
       // the queue is paused whatever it was, and an unrecorded result needs the history.
-      if (runtime || closePrint) setResult(answer);
+      if (runtime || closePrint || preview.after.settlement?.pending_only) setResult(answer);
       else onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
@@ -130,7 +130,14 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
         <p>{t('printStateRecovery.runtime.willPause')}</p>
         <p>{t('printStateRecovery.runtime.notPlate')}</p>
       </div>}
-      {result && (closePrint ? <div role="status" className="space-y-1">
+      {result && preview?.after.settlement?.pending_only && <div role="status" className="space-y-1">
+        <p>{t('printStateRecovery.pendingSwapRecorded')}</p>
+        <a className="text-bambu-green hover:underline"
+          href={`/system?printer_id=${issue.printer_id}&kind=runtime&target_id=${issue.target_id}#print-state`}>
+          {t('printStateRecovery.pendingSwapRuntime')}
+        </a>
+      </div>}
+      {result && (runtime || closePrint) && (closePrint ? <div role="status" className="space-y-1">
         <p className="font-medium">{t('printStateRecovery.closePrintApplied')}</p>
         <p>{t(`printStateRecovery.closePrintContext.${result.context_released === true ? 'released' : result.context_released === false ? 'retained' : 'unconfirmed'}`)}</p>
         <p>{t('printStateRecovery.runtime.pausedNow')}</p>
@@ -156,7 +163,11 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
         {closePrint && operatorOutcome && <p className="font-medium">{t(`printStateRecovery.recordedPrintOutcome.${operatorOutcome}`)}</p>}
         {(runtime || closePrint) && <RuntimeRelease preview={preview} />}
         {group && <div className="overflow-x-auto"><p>{t('printStateRecovery.groupExplanation')}</p><table className="w-full text-left"><thead><tr><th>{t('printStateRecovery.fields.item')}</th><th>{t('printStateRecovery.before')}</th><th>{t('printStateRecovery.after')}</th></tr></thead><tbody>{preview.members?.map(m => <tr key={m.id}><td>#{m.id}</td><td>{t(`printStateRecovery.states.${m.status}`)}</td><td>{t('printStateRecovery.states.cancelled')}</td></tr>)}</tbody></table></div>}
-        {settlement && <><p>{t('printStateRecovery.settlementChange')}</p><p>{t('printStateRecovery.swapModeFact')}: {t(preview.swap_mode_enabled ? 'common.yes' : 'common.no')}</p><p>{t('printStateRecovery.settlementNext')}</p></>}
+        {settlement && <>
+          <p>{t(preview.after.settlement?.pending_only ? 'printStateRecovery.pendingSwapChange' : 'printStateRecovery.settlementChange')}</p>
+          <p>{t('printStateRecovery.swapModeFact')}: {t(preview.swap_mode_enabled ? 'common.yes' : 'common.no')}</p>
+          <p>{t(preview.after.settlement?.pending_only ? 'printStateRecovery.pendingSwapNext' : 'printStateRecovery.settlementNext')}</p>
+        </>}
         {preview.estimate && <p className="text-amber-700 dark:text-amber-300">{t('printStateRecovery.estimatedLabel')}: {' '}
           {formatDateTime(preview.estimate.started_at)} + {preview.estimate.duration_seconds}s → {formatDateTime(preview.estimate.completed_at)}
         </p>}
@@ -172,7 +183,7 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
             </tbody></table>
         </div>
         {close
-          ? <p>{t('printStateRecovery.interruptedNext')}</p>
+          ? <p>{t(preview.after.queue.is_paused ? 'printStateRecovery.interruptedSwapNext' : 'printStateRecovery.interruptedNext')}</p>
           : !runtime && Object.keys(preview.after.queue).length > 0 && <p>{t('printStateRecovery.paused')}</p>}
         <label className="flex gap-2 items-start"><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />
           <span>{t('printStateRecovery.confirm')}</span></label>

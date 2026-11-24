@@ -330,6 +330,8 @@
 
 ### Fixed
 
+- A SWAP job keeps its queue claim when its start goes unacknowledged, so late telemetry can still resolve that execution. Info and the print-state API can settle an old detached SWAP instruction after the operator verifies the plate, then release the finished context.
+
 - **Printer presets prioritize the farm model and nozzle.** If the selected source has no matching profile, the picker offers matching profiles from other sources and explains why. The current selection stays available. The farm-model filter matches configured models exactly. Filament lists keep the loaded-filament filter whenever a matching profile is available after relaxing the source filter.
 
 - **Read the finish and color from Spoolman product names.** For example,
