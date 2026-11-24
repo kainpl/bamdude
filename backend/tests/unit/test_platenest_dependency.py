@@ -23,7 +23,7 @@ def test_requirements_pin_the_installed_version_exactly():
     # immutable build, never an archive from any owner or an unpinned branch.
     assert requirement.url == (
         "https://github.com/UVCXanth/platenest/archive/"
-        "94898d553cc521f09f6d8382f68ba95bd7826846.tar.gz"
+        "76e945dcdc1fa178d9678b02c7349d5076d34647.tar.gz"
     )
     assert version("platenest") == "0.1.1"
     from platenest import optimize

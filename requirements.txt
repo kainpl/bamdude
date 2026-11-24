@@ -99,7 +99,7 @@ mapbox-earcut>=1.0.0
 # BamDude writes files with it and reads them back for re-layout.
 # Temporary immutable review build; replace with the exact maintained release
 # after kainpl/platenest#3 is merged and published (maintainer release step).
-platenest[optimize] @ https://github.com/UVCXanth/platenest/archive/94898d553cc521f09f6d8382f68ba95bd7826846.tar.gz
+platenest[optimize] @ https://github.com/UVCXanth/platenest/archive/76e945dcdc1fa178d9678b02c7349d5076d34647.tar.gz
 matplotlib>=3.8.0
 fast-simplification>=0.1.0
 # trimesh's 3MF loader imports lxml lazily inside the 3MF code path (model.xml

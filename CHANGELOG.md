@@ -72,6 +72,8 @@
 
 - **Assembly can spend longer looking for a denser layout.** A visible optional five-minute search tries bitmap restarts and Sparrow, keeps the best validated layout, and can finish early with that result. Fresh quick assemblies keep 90° rotations; finer or arbitrary in-plane rotations are explicit choices; saved projects retain their previous rotation setting. Parts are never mirrored or scaled by this search.
 
+  The reviewed packing build also preserves one-shot cancellation during raster recovery and restarts; finish and soft expiry keep their separate best-result behavior. An exact maintained PlateNest release is still required before this integration can merge.
+
 - **Edit a project assembly and try again.** After a completed or failed assembly, return to the same inputs and change settings for another attempt. The operator starts the new job explicitly and chooses whether to move previous outputs to the trash.
 
 - **Failed and cancelled prints can keep the printer's timelapse.** When the printer was recording, BamDude uses the same archive and storage checks that protect the scan after a successful print.
