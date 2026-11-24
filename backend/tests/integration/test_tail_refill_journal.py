@@ -466,6 +466,18 @@ async def test_the_spoolman_assignment_waits_for_the_slot_lock_but_never_holds_i
 # ── F04 · the seed of a joined print ────────────────────────────────────────
 
 
+@contextmanager
+def joined_printer_client(client):
+    from backend.app.services.printer_manager import printer_manager
+
+    # The restore and journal replay both read the live printer manager.
+    with (
+        patch.object(printer_manager, "get_client", return_value=client),
+        patch.object(printer_manager, "get_status", return_value=client.state),
+    ):
+        yield
+
+
 async def test_the_restart_seed_gives_the_joined_client_its_open_tail_back(db_session, incident):
     """F04: the journal holds an open tail; the restarted client's first report is the origin
     — the return happened while BamDude was down, so it is a gap return."""
@@ -488,8 +500,7 @@ async def test_the_restart_seed_gives_the_joined_client_its_open_tail_back(db_se
     )  # fmt: skip
     generation = client.on_print_running_observed.call_args.args[0]["_journal_generation"]
 
-    with patch("backend.app.main.printer_manager") as pm:
-        pm.get_client.return_value = client
+    with joined_printer_client(client):
         await _restore_usage_tracking_session(
             printer.id, client.state, db_session, logging.getLogger(__name__), generation=generation
         )
@@ -559,9 +570,7 @@ async def test_a_failed_seed_is_retried_from_the_same_evidence(db_session, incid
     client = a_restarted_client_seeing_the_origin()
     a_flaky_read(monkeypatch, failures=1)
 
-    with patch("backend.app.main.printer_manager") as pm:
-        pm.get_client.return_value = client
-        pm.get_status.return_value = client.state
+    with joined_printer_client(client):
         assert not await _restore_usage_tracking_session(
             printer.id, client.state, db_session, logging.getLogger(__name__), generation=client.journal_generation()
         )
@@ -586,9 +595,7 @@ async def test_a_seed_that_keeps_failing_ends_the_hold_with_the_feed_unknown(
     client = a_restarted_client_seeing_the_origin()
     calls = a_flaky_read(monkeypatch, failures=100)
 
-    with patch("backend.app.main.printer_manager") as pm:
-        pm.get_client.return_value = client
-        pm.get_status.return_value = client.state
+    with joined_printer_client(client):
         await _restore_usage_tracking_session(
             printer.id, client.state, db_session, logging.getLogger(__name__), generation=client.journal_generation()
         )
@@ -616,9 +623,7 @@ async def test_a_seed_retry_leaves_a_print_that_moved_on_alone(db_session, incid
     generation = client.journal_generation()
     calls = a_flaky_read(monkeypatch, failures=100)
 
-    with patch("backend.app.main.printer_manager") as pm:
-        pm.get_client.return_value = client
-        pm.get_status.return_value = client.state
+    with joined_printer_client(client):
         await _restore_usage_tracking_session(
             printer.id, client.state, db_session, logging.getLogger(__name__), generation=generation
         )
