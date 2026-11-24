@@ -331,7 +331,10 @@ async def get_usage_projection(
 
 @router.get("/usb-cameras")
 async def list_usb_cameras(
+    request: Request,
+    include_configured: bool = False,
     _=RequirePermission(Permission.PRINTERS_READ),
+    db: AsyncSession = Depends(get_db),
 ):
     """List available USB cameras connected to the system.
 
@@ -341,10 +344,27 @@ async def list_usb_cameras(
     Returns:
         List of dicts with {device: str, name: str, capabilities: list, formats?: list}
     """
-    from backend.app.services.external_camera import list_usb_cameras
+    from backend.app.services import external_camera
 
-    cameras = list_usb_cameras()
-    return {"cameras": cameras}
+    cameras = await asyncio.to_thread(external_camera.list_usb_cameras)
+    response = {"cameras": cameras}
+    if include_configured:
+        result = await db.execute(
+            select(Printer.id, Printer.external_camera_url).where(
+                Printer.archived.is_(False),
+                Printer.external_camera_enabled.is_(True),
+                Printer.external_camera_type == "usb",
+                Printer.external_camera_url.is_not(None),
+            )
+        )
+        devices = {camera["device"] for camera in cameras}
+        configured = {}
+        for printer_id, url in result.all():
+            if url and in_key_scope(request, printer_id):
+                device = external_camera._safe_usb_device_path(url)
+                configured[printer_id] = device is not None and device.as_posix() in devices
+        response["configured_devices_found"] = configured
+    return response
 
 
 @router.get("/available-filaments")

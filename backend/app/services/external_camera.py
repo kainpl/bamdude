@@ -98,21 +98,24 @@ def _safe_usb_device_path(device: str) -> Path | None:
     return Path(f"/dev/video{int(match.group(1))}")
 
 
-def list_usb_cameras() -> list[dict]:
+def list_usb_cameras(dev_dir: Path = Path("/dev")) -> list[dict]:
     """List available USB cameras (V4L2 devices on Linux).
 
-    Returns:
-        List of dicts with {device: str, name: str, capabilities: list}
+    This calls v4l2-ctl synchronously. Async callers run it off the event loop.
     """
     cameras = []
-    video_devices = sorted(Path("/dev").glob("video*"))
+    video_devices: list[Path] = []
+    for entry in dev_dir.glob("video*"):
+        device = _safe_usb_device_path(f"/dev/{entry.name}")
+        if device and device.name == entry.name:
+            video_devices.append(device)
 
-    for device in video_devices:
-        device_path = str(device)
+    v4l2_ctl = shutil.which("v4l2-ctl")
+    for device in sorted(video_devices, key=lambda path: int(path.name.removeprefix("video"))):
+        device_path = device.as_posix()
         info = {"device": device_path, "name": device.name, "capabilities": []}
 
         # Try to get device info via v4l2-ctl
-        v4l2_ctl = shutil.which("v4l2-ctl")
         if v4l2_ctl:
             import subprocess
 
@@ -149,13 +152,8 @@ def list_usb_cameras() -> list[dict]:
 
         # Only include devices that look like video capture devices
         # Skip metadata devices (typically odd numbered like video1, video3)
-        try:
-            device_num = int(device.name.replace("video", ""))
-            # Even numbered devices are usually capture, odd are metadata
-            # But also check if we got capabilities
-            if info.get("capabilities") or device_num % 2 == 0:
-                cameras.append(info)
-        except ValueError:
+        device_num = int(device.name.removeprefix("video"))
+        if info["capabilities"] or device_num % 2 == 0:
             cameras.append(info)
 
     return cameras

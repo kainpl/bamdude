@@ -20,6 +20,7 @@ import { LoadingBlock } from '../components/LoadingBlock';
 import { CopyButton } from '../components/CopyButton';
 import { Button } from '../components/Button';
 import { Select } from '../components/Select';
+import { UsbCameraDevicePicker } from '../components/UsbCameraDevicePicker';
 import { Modal } from '../components/Modal';
 import { LdapUserPicker } from '../components/LdapUserPicker';
 import { ZigbeeCoordinatorCard } from '../components/zigbee/ZigbeeCoordinatorCard';
@@ -1297,6 +1298,15 @@ export function SettingsPage() {
     const status = index >= 0 ? printerStatusQueries[index]?.data : undefined;
     return !(status?.connected && status.has_chamber_light === false);
   };
+
+  const usbCameras = useQuery({
+    queryKey: ['usb-cameras'],
+    queryFn: ({ signal }) => api.getUsbCameras(signal),
+    enabled: activeTab === 'camera' && hasPermission('printers:update') &&
+      !!printers?.some((printer) => printer.external_camera_enabled && printer.external_camera_type === 'usb'),
+    staleTime: 30_000,
+    retry: false,
+  });
 
   const updatePrinterMutation = useMutation({
     mutationFn: ({ id, data }: { id: number; data: Partial<{ secret_actions: Partial<Record<'external_camera_url' | 'external_camera_snapshot_url', 'keep' | 'clear' | 'replace'>>; external_camera_url: string | null; external_camera_type: string | null; external_camera_enabled: boolean; external_camera_snapshot_url: string | null; camera_rotation: number; camera_light_auto: CameraLightPolicy }> }) =>
@@ -5418,14 +5428,29 @@ export function SettingsPage() {
 
                         {printer.external_camera_enabled && (
                           <div className="space-y-2 mt-2">
-                            <input
-                              type="password"
-                              autoComplete="new-password"
-                              placeholder={printer.external_camera_url_configured ? t('settings.cameraCredentialStored') : printer.external_camera_type === 'usb' ? t('settings.cameraPlaceholderUsb') : t('settings.cameraPlaceholderUrl')}
-                              value={localCameraUrls[printer.id] ?? ''}
-                              onChange={(e) => handleCameraUrlChange(printer.id, e.target.value)}
-                              className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
-                            />
+                            {printer.external_camera_type === 'usb' && hasPermission('printers:update') ? (
+                              <UsbCameraDevicePicker
+                                printerName={printer.name}
+                                printerId={printer.id}
+                                value={localCameraUrls[printer.id] ?? ''}
+                                stored={!!printer.external_camera_url_configured}
+                                listing={usbCameras.data}
+                                isFetching={usbCameras.isFetching}
+                                isError={usbCameras.isError}
+                                onRefresh={() => void usbCameras.refetch()}
+                                onSelect={(path) => handleCameraUrlChange(printer.id, path)}
+                              />
+                            ) : (
+                              <input
+                                type="password"
+                                autoComplete="new-password"
+                                aria-label={t('settings.cameraPlaceholderUrl')}
+                                placeholder={printer.external_camera_url_configured ? t('settings.cameraCredentialStored') : t('settings.cameraPlaceholderUrl')}
+                                value={localCameraUrls[printer.id] ?? ''}
+                                onChange={(e) => handleCameraUrlChange(printer.id, e.target.value)}
+                                className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
+                              />
+                            )}
                             {printer.external_camera_url_configured && (
                               <div className="flex items-center justify-between gap-2 text-xs text-bambu-gray">
                                 <span>{printer.external_camera_host || t('settings.cameraCredentialStored')}</span>

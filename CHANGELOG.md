@@ -70,6 +70,8 @@
 
 ### Added
 
+- **Choose a USB camera for a printer from detected devices.** Refresh the list after connecting a camera or mapping it into Docker. BamDude flags devices it cannot find and still accepts a path entered by hand.
+
 - **Assign a spool by scanning its label.** Pick an AMS slot or storage location, scan a current BamDude inventory label with the camera or from a photo, and confirm the spool. New labels stay tied to their original record even when a spool number is reused. Reprint older labels to use the scanner.
 
 - **Slicer sidecars can publish their ports on one host address.** Set

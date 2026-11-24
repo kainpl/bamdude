@@ -967,6 +967,11 @@ export type CameraUpdate = Partial<CameraCreate>;
 /** `printers.camera_light_auto`: the per-printer answer, or defer to the farm's toggle. */
 export type CameraLightPolicy = 'inherit' | 'on' | 'off';
 
+export interface UsbCameraListing {
+  cameras: { device: string; name: string }[];
+  configured_devices_found: Record<number, boolean>;
+}
+
 export interface Printer {
   id: number;
   name: string;
@@ -11002,6 +11007,8 @@ export const api = {
 
   // Printers
   getPrinters: () => request<Printer[]>('/printers/'),
+  getUsbCameras: (signal?: AbortSignal) =>
+    request<UsbCameraListing>('/printers/usb-cameras?include_configured=true', { signal }),
   getModelCompatibility: () => request<{ models: Record<string, string[]> }>('/printers/model-compatibility'),
   getUsageProjection: (id: number, signal?: AbortSignal) => request<UsageProjection>(`/printers/${id}/usage-projection`, { signal }),
   // Includes archived (soft-retired) printers — used by the Settings restore
