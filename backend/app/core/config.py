@@ -220,7 +220,7 @@ class Settings(BaseSettings):
 
     # Database connection-pool sizing. ``None`` = use the built-in, dialect-aware
     # default (PostgreSQL: pool_size 20 + max_overflow 60 + pre-ping + recycle
-    # 1800 + LIFO; SQLite: 20 + 200). Large PostgreSQL printer farms can raise
+    # 1800 + LIFO; SQLite: 10 + 90). Large PostgreSQL printer farms can raise
     # these via the DB_POOL_SIZE / DB_MAX_OVERFLOW / DB_POOL_TIMEOUT /
     # DB_POOL_RECYCLE / DB_POOL_USE_LIFO / DB_POOL_PRE_PING env vars. Ensure PostgreSQL
     # ``max_connections`` comfortably exceeds (pool_size + max_overflow) x workers.
