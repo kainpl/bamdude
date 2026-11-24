@@ -9,6 +9,7 @@ from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
 from backend.app.schemas.plate_detection import PlatePolygon
 from backend.app.schemas.printer_location import PrinterLocationOut, reject_legacy_key
 from backend.app.schemas.printer_tag import PrinterTagOut
+from backend.app.utils.filament_types import routing_filament_type
 from backend.app.utils.rgba import normalize_opaque_rgba
 
 
@@ -377,6 +378,14 @@ class AMSTray(BaseModel):
     # than "Empty" (upstream #2527). None when the bitmask was unavailable (→ the
     # state-based fallback).
     exists: bool | None = None
+
+    @computed_field
+    @property
+    def routing_type(self) -> str | None:
+        """Type for tentative slot picks in the dialog, derived from the real spool."""
+        if self.actual is not None:
+            return routing_filament_type(self.actual.tray_type, self.actual.tray_info_idx) or None
+        return routing_filament_type(self.tray_type, self.tray_info_idx) or None
 
 
 class AMSUnit(BaseModel):

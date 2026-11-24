@@ -39,7 +39,7 @@ from dataclasses import dataclass
 
 from backend.app.services.ams_advertised_overlay import slot_key
 from backend.app.services.filament_routing import RoutingPolicy, effective_slots, normalized_color
-from backend.app.utils.filament_types import SUPPORT_SLOT_TYPES, filament_types_compatible, support_slot_type
+from backend.app.utils.filament_types import SUPPORT_SLOT_TYPES, filament_types_compatible, routing_filament_type
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +156,7 @@ def feed_from(
             continue
         tray = reported[key][1]
         if tray.get("tray_type"):
-            slot_type = support_slot_type(tray["tray_type"], tray.get("tray_info_idx"))
+            slot_type = routing_filament_type(tray["tray_type"], tray.get("tray_info_idx"))
             sources.append(OfflineSource(kind, slot_type, tray.get("tray_color") or None))
     return OfflineFeed(tuple(sources), ams_known, external_known)
 
@@ -228,7 +228,7 @@ async def _bound_internal(db, printer_id: int) -> dict[tuple[int, int], BoundSpo
             bound[key] = None
             continue
         try:
-            written = await tray_types_written_for(db, row.spool, printer_id, row.ams_id, row.tray_id)
+            written = await tray_types_written_for(db, row.spool, printer_id, row.ams_id, row.tray_id, for_routing=True)
         except Exception:  # noqa: BLE001 — a lookup failure is "unknown", never "empty"
             logger.debug("offline feed: slot plan for spool %s failed", row.spool_id, exc_info=True)
             written = {(row.spool.material or "").upper()}
@@ -270,7 +270,11 @@ async def _bound_spoolman(db, printer_id: int) -> dict[tuple[int, int], BoundSpo
         family = family_for_material(material)
         base_type = material_type(material) or ""
         written = {material, base_type, (family.filament_type if family else "") or ""}
-        if base_type in {"PLA", "PA"} or material.upper() in SUPPORT_SLOT_TYPES or "support" in material.casefold():
+        if (
+            base_type in {"PLA", "PA", "ABS"}
+            or material.upper() in SUPPORT_SLOT_TYPES | {"ABS-S"}
+            or "support" in material.casefold()
+        ):
             state = printer_manager.get_status(printer_id)
             nozzle = slot_nozzle(state, row.ams_id, row.tray_id)
             calibration = await resolve_spoolman_slot_kprofile(
@@ -294,8 +298,9 @@ async def _bound_spoolman(db, printer_id: int) -> dict[tuple[int, int], BoundSpo
             except ValueError:
                 bound[key] = None
                 continue
-            if plan.tray_type in SUPPORT_SLOT_TYPES:
-                written = {plan.tray_type}
+            routing_type = routing_filament_type(plan.tray_type, plan.tray_info_idx)
+            if routing_type in SUPPORT_SLOT_TYPES or routing_type != plan.tray_type:
+                written = {routing_type}
         bound[key] = (tuple(sorted(w.upper() for w in written if w)), mapped.get("rgba"))
     return bound
 

@@ -24,13 +24,105 @@ from backend.app.services.filament_intake import (
 from backend.app.services.filament_policy import choices_policy, decode, queue_policy
 from backend.app.services.filament_preflight import ranked_feed
 from backend.app.services.filament_requirements import PrintRequirementsCache
-from backend.app.services.filament_routing import resolve_filament_routing
+from backend.app.services.filament_routing import (
+    backup_twins,
+    channel_nozzle_counts,
+    channel_refusal,
+    effective_slots,
+    normalized_color,
+    resolve_filament_routing,
+    slot_nozzle,
+    source_fits,
+)
 from backend.app.services.printer_location_service import load_tree, subtree_ids
 from backend.app.services.printer_manager import printer_manager
 from backend.app.utils.model_compatibility import model_compatibility
+from backend.app.utils.printer_configs import requires_left_tpu_firmware_check
 from backend.app.utils.printer_models import is_dual_nozzle_model, normalize_model_name
 
 logger = logging.getLogger(__name__)
+_CHANNEL_SOURCE_LIMIT = 8
+
+
+def explain_channels(req, policy, snapshot, result):
+    """Bounded diagnostics for this printer, using the actual routing inputs."""
+    if not (result.plan or result.slots):
+        return []
+    slots = effective_slots(req, policy)
+    counts = channel_nozzle_counts(slots)
+    left_tpu_check = requires_left_tpu_firmware_check(snapshot.model)
+    channels = []
+    for slot in slots:
+        sid = slot["slot_id"]
+        nozzle = slot_nozzle(slot)
+        pin = policy.physical_pins.get(sid)
+        planned = result.plan.assignments[sid] if result.plan else None
+        selected = planned.id if planned else pin["source_id"] if pin else None
+        required_color = normalized_color(slot.get("color"))
+        refusal = channel_refusal(req, slot, snapshot)
+        if planned:
+            sources = (planned,)
+        elif pin:
+            allowed = {selected} | backup_twins(selected, snapshot)
+            sources = tuple(source for source in snapshot.sources if source.id in allowed)
+        else:
+            sources = snapshot.sources
+        checks = []
+        for source in sources:
+            if refusal:
+                fits, why, unknown = False, refusal.reason, refusal.status == "unknown"
+            elif planned:
+                fits, why, unknown = True, None, False
+            else:
+                fits, why, unknown = source_fits(
+                    slot,
+                    source,
+                    policy,
+                    snapshot,
+                    nozzle=nozzle,
+                    nozzle_counts=counts,
+                    allowed=None,
+                    pin=pin,
+                    left_tpu_check=left_tpu_check,
+                    explain=True,
+                )
+            checks.append(
+                {
+                    "source_id": source.id,
+                    "kind": source.kind,
+                    "material": source.material,
+                    "reported_material": source.reported_material,
+                    "profile": source.rule_variant,
+                    "status": "compatible" if fits else "unknown" if unknown else "incompatible",
+                    "reason": why,
+                    "color_matches": bool(required_color and required_color == normalized_color(source.rule_color)),
+                }
+            )
+        checks.sort(
+            key=lambda check: (
+                check["source_id"] != selected,
+                check["kind"] != "external",
+                check["status"] != "compatible",
+                check["source_id"],
+            )
+        )
+        channel_result = refusal or (result if sid in result.slots or planned else None)
+        channels.append(
+            {
+                "slot_id": sid,
+                "material": slot["type"],
+                "profile": slot.get("tray_info_idx"),
+                "selected_source_id": selected,
+                "status": channel_result.status if channel_result else None,
+                "reason": routing_detail(channel_result.reason) if channel_result and channel_result.reason else None,
+                "sources": [
+                    {**check, "reason": routing_detail(check["reason"]) if check["reason"] else None}
+                    for check in checks[:_CHANNEL_SOURCE_LIMIT]
+                ],
+                "omitted_sources": max(0, len(checks) - _CHANNEL_SOURCE_LIMIT),
+            }
+        )
+    return channels
 
 
 async def visible_source(db, data, user):
@@ -94,6 +186,8 @@ async def printer_routing_preview(db, data, user):
                 "status": "unknown",
                 "mapping": None,
                 "reason": None,
+                "channels": [],
+                "dual_nozzle": False,
             }
             printer = await db.get(Printer, target.printer_id)
             if printer is None or printer.archived:
@@ -149,6 +243,8 @@ async def printer_routing_preview(db, data, user):
                     status=result.status,
                     mapping=result.plan.mapping if result.plan else None,
                     reason=routing_detail(result.reason, **result.params) if result.reason else None,
+                    channels=explain_channels(req, policy, snapshot, result),
+                    dual_nozzle=is_dual_nozzle_model(snapshot.model),
                 )
             results.append(answer)
     return {"targets": results}

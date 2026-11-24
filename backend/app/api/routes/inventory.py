@@ -179,7 +179,7 @@ async def spool_slot_plan(db: AsyncSession, spool: Spool, printer_id: int, ams_i
 
 
 async def tray_types_written_for(
-    db: AsyncSession, spool: Spool, printer_id: int, ams_id: int, tray_id: int
+    db: AsyncSession, spool: Spool, printer_id: int, ams_id: int, tray_id: int, *, for_routing: bool = False
 ) -> set[str]:
     """Every ``tray_type`` the assign path can have put in this slot for ``spool``, upper-cased.
 
@@ -197,9 +197,13 @@ async def tray_types_written_for(
         plan = await spool_slot_plan(db, spool, printer_id, ams_id, tray_id)
     except ValueError:
         return written
-    from backend.app.utils.filament_types import SUPPORT_SLOT_TYPES
+    from backend.app.utils.filament_types import SUPPORT_SLOT_TYPES, routing_filament_type
 
     wire_type = (plan.tray_type or material).upper()
+    if for_routing:
+        routing_type = routing_filament_type(wire_type, plan.tray_info_idx)
+        if routing_type != wire_type:
+            return {routing_type}
     if wire_type in SUPPORT_SLOT_TYPES:
         return {wire_type}
     written.add(wire_type)

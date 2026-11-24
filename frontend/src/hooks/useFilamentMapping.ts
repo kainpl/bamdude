@@ -40,7 +40,8 @@ export function buildLoadedFilaments(printerStatus: PrinterStatus | undefined): 
   const hasDualNozzle =
     Boolean(printerStatus?.nozzles?.[1]?.nozzle_diameter)
     || (amsExtruderMap && Object.keys(amsExtruderMap).length > 0)
-    || (printerStatus?.vt_tray?.length ?? 0) > 1;
+    || (printerStatus?.vt_tray?.length ?? 0) > 1
+    || printerStatus?.vt_tray?.some(tray => tray.id === 255);
 
   // Add filaments from all AMS units (regular and HT)
   printerStatus?.ams?.forEach((amsUnit) => {
@@ -54,7 +55,7 @@ export function buildLoadedFilaments(printerStatus: PrinterStatus | undefined): 
         const actual = tray.actual ?? null;
         const color = normalizeColor(actual?.tray_color ?? tray.tray_color);
         filaments.push({
-          type: actual?.tray_type || tray.tray_type,
+          type: tray.routing_type || actual?.tray_type || tray.tray_type,
           color,
           colorName: getColorName(color, tray.tray_sub_brands, actual?.tray_info_idx ?? tray.tray_info_idx),
           amsId: amsUnit.id,
@@ -79,16 +80,15 @@ export function buildLoadedFilaments(printerStatus: PrinterStatus | undefined): 
     if (extTray.tray_type) {
       const color = normalizeColor(extTray.tray_color);
       const trayId = extTray.id ?? 254;
-      const hasDualExternal = (printerStatus?.vt_tray?.length ?? 0) > 1;
       filaments.push({
-        type: extTray.tray_type,
+        type: extTray.routing_type || extTray.tray_type,
         color,
         colorName: getColorName(color, extTray.tray_sub_brands, extTray.tray_info_idx),
         amsId: -1,
         trayId: trayId - 254,
         isHt: false,
         isExternal: true,
-        label: hasDualExternal ? (trayId === 254 ? 'Ext-L' : 'Ext-R') : 'External',
+        label: hasDualNozzle ? (trayId === 254 ? 'Ext-L' : 'Ext-R') : 'External',
         globalTrayId: trayId,
         trayInfoIdx: extTray.tray_info_idx || '',
         traySubBrands: extTray.tray_sub_brands || '',

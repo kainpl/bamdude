@@ -23,6 +23,8 @@ import type { PrinterMappingResult, PerPrinterConfig } from '../../hooks/useMult
 import type { FilamentRequirement } from '../../hooks/useFilamentMapping';
 import { useSlotSpoolNames, useSlotSpoolSwatches } from '../../hooks/useSlotSpoolNames';
 import { SlotPicker } from './SlotPicker';
+import { RoutingChannelDetails } from './RoutingChannelDetails';
+import { checkedSlotStatus } from './feasibility';
 import { modelCompatibility } from '../../utils/modelCompatibility';
 
 interface PrinterSelectorWithMappingProps extends PrinterSelectorProps {
@@ -93,14 +95,17 @@ function InlineMappingEditor({
   // dialog this is the same server plan used by the verdict and submit path.
   const slotAssignments = filamentReqs.map((req) => {
     const slotId = req.slot_id || 0;
-    const selected = printerResult.finalMapping?.[slotId - 1];
+    const channel = printerResult.routingChannels?.find(row => row.slot_id === slotId);
+    const selected = channel ? channel.selected_source_id : printerResult.finalMapping?.[slotId - 1];
     const loaded = printerResult.loadedFilaments.find(f => f.globalTrayId === selected);
     const isManual = !printerResult.config.autoConfigured &&
       printerResult.config.manualMappings[slotId] !== undefined;
 
     // Determine status
-    let status: 'match' | 'type_only' | 'mismatch' = 'mismatch';
-    if (loaded) {
+    let status: ReturnType<typeof checkedSlotStatus> = 'mismatch';
+    if (printerResult.routingChannels) {
+      status = channel ? checkedSlotStatus(channel) : 'unverified';
+    } else if (loaded) {
       const typeMatch = filamentRequirementMatches(req, loaded);
       const colorMatch = filamentColorMatches(req, loaded);
 
@@ -111,7 +116,7 @@ function InlineMappingEditor({
       }
     }
 
-    return { req, loaded, status, isManual };
+    return { req, selected: channel ? selected : loaded?.globalTrayId, status, isManual, channel };
   });
 
   return (
@@ -129,7 +134,7 @@ function InlineMappingEditor({
         </button>
       </div>
 
-      {slotAssignments.map(({ req, loaded, status, isManual }, idx) => (
+      {slotAssignments.map(({ req, selected, status, isManual, channel }, idx) => (
         <div
           key={idx}
           className="grid items-center gap-2 text-xs grid-cols-[16px_minmax(0,1fr)_16px] sm:grid-cols-[16px_minmax(70px,1fr)_auto_2fr_16px]"
@@ -146,7 +151,7 @@ function InlineMappingEditor({
           <span className="text-bambu-gray max-sm:hidden">→</span>
           <div className="min-w-0 max-sm:col-span-3 max-sm:row-start-2">
             <SlotPicker
-              value={loaded?.globalTrayId ?? null}
+              value={selected != null && selected >= 0 ? selected : null}
               onChange={(value) => handleSlotChange(req.slot_id || 0, value == null ? '' : String(value))}
               placeholder={t('printModal.selectSlot')}
               ariaLabel={t('printModal.slotFor', { filament: req.type })}
@@ -156,6 +161,8 @@ function InlineMappingEditor({
                   ? 'border-bambu-green/50 text-bambu-green'
                   : status === 'type_only'
                   ? 'border-yellow-500 dark:border-yellow-400/50 text-yellow-700 dark:text-yellow-400'
+                  : status === 'unverified'
+                  ? 'border-bambu-gray/30 text-bambu-gray'
                   : 'border-orange-500 dark:border-orange-400/50 text-orange-700 dark:text-orange-400'
               } ${isManual ? 'ring-1 ring-blue-400/50' : ''}`}
               title={isManual ? t('printModal.manuallySelected') : t('printModal.autoMatched')}
@@ -164,6 +171,7 @@ function InlineMappingEditor({
                 : filterFilamentsByNozzle(printerResult.loadedFilaments, req.nozzle_id))
                 .map((f) => {
                   const bound = slotSwatches.get(f.globalTrayId);
+                  const checked = channel?.sources.find(source => source.source_id === f.globalTrayId);
                   return {
                     value: f.globalTrayId,
                     slot: f.label,
@@ -172,7 +180,9 @@ function InlineMappingEditor({
                     extraColors: bound?.extraColors,
                     effectType: bound?.effectType,
                     subtype: bound?.subtype,
-                    exact: filamentRequirementMatches(req, f) && filamentColorMatches(req, f),
+                    exact: printerResult.routingChannels
+                      ? checked?.status === 'compatible' && checked.color_matches
+                      : filamentRequirementMatches(req, f) && filamentColorMatches(req, f),
                   };
                 })}
             />
@@ -183,11 +193,16 @@ function InlineMappingEditor({
             <span className="max-sm:col-start-3 max-sm:row-start-1" title={t('printModal.sameTypeDifferentColor')}>
               <AlertTriangle className="w-3 h-3 text-yellow-600 dark:text-yellow-400" />
             </span>
+          ) : status === 'unverified' ? (
+            <span className="max-sm:col-start-3 max-sm:row-start-1" title={t('filamentRouting.channelUnverified')}>
+              <Circle className="w-3 h-3 text-bambu-gray" />
+            </span>
           ) : (
             <span className="max-sm:col-start-3 max-sm:row-start-1" title={printerResult.routingReason || t('printModal.filamentTypeNotLoaded')}>
               <AlertTriangle className="w-3 h-3 text-orange-600 dark:text-orange-400" />
             </span>
           )}
+          {channel && <div className="col-span-full"><RoutingChannelDetails channel={channel} dualNozzle={!!printerResult.routingDualNozzle} /></div>}
         </div>
       ))}
     </div>

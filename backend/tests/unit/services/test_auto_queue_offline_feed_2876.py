@@ -86,6 +86,11 @@ class TestWhatAnOffPrinterHolds:
         feed = feed_from(_reading([], vt=[{"id": "254", "tray_type": ""}]), {(255, 0): (("ABS",), "000000FF")})
         assert feed.sources == (OfflineSource("external", "ABS", "000000FF"),)
 
+    def test_support_abs_from_the_last_report_is_not_ordinary_abs(self):
+        feed = feed_from(_reading([], vt=[_tray(255, "ABS", "FFFFFFFF", tray_info_idx="GFS06")]), {})
+        assert offline_shortfall(_req(("ABS-S", None)), RoutingPolicy(), feed) == []
+        assert offline_shortfall(_req(("ABS", None)), RoutingPolicy(), feed) == [{"slot": 1, "wanted": "ABS"}]
+
     def test_an_ht_slot_matches_its_assignment_whatever_id_it_reports(self):
         reading = {"ams": [{"id": "128", "tray": [_tray(4, "PLA", "FFFFFFFF")]}], "vt_tray": []}
         feed = feed_from(reading, {(128, 0): (("ASA",), "FFFFFFFF")})

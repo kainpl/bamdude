@@ -7,6 +7,8 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  buildAmsMapping,
+  buildFilamentComparison,
   buildLoadedFilaments,
   computeAmsMapping,
 } from '../../hooks/useFilamentMapping';
@@ -33,6 +35,21 @@ function createPrinterStatus(ams: TestAmsUnit[], vt_tray: TestTray[] = []): Prin
 }
 
 describe('buildLoadedFilaments', () => {
+  it('keeps a compatible support slot in the provisional plan when another channel is picked manually', () => {
+    const status = createPrinterStatus(
+      [{ id: 0, tray: [{ id: 0, tray_type: 'PLA', tray_color: 'FFFFFFFF' }] }],
+      [{ id: 255, tray_type: 'ABS', routing_type: 'ABS-S', tray_info_idx: 'GFS06', tray_color: 'FFFFFFFF' }],
+    );
+    status.ams_extruder_map = { '0': 1 };
+    const loaded = buildLoadedFilaments(status);
+    const requirements = { filaments: [
+      { slot_id: 1, type: 'PLA', color: '#FFFFFF', used_grams: 5, nozzle_id: 1 },
+      { slot_id: 2, type: 'ABS-S', color: '#FFFFFF', used_grams: 1, nozzle_id: 0, tray_info_idx: 'GFS06' },
+    ] };
+    expect(loaded[1]).toMatchObject({ type: 'ABS-S', label: 'Ext-R' });
+    expect(buildAmsMapping(buildFilamentComparison(requirements, loaded, { 1: 0 }, false))).toEqual([0, 255]);
+  });
+
   it('returns empty array for undefined status', () => {
     const result = buildLoadedFilaments(undefined);
     expect(result).toEqual([]);

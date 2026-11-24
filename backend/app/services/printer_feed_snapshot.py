@@ -9,7 +9,7 @@ import json
 from dataclasses import asdict, dataclass, field
 
 from backend.app.services.ams_advertised_overlay import matches_live, slot_key
-from backend.app.utils.filament_types import support_slot_type
+from backend.app.utils.filament_types import routing_filament_type
 from backend.app.utils.model_compatibility import effective_model_for_state
 from backend.app.utils.printer_models import is_dual_nozzle_model, is_nozzle_rack_model, normalize_model_name
 
@@ -33,6 +33,7 @@ class FeedSource:
     #: material is always the spool's.
     declared_color: str | None = None
     declared_variant: str | None = None
+    reported_material: str | None = field(default=None, compare=False)
 
     @property
     def rule_color(self) -> str | None:
@@ -325,7 +326,7 @@ def snapshot_from_state(
             FeedSource(
                 id=sid,
                 kind=kind,
-                material=support_slot_type(material, variant),
+                material=routing_filament_type(material, variant),
                 color=color,
                 variant=variant,
                 nozzles=nozzles,
@@ -333,6 +334,7 @@ def snapshot_from_state(
                 identity=str(tray.get("tray_uuid") or tray.get("tag_uid") or ""),
                 declared_color=declared_color,
                 declared_variant=declared_variant,
+                reported_material=tray.get("tray_type"),
             )
         )
 
@@ -382,7 +384,7 @@ def snapshot_from_state(
         "fts_pending_confirmation": getattr(state, "fts_pending_confirmation", False) is True,
         "left_tpu_firmware": telemetry.left_tpu_firmware,
         "incomplete": incomplete,
-        "sources": [{k: v for k, v in asdict(s).items() if k != "remain"} for s in sources],
+        "sources": [{k: v for k, v in asdict(s).items() if k not in {"remain", "reported_material"}} for s in sources],
         # Sorted, because these are collected in ``telemetry.units`` insertion
         # order: a reordered AMS payload would otherwise move the revision with
         # nothing semantically changed, and the dispatcher's final guard would
