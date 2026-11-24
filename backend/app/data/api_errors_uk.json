@@ -230,7 +230,6 @@
   "Cannot assign-now item in status '{}'": "Не можна одразу призначити елемент у статусі «{}»",
   "Cannot cancel item with status '{}'": "Не можна скасувати елемент зі статусом «{}»",
   "Cannot change password for LDAP users - passwords are managed by the LDAP server": "Не можна змінити пароль для користувачів LDAP — паролями керує сервер LDAP",
-  "Cannot change role of the last admin user": "Не можна змінити роль останнього адміністратора",
   "Cannot create a folder in a read-only external folder": "Не можна створити теку в зовнішній теці лише для читання",
   "Cannot deactivate the last admin user": "Не можна деактивувати останнього адміністратора",
   "Cannot remove admin rights from the last admin user": "Не можна забрати права в останнього адміністратора",

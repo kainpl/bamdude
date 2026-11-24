@@ -1,4 +1,9 @@
 {
+  "printers.hms_notified_faults": {
+    "table": "printers",
+    "column": "hms_notified_faults",
+    "policy": "Fault codes and notification times for this printer. Codes are device facts. The printer deletion owner removes the row and clears the matching in-memory notification storage."
+  },
   "printers.plate_detection_polygon": {
     "table": "printers",
     "column": "plate_detection_polygon",

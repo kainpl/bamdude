@@ -789,6 +789,12 @@ class TestTheJanitorsThreadIsOwned:
 class TestAnUnreapedStitchKeepsTheEncoder:
     """Codex F3-R: the stitch pinned its frames and still gave the encoder slot back."""
 
+    @pytest.fixture(autouse=True)
+    def encoder(self, monkeypatch):
+        # These tests replace the encoder child. The three ownership paths also
+        # run on hosts without ffmpeg installed.
+        monkeypatch.setattr(lt, "get_ffmpeg_path", lambda: sys.executable)
+
     async def test_the_slot_stays_taken_with_no_end_to_wait_for(self, frames, monkeypatch):
         async def unreaped(*_args, **_kwargs):
             return media_child.ChildResult(media_child.UNREAPED)
