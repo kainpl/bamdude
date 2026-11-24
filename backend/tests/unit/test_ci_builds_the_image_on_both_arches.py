@@ -82,7 +82,10 @@ def test_docker_checks_the_production_server_and_backend_keeps_the_full_suite():
     assert "docker run -d --name bamdude-ci-http --network none bamdude:test" in runs
     assert "docker exec -i bamdude-ci-http python - < scripts/docker_http_smoke.py" in runs
     assert "integration-test-runner" not in runs
-    assert "backend/tests/ -v" in jobs["backend-tests"]["steps"][-1]["run"]
+    backend = jobs["backend-tests"]
+    targets = [lane["targets"] for lane in backend["strategy"]["matrix"]["include"]]
+    assert targets == ["backend/tests/unit", "backend/tests/ --ignore=backend/tests/unit"]
+    assert "pytest ${{ matrix.targets }} -v" in backend["steps"][-1]["run"]
     # Owner selected optimization 2, not 1: preserve the job dependency gates.
     assert jobs["docker-test"]["needs"] == ["backend-tests", "postgres-scenarios", "frontend-build"]
     assert any(s.get("if") == "always()" and "docker rm" in s.get("run", "") for s in jobs["docker-test"]["steps"])
