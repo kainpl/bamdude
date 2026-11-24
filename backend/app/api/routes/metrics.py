@@ -1,5 +1,7 @@
 """Prometheus metrics endpoint for external monitoring."""
 
+import hmac
+import math
 import platform
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response
@@ -32,7 +34,11 @@ def format_labels(**labels: str) -> str:
     """Format label key-value pairs for Prometheus."""
     if not labels:
         return ""
-    pairs = [f'{k}="{v}"' for k, v in labels.items() if v is not None]
+
+    def escape(value):
+        return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+    pairs = [f'{k}="{escape(v)}"' for k, v in labels.items() if v is not None]
     return "{" + ",".join(pairs) + "}"
 
 
@@ -61,13 +67,18 @@ async def get_metrics(
 
     Returns metrics in Prometheus text exposition format.
     Requires prometheus_enabled setting to be true.
-    If prometheus_token is set, requires Bearer token authentication.
+    Requires a configured prometheus_token and Bearer token authentication.
     """
     # Check if enabled
     enabled, token = await get_prometheus_settings(db)
 
     if not enabled:
         raise HTTPException(status_code=404, detail="Prometheus metrics not enabled")
+
+    # Settings already refuse enabling an unprotected exporter. Legacy imports
+    # or hand-edited databases must not expose production/stock data either.
+    if not token.strip():
+        raise HTTPException(status_code=503, detail="Configure a Prometheus token before scraping metrics")
 
     # Check authentication if token is set
     if token:
@@ -76,7 +87,7 @@ async def get_metrics(
         if not authorization.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="Bearer token required")
         provided_token = authorization[7:]  # Remove "Bearer " prefix
-        if provided_token != token:
+        if not hmac.compare_digest(provided_token.encode(), token.encode()):
             raise HTTPException(status_code=401, detail="Invalid token")
 
     lines: list[str] = []
@@ -354,8 +365,10 @@ async def get_metrics(
 
     # Total prints by status
     lines.append("")
-    lines.append("# HELP bamdude_prints_total Total number of prints by result")
-    lines.append("# TYPE bamdude_prints_total counter")
+    lines.append(
+        "# HELP bamdude_prints_total Current archive row count by result; mutable snapshot, not an event counter"
+    )
+    lines.append("# TYPE bamdude_prints_total gauge")
     result = await db.execute(select(PrintArchive.status, func.count(PrintArchive.id)).group_by(PrintArchive.status))
     for print_result, count in result.all():
         result_label = print_result or "unknown"
@@ -365,7 +378,7 @@ async def get_metrics(
     # Total prints per printer
     lines.append("")
     lines.append("# HELP bamdude_printer_prints_total Total prints per printer")
-    lines.append("# TYPE bamdude_printer_prints_total counter")
+    lines.append("# TYPE bamdude_printer_prints_total gauge")
     result = await db.execute(
         select(PrintArchive.printer_id, func.count(PrintArchive.id)).group_by(PrintArchive.printer_id)
     )
@@ -381,16 +394,20 @@ async def get_metrics(
 
     # Total filament used - filament_used_grams already contains the total for each print job
     lines.append("")
-    lines.append("# HELP bamdude_filament_used_grams Total filament used in grams")
-    lines.append("# TYPE bamdude_filament_used_grams counter")
+    lines.append(
+        "# HELP bamdude_filament_used_grams Legacy raw archive grams, includes estimates; use accounted_filament_window_grams for booked consumption"
+    )
+    lines.append("# TYPE bamdude_filament_used_grams gauge")
     result = await db.execute(select(func.coalesce(func.sum(PrintArchive.filament_used_grams), 0)))
     total_filament = result.scalar() or 0
     lines.append(f"bamdude_filament_used_grams {total_filament:.1f}")
 
     # Total print time
     lines.append("")
-    lines.append("# HELP bamdude_print_time_seconds Total print time in seconds")
-    lines.append("# TYPE bamdude_print_time_seconds counter")
+    lines.append(
+        "# HELP bamdude_print_time_seconds Raw archive time snapshot, includes estimates; not an elapsed-time counter"
+    )
+    lines.append("# TYPE bamdude_print_time_seconds gauge")
     result = await db.execute(select(func.coalesce(func.sum(PrintArchive.print_time_seconds), 0)))
     total_time = result.scalar() or 0
     lines.append(f"bamdude_print_time_seconds {total_time}")
@@ -500,6 +517,21 @@ async def get_metrics(
                 lines.append("# HELP bamdude_db_freelist_pages Free pages inside the SQLite file")
                 lines.append("# TYPE bamdude_db_freelist_pages gauge")
                 lines.append(f"bamdude_db_freelist_pages {sqlite['freelist_count']}")
+
+    from backend.app.services.production_metrics import collect_production_metrics
+
+    families = {}
+
+    def emit(name, help_text, value, **labels):
+        name = "bamdude_" + name
+        if name not in families:
+            families[name] = ["", f"# HELP {name} {help_text}", f"# TYPE {name} gauge"]
+        sample = "NaN" if isinstance(value, float) and math.isnan(value) else str(value)
+        families[name].append(f"{name}{format_labels(**labels)} {sample}")
+
+    await collect_production_metrics(db, emit, printer_manager)
+    for samples in families.values():
+        lines.extend(samples)
 
     # Add trailing newline
     lines.append("")

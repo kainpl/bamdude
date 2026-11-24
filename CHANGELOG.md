@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Prometheus includes production and stock accounting.** The native authenticated exporter now reads active order/part progress, checked and unchecked output, recorded defects, free full spools, assigned balances, booked filament windows and both queue tiers from the existing readers. Queue pauses, Maintenance Mode, plate-clear gates and MQTT reception age are explicit. Unknown QC quantities remain unknown; bounded order details report their coverage. Mutable archive aggregates are correctly typed as gauges, and a legacy enabled exporter without a token fails closed. Existing metric names and values remain available; replace `rate`/`increase` queries on archive snapshots with the documented accounting gauges.
+
 Order lines keep the parts and quantities recorded when the line was added. During the upgrade, existing lines capture the parts they show at that time. In an active order, use **Add part to line…** to choose from the saved variant or all parts of the product, then review the quantity and any effect on stock reservations. Adding a purchased part keeps individually reserved printed parts. If the order or reservation changes during review, confirm the refreshed preview before saving.
 
 The configuration editor preserves the quantities and descriptions of other saved parts. You can edit saved parts that have left the catalog, and you review the changes before switching variants or removing an archived part. Finished stock tracks different physical kits of the same variant separately, so an order can reserve only a matching kit.
