@@ -33,9 +33,8 @@ Cancellation still discards the job; finish publishes normally.
 - **ironnest:** current Python requirements did not match the application's
   Python 3.12 runtime. No parallel packing framework was introduced.
 
-The library dependency is temporarily pinned to an immutable contributor commit
-until the companion PlateNest change is released. Switch to that release before
-merging if available. spyrrow 0.9.0 is pinned; it uses its bundled Sparrow version,
+BamDude installs the optimizer from the official `platenest[optimize]==0.2.0` release.
+That release pins spyrrow 0.9.0 and uses its bundled Sparrow version,
 not necessarily the newest upstream engine. This heuristic does not prove an
 optimum, guarantee a speedup, or promise identical layouts across CPU platforms.
 

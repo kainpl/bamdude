@@ -94,12 +94,11 @@ shapely>=2.0.0
 mapbox-earcut>=1.0.0
 # Packing engine of "Assemble project" (File Library): places parts by their real
 # outline, so small parts go into the holes and concavities of larger ones, and
-# writes the Bambu project 3MF. Our own library (kainpl/platenest, AGPL-3.0); needs
-# only numpy and opencv-python-headless, both already here. Pinned exactly because
+# writes the Bambu project 3MF. Our own library (kainpl/platenest, AGPL-3.0). It needs
+# numpy and opencv-python-headless for quick packing; the optimize extra adds
+# the native Sparrow solver for longer searches. Pinned exactly because
 # BamDude writes files with it and reads them back for re-layout.
-# Temporary immutable review build; replace with the exact maintained release
-# after kainpl/platenest#3 is merged and published (maintainer release step).
-platenest[optimize] @ https://github.com/UVCXanth/platenest/archive/76e945dcdc1fa178d9678b02c7349d5076d34647.tar.gz
+platenest[optimize]==0.2.0
 matplotlib>=3.8.0
 fast-simplification>=0.1.0
 # trimesh's 3MF loader imports lxml lazily inside the 3MF code path (model.xml

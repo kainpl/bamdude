@@ -19,13 +19,9 @@ def test_requirements_pin_the_installed_version_exactly():
     requirement = Requirement(_pin())
     assert requirement.name == "platenest"
     assert requirement.extras == {"optimize"}
-    # Release is a maintainer step. Until it exists, allow only the reviewed
-    # immutable build, never an archive from any owner or an unpinned branch.
-    assert requirement.url == (
-        "https://github.com/UVCXanth/platenest/archive/"
-        "76e945dcdc1fa178d9678b02c7349d5076d34647.tar.gz"
-    )
-    assert version("platenest") == "0.1.1"
+    assert requirement.url is None
+    installed = version("platenest")
+    assert str(requirement.specifier) == f"=={installed}"
     from platenest import optimize
 
     assert callable(optimize)
