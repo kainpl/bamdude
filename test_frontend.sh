@@ -1,4 +1,5 @@
 #!/bin/sh
+set -e
 
 cd frontend
 npm run typecheck   # tsc -b --noEmit; a bare `npx tsc` enters no file here and exits 0
