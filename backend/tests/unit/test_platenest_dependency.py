@@ -5,6 +5,8 @@ import sys
 from importlib.metadata import version
 from pathlib import Path
 
+from packaging.requirements import Requirement
+
 ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -14,7 +16,15 @@ def _pin() -> str:
 
 
 def test_requirements_pin_the_installed_version_exactly():
-    assert _pin() == f"platenest=={version('platenest')}"
+    requirement = Requirement(_pin())
+    assert requirement.name == "platenest"
+    assert requirement.extras == {"optimize"}
+    assert requirement.url is None
+    installed = version("platenest")
+    assert str(requirement.specifier) == f"=={installed}"
+    from platenest import optimize
+
+    assert callable(optimize)
 
 
 def test_the_windows_installer_checks_for_it():

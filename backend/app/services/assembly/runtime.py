@@ -386,6 +386,7 @@ class AssemblyRuntime:
         job_id: int,
         timeout_s: float = 900.0,
         on_progress: Callable[[dict], None] | None = None,
+        finish_requested: Callable[[], bool] | None = None,
     ) -> dict:
         """Pack the job staged in ``root`` and return the child's result. Raises :class:`AssemblyFailed`."""
         if not self.ready or self.closed:
@@ -405,6 +406,7 @@ class AssemblyRuntime:
                 raise AssemblyFailed(refused if refused == "busy" else "unavailable", "refused")
             accepted = True
             shown = None
+            finish_sent = False
             while True:
                 state = reply.get("state")
                 if state == "done":
@@ -423,6 +425,9 @@ class AssemblyRuntime:
                 if on_progress is not None and progress != shown:
                     shown = progress
                     on_progress(dict(progress))
+                if not finish_sent and finish_requested is not None and finish_requested():
+                    await disk((root / "finish").touch)
+                    finish_sent = True
                 await asyncio.sleep(_POLL_SECONDS)
                 # One unanswered status is not a lost job: main's loop may stall, and the service shares a
                 # core with a child at full load. The service itself watches the child; the monitor here
@@ -562,7 +567,11 @@ async def stop_assembly_runtime() -> None:
         runtime = None
 
 
-async def run_assembly(root: Path, *, job_id: int, timeout_s: float = 900.0, on_progress=None) -> dict:
+async def run_assembly(
+    root: Path, *, job_id: int, timeout_s: float = 900.0, on_progress=None, finish_requested=None
+) -> dict:
     if runtime is None:
         raise AssemblyFailed("unavailable", "not_started")
-    return await runtime.run(root, job_id=job_id, timeout_s=timeout_s, on_progress=on_progress)
+    return await runtime.run(
+        root, job_id=job_id, timeout_s=timeout_s, on_progress=on_progress, finish_requested=finish_requested
+    )

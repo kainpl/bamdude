@@ -2,6 +2,8 @@
 
 ### Security
 
+- Updated i18next to 26.3.4 to address [GHSA-6jcc-5g8w-32mx](https://github.com/advisories/GHSA-6jcc-5g8w-32mx).
+
 - The part thumbnail renderer uses Node.js 24.22.3 on 64-bit platforms and 22.23.5 on 32-bit ARM. Both updates include Node.js security fixes.
 
 - **Removing a user from Administrators takes effect on their next request.** This also clears their legacy admin role. BamDude refuses changes that would leave no active administrator.
@@ -69,6 +71,12 @@
   address is no longer rejected by its additional loopback-only default check.
 
 ### Added
+
+- **Slicer parameters follow the Ukrainian interface language.** Process-setting tabs, groups, labels, tooltips, choices and units use OrcaSlicer’s Ukrainian catalog, with reviewed translations for descriptions specific to the vendored schema. Search accepts Ukrainian text and original English keys; changing language keeps edits and sends the same slicer keys and values. The optional catalog loads independently and falls back to English on failure without blocking the panel. Reviewed corrections distinguish lattice angles and translate tooltips containing literal function names.
+
+- **Assembly can spend longer looking for a denser layout.** A visible optional five-minute search tries bitmap restarts and Sparrow, keeps the best validated layout, and can finish early with that result. Fresh quick assemblies keep 90° rotations; finer or arbitrary in-plane rotations are explicit choices; saved projects retain their previous rotation setting. Parts are never mirrored or scaled by this search.
+
+  PlateNest 0.2.0 preserves one-shot cancellation during raster recovery and restarts. Finish and time limits keep the best validated result.
 
 - MCP order reads keep known QC counts for independent lines when another archive lacks part rows; genuinely pooled gaps remain uncertain. A progress request shares its single attribution with Workshop fulfilment. Printer-scoped running queries no longer report missing pending work, and queue links select the requested printer.
 

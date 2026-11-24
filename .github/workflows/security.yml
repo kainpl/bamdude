@@ -43,9 +43,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Short-circuit when the same SHA already ran on another ref (e.g.
-  # fast-forward dev → main puts the exact same commit on two branches;
-  # without this we'd audit the same bytes twice in a row).
+  # Outside the default branch, skip duplicate content that already passed.
+  # The default branch runs its own audit because it owns repository-wide issues.
   check-duplicate:
     name: Check Duplicate
     runs-on: ubuntu-latest
@@ -53,6 +52,7 @@ jobs:
       should_skip: ${{ steps.skip.outputs.should_skip }}
     steps:
       - id: skip
+        if: github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
         uses: fkirc/skip-duplicate-actions@v5
         with:
           concurrent_skipping: 'same_content_newer'
@@ -193,8 +193,9 @@ jobs:
           path: pip-audit-results.json
           retention-days: 30
 
+      # Track repository-wide alerts against the default branch.
       - name: Create or close pip security issue
-        if: always()
+        if: always() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         uses: actions/github-script@v9
         with:
           script: |
@@ -370,8 +371,9 @@ jobs:
           path: frontend/npm-audit-results.json
           retention-days: 30
 
+      # Track repository-wide alerts against the default branch.
       - name: Create or close npm security issue
-        if: always()
+        if: always() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         uses: actions/github-script@v9
         with:
           script: |

@@ -32,9 +32,10 @@ class AssemblyPrinter(BaseModel):
 
 class AssemblyLayout(BaseModel):
     spacing: float = Field(2.0, ge=0, le=50)
-    rotation_step: Literal[0, 45, 90, 180] = 90
+    rotation_step: Literal[-1, 0, 5, 15, 45, 90, 180] = 90
     centre: bool = True
     split_plates: bool = False  # a file per plate instead of one multi-plate file
+    long_search: bool = False
 
 
 class AssemblyRequest(BaseModel):
