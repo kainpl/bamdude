@@ -389,11 +389,31 @@ async def scenario_e() -> dict:
 # ---------- f · R08 — freshness of the configuration writers ----------
 
 
+async def _review_blue(shop):
+    from backend.app.api.routes import projects as project_routes
+    from backend.app.core.database import async_session
+    from backend.app.models.project_line import ProjectLine
+    from backend.app.schemas.project import LineConfigurationIn
+
+    async with async_session() as db:
+        line = await db.get(ProjectLine, shop["line"])
+        choice = LineConfigurationIn(
+            choices={shop["group"]: shop["options"]["blue"]},
+            expected_revision=len(line.composition_revisions or []),
+        )
+        review = await project_routes.configure_line(
+            shop["order"], shop["line"], choice.model_copy(update={"dry_run": True}), db, None, creds=_allow()
+        )
+    assert review.review_version
+    return choice.model_copy(update={"review_version": review.review_version})
+
+
 async def scenario_f(recipe: str) -> dict:
     """Four pairs, each with its outcome. ``recipe`` — ``duel`` (PostgreSQL) or ``serial``."""
     from backend.app.api.routes import products as product_routes, projects as project_routes
+    from backend.app.core.database import async_session
     from backend.app.schemas.product import VariantGroupCreate, VariantGroupUpdate
-    from backend.app.schemas.project import LineConfigurationIn, ProjectLineCreate
+    from backend.app.schemas.project import ProjectLineCreate
 
     async def pair(a_call, b_call):
         if recipe == "duel":
@@ -402,19 +422,26 @@ async def scenario_f(recipe: str) -> dict:
 
     out: dict[str, dict] = {}
 
-    # f1: a group added, then the line reconfigured — the new group's choice survives.
+    # f1: a group added after review makes the waiting write stale. Re-review
+    # after the group commits and verify the confirmed write retains its choice.
     s = await shop()
-    size = {}
+    old_choices = await _line_choices(s["line"])
 
     async def add_size(db):
         await product_routes.create_variant_group(
             s["product"], VariantGroupCreate(name="Size", options=["S", "L"]), db, None
         )
 
-    choose_blue = LineConfigurationIn(choices={s["group"]: s["options"]["blue"]})
+    choose_blue = await _review_blue(s)
     r = await pair(
         add_size, lambda db: project_routes.configure_line(s["order"], s["line"], choose_blue, db, None, creds=_allow())
     )
+    before_retry = await _line_choices(s["line"])
+    refreshed = await _review_blue(s)
+    async with async_session() as db:
+        retry = await _runner()._outcome(
+            db, lambda: project_routes.configure_line(s["order"], s["line"], refreshed, db, None, creds=_allow())
+        )
     size = await _group_by_name(s["product"], "Size")
     choices = await _line_choices(s["line"])
     kit_before = await _line_kit(s["line"])
@@ -422,6 +449,8 @@ async def scenario_f(recipe: str) -> dict:
         await _set_standard(size["id"], size["options"]["L"], product_routes, VariantGroupUpdate, s["product"])
     out["group_then_configuration"] = {
         **r,
+        "retry": retry,
+        "choice_unchanged_after_conflict": before_retry[s["group"]] == old_choices[s["group"]],
         "has_size": size is not None and size["id"] in choices,
         "kept_blue": choices.get(s["group"]) == s["options"]["blue"],
         "key_ok": await _line_key_matches(s["line"]),
@@ -430,7 +459,7 @@ async def scenario_f(recipe: str) -> dict:
 
     # f2: the line reconfigured, then a group added — the group lands on it.
     s = await shop()
-    choose_blue = LineConfigurationIn(choices={s["group"]: s["options"]["blue"]})
+    choose_blue = await _review_blue(s)
     r = await pair(
         lambda db: project_routes.configure_line(s["order"], s["line"], choose_blue, db, None, creds=_allow()),
         lambda db: product_routes.create_variant_group(
@@ -467,14 +496,14 @@ async def scenario_f(recipe: str) -> dict:
 
     # f4: an option deleted against a configuration choosing it — both orders.
     s = await shop()
-    choose_blue = LineConfigurationIn(choices={s["group"]: s["options"]["blue"]})
+    choose_blue = await _review_blue(s)
     r = await pair(
         lambda db: project_routes.configure_line(s["order"], s["line"], choose_blue, db, None, creds=_allow()),
         lambda db: product_routes.delete_variant_option(s["product"], s["group"], s["options"]["blue"], db, None),
     )
     out["choice_then_delete"] = {**r, "line_keeps_blue": (await _line_choices(s["line"])).get(s["group"])}
     s = await shop()
-    choose_blue = LineConfigurationIn(choices={s["group"]: s["options"]["blue"]})
+    choose_blue = await _review_blue(s)
     r = await pair(
         lambda db: product_routes.delete_variant_option(s["product"], s["group"], s["options"]["blue"], db, None),
         lambda db: project_routes.configure_line(s["order"], s["line"], choose_blue, db, None, creds=_allow()),
@@ -873,7 +902,7 @@ def _with_size(draft: list) -> list:
 
 async def scenario_t2() -> dict:
     from backend.app.api.routes import projects as project_routes
-    from backend.app.schemas.project import FulfilmentIn, FulfilmentLineIn, LineConfigurationIn
+    from backend.app.schemas.project import FulfilmentIn, FulfilmentLineIn
 
     out: dict[str, dict] = {}
 
@@ -914,7 +943,7 @@ async def scenario_t2() -> dict:
     # An apply adding a group against a configuration change of a line.
     s = await shop()
     revision, draft = await _revision_and_draft(s["product"])
-    choose_blue = LineConfigurationIn(choices={s["group"]: s["options"]["blue"]})
+    choose_blue = await _review_blue(s)
     result = await duel(
         lambda db: project_routes.configure_line(s["order"], s["line"], choose_blue, db, None, creds=_allow()),
         _apply_door(s["product"], revision, _with_size(draft)),

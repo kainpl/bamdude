@@ -51,6 +51,9 @@ CATALOG_PATH = APP_DIR / "data" / "api_errors_uk.json"
 sys.path.insert(0, str(ROOT))
 from backend.app.i18n.api_errors import is_code  # noqa: E402
 
+# Functions that can refuse with a caller-supplied sentence.
+FORWARDED_CALL_ARG_INDEX = {"require_other_active_admin": 2}
+
 # Domain exceptions that routes forward verbatim (``detail=str(exc)``). Their
 # messages are API-facing by construction, so the guard demands a translation.
 # Forwarded refusals whose sentence is NOT the first argument: ``VariantError(status,
@@ -259,6 +262,9 @@ def scan(app_dir: Path = APP_DIR) -> dict[str, set[Site]]:
                     kind, expr = "json", _json_detail_expr(node)
                 elif name == "json_error":
                     kind, expr = "json", (node.args[1] if len(node.args) >= 2 else None)
+                elif name in FORWARDED_CALL_ARG_INDEX:
+                    index = FORWARDED_CALL_ARG_INDEX[name]
+                    kind, expr = "forwarded", (node.args[index] if len(node.args) > index else None)
                 elif name == "translate_sentence":
                     # Explicitly translated success fragments and domain refusals
                     # reach the wire too; sync --prune must preserve their keys.

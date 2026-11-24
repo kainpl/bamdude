@@ -25,6 +25,9 @@ NOT_A_SURFACE = {
     "product.EstimateSurplusOut": "the product estimate's surplus figures -- no surface of spec §12.2",
     "plate_fit.PlateFitPart": "the quantity calculator's what-if coverage figures, like EstimateSurplusOut; not a part-image surface",
     "product.PartSourcesOut": "a part's sources, shown under the part's own row, which carries the picture",
+    "project.LinePartAdd": "a request body selecting a catalog part",
+    "project.LineSavedPartOut": "saved rows for the configuration editor, including archived parts",
+    "project.ReleasedPartReservation": "part name and quantity in the reservation warning",
     "project.LineChangedPartOut": "a configuration caption; the variant chips stay as they are (spec §12.2)",
     "project.StockMovedOut": "the answer to «bank surplus», told as a toast (spec §12.2: toasts unchanged)",
 }

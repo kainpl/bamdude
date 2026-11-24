@@ -434,9 +434,11 @@ async def test_four_step_timeouts_keep_the_service_and_an_stl_follows_at_once(ca
         finally:
             watcher.cancel()
         assert outcome in {"timeout", "canceled", "resource_limit"} and not files, (outcome, stage)
-        assert (stage is None and not seen) or (
-            stage is not None and seen and STAGES.index(stage) >= STAGES.index(seen[-1])
-        ), (stage, seen)
+        # A short-lived marker can disappear between watcher polls. Any
+        # marker we saw still bounds the stage the service may report.
+        assert stage is None or stage in STAGES, (stage, seen)
+        if seen:
+            assert stage is not None and STAGES.index(stage) >= STAGES.index(seen[-1]), (stage, seen)
         landed.append((outcome, stage))
         if outcome == "resource_limit":
             offset -= step  # the watchdog came first

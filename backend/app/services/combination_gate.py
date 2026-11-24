@@ -42,7 +42,7 @@ from sqlalchemy.orm import selectinload
 from backend.app.models.product import Product
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
 from backend.app.services.line_composition import Unavailable, availability
-from backend.app.services.line_config import LineConfigError, resolve_on
+from backend.app.services.line_config import LineConfigError, LineConfigurationStale, resolve_on
 from backend.app.services.product_composition import recipes_for_products, sliced_part_ids
 
 COMBINATION_UNAVAILABLE = "That combination is not available"
@@ -72,7 +72,7 @@ def refusal_detail(error: Exception) -> str | dict:
     # Imported here: line_intake imports this module.
     from backend.app.services.line_intake import LineIntakeError
 
-    if isinstance(error, CombinationUnavailable):
+    if isinstance(error, (CombinationUnavailable, LineConfigurationStale)):
         return error.payload()
     if isinstance(error, LineIntakeError) and error.payload is not None:
         return error.payload

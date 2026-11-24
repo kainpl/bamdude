@@ -269,6 +269,7 @@ describe('OrderLinesTable · the table (E4 B)', () => {
     const items = within(menu).getAllByRole('menuitem');
     expect(items.map((i) => i.textContent)).toEqual([
       'Part configuration…',
+      'Add part to line…',
       'Edit line…',
       'Move up',
       'Move down',

@@ -124,7 +124,8 @@ jobs gate the merge. The same commands, locally:
 | CI job | Run locally |
 |---|---|
 | Backend Lint | `ruff check backend/ && ruff format --check backend/` |
-| Backend Tests | `pytest backend/tests/ -n 4 --timeout=300 --timeout-method=thread` (from the repo root — see [Testing](#testing)) |
+| Backend Tests (unit) | `python -m pytest backend/tests/unit -n 4 --timeout=60 --timeout-method=thread` (from the repo root) |
+| Backend Tests (integration and other) | `python -m pytest backend/tests/ --ignore=backend/tests/unit -n 4 --timeout=60 --timeout-method=thread` (see [Testing](#testing)) |
 | PostgreSQL Scenarios | `TEST_POSTGRES_URL=postgresql://… pytest backend/tests/integration/test_postgres_scenarios.py` (see [Testing](#testing)) |
 | Backend Security | `pip-audit` |
 | Frontend Lint | `cd frontend && npm run lint && npm run i18n:check` |
@@ -145,9 +146,10 @@ Autofix where it exists: `ruff check --fix backend/ && ruff format backend/`,
 `cd frontend && npm run lint -- --fix`. There is deliberately **no formatter on
 the frontend** (no Prettier); lint and typecheck are the gates.
 
-A Markdown-only change skips CI. Both Backend Tests and the Docker integration
-suite explicitly use `-n 4`: automatic detection selects only two pytest workers
-on the hosted runner. These are test processes, not additional CPU cores.
+A Markdown-only change skips CI. The two Backend Tests jobs cover the full suite
+on separate runners. Each uses `-n 4` because automatic detection selects only
+two pytest workers on the hosted runner. The Docker job checks the shipped
+image through HTTP.
 
 ### Pre-commit hooks
 

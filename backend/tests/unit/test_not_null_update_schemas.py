@@ -28,6 +28,8 @@ NOT_A_ROW_UPDATE = {
     "KProfileNote": "upserts or deletes a note; the row key is resolved by the route, never set from the body",
     "LabelCassetteIn": "upserts a cassette field by field; the name is assigned only when given",
     "WorkingWrite": "an order's working plan, written by its own service",
+    "LineConfigurationIn": "the configuration service interprets choices, optional edits and preview metadata",
+    "ProcurementUpdate": "only the required acquired quantity is written; the optional identity guards the lookup",
     "PartImageChoiceIn": "a part's picture choice, written by its own service",
     # Refuse a null themselves, with a 422 their own tests pin -- "unchanged" would hide the mistake.
     "DryingScheduleUpdate": "every rule field but latest_start refuses null (422)",

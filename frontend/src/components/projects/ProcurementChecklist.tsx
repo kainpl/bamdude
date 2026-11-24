@@ -75,8 +75,11 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
   const { data: settings } = useUiPreferences();
 
   const save = useMutation({
-    mutationFn: ({ partId, acquired }: { partId: number; acquired: number; record: SentRecord }) =>
-      api.updateOrderProcurement(order.id, partId, acquired),
+    mutationFn: ({ partId, partIdentity, acquired }: {
+      partId: number; partIdentity?: string; acquired: number; record: SentRecord;
+    }) => partIdentity
+      ? api.updateOrderProcurement(order.id, partId, acquired, partIdentity)
+      : api.updateOrderProcurement(order.id, partId, acquired),
     onSuccess: (_order, { partId, record }) => {
       invalidateOrderViews(queryClient, { orderId: order.id });
       // The record ends with the re-read its write started — the fetch already under
@@ -105,6 +108,7 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
   }
 
   const commit = (row: ProcurementRow, field: HTMLInputElement) => {
+    if (row.part_id < 0) return;
     const raw = field.value.trim();
     const next = Number(raw);
     const last = sent.current[row.part_id];
@@ -115,7 +119,7 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
       if (next === current) return;
       const record = { value: next, base: row.acquired };
       sent.current[row.part_id] = record;
-      save.mutate({ partId: row.part_id, acquired: next, record });
+      save.mutate({ partId: row.part_id, partIdentity: row.part_identity ?? undefined, acquired: next, record });
       return;
     }
     // ⚠️ And the box has to say so. The input is uncontrolled and keyed on the
@@ -144,7 +148,7 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
           </thead>
           <tbody>
             {order.procurement.map((row) => (
-              <tr key={row.part_id} className="border-b border-bambu-dark-tertiary last:border-0">
+              <tr key={row.part_identity ?? row.part_id} className="border-b border-bambu-dark-tertiary last:border-0">
                 <td className="px-3 py-2 align-middle text-white">
                   {/* The part's photo beside its name (spec procurement-stock-images R2): its own door
                       to the larger picture, apart from the supplier's link and from the count. */}
@@ -175,7 +179,7 @@ export function ProcurementChecklist({ order, canEdit }: ProcurementChecklistPro
                     type="number"
                     min={0}
                     defaultValue={row.acquired}
-                    disabled={!canEdit}
+                    disabled={!canEdit || row.part_id < 0}
                     onBlur={(e) => commit(row, e.currentTarget)}
                     // Enter only lets go of the box; the blur is the one commit (R07).
                     onKeyDown={(e) => {

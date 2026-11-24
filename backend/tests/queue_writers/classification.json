@@ -2139,6 +2139,7 @@
  "backend/app/services/telegram_handlers/library_scene.py::cb_library_add_queue.attach": {
   "class": "lane:queue_scope_lock",
   "fk": {
+   "print_queue.** (any FK)": "free",
    "print_queue.created_by_id": "free",
    "print_queue.library_file_id": "free",
    "print_queue.queue_id": "free",
@@ -2147,7 +2148,7 @@
   "lock": "lane",
   "owner": "publication",
   "r3": "listed",
-  "rule": "unchanged · r5 R20/A25: the target header re-read under the lane; missing or another recovery_identity -> refusal"
+  "rule": "r5 R20/A25: recheck the target header under the lane. The saved_queue_options expansion supplies print preferences only; the foreign keys are the explicit arguments."
  },
  "backend/app/services/telegram_handlers/printer_add_scene.py::cb_confirm": {
   "class": "L2c-runtime",
@@ -2183,6 +2184,7 @@
  "backend/app/services/telegram_handlers/queue_scene.py::cb_qadd_confirm.attach": {
   "class": "lane:queue_scope_lock",
   "fk": {
+   "print_queue.** (any FK)": "free",
    "print_queue.created_by_id": "free",
    "print_queue.library_file_id": "free",
    "print_queue.queue_id": "free",
@@ -2191,7 +2193,7 @@
   "lock": "lane",
   "owner": "publication",
   "r3": "listed",
-  "rule": "unchanged · r5 R20/A25: the target header re-read under the lane; missing or another recovery_identity -> refusal"
+  "rule": "r5 R20/A25: recheck the target header under the lane. The saved_queue_options expansion supplies print preferences only; the foreign keys are the explicit arguments."
  },
  "backend/app/services/usage_projection.py::_record_projection": {
   "candidates": {

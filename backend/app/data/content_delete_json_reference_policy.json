@@ -1,4 +1,9 @@
 {
+  "printers.hms_notified_faults": {
+    "table": "printers",
+    "column": "hms_notified_faults",
+    "policy": "Fault codes and notification times for this printer. Codes are device facts. The printer deletion owner removes the row and clears the matching in-memory notification storage."
+  },
   "printers.plate_detection_polygon": {
     "table": "printers",
     "column": "plate_detection_polygon",
@@ -98,6 +103,11 @@
     "table": "product_parts",
     "column": "aliases",
     "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "project_lines.composition_revisions": {
+    "table": "project_lines",
+    "column": "composition_revisions",
+    "policy": "Document history. Stored part and option ids describe the saved revision and remain with the document after catalog deletion. Readers resolve current parts only with matching identities."
   },
   "project_lines.extra_percentages": {
     "table": "project_lines",
@@ -318,6 +328,11 @@
     "table": "stock_issues",
     "column": "supplier",
     "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "stock_items.composition_parts": {
+    "table": "stock_items",
+    "column": "composition_parts",
+    "policy": "Saved physical kit. Part ids describe the captured kit and the reader matches current parts by identity. Preserve the kit through catalog changes and use the existing stock deletion owner."
   },
   "stock_issue_lines.configuration": {
     "table": "stock_issue_lines",

@@ -111,20 +111,39 @@ async def _lane_free():
 @pytest.mark.asyncio
 class TestOneSessionPerPrinter:
     async def test_a_cancelled_read_never_shares_the_printer_with_the_next_session(
-        self, patch_ftp_port, sessions, slow_retr
+        self, patch_ftp_port, sessions, slow_retr, monkeypatch
     ):
         server = patch_ftp_port
         server.add_file("timelapse/big.mp4", bytes(range(256)) * 4096)
         gate, started = slow_retr
+        disconnected, finish_worker = threading.Event(), threading.Event()
+        end_session = bambu_ftp._end_session
+
+        def hold_cancelled_worker(worker, client):
+            end_session(worker, client)
+            if worker.name == "read" and worker.cancel_requested:
+                disconnected.set()
+                assert finish_worker.wait(10)
+
+        monkeypatch.setattr(bambu_ftp, "_end_session", hold_cancelled_worker)
         read = asyncio.create_task(download_file_bytes_async(IP, CODE, "/timelapse/big.mp4"))
-        assert await asyncio.to_thread(started.wait, 10)
-        read.cancel()
-        await asyncio.gather(read, return_exceptions=True)
-        listing = asyncio.create_task(list_directory_async(IP, CODE, "/"))
-        await asyncio.sleep(0.5)
-        assert sessions.peak == 1  # the listing waits for the cancelled read's thread
-        assert not listing.done()
-        gate.set()
+        try:
+            assert await asyncio.to_thread(started.wait, 10)
+            read.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await read
+            assert await asyncio.to_thread(disconnected.wait, 10)
+            # Let the peer observe its closed socket, independently of the
+            # cancelled client worker, which is still in its finally block.
+            gate.set()
+            await _until(lambda: sessions.active == 0)
+            listing = asyncio.create_task(list_directory_async(IP, CODE, "/"))
+            await asyncio.sleep(0.5)
+            assert sessions.peak == 1
+            assert not listing.done()
+        finally:
+            gate.set()
+            finish_worker.set()
         assert (await listing).status == LISTING_COMPLETE
         assert sessions.peak == 1
         await _lane_free()

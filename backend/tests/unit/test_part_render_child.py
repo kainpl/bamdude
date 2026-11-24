@@ -7,6 +7,7 @@ import os
 import time
 from pathlib import Path
 
+import psutil
 import pytest
 from PIL import Image
 
@@ -21,6 +22,21 @@ from backend.tests.fixtures.part_render_3mf import (
     write_3mf,
 )
 from backend.tests.unit.services.test_part_render_node import NODE, needs_node
+
+
+@pytest.fixture(autouse=True)
+def render_attempt_rss(monkeypatch):
+    # These unit tests run the reader inside a reused pytest process. Count
+    # the reader's growth during the attempt plus Node, rather than memory
+    # retained by unrelated suites. The end-to-end tests run the real child
+    # with its production limit on total RSS.
+    rss_before = psutil.Process().memory_info().rss
+    run_frames = part_render.run_frames
+
+    def frames(*args, rss_of, **kwargs):
+        return run_frames(*args, rss_of=lambda pid: max(0, rss_of(pid) - rss_before), **kwargs)
+
+    monkeypatch.setattr(part_render, "run_frames", frames)
 
 
 def boot_for(

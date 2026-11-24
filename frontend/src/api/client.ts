@@ -2429,10 +2429,24 @@ export interface LineChangedPart {
   standard_qty: number;
 }
 
-/** Names and codes only — the caption is composed here, in the reader's language. */
+export interface LineSavedPart {
+  part_id: number;
+  identity: string;
+  name: string;
+  kind: ProductPartKind;
+  qty: number;
+  in_catalog: boolean;
+  manual: boolean;
+}
+
+/** The saved choice, overrides and editable document rows. */
 export interface LineConfiguration {
   choices: LineChoice[];
   changed_parts: LineChangedPart[];
+  saved_parts?: LineSavedPart[];
+  count_identities?: Record<number, string>;
+  revision?: number | null;
+  origin?: 'order' | 'migration' | null;
 }
 
 /** `PUT …/configuration`: `choices` `{group_id: option_id}`, `part_counts`
@@ -2440,6 +2454,41 @@ export interface LineConfiguration {
 export interface LineConfigurationBody {
   choices: Record<number, number>;
   part_counts: Record<number, number>;
+  expected_revision?: number;
+  part_edits?: Record<number, number>;
+  saved_part_edits?: Record<string, number>;
+  catalog_part_edits?: Record<string, number>;
+  review_version?: string;
+}
+
+export interface LinePartCandidates {
+  revision: number;
+  catalog_version: string;
+  quantity: number;
+  variant_available: boolean;
+  variant_names: string[];
+  parts: {
+    id: number;
+    part_identity: string;
+    name: string;
+    kind: string;
+    compatible: boolean;
+    saved_qty: number;
+    suggested_qty: number;
+    extra_percent: number;
+  }[];
+}
+
+export interface LinePartAdd {
+  part_id: number;
+  part_identity: string;
+  quantity: number;
+  all_parts: boolean;
+  expected_revision: number;
+  expected_quantity: number;
+  catalog_version: string;
+  reservation_review: Pick<LineConfigurationImpact, 'reserved_before' | 'reserved_after' | 'finished_before' | 'finished_after' | 'part_reservation_version'>;
+  command_id: string;
 }
 
 export interface DroppedPart {
@@ -2456,11 +2505,15 @@ export interface DroppedPart {
 
 /** What a configuration change would do — the server's dry run (rule 14). */
 export interface LineConfigurationImpact {
+  changes?: DroppedPart[];
+  review_version?: string | null;
   reserved_before: number;
   reserved_after: number | null;
   /** Ready units the line holds and would hold in the new configuration's position. */
   finished_before: number;
   finished_after: number | null;
+  part_reservation_version?: string | null;
+  released_parts?: { part_id: number; name: string; quantity: number }[];
   dropping: DroppedPart[];
 }
 
@@ -2576,6 +2629,7 @@ export interface PlateFitResponse {
 /** A purchased part rolled up across every line of the order. */
 export interface ProcurementRow {
   part_id: number;
+  part_identity?: string | null;
   name: string;
   need: number;
   acquired: number;
@@ -3412,6 +3466,7 @@ export interface ProductPart {
   /** Additional printed parts, rounded up once over an order line. */
   extra_percent?: number;
   id: number;
+  composition_identity?: string | null;
   kind: ProductPartKind;
   name: string;
   /** Normalised name the plate walk matches on. */
@@ -14563,6 +14618,13 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ ...data, dry_run: true }),
     }),
+  getLinePartCandidates: (orderId: number, lineId: number) =>
+    request<LinePartCandidates>(`/projects/${orderId}/lines/${lineId}/part-candidates`),
+  addLinePart: (orderId: number, lineId: number, data: LinePartAdd) =>
+    request<Order>(`/projects/${orderId}/lines/${lineId}/parts`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   /** What each line would take from stock (spec workshop-add-to-order, rule 10). */
   suggestStock: (items: StockSuggestItem[]) =>
     request<{ items: StockSuggestion[] }>('/stock/suggest', { method: 'POST', body: JSON.stringify({ items }) }),
@@ -14601,10 +14663,10 @@ export const api = {
     request<PlateFitResponse>(`/projects/${orderId}/lines/${lineId}/plate-fit`, { method: 'POST', body: JSON.stringify(data) }),
   deleteOrderLine: (orderId: number, lineId: number) =>
     request<Order>(`/projects/${orderId}/lines/${lineId}`, { method: 'DELETE' }),
-  updateOrderProcurement: (orderId: number, partId: number, quantityAcquired: number) =>
+  updateOrderProcurement: (orderId: number, partId: number, quantityAcquired: number, partIdentity?: string) =>
     request<Order>(`/projects/${orderId}/procurement/${partId}`, {
       method: 'PATCH',
-      body: JSON.stringify({ quantity_acquired: quantityAcquired }),
+      body: JSON.stringify({ quantity_acquired: quantityAcquired, part_identity: partIdentity }),
     }),
   /** `lineId` omitted binds the prints to the order without a line — the
    *  server then files them under `other_archive_ids`. The null is explicit so

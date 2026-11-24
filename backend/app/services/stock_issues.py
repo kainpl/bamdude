@@ -208,7 +208,7 @@ async def seal(db: AsyncSession, issue: StockIssue, *, actor: User | None) -> li
                 product_id=product.id,
                 product_name=product.name,
                 sku=product.sku,
-                configuration=configurations[item_id][1].model_dump(),
+                configuration=configurations[item_id][1].model_dump(include={"choices", "changed_parts"}),
                 quantity=quantity,
             )
         )

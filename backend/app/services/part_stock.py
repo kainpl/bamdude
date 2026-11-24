@@ -73,8 +73,8 @@ from backend.app.services.line_composition import (
     default_options,
     extra_parts_for_line,
     has_shelf,
-    line_composition,
     load_line_configs,
+    saved_composition,
 )
 from backend.app.services.order_metrics import IN_CHUNK, index_plates, products_for_print, row_quantity
 from backend.app.services.product_composition import part_index
@@ -282,7 +282,7 @@ async def line_composition_of(db: AsyncSession, line: ProjectLine) -> Compositio
     )
     config = (await load_line_configs(db, [line.id])).get(line.id, LineConfig())
     defaults = (await default_options(db, [line.product_id])).get(line.product_id, {})
-    return line_composition(list(parts), line.mode, config, defaults)
+    return saved_composition(line, parts, config, defaults)
 
 
 def lock_part_stmt(part_id: int):
@@ -635,6 +635,64 @@ async def release_for_line(db: AsyncSession, line: ProjectLine, *, note: str) ->
 async def reserved_parts_for_line(db: AsyncSession, line: ProjectLine) -> dict[int, int]:
     """Actual live per-part reservations, including incomplete kits."""
     return dict(await _reserved_net_by_part(db, line.id))
+
+
+@dataclass
+class AddedPartsReservation:
+    kits: int
+    before: dict[int, int]
+    after: dict[int, int]
+
+
+async def plan_added_parts_reservation(
+    db: AsyncSession,
+    line: ProjectLine,
+    old_comp: Composition,
+    new_comp: Composition,
+    held: dict[int, int],
+    kits: int,
+    *,
+    lock: bool,
+) -> AddedPartsReservation:
+    """Review whole kits against added requirements and carry forward loose allocations."""
+    old_per = {part.id: per for part, per in counted(old_comp)}
+    kit = counted(new_comp)
+    if line.mode != "product" or not kits or old_per == {part.id: per for part, per in kit}:
+        return AddedPartsReservation(kits, held, held)
+    if lock:
+        await lock_parts(db, [part for part, _ in kit])
+    shelf = await balances(db, line.product_id)
+    available = {
+        part.id: shelf.get(part.id, 0) + min(held.get(part.id, 0), kits * old_per.get(part.id, 0)) for part, _ in kit
+    }
+    keep = min(kits, line.quantity, kits_of(available, kit))
+    target = dict(held)
+    for part, per in kit:
+        pid = part.id
+        from_kits = min(held.get(pid, 0), kits * old_per.get(pid, 0))
+        target[pid] = held.get(pid, 0) - from_kits + keep * per
+    return AddedPartsReservation(keep, held, {pid: qty for pid, qty in target.items() if qty})
+
+
+async def apply_added_parts_reservation(
+    db: AsyncSession, line: ProjectLine, plan: AddedPartsReservation, *, created_by: int | None
+) -> None:
+    """Apply only the reviewed differences under the planning locks."""
+    for pid in sorted(plan.before.keys() | plan.after.keys()):
+        delta = plan.before.get(pid, 0) - plan.after.get(pid, 0)
+        if delta == 0:
+            continue
+        movement = await move(
+            db,
+            part_id=pid,
+            delta=delta,
+            reason="reservation_released" if delta > 0 else "reserved_for_order",
+            project_line_id=line.id,
+            note=NOTE_RESERVATION_REWRITTEN if delta > 0 else None,
+            created_by=created_by,
+        )
+        if movement is None or movement.delta != delta:
+            raise PartStockError("Part stock changed. Review the current values and confirm again")
 
 
 async def fit_reservation_for_line(db: AsyncSession, line: ProjectLine, units: int) -> None:

@@ -147,6 +147,7 @@ async def test_plug_service_lookup_rechecks_before_turn_off(mode, monkeypatch):
         await release.wait()
         return service
 
+    monkeypatch.setattr(plugs, "_off_target", AsyncMock(return_value=SimpleNamespace(id=1)))
     monkeypatch.setattr(plugs, "get_service_for_plug", lookup)
     monkeypatch.setattr("backend.app.services.smart_plug_manager.printer_manager", manager)
     monkeypatch.setattr(
@@ -157,10 +158,6 @@ async def test_plug_service_lookup_rechecks_before_turn_off(mode, monkeypatch):
         func(
             1,
             "tasmota",
-            None,
-            None,
-            None,
-            None,
             1,
             0 if mode == "time" else 50,
             may_run=lambda: print_effect_is_current(manager, token),

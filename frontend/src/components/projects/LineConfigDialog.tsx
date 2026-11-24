@@ -1,10 +1,11 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { api } from '../../api/client';
+import { api, ApiError } from '../../api/client';
 import type {
   LineConfigurationBody,
   LineConfigurationImpact,
+  LineSavedPart,
   PartImageRef,
   PartSource,
   Product,
@@ -41,6 +42,17 @@ const MAX_COUNT = 9999;
 /** At most this many sources per part in the «Source» cell (the mockup shows two). */
 const SOURCES_SHOWN = 2;
 
+type EditablePart = Pick<ProductPart, 'id' | 'kind' | 'name' | 'qty_per_unit' | 'variant_option_ids' | 'image'> & {
+  key: string;
+  catalogIdentity?: string | null;
+  document?: LineSavedPart;
+  archived: boolean;
+};
+
+function isConfigurationStale(error: unknown): boolean {
+  return error instanceof ApiError && error.code === 'line_configuration_stale';
+}
+
 function useDebouncedValue<T>(value: T, delayMs: number): T {
   const [debounced, setDebounced] = useState(value);
   useEffect(() => {
@@ -67,7 +79,7 @@ function defaultsOf(product: Product | undefined): Record<number, number> {
  *  in every group it is bound in, the chosen option is one of its options («and» across groups, «or»
  *  within one); a part bound to nothing is always in. An option the product's groups do not hold
  *  is a group nobody can choose in — never «always in the kit». */
-function basePer(part: ProductPart, chosen: Set<number>, groups: readonly BindingGroup[]): number {
+function basePer(part: Pick<ProductPart, 'variant_option_ids' | 'qty_per_unit'>, chosen: Set<number>, groups: readonly BindingGroup[]): number {
   const known = new Set(groups.flatMap((group) => group.options.map((option) => option.id)));
   if (part.variant_option_ids.some((id) => !known.has(id))) return 0;
   for (const optionIds of bindingByGroup(groups, part.variant_option_ids).values()) {
@@ -157,29 +169,112 @@ export function LineConfigDialog({
     [sources.data],
   );
 
-  const initialChoices = useMemo(
+  const initialChoices = useMemo<Record<number, number>>(
     () => Object.fromEntries((line.configuration?.choices ?? []).map((c) => [c.group_id, c.option_id])),
     [line],
   );
-  const initialCounts = useMemo(
+  const initialCounts = useMemo<Record<number, number>>(
     () => Object.fromEntries((line.configuration?.changed_parts ?? []).map((p) => [p.part_id, p.qty])),
     [line],
   );
-  const [choices, setChoices] = useState<Record<number, number>>(initialChoices);
+  const [choiceEdits, setChoiceEdits] = useState<Record<number, number | null>>({});
+  const choices = { ...initialChoices };
+  for (const [groupId, optionId] of Object.entries(choiceEdits)) {
+    if (optionId == null) delete choices[Number(groupId)];
+    else choices[Number(groupId)] = optionId;
+  }
   const [counts, setCounts] = useState<Record<number, number>>(initialCounts);
+  const [resetCounts, setResetCounts] = useState(false);
+  const [editedCounts, setEditedCounts] = useState<Record<string, number>>({});
+  const savedStandards = new Map((line.configuration?.changed_parts ?? []).map((row) => [row.part_id, row.standard_qty]));
 
-  const body = bodyOf(product, isParts, choices, counts);
-  const bodyKey = JSON.stringify(body);
-  const initialKey = JSON.stringify(bodyOf(product, isParts, initialChoices, initialCounts));
-  const dirty = product != null && bodyKey !== initialKey;
-  const debouncedKey = useDebouncedValue(bodyKey, 300);
-  const settled = debouncedKey === bodyKey;
-
+  const revision = line.configuration?.revision;
+  const saved = new Map([
+    ...line.parts.filter((p) => p.qty_per_unit > 0).map((p) => [p.part_id, p.qty_per_unit] as const),
+    ...(line.purchased ?? []).filter((p) => p.per > 0).map((p) => [p.part_id, p.per] as const),
+  ]);
+  const [confirmed, setConfirmed] = useState<{ body: string; revision: number; version: string } | null>(null);
   const defaults = defaultsOf(product);
   const groups = product?.variant_groups ?? [];
   // The combination as the server reads it — every group's choice; the line's own beside it.
   const chosen = { ...defaults, ...choices };
-  const choicesChanged = choicesKey(chosen) !== choicesKey({ ...defaults, ...initialChoices });
+  const choicesChanged = !isParts && choicesKey(chosen) !== choicesKey({ ...defaults, ...initialChoices });
+  const editingSaved = revision != null && !choicesChanged;
+  const chosenSet = new Set(Object.values(chosen));
+  const catalog = [...(product?.parts ?? [])].filter((part) => !part.ignored).sort(byOrder);
+  const byId = new Map(catalog.map((part) => [part.id, part]));
+  const documentRows = line.configuration?.saved_parts;
+  const documentById = new Map(documentRows?.map((row) => [row.part_id, row]));
+  const isLive = (row: LineSavedPart) => row.in_catalog && byId.get(row.part_id)?.composition_identity === row.identity;
+  const parts: EditablePart[] = catalog.flatMap((part) => {
+    const row = documentById.get(part.id);
+    const document = row && isLive(row) ? row : undefined;
+    const isSaved = documentRows ? document != null : saved.has(part.id);
+    if (editingSaved && !isSaved) return [];
+    return [{
+      ...part, name: document?.name ?? part.name, document, catalogIdentity: part.composition_identity,
+      key: document?.identity ?? part.composition_identity ?? String(part.id), archived: false,
+    }];
+  });
+  for (const row of documentRows ?? []) {
+    if (isLive(row)) continue;
+    parts.push({
+      id: row.part_id, name: row.name, kind: row.kind, key: row.identity, archived: true,
+      qty_per_unit: row.qty, variant_option_ids: [], document: row,
+    });
+  }
+
+  // A zero override still belongs to the catalog identity that the order excluded.
+  const countIdentities = line.configuration?.count_identities;
+  const liveCounts = (values: Record<number, number>) => countIdentities
+    ? Object.fromEntries(Object.entries(values).filter(([id]) => {
+        const part = byId.get(Number(id));
+        return part?.composition_identity != null && part.composition_identity === countIdentities[Number(id)];
+      }))
+    : values;
+  const inheritedCounts = liveCounts(revision == null ? counts : resetCounts ? {} : initialCounts);
+  const body: LineConfigurationBody = editingSaved
+    ? { choices: {}, part_counts: {} }
+    : bodyOf(product, isParts, choices, inheritedCounts);
+  const savedEdits: Record<string, number> = {};
+  const numericEdits: Record<number, number> = {};
+  const catalogEdits: Record<string, number> = {};
+  let removesArchived = false;
+  if (revision != null) {
+    for (const part of parts) {
+      const qty = editedCounts[part.key];
+      if (qty == null || (editingSaved && qty === (part.document?.qty ?? saved.get(part.id)))) continue;
+      if (part.document) {
+        savedEdits[part.document.identity] = qty;
+        removesArchived ||= part.archived && qty === 0;
+      } else if (part.catalogIdentity) {
+        catalogEdits[part.catalogIdentity] = qty;
+      } else if (editingSaved) {
+        numericEdits[part.id] = qty;
+      } else {
+        body.part_counts[part.id] = qty;
+        continue;
+      }
+      if (!part.archived) delete body.part_counts[part.id];
+    }
+    for (const [id, qty] of Object.entries(body.part_counts)) {
+      const identity = byId.get(Number(id))?.composition_identity;
+      if (!identity) continue;
+      catalogEdits[identity] = qty;
+      delete body.part_counts[Number(id)];
+    }
+  }
+  if (Object.keys(savedEdits).length) body.saved_part_edits = savedEdits;
+  if (Object.keys(numericEdits).length) body.part_edits = numericEdits;
+  if (Object.keys(catalogEdits).length) body.catalog_part_edits = catalogEdits;
+  const reviewRequired = revision != null && (choicesChanged || removesArchived);
+  const bodyKey = JSON.stringify(body);
+  const initialKey = editingSaved
+    ? JSON.stringify({ choices: {}, part_counts: {} })
+    : JSON.stringify(bodyOf(product, isParts, initialChoices, liveCounts(initialCounts)));
+  const dirty = product != null && bodyKey !== initialKey;
+  const debouncedKey = useDebouncedValue(bodyKey, 300);
+  const settled = debouncedKey === bodyKey;
   const combination = useCombinationState(
     line.product_id,
     chosen,
@@ -190,54 +285,86 @@ export function LineConfigDialog({
   // A closed choice is said by the combination note; its dry run would only be refused.
   const combinationClosed = choicesChanged && combination.gate === 'closed';
 
-  // The dry run asks about the draft on screen only (settled), and a changed choice only once the
-  // combination has answered open — the server refuses a closed one's dry run too.
+  const [previewGeneration, setPreviewGeneration] = useState(0);
+  const lastStaleDraft = useRef<string | null>(null);
+  const refresh = useMutation({
+    mutationFn: async () => {
+      await Promise.all([
+        productQuery.refetch({ throwOnError: true }),
+        queryClient.refetchQueries({ queryKey: ['project', orderId], exact: true, type: 'active' }, { throwOnError: true }),
+        queryClient.invalidateQueries({ queryKey: [COMBINATION_STATE_KEY, line.product_id] }),
+      ]);
+    },
+    onMutate: () => setConfirmed(null),
+    onSuccess: () => setPreviewGeneration((generation) => generation + 1),
+  });
+  const refreshing = refresh.isPending || refresh.isError;
+  const refreshDraft = () => refresh.mutate();
+
+  // Refetch the inputs before asking about this draft again. A failed refresh
+  // leaves Save disabled and offers a retry instead of reusing the old proposal.
   const preview = useQuery<LineConfigurationImpact>({
-    queryKey: ['line-config-preview', orderId, line.id, debouncedKey],
-    queryFn: () => api.previewLineConfiguration(orderId, line.id, JSON.parse(debouncedKey) as LineConfigurationBody),
-    enabled: product != null && debouncedKey !== initialKey && settled && !combinationBlocks,
+    queryKey: ['line-config-preview', orderId, line.id, revision, previewGeneration, debouncedKey],
+    queryFn: async () => {
+      const draft = JSON.parse(debouncedKey) as LineConfigurationBody;
+      const draftKey = JSON.stringify([revision, draft]);
+      try {
+        const impact = await api.previewLineConfiguration(orderId, line.id, { ...draft, expected_revision: revision ?? undefined });
+        if (lastStaleDraft.current === draftKey) lastStaleDraft.current = null;
+        return impact;
+      } catch (error) {
+        if (isConfigurationStale(error) && lastStaleDraft.current !== draftKey) {
+          lastStaleDraft.current = draftKey;
+          refreshDraft();
+        }
+        throw error;
+      }
+    },
+    enabled: product != null && debouncedKey !== initialKey && settled && !combinationBlocks && !refreshing,
     retry: false,
     staleTime: 30_000,
   });
 
+  const reviewVersion = preview.data?.review_version;
+  const reviewConfirmed = confirmed != null && confirmed.body === bodyKey
+    && confirmed.revision === revision && confirmed.version === reviewVersion;
   const save = useMutation({
-    mutationFn: () => api.setLineConfiguration(orderId, line.id, body),
+    mutationFn: (request: LineConfigurationBody) => api.setLineConfiguration(orderId, line.id, request),
     onSuccess: () => {
       invalidateOrderViews(queryClient, { orderId });
       onClose();
     },
     // The combination closed since it was read: read it again, so the marks and reasons say so.
     onError: (err) => {
-      if (isCombinationRefusal(err)) {
+      if (isConfigurationStale(err)) {
+        refreshDraft();
+      } else if (isCombinationRefusal(err)) {
         void queryClient.invalidateQueries({ queryKey: [COMBINATION_STATE_KEY, line.product_id] });
       }
     },
   });
 
-  const chosenSet = new Set(Object.values(chosen));
-  // «Не рахувати» is not a part a line can want (spec workshop-order-issue-followups, rule 34).
-  const parts = [...(product?.parts ?? [])].filter((p) => !p.ignored).sort(byOrder);
-
-  /** A count back at what the options give is no longer a change. */
-  const setCount = (part: ProductPart, qty: number) =>
+  const setCount = (part: EditablePart, qty: number) => {
+    if (revision != null) {
+      setEditedCounts((prev) => ({ ...prev, [part.key]: qty }));
+      return;
+    }
     setCounts((prev) => {
       const next = { ...prev };
       if (!isParts && qty === basePer(part, chosenSet, groups)) delete next[part.id];
       else next[part.id] = qty;
       return next;
     });
+  };
 
   const choose = (groupId: number, optionId: number | null) =>
-    setChoices((prev) => {
-      const next = { ...prev };
-      if (optionId == null) delete next[groupId];
-      else next[groupId] = optionId;
-      return next;
-    });
+    setChoiceEdits((prev) => ({ ...prev, [groupId]: optionId }));
 
   const reset = () => {
-    setChoices(defaultsOf(product));
+    setChoiceEdits(Object.fromEntries(groups.map((group) => [group.id, group.default_option_id ?? null])));
     setCounts({});
+    setResetCounts(true);
+    setEditedCounts({});
   };
 
   const nonStandardOptions = (product?.variant_groups ?? []).some(
@@ -245,7 +372,8 @@ export function LineConfigDialog({
   );
   // An override is what the body carries — a count the chosen options would not give anyway.
   // A draft key the options have since caught up with is no override (review M2).
-  const overrides = isParts ? Object.keys(counts).length : Object.keys(body.part_counts).length;
+  const overrides = Object.keys(body.part_counts).length + Object.keys(savedEdits).length
+    + Object.keys(numericEdits).length + Object.keys(catalogEdits).length;
   const canSave =
     saveAllowed({
       productRead: product != null,
@@ -253,7 +381,7 @@ export function LineConfigDialog({
       settled,
       fetching: preview.isFetching,
       status: preview.status,
-    }) && !combinationBlocks;
+    }) && !refreshing && !combinationBlocks && (!reviewRequired || reviewConfirmed);
   const pending = save.isPending;
 
   const subtitle = isParts
@@ -293,7 +421,12 @@ export function LineConfigDialog({
       size="lg"
       pending={pending}
       error={
-        save.isError ? (
+        refresh.isError ? (
+          <>
+            {refresh.error.message}
+            <Button size="sm" variant="ghost" onClick={refreshDraft}>{t('common.retry')}</Button>
+          </>
+        ) : save.isError && !isConfigurationStale(save.error) ? (
           <>
             {save.error.message}
             {isCombinationRefusal(save.error) && save.error.reasons && (
@@ -309,7 +442,14 @@ export function LineConfigDialog({
             {t('common.cancel')}
           </Button>
           <Button
-            onClick={() => (dirty ? save.mutate() : onClose())}
+            onClick={() => {
+              if (!dirty) onClose();
+              else if (canSave) save.mutate({
+                ...body,
+                expected_revision: revision ?? undefined,
+                review_version: reviewConfirmed ? confirmed.version : undefined,
+              });
+            }}
             disabled={!canSave || pending}
             aria-describedby={combinationNote ? noteId : undefined}
           >
@@ -330,7 +470,12 @@ export function LineConfigDialog({
         </div>
       ) : product ? (
         <fieldset disabled={pending} className="m-0 min-w-0 space-y-3 border-0 p-0">
-          {productQuery.isError && <RefreshFailedNote onRetry={() => productQuery.refetch()} />}
+          {productQuery.isError && !refresh.isError && <RefreshFailedNote onRetry={() => productQuery.refetch()} />}
+          {(refresh.isPending || refresh.isSuccess) && (
+            <p role="status" className="text-sm text-bambu-gray">
+              {t(refresh.isPending ? 'orders.lineConfig.checking' : 'orders.lineConfig.refreshed')}
+            </p>
+          )}
 
           {!isParts &&
             (product.variant_groups.length > 0 ? (
@@ -421,13 +566,18 @@ export function LineConfigDialog({
                   </thead>
                   <tbody>
                     {parts.map((part) => {
-                      const base = isParts ? 0 : basePer(part, chosenSet, groups);
-                      const shown = counts[part.id] ?? base;
+                      const base = editingSaved
+                        ? (part.document?.qty ?? saved.get(part.id) ?? 0)
+                        : isParts || part.archived ? 0 : basePer(part, chosenSet, groups);
+                      const standard = editingSaved ? savedStandards.get(part.id) ?? base : base;
+                      const inherited = editingSaved || part.archived ? undefined : inheritedCounts[part.id];
+                      const manual = !editingSaved && part.document?.manual ? part.document.qty : undefined;
+                      const shown = editedCounts[part.key] ?? inherited ?? manual ?? base;
                       const off = !isParts && shown === 0;
                       const variant = bindingLabel(groups, part.variant_option_ids);
                       return (
                         <tr
-                          key={part.id}
+                          key={part.key}
                           data-testid={`config-part-${part.id}`}
                           className={`border-t border-bambu-dark-tertiary text-white ${off ? 'opacity-50' : ''}`}
                         >
@@ -446,18 +596,21 @@ export function LineConfigDialog({
                           )}
                           <td className={CELL}>
                             <span className="flex items-start gap-2">
-                              <LivePartThumb partId={part.id} image={part.image} name={part.name} kind={part.kind} size="sm" />
+                              <LivePartThumb partId={part.archived ? 0 : part.id} image={part.image} name={part.name} kind={part.kind} size="sm" />
                               <span className="min-w-0">
                                 <span className="[overflow-wrap:anywhere]">{part.name}</span>
                                 {part.kind === 'purchased' && (
                                   <span className={`ml-1.5 ${VARIANT_CHIP}`}>{t('orders.lineConfig.chip.bought')}</span>
+                                )}
+                                {part.archived && (
+                                  <span className={`ml-1.5 ${VARIANT_CHIP}`}>{t('orders.lines.archivedPart')}</span>
                                 )}
                                 {variant && (
                                   <span className={`ml-1.5 ${VARIANT_CHIP}`}>
                                     {t('orders.lineConfig.chip.variant', { option: variant })}
                                   </span>
                                 )}
-                                {!isParts && part.id in body.part_counts && (
+                                {!isParts && (part.id in body.part_counts || part.key in savedEdits || part.key in catalogEdits) && (
                                   <span className="ml-1.5 inline-block rounded bg-bambu-green/20 px-1.5 py-px align-[1px] text-[11px] font-medium leading-4 text-bambu-green">
                                     {t('orders.lineConfig.chip.changed')}
                                   </span>
@@ -467,7 +620,7 @@ export function LineConfigDialog({
                           </td>
                           <td className={`${CELL} whitespace-nowrap`}>
                             <CountInput
-                              value={isParts ? (counts[part.id] ?? 0) : shown}
+                              value={shown}
                               min={0}
                               max={MAX_COUNT}
                               onCommit={(qty) => setCount(part, qty)}
@@ -478,8 +631,8 @@ export function LineConfigDialog({
                             />
                             {!isParts && (
                               <span className="ml-2 text-xs text-bambu-gray">
-                                {base > 0
-                                  ? t('orders.lineConfig.standardN', { n: base })
+                                {standard > 0
+                                  ? t('orders.lineConfig.standardN', { n: standard })
                                   : t('orders.lineConfig.outsideStandard')}
                               </span>
                             )}
@@ -488,12 +641,10 @@ export function LineConfigDialog({
                             <td className={`${CELL} tabular-nums`}>{shown > 0 ? shown * line.quantity : '—'}</td>
                           )}
                           <td className={CELL}>
-                            <SourceCell
-                              part={part}
-                              sources={sourcesOf.get(part.id)}
-                              loading={sources.isPending}
-                              failed={sources.isError}
-                            />
+                            {part.archived && part.kind === 'printed' ? '—' : (
+                              <SourceCell part={part} sources={sourcesOf.get(part.id)}
+                                loading={sources.isPending} failed={sources.isError} />
+                            )}
                           </td>
                         </tr>
                       );
@@ -522,7 +673,21 @@ export function LineConfigDialog({
           )}
 
           {dirty && (
-            <Impact preview={preview} settled={settled} closed={combinationClosed} parts={product?.parts ?? []} />
+            <>
+              {!refreshing && (
+                <Impact preview={preview} settled={settled} closed={combinationClosed}
+                  parts={product?.parts ?? []} onStaleRetry={refreshDraft} />
+              )}
+              {reviewRequired && revision != null && !refreshing && settled && preview.isSuccess && reviewVersion && (
+                <label className="mt-2 flex items-center gap-2 text-sm text-white">
+                  <input type="checkbox" checked={reviewConfirmed} disabled={preview.isFetching}
+                    onChange={(event) => setConfirmed(
+                      event.target.checked ? { body: bodyKey, revision, version: reviewVersion } : null,
+                    )} />
+                  {t(choicesChanged ? 'orders.lines.confirmVariantKit' : 'orders.lines.confirmPartRemoval')}
+                </label>
+              )}
+            </>
           )}
         </fieldset>
       ) : null}
@@ -537,7 +702,7 @@ function SourceCell({
   loading,
   failed,
 }: {
-  part: ProductPart;
+  part: Pick<ProductPart, 'kind'>;
   sources: PartSource[] | undefined;
   loading: boolean;
   failed: boolean;
@@ -591,11 +756,13 @@ function Impact({
   settled,
   closed,
   parts,
+  onStaleRetry,
 }: {
   preview: UseQueryResult<LineConfigurationImpact>;
   settled: boolean;
   closed: boolean;
   parts: ProductPart[];
+  onStaleRetry: () => void;
 }) {
   const { t } = useTranslation();
   if (closed) return null;
@@ -616,7 +783,7 @@ function Impact({
     return (
       <p className="flex flex-wrap items-center gap-2 text-sm" data-testid="line-config-impact">
         <span className="text-amber-700 dark:text-amber-400">{preview.error.message}</span>
-        <Button size="sm" variant="ghost" onClick={() => preview.refetch()}>
+        <Button size="sm" variant="ghost" onClick={() => isConfigurationStale(preview.error) ? onStaleRetry() : preview.refetch()}>
           {t('common.retry')}
         </Button>
       </p>
@@ -632,6 +799,10 @@ function Impact({
   if (impact.finished_before !== impact.finished_after) {
     const text = t('orders.lineConfig.impact.ready', { before: impact.finished_before, after: impact.finished_after });
     lines.push({ key: text, text });
+  }
+  for (const change of impact.changes ?? []) {
+    const text = t('orders.lines.kitChange', { name: change.name, before: change.per_before, after: change.per_after });
+    lines.push({ key: `kit-${change.part_id}`, text });
   }
   for (const d of impact.dropping) {
     if (d.printed > 0 || d.queued > 0) {
