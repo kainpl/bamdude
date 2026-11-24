@@ -125,7 +125,15 @@ def _load_parts(root: Path, job: dict) -> list[tuple]:
     return [(_orient(m[0], parts_spec[i]["orientation"]), m[1]) for i, m in enumerate(meshes)]
 
 
-def _pack_printer(root: Path, job: dict, printer: dict, index: int, meshes: list, deadline_ns: int | None) -> dict:
+def _pack_printer(
+    root: Path,
+    job: dict,
+    printer: dict,
+    index: int,
+    meshes: list,
+    deadline_ns: int | None,
+    search_seconds: float = 0,
+) -> dict:
     import cv2
     from platenest import Cancelled, Options, Part, Zone, pack, render_plate
     from platenest.bambu3mf import Instance, MeshObject, write_project
@@ -155,19 +163,27 @@ def _pack_printer(root: Path, job: dict, printer: dict, index: int, meshes: list
 
     def progress(p) -> None:
         now = time.monotonic()
-        if now - last[0] < _PROGRESS_SECONDS:
+        diagnostic = getattr(p, "diagnostic", None)
+        if now - last[0] < _PROGRESS_SECONDS and not diagnostic:
             return
         last[0] = now
         payload = {
             "printer": printer["key"],
             "printer_index": index,
             "printer_count": len(job["printers"]),
-            "run": p.run,
-            "runs": p.runs,
-            "placed": p.placed,
-            "total": p.total,
-            "fill_part": p.fill_part,
         }
+        if hasattr(p, "best"):
+            payload.update(
+                search_best_copies=len(p.best.placements),
+                search_best_plates=p.best.plate_count,
+                search_elapsed_ms=int(p.elapsed * 1000),
+                search_attempt=p.attempt,
+                search_engine=1 if p.engine == "sparrow" else 0,
+            )
+            if diagnostic:
+                payload["search_diagnostic"] = diagnostic
+        else:
+            payload.update(run=p.run, runs=p.runs, placed=p.placed, total=p.total, fill_part=p.fill_part)
         try:
             _write_json(root / "progress.json", payload)
         except OSError:
@@ -180,7 +196,21 @@ def _pack_printer(root: Path, job: dict, printer: dict, index: int, meshes: list
         return (root / "cancel").exists()
 
     try:
-        result = pack(parts, zone, options, progress=progress, cancel=cancel)
+        if layout.get("long_search", False):
+            from platenest import optimize
+
+            result = optimize(
+                parts,
+                zone,
+                options,
+                seconds=search_seconds,
+                free_rotation=layout["rotation_step"] == -1,
+                progress=progress,
+                cancel=cancel,
+                finish=lambda: (root / "finish").exists(),
+            )
+        else:
+            result = pack(parts, zone, options, progress=progress, cancel=cancel)
     except Cancelled:
         raise _Stop("canceled", "cancel") from None
     except ValueError:
@@ -206,7 +236,11 @@ def _pack_printer(root: Path, job: dict, printer: dict, index: int, meshes: list
         parts=tuple(rec.PartInput(s["name"], int(s["quantity"]), bool(s["fill"]), "as_is") for s in specs),
         printer=rec.PrinterInput(**printer["record_printer"]),
         layout=rec.LayoutInput(
-            float(layout["spacing"]), layout["rotation_step"], bool(layout["centre"]), bool(layout["split_plates"])
+            float(layout["spacing"]),
+            layout["rotation_step"],
+            bool(layout["centre"]),
+            bool(layout["split_plates"]),
+            bool(layout.get("long_search", False)),
         ),
         plates=tuple(plates),
     )
@@ -277,8 +311,10 @@ def run(root: Path, deadline_ns: int | None = None) -> dict:
 
         cv2.setNumThreads(1)  # the worker environment pins BLAS threads, not OpenCV's own
         meshes = _load_parts(root, job)
+        search_deadline = time.monotonic() + 300
         for index, printer in enumerate(job["printers"]):
-            result["printers"].append(_pack_printer(root, job, printer, index, meshes, deadline_ns))
+            share = max(0.0, search_deadline - time.monotonic()) / (len(job["printers"]) - index)
+            result["printers"].append(_pack_printer(root, job, printer, index, meshes, deadline_ns, share))
         result.update(outcome="ok", why="")
     except _Stop as stop:
         result.update(outcome=stop.outcome, why=stop.why, parts=stop.parts)

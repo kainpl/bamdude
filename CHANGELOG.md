@@ -72,6 +72,10 @@
 
 - **Slicer parameters follow the Ukrainian interface language.** Process-setting tabs, groups, labels, tooltips, choices and units use OrcaSlicer’s Ukrainian catalog, with reviewed translations for descriptions specific to the vendored schema. Search accepts Ukrainian text and original English keys; changing language keeps edits and sends the same slicer keys and values. The optional catalog loads independently and falls back to English on failure without blocking the panel. Reviewed corrections distinguish lattice angles and translate tooltips containing literal function names.
 
+- **Assembly can spend longer looking for a denser layout.** A visible optional five-minute search tries bitmap restarts and Sparrow, keeps the best validated layout, and can finish early with that result. Fresh quick assemblies keep 90° rotations; finer or arbitrary in-plane rotations are explicit choices; saved projects retain their previous rotation setting. Parts are never mirrored or scaled by this search.
+
+  PlateNest 0.2.0 preserves one-shot cancellation during raster recovery and restarts. Finish and time limits keep the best validated result.
+
 - **Edit a project assembly and try again.** After a completed or failed assembly, return to the same inputs and change settings for another attempt. The operator starts the new job explicitly and chooses whether to move previous outputs to the trash.
 
 - **Failed and cancelled prints can keep the printer's timelapse.** When the printer was recording, BamDude uses the same archive and storage checks that protect the scan after a successful print.
