@@ -418,13 +418,20 @@ describe('PrintersPage', () => {
     it('a browser that chose the overlay opens it even when the farm default is a window', async () => {
       localStorage.setItem('cameraViewMode', 'embedded');
       server.use(http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({ camera_view_mode: 'window' })));
+      const openWindow = vi.spyOn(window, 'open').mockReturnValue(null);
       const view = render(<PrintersPage />);
       try {
-        await waitFor(() => expect(screen.getAllByTitle('Open camera overlay').length).toBeGreaterThan(0));
-        await userEvent.click(within(document.getElementById('printer-1')!).getByTitle('Open camera overlay'));
-        expect(await screen.findByAltText('Camera stream')).toBeInTheDocument();
+        await waitFor(() => expect(screen.getAllByTitle('Open camera overlay')).toHaveLength(3));
+        const card = document.getElementById('printer-1')!;
+        await userEvent.click(within(card).getByTitle('Open camera overlay'));
+
+        // The toolbar is visible as soon as the overlay opens, independently
+        // of the live stream budget and requests to the camera.
+        expect(await screen.findByTitle('Refresh stream', {}, { timeout: 3000 })).toBeInTheDocument();
+        expect(openWindow).not.toHaveBeenCalled();
       } finally {
         view.unmount();
+        openWindow.mockRestore();
       }
     });
 
