@@ -105,8 +105,17 @@ def _empty_slots() -> dict[str, list[UnifiedPreset]]:
     return {"printer": [], "process": [], "filament": []}
 
 
+async def is_stock_bambu_process(db: AsyncSession, user: User | None, ref: PresetRef) -> bool:
+    if ref.source == "standard":
+        return True
+    if ref.source != "cloud":
+        return False
+    slots, status = await _fetch_cloud_presets(db, user, renew=False)
+    return status == "ok" and any(preset.id == ref.id and preset.stock_cloud for preset in slots["process"])
+
+
 async def _fetch_cloud_presets(
-    db: AsyncSession, user: User | None, *, refresh: bool = False
+    db: AsyncSession, user: User | None, *, refresh: bool = False, renew: bool = True
 ) -> tuple[dict[str, list[UnifiedPreset]], str]:
     """Return ``(slots, cloud_status)``. Slots are empty when ``cloud_status != 'ok'``.
 
@@ -140,7 +149,10 @@ async def _fetch_cloud_presets(
     # An expired access token is renewed with the stored refresh token, as the
     # cloud routes do, and the listing repeated once; "expired" is answered
     # only when it cannot be renewed.
-    captured, refresh_token = await renewal_credentials(db, user)
+    # A slice can classify an already-resolved preset just before publishing
+    # the export. That optional lookup must not rotate the credential snapshot
+    # held by the slice itself.
+    captured, refresh_token = await renewal_credentials(db, user) if renew else (None, None)
     # Everything the call needs is read: finish the short transaction, so no
     # database connection is held while Bambu takes its time to answer.
     await db.commit()
@@ -192,7 +204,7 @@ async def _fetch_cloud_presets(
                 if not name or not setting_id or name in seen_names:
                     continue
                 seen_names.add(name)
-                preset = UnifiedPreset(id=setting_id, name=name, source="cloud")
+                preset = UnifiedPreset(id=setting_id, name=name, source="cloud", stock_cloud=index >= len(private))
                 if slot == "printer" and index < len(private):
                     preset.inherits = _saved_from(
                         name,

@@ -39,7 +39,9 @@ from __future__ import annotations
 import json
 import logging
 import zipfile
+from copy import copy
 from io import BytesIO
+from shutil import copyfileobj
 from typing import Any, NamedTuple
 
 logger = logging.getLogger(__name__)
@@ -215,3 +217,54 @@ def apply_design_overrides(process_json: str, overrides: list[DesignOverride], s
     process_cfg.update(by_key)
     logger.info("Carrying %d design setting(s) onto the picked process preset: %s", len(by_key), sorted(by_key))
     return json.dumps(process_cfg)
+
+
+def changed_process_keys(before_json: str, after_json: str) -> set[str]:
+    """Identify the process keys added or changed after resolving a preset."""
+    if before_json == after_json:
+        return set()
+    try:
+        before, after = json.loads(before_json), json.loads(after_json)
+    except json.JSONDecodeError:
+        return set()
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return set()
+    return {key for key, value in after.items() if key not in before or before[key] != value}
+
+
+def record_process_changes(data: bytes, keys: set[str]) -> bytes:
+    """Mark the emitted overrides so Bambu Studio reapplies them on reopen."""
+    if not keys:
+        return data
+    try:
+        with zipfile.ZipFile(BytesIO(data)) as source:
+            if source.namelist().count(_PROJECT_SETTINGS) != 1:
+                return data
+            config = json.loads(source.read(_PROJECT_SETTINGS))
+            if not isinstance(config, dict):
+                return data
+            changed = config.get("different_settings_to_system")
+            filaments = config.get("filament_settings_id")
+            if not (
+                isinstance(filaments, list)
+                and isinstance(changed, list)
+                and len(changed) == len(filaments) + 2
+                and isinstance(changed[0], str)
+            ):
+                return data
+            new_keys = keys.intersection(config).difference(_split_changed_keys(changed[0]))
+            if not new_keys:
+                return data
+            changed[0] = ";".join([*_split_changed_keys(changed[0]), *sorted(new_keys)])
+            buffer = BytesIO()
+            with zipfile.ZipFile(buffer, "w") as output:
+                output.comment = source.comment
+                for member in source.infolist():
+                    if member.filename == _PROJECT_SETTINGS:
+                        output.writestr(copy(member), json.dumps(config, ensure_ascii=False).encode("utf-8"))
+                    else:
+                        with source.open(member) as original, output.open(copy(member), "w") as target:
+                            copyfileobj(original, target)
+            return buffer.getvalue()
+    except (zipfile.BadZipFile, UnicodeDecodeError, json.JSONDecodeError, OSError, RuntimeError):
+        return data

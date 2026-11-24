@@ -330,6 +330,8 @@
 
 ### Fixed
 
+- **Bambu Studio keeps process overrides when reopening a sliced 3MF.** Exports based on a built-in or stock Bambu Cloud process record the settings changed in BamDude, including carried design settings.
+
 - **Both slicer images support running under an unprivileged UID.** The
   image builds make extracted AppImage files readable and executable where
   needed. Set a writable data mount and home when overriding the runtime user.

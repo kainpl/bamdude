@@ -31,7 +31,14 @@ def _sliced_3mf(start_gcode: str) -> bytes:
         archive.writestr("3D/3dmodel.model", "<model/>")
         archive.writestr(
             "Metadata/project_settings.config",
-            json.dumps({"machine_start_gcode": start_gcode}),
+            json.dumps(
+                {
+                    "machine_start_gcode": start_gcode,
+                    "filament_settings_id": ["Bambu PLA Basic"],
+                    "different_settings_to_system": ["layer_height", "filament_flow_ratio", "bed_custom_model"],
+                    "wall_loops": "5",
+                }
+            ),
         )
     return buffer.getvalue()
 
@@ -95,7 +102,11 @@ async def _run(
         service.slice_without_profiles = AsyncMock()
 
     async def _setting(_db, key):
-        return {"preferred_slicer": "bambu_studio", "bambu_studio_api_url": "http://sidecar:3000"}.get(key)
+        return {
+            "preferred_slicer": "bambu_studio",
+            "bambu_studio_api_url": "http://sidecar:3000",
+            "orcaslicer_api_url": "http://sidecar:3000",
+        }.get(key)
 
     with (
         patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(side_effect=_setting)),
@@ -150,3 +161,42 @@ class TestItDoesNotJudgeProfilesBamDudeDidNotResolve:
 
         assert used_embedded is True
         assert result.print_time_seconds == 600
+
+
+@pytest.mark.parametrize(
+    ("source", "listed_stock", "engine", "embedded", "expected"),
+    [
+        ("standard", False, "bambu_studio", False, True),
+        ("cloud", True, "bambu_studio", False, True),
+        ("cloud", False, "bambu_studio", False, False),
+        ("local", False, "bambu_studio", False, False),
+        ("orca_cloud", False, "bambu_studio", False, False),
+        ("standard", False, "orcaslicer", False, False),
+        ("standard", False, "bambu_studio", True, False),
+    ],
+)
+async def test_only_bambu_stock_process_overrides_are_recorded(
+    monkeypatch, source, listed_stock, engine, embedded, expected
+):
+    cloud_listing = AsyncMock(
+        return_value=({"process": [SimpleNamespace(id="chosen", stock_cloud=listed_stock)]}, "ok")
+    )
+    monkeypatch.setattr("backend.app.api.routes.slicer_presets._fetch_cloud_presets", cloud_listing)
+    request = _request("standard")
+    request.process_preset = PresetRef(source=source, id="chosen")
+    request.process_overrides = {"wall_loops": 5}
+    request.slicer = engine
+    result, used_embedded = await _run(request, start_gcode=REAL_START, embedded_fallback=embedded)
+    assert used_embedded is embedded
+    if source != "cloud":
+        cloud_listing.assert_not_awaited()
+
+    with zipfile.ZipFile(io.BytesIO(result.content)) as archive:
+        assert archive.read("3D/3dmodel.model") == b"<model/>"
+        config = json.loads(archive.read("Metadata/project_settings.config"))
+        assert config["wall_loops"] == "5"
+        assert config["different_settings_to_system"] == [
+            "layer_height;wall_loops" if expected else "layer_height",
+            "filament_flow_ratio",
+            "bed_custom_model",
+        ]

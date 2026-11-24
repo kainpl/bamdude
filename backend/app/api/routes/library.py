@@ -99,8 +99,10 @@ from backend.app.services.archive import ThreeMFParser
 from backend.app.services.design_settings import (
     DesignOverride,
     apply_design_overrides,
+    changed_process_keys,
     extract_design_process_overrides,
     overrides_from_config,
+    record_process_changes,
 )
 from backend.app.services.entity_codes import code_for
 from backend.app.services.filament_requirements import annotate_rack_groups
@@ -3032,6 +3034,8 @@ async def _run_slicer_with_fallback(
     # one that still has to be patched afterwards (upstream 4f10d155, #2977).
     filament_jsons = _patch_filament_colours(filament_jsons, request.filament_colours, model_bytes)
 
+    process_as_selected = presets["process"]
+
     # Bed-type override (upstream Bambuddy #1337): patch
     # ``curr_bed_type`` onto the resolved process JSON so the slicer's
     # config pass picks up the user's pick instead of whatever the
@@ -3405,6 +3409,13 @@ async def _run_slicer_with_fallback(
                 "%s",
                 unresolved_filament_message(unresolved, [ref.id for ref in request.filament_presets]),
             )
+
+    if chosen == "bambu_studio" and request.export_3mf and not used_embedded_settings:
+        from backend.app.api.routes.slicer_presets import is_stock_bambu_process
+
+        changes = changed_process_keys(process_as_selected, presets["process"])
+        if changes and await is_stock_bambu_process(db, user, request.process_preset):
+            result = result._replace(content=await asyncio.to_thread(record_process_changes, result.content, changes))
 
     return result, used_embedded_settings
 

@@ -285,3 +285,34 @@ async def test_null_cloud_preset_types_and_tiers_keep_slice_and_profiles_availab
     expected[empty_type] = []
     for cloud_type, slot in (("filament", "filament"), ("printer", "printer"), ("print", "process")):
         assert [preset["name"] for preset in presets[slot]] == expected[cloud_type]
+
+
+async def test_stock_process_classification_uses_cloud_public_list_and_same_cache(
+    async_client, db_session, bambu, monkeypatch
+):
+    from backend.app.schemas.slicer import PresetRef
+
+    monkeypatch.setattr(slicer_presets, "_cloud_cache", {})
+    user = await _sign_in(db_session)
+    listing = {
+        "print": {
+            "public": [{"setting_id": "public", "name": "Stock Process"}],
+            "private": [{"setting_id": "private", "name": "Own Process"}],
+        },
+    }
+    fake = bambu({("GET", SETTINGS): (200, listing)})
+    assert await slicer_presets.is_stock_bambu_process(db_session, user, PresetRef(source="cloud", id="public"))
+    assert not await slicer_presets.is_stock_bambu_process(db_session, user, PresetRef(source="cloud", id="private"))
+    assert not await slicer_presets.is_stock_bambu_process(db_session, user, PresetRef(source="cloud", id="unknown"))
+    assert fake.count("GET", SETTINGS) == 1
+
+
+async def test_stock_process_lookup_does_not_renew_a_slices_credential(async_client, db_session, bambu, monkeypatch):
+    from backend.app.schemas.slicer import PresetRef
+
+    monkeypatch.setattr(slicer_presets, "_cloud_cache", {})
+    user = await _sign_in(db_session)
+    fake = bambu({("GET", SETTINGS): EXPIRED, ("POST", REFRESH): RENEWED_PAIR})
+    assert not await slicer_presets.is_stock_bambu_process(db_session, user, PresetRef(source="cloud", id="public"))
+    assert fake.count("POST", REFRESH) == 0
+    assert await _stored(db_session, user.id) == ("acc", "ref", False)

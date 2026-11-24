@@ -10,7 +10,7 @@ can pick any source. The order only drives auto-pick and group rendering.
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 CloudStatus = Literal["ok", "not_authenticated", "expired", "unreachable"]
 
@@ -37,6 +37,8 @@ class UnifiedPreset(BaseModel):
     id: str
     name: str
     source: Literal["orca_cloud", "cloud", "local", "standard"]
+    # Bambu Cloud's public list is the authority for its system presets.
+    stock_cloud: bool = Field(default=False, exclude=True)
     filament_type: str | None = None
     filament_colour: str | None = None
     # The filament preset's stored ``filament_flow_ratio`` (a per-extruder
