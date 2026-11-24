@@ -249,6 +249,7 @@ class ProductPartAlias(BaseModel):
 
 class ProductPartResponse(BaseModel):
     id: int
+    composition_identity: str | None = None
     kind: str
     name: str
     name_key: str

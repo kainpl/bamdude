@@ -104,11 +104,68 @@ class LineConfigurationIn(BaseModel):
     ``choices`` names only the groups to change; ``part_counts`` is the whole
     set of changed (or, for a parts line, wanted) counts. ``dry_run`` answers
     :class:`LineConfigurationImpact` and writes nothing (rule 14).
+    ``saved_part_edits`` names quantities by document part identity, including archived rows.
+    ``catalog_part_edits`` names quantities by current catalog identity. Both require the current
+    revision on write. Explicit edits supplement ``part_counts`` and take precedence on overlaps.
     """
 
     choices: dict[int, int] = Field(default_factory=dict)
     part_counts: dict[int, int] = Field(default_factory=dict)
     dry_run: bool = False
+    expected_revision: int | None = Field(default=None, ge=0)
+    part_edits: dict[int, int] | None = None
+    saved_part_edits: dict[str, int] = Field(default_factory=dict)
+    catalog_part_edits: dict[str, int] = Field(default_factory=dict)
+    review_version: str | None = None
+
+
+class LinePartCandidate(BaseModel):
+    id: int
+    part_identity: str
+    name: str
+    kind: str
+    compatible: bool
+    saved_qty: int
+    suggested_qty: int
+    extra_percent: float
+
+
+class LinePartCandidates(BaseModel):
+    revision: int
+    catalog_version: str
+    quantity: int
+    variant_available: bool
+    variant_names: list[str]
+    parts: list[LinePartCandidate]
+
+
+class LinePartReservationReview(BaseModel):
+    """Reservation counts from the preview. After counts are hidden without stock:read."""
+
+    reserved_before: int = Field(ge=0)
+    reserved_after: int | None = Field(ge=0)
+    finished_before: int = Field(ge=0)
+    finished_after: int | None = Field(ge=0)
+    part_reservation_version: str | None = None
+
+
+class LinePartAdd(BaseModel):
+    part_id: int = Field(gt=0)
+    part_identity: str | None = None
+    quantity: int = Field(ge=1, le=9999)
+    all_parts: bool = False
+    expected_revision: int = Field(ge=0)
+    expected_quantity: int = Field(ge=1)
+    catalog_version: str
+    reservation_review: LinePartReservationReview | None = None
+    command_id: str = Field(min_length=1, max_length=64)
+
+
+class CapturedLinePartOut(BaseModel):
+    id: int
+    name: str
+    kind: str
+    qty: int
 
 
 class DroppedPartOut(BaseModel):
@@ -123,6 +180,12 @@ class DroppedPartOut(BaseModel):
     image: PartImageRef | None = None
 
 
+class ReleasedPartReservation(BaseModel):
+    part_id: int
+    name: str
+    quantity: int
+
+
 class LineConfigurationImpact(BaseModel):
     reserved_before: int = 0
     #: Null for a caller without stock:read — what the new kit would get is the shelf's (WS-13 E13 O12).
@@ -131,7 +194,11 @@ class LineConfigurationImpact(BaseModel):
     #: position (spec workshop-add-to-order, rule 8).
     finished_before: int = 0
     finished_after: int | None = 0
+    part_reservation_version: str | None = None
+    released_parts: list[ReleasedPartReservation] = []
     dropping: list[DroppedPartOut] = []
+    changes: list[DroppedPartOut] = []
+    review_version: str | None = None
 
 
 class LineChoiceOut(BaseModel):
@@ -140,6 +207,15 @@ class LineChoiceOut(BaseModel):
     option_id: int
     option_name: str
     is_default: bool
+
+
+class LineCompositionRevisionOut(BaseModel):
+    revision: int
+    origin: Literal["order", "migration"]
+    actor_id: int | None = None
+    captured_at: datetime | None = None
+    choices: list[LineChoiceOut]
+    parts: list[CapturedLinePartOut]
 
 
 class LineChangedPartOut(BaseModel):
@@ -151,11 +227,25 @@ class LineChangedPartOut(BaseModel):
     standard_qty: int
 
 
+class LineSavedPartOut(BaseModel):
+    part_id: int
+    identity: str
+    name: str
+    kind: Literal["printed", "purchased"]
+    qty: int
+    in_catalog: bool
+    manual: bool
+
+
 class LineConfigurationOut(BaseModel):
     """Codes and names only; the frontend composes the caption in the reader's language."""
 
     choices: list[LineChoiceOut] = []
     changed_parts: list[LineChangedPartOut] = []
+    saved_parts: list[LineSavedPartOut] = []
+    count_identities: dict[int, str] = {}
+    revision: int | None = None
+    origin: Literal["order", "migration"] | None = None
 
 
 class ProjectLineUpdate(BaseModel):
@@ -188,6 +278,7 @@ class ProjectLineUpdate(BaseModel):
 
 class ProcurementUpdate(BaseModel):
     quantity_acquired: int = Field(ge=0)
+    part_identity: str | None = None
 
 
 #: WS-13 E6 G01: a name is trimmed BEFORE its length is checked — blank is refused,
@@ -405,6 +496,7 @@ class ProjectLineResponse(BaseModel):
 
 class ProcurementOut(BaseModel):
     part_id: int
+    part_identity: str | None = None
     name: str
     need: int
     acquired: int

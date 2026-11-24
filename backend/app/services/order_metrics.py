@@ -38,9 +38,9 @@ from backend.app.services.line_composition import (
     default_options,
     extra_parts_for_line,
     has_shelf,
-    line_composition,
     load_line_configs,
     per_by_line,
+    saved_composition,
 )
 from backend.app.services.order_queue import (
     RUNNING_STATUS,
@@ -220,6 +220,7 @@ class ProcurementFigures:
     sourcing_url: str | None = None
     planned_cost: float | None = None
     acquired_cost: float | None = None
+    part_identity: str | None = None
 
 
 @dataclass
@@ -320,9 +321,9 @@ class OrderContext:
 
 def composition_of(ctx: OrderContext, line: ProjectLine) -> Composition:
     """The line's composition — through the one reader (spec workshop-product-variants, rule 8)."""
-    return line_composition(
+    return saved_composition(
+        line,
         ctx.parts_by_product.get(line.product_id, []),
-        line.mode,
         ctx.config_by_line.get(line.id, LineConfig()),
         ctx.defaults_by_product.get(line.product_id, {}),
     )
@@ -337,9 +338,9 @@ async def _load_configs(
     parts_by_product = {p.id: list(p.parts) for p in products}
     defaults = await default_options(db, list(parts_by_product))
     compositions = {
-        line.id: line_composition(
+        line.id: saved_composition(
+            line,
             parts_by_product.get(line.product_id, []),
-            line.mode,
             configs.get(line.id, LineConfig()),
             defaults.get(line.product_id, {}),
         )
@@ -984,38 +985,38 @@ def attribute(
 def procurement_figures(ctx: OrderContext) -> list[ProcurementFigures]:
     """Need per purchased part is Σ over the ORDER's lines — printed progress
     never enters it, which is why no line figures are taken here."""
-    need_by_part: dict[int, int] = defaultdict(int)
+    need_by_part: dict[str | int, int] = defaultdict(int)
+    names: dict[str | int, ProductPart] = {}
     for line in ctx.lines:
         for part, per in composition_of(ctx, line):
             if part.kind == "purchased" and per > 0:
-                need_by_part[part.id] += per * line.quantity
+                key = part.composition_identity or part.id
+                need_by_part[key] += per * line.quantity
+                names.setdefault(key, part)
     out: list[ProcurementFigures] = []
-    for _product_id, parts in ctx.parts_by_product.items():
-        for part in parts:
-            if part.id not in need_by_part:
-                continue
-            need = need_by_part[part.id]
-            acquired = ctx.procurement_by_part.get(part.id, 0)
-            price = part.unit_price
-            out.append(
-                ProcurementFigures(
-                    part_id=part.id,
-                    name=part.name,
-                    need=need,
-                    acquired=acquired,
-                    remaining=max(0, need - acquired),
-                    unit_price=price,
-                    sourcing_url=part.sourcing_url,
-                    planned_cost=None if price is None else round(need * price, 2),
-                    # Nothing bought is a KNOWN zero, priced or not (Z8); something
-                    # bought without a price is unknown, never free.
-                    acquired_cost=0.0
-                    if acquired <= 0
-                    else None
-                    if price is None
-                    else round(min(acquired, need) * price, 2),
-                )
+    for key, need in need_by_part.items():
+        part = names[key]
+        acquired = ctx.procurement_by_part.get(part.id, 0) if part.id > 0 else 0
+        price = part.unit_price
+        out.append(
+            ProcurementFigures(
+                part_id=part.id,
+                part_identity=part.composition_identity,
+                name=part.name,
+                need=need,
+                acquired=acquired,
+                remaining=max(0, need - acquired),
+                unit_price=price,
+                sourcing_url=part.sourcing_url,
+                planned_cost=None if price is None else round(need * price, 2),
+                # Nothing bought is a known zero, even for a part without a price.
+                acquired_cost=0.0
+                if acquired <= 0
+                else None
+                if price is None
+                else round(min(acquired, need) * price, 2),
             )
+        )
     return out
 
 

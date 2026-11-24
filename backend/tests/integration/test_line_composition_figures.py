@@ -2,11 +2,11 @@
 (spec workshop-product-variants, rules 8–9, 15–16, 22)."""
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
-from backend.app.models.line_config import ProjectLineChoice, ProjectLinePartCount
+from backend.app.models.line_config import ProjectLineChoice
 from backend.app.models.product import Product, ProductPart
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
 from backend.app.models.project_line import ProjectLine
@@ -70,7 +70,7 @@ async def pipe(db_session):
     return {"product": product, "group": group, "straight": straight, "angled": angled, "parts": parts}
 
 
-async def _order(client, db, pipe, *, angled_flask=None):
+async def _order(client, db, pipe, *, angled_flask=None, first=None):
     """Two lines of 4: line 1 standard (straight), line 2 angled (flask ×2 when asked)."""
     gid = str(pipe["group"].id)
     angled = {"product_id": pipe["product"].id, "quantity": 4, "choices": {gid: pipe["angled"].id}}
@@ -79,7 +79,7 @@ async def _order(client, db, pipe, *, angled_flask=None):
     body = (
         await client.post(
             "/api/v1/projects/",
-            json={"name": "O", "lines": [{"product_id": pipe["product"].id, "quantity": 4}, angled]},
+            json={"name": "O", "lines": [{"product_id": pipe["product"].id, "quantity": 4, **(first or {})}, angled]},
         )
     ).json()
     first, second = (line["id"] for line in body["lines"])
@@ -171,16 +171,16 @@ async def test_the_stock_tab_reads_reservations_per_line_composition(committing_
 
 @pytest.mark.asyncio
 async def test_parts_mode_figures(committing_client, db_session, pipe):
-    pid, first, _ = await _order(committing_client, db_session, pipe)
-    await db_session.execute(update(ProjectLine).where(ProjectLine.id == first).values(mode="parts", quantity=1))
-    await db_session.execute(ProjectLineChoice.__table__.delete().where(ProjectLineChoice.line_id == first))
-    db_session.add_all(
-        [
-            ProjectLinePartCount(line_id=first, part_id=pipe["parts"]["angled"].id, qty=3),
-            ProjectLinePartCount(line_id=first, part_id=pipe["parts"]["flask"].id, qty=1),
-        ]
+    pid, first, _ = await _order(
+        committing_client,
+        db_session,
+        pipe,
+        first={
+            "mode": "parts",
+            "quantity": 1,
+            "part_counts": {str(pipe["parts"]["angled"].id): 3, str(pipe["parts"]["flask"].id): 1},
+        },
     )
-    await db_session.commit()
     await _file(db_session, pid, first, angled=2)
     body = (await committing_client.get(f"/api/v1/projects/{pid}")).json()
     line = next(ln for ln in body["lines"] if ln["id"] == first)

@@ -5,23 +5,23 @@ nothing half-written. So the whole alias list travels with the part — absent o
 ``null`` changes nothing, ``[]`` keeps only the part's own key, a list replaces the
 rest — and a part can be created already bound to an option.
 
-A new bound part enters the FINAL composition (K22): saved product-mode lines and
-stock positions are not frozen, they take it by the same rule as new ones — the lines
-that chose its option get ``qty_per_unit``, the others nothing. A parts-only line is an
-explicit list and never gains a new part. Creating with a binding takes the product
-gate before anything is changed and reads the option behind it.
+New lines use the catalog after creation. Saved order lines and finished goods
+retain their recorded parts. Creation takes the product gate before reading the
+option or changing the catalog.
 """
 
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
-from backend.app.models.finished_stock import StockItem
+from backend.app.migrations import m258_order_line_composition
+from backend.app.models.finished_stock import StockItem, StockItemMovement
 from backend.app.models.product import Product, ProductPart
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
-from backend.app.services import finished_stock, line_composition, line_config, product_variants
+from backend.app.models.stock_issue import StockIssue
+from backend.app.services import finished_stock, line_composition, line_config, part_stock, product_variants
 from backend.tests.fixtures.sliced_sources import slice_parts
 
 pytestmark = pytest.mark.integration
@@ -181,10 +181,52 @@ async def test_a_refused_alias_rolls_back_a_binding_change_sent_with_it(committi
 # ------------------------------------------------------------------ binding on create
 
 
+@pytest.mark.parametrize("status", ["active", "completed", "cancelled"])
+@pytest.mark.parametrize("present_at_order", [False, True], ids=["late-part", "original-part"])
 @pytest.mark.asyncio
-async def test_a_part_created_bound_enters_only_the_lines_and_positions_of_its_option(
-    committing_client, db_session, lamp
+async def test_closed_line_keeps_its_original_kit_across_catalog_saves(
+    committing_client, db_session, lamp, status, present_at_order
 ):
+    line_id = lamp["lines"]["L_A"]
+    line = await db_session.get(ProjectLine, line_id)
+    order = await db_session.get(Project, line.project_id)
+    order.status = status
+    await db_session.commit()
+    order_url = f"/api/v1/projects/{order.id}"
+
+    async def read_kit():
+        response = await committing_client.get(order_url)
+        assert response.status_code == 200, response.text
+        document = response.json()
+        assert document["status"] == status
+        saved = next(row for row in document["lines"] if row["id"] == line_id)
+        assert [c["option_id"] for c in saved["configuration"]["choices"]] == [lamp["options"]["A"]]
+        return {p["part_id"]: p["qty_per_unit"] for p in saved["parts"] if p["qty_per_unit"] > 0}
+
+    baseline = await read_kit()
+    assert baseline == {lamp["shade"]: 1}
+    observed = {}
+    part_id = lamp["shade"]
+    if not present_at_order:
+        response = await committing_client.post(
+            _url(lamp, "/parts"),
+            json={"kind": "printed", "name": "Late collar", "qty_per_unit": 1, "variant_option_ids": []},
+        )
+        assert response.status_code == 200, response.text
+        part_id = response.json()["id"]
+        observed["created without binding"] = await read_kit()
+
+    response = await committing_client.patch(
+        _url(lamp, f"/parts/{part_id}"), json={"variant_option_ids": [lamp["options"]["B"]]}
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["variant_option_ids"] == [lamp["options"]["B"]]
+    observed["bound to B"] = await read_kit()
+    assert observed == dict.fromkeys(observed, baseline)
+
+
+@pytest.mark.asyncio
+async def test_a_part_created_bound_leaves_saved_lines_and_positions_intact(committing_client, db_session, lamp):
     before_shade = await _per(db_session, lamp, lamp["shade"])
     r = await committing_client.post(
         _url(lamp, "/parts"),
@@ -193,7 +235,7 @@ async def test_a_part_created_bound_enters_only_the_lines_and_positions_of_its_o
     assert r.status_code == 200, r.text
     x = r.json()
     assert x["variant_option_ids"] == [lamp["options"]["A"]]
-    assert await _per(db_session, lamp, x["id"]) == {"L_A": 1, "L_B": 0, "L_O": 1, "L_P": 0, "P_A": 1, "P_B": 0}
+    assert not any((await _per(db_session, lamp, x["id"])).values())
     # Nothing else moved: L_O keeps its own count of shade, every other count stands.
     assert await _per(db_session, lamp, lamp["shade"]) == before_shade
 
@@ -236,12 +278,154 @@ async def test_a_new_line_takes_a_bound_part_by_its_choice(committing_client, db
 
 
 @pytest.mark.asyncio
-async def test_an_unbound_new_part_still_enters_every_product_line_and_position(committing_client, db_session, lamp):
-    """Today's behaviour, pinned: a new part without a binding is part of every
-    product-mode kit; a parts-only line is an explicit list and does not gain it."""
+async def test_a_common_part_does_not_enter_saved_lines_or_positions(committing_client, db_session, lamp):
     r = await committing_client.post(_url(lamp, "/parts"), json={"kind": "printed", "name": "Base", "qty_per_unit": 1})
     assert r.status_code == 200, r.text
-    assert await _per(db_session, lamp, r.json()["id"]) == {"L_A": 1, "L_B": 1, "L_O": 1, "L_P": 0, "P_A": 1, "P_B": 1}
+    assert not any((await _per(db_session, lamp, r.json()["id"])).values())
+
+
+@pytest.mark.parametrize("status", ["completed", "cancelled"])
+async def test_both_composition_writers_refuse_a_closed_order(committing_client, db_session, lamp, status):
+    line = await db_session.get(ProjectLine, lamp["lines"]["L_A"])
+    order = await db_session.get(Project, line.project_id)
+    order.status = status
+    await db_session.commit()
+    url = f"/api/v1/projects/{order.id}/lines/{line.id}"
+    candidate = await committing_client.get(url + "/part-candidates")
+    assert candidate.status_code == 200, candidate.text
+    meta = candidate.json()
+    response = await committing_client.post(
+        url + "/parts",
+        json={
+            "expected_revision": meta["revision"],
+            "catalog_version": meta["catalog_version"],
+            "expected_quantity": meta["quantity"],
+            "command_id": "closed",
+            "part_id": lamp["shade"],
+            "quantity": 2,
+        },
+    )
+    assert response.status_code == 409 and status in response.text
+    response = await committing_client.put(
+        url + "/configuration",
+        json={
+            "expected_revision": meta["revision"],
+            "part_counts": {lamp["shade"]: 2},
+        },
+    )
+    assert response.status_code == 409 and status in response.text
+
+
+async def test_add_single_part_checks_the_preview_quantity_and_retries_safely(committing_client, db_session, lamp):
+    line = await db_session.get(ProjectLine, lamp["lines"]["L_A"])
+    url = f"/api/v1/projects/{line.project_id}/lines/{line.id}"
+    response = await committing_client.post(
+        _url(lamp, "/parts"),
+        json={
+            "kind": "purchased",
+            "name": "Opal ring",
+            "variant_option_ids": [lamp["options"]["B"]],
+        },
+    )
+    assert response.status_code == 200, response.text
+    part_id = response.json()["id"]
+    old = (await committing_client.get(url + "/part-candidates")).json()
+    assert next(part for part in old["parts"] if part["id"] == part_id)["compatible"] is False
+    changed = await committing_client.patch(url, json={"quantity": 5})
+    assert changed.status_code == 200, changed.text
+    body = {
+        "part_id": part_id,
+        "quantity": 2,
+        "all_parts": True,
+        "expected_revision": old["revision"],
+        "expected_quantity": old["quantity"],
+        "catalog_version": old["catalog_version"],
+        "command_id": "add-ring",
+    }
+    refused = await committing_client.post(url + "/parts", json=body)
+    assert refused.status_code == 409, refused.text
+    fresh = (await committing_client.get(url + "/part-candidates")).json()
+    assert fresh["quantity"] == 5 and fresh["revision"] == old["revision"]
+    body.update(expected_quantity=5)
+    for _ in range(2):
+        response = await committing_client.post(url + "/parts", json=body)
+        assert response.status_code == 200, response.text
+        line_out = next(row for row in response.json()["lines"] if row["id"] == line.id)
+        assert [(p["part_id"], p["need"]) for p in line_out["purchased"]] == [(part_id, 10)]
+        assert line_out["configuration"]["revision"] == old["revision"] + 1
+    history = await committing_client.get(url + "/composition-revisions")
+    assert history.status_code == 200, history.text
+    initial, current = history.json()
+    assert {p["id"] for p in initial["parts"]} == {lamp["shade"]}
+    assert {p["id"] for p in current["parts"]} == {lamp["shade"], part_id}
+
+
+async def test_two_finished_kits_of_one_variant_reserve_only_the_matching_unit(committing_client, db_session, lamp):
+    options = {lamp["group"]: lamp["options"]["A"]}
+    old = await finished_stock.item_for(db_session, lamp["product"], options, create=True)
+    await finished_stock.receive(db_session, old, 1)
+    await db_session.commit()
+    response = await committing_client.post(_url(lamp, "/parts"), json={"kind": "purchased", "name": "Diffuser"})
+    assert response.status_code == 200, response.text
+    new = await finished_stock.item_for(db_session, lamp["product"], options, create=True)
+    assert old.id != new.id and old.variant_key == new.variant_key
+    await finished_stock.receive(db_session, new, 1)
+    await db_session.commit()
+    existing = await db_session.get(ProjectLine, lamp["lines"]["L_A"])
+    line = ProjectLine(project_id=existing.project_id, product_id=lamp["product"], quantity=2, mode="product")
+    db_session.add(line)
+    await db_session.flush()
+    await line_config.seed_line(db_session, line, choices=options, counts=None)
+    assert old.on_hand + new.on_hand == 2
+    assert await finished_stock.reserve_for_line(db_session, line, 2) == 1
+    assert await finished_stock.held_by_item(db_session, line.id) == {new.id: 1}
+    assert old.on_hand - old.reserved == 1
+    assert new.on_hand - new.reserved == 0
+    issue = StockIssue(project_id=line.project_id)
+    db_session.add(issue)
+    await db_session.flush()
+    await finished_stock.issue_from_line(db_session, line, 1, stock_issue=issue)
+    assert old.on_hand == 1 and new.on_hand == 0
+
+
+async def test_upgrade_captures_the_visible_kit_once_and_preserves_the_shelf(db_session, lamp):
+    line = await db_session.get(ProjectLine, lamp["lines"]["L_O"])
+    item = await db_session.get(StockItem, lamp["items"]["P_A"])
+    await finished_stock.receive(db_session, item, 2)
+    await finished_stock.reserve_for_line(db_session, await db_session.get(ProjectLine, lamp["lines"]["L_A"]), 1)
+    empty = Product(name="Empty kit")
+    db_session.add(empty)
+    await db_session.flush()
+    empty_line = ProjectLine(project_id=line.project_id, product_id=empty.id, quantity=1, mode="product")
+    db_session.add(empty_line)
+    await db_session.flush()
+    await db_session.execute(update(ProjectLine).values(composition_revisions=None))
+    await db_session.execute(update(StockItem).values(composition_parts=None, variant_key=None))
+    await db_session.flush()
+    comp = await part_stock.line_composition_of(db_session, line)
+    expected = [(part.name, per) for part, per in comp]
+    movements = select(
+        StockItemMovement.id,
+        StockItemMovement.item_id,
+        StockItemMovement.delta_on_hand,
+        StockItemMovement.delta_reserved,
+        StockItemMovement.project_line_id,
+    ).order_by(StockItemMovement.id)
+    journal = (await db_session.execute(movements)).all()
+    balance = item.on_hand, item.reserved
+    connection = await db_session.connection()
+    for _ in range(2):
+        await m258_order_line_composition.upgrade(connection)
+        await db_session.refresh(line)
+        await db_session.refresh(empty_line)
+        await db_session.refresh(item)
+        assert len(line.composition_revisions) == 1
+        assert line.composition_revisions[0]["origin"] == "migration"
+        assert [(part.name, per) for part, per in await part_stock.line_composition_of(db_session, line)] == expected
+        assert empty_line.composition_revisions[0]["parts"] == []
+        assert item.composition_parts is not None
+        assert (item.on_hand, item.reserved) == balance
+        assert (await db_session.execute(movements)).all() == journal
 
 
 @pytest.mark.asyncio

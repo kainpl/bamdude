@@ -15,7 +15,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import delete, event, select
+from sqlalchemy import delete, event, select, update
 
 from backend.app.models.library import LibraryFile
 from backend.app.models.line_config import ProjectLineChoice, ProjectLinePartCount
@@ -230,7 +230,12 @@ async def test_changing_choice_to_closed_is_409_and_counts_only_change_is_allowe
     assert dict(counts.all()) == {jar.body_400: 2}
     # A change of choice is checked against the standard kit — the count does not open it.
     other = await committing_client.put(
-        url, json={"choices": {str(jar.lid): jar.snap}, "part_counts": {str(jar.body_400): 2}}
+        url,
+        json={
+            "choices": {str(jar.lid): jar.snap},
+            "part_counts": {str(jar.body_400): 2},
+            "expected_revision": r.json()["lines"][0]["configuration"]["revision"],
+        },
     )
     assert {x["code"] for x in _refusal(other)["reasons"]} == {"part_not_sliced"}
 
@@ -323,6 +328,9 @@ async def test_a_counts_only_change_of_a_line_without_a_stored_choice_is_not_che
             ProjectLineChoice.line_id == saved_line.id, ProjectLineChoice.group_id == jar.weight
         )
     )
+    await db_session.execute(
+        update(ProjectLine).where(ProjectLine.id == saved_line.id).values(composition_revisions=None)
+    )
     await db_session.commit()
     await _trash(db_session, jar.files["body_400"])  # 400 + solid + screw is closed now
     url = f"/api/v1/projects/{saved_line.order.id}/lines/{saved_line.id}/configuration"
@@ -333,7 +341,13 @@ async def test_a_counts_only_change_of_a_line_without_a_stored_choice_is_not_che
     # The standard the kit read is now recorded beside the new count.
     assert await _choices(db_session, saved_line.id) == {jar.weight: jar.w400, jar.kind: jar.solid, jar.lid: jar.screw}
     # A changed choice on that line is still checked.
-    other = await committing_client.put(url, json={"choices": {str(jar.lid): jar.snap}})
+    other = await committing_client.put(
+        url,
+        json={
+            "choices": {str(jar.lid): jar.snap},
+            "expected_revision": r.json()["lines"][0]["configuration"]["revision"],
+        },
+    )
     assert {x["code"] for x in _refusal(other)["reasons"]} == {"part_not_sliced"}
 
 
@@ -347,6 +361,9 @@ async def test_naming_the_choice_such_a_line_already_reads_journals_nothing(
         delete(ProjectLineChoice).where(
             ProjectLineChoice.line_id == saved_line.id, ProjectLineChoice.group_id == jar.weight
         )
+    )
+    await db_session.execute(
+        update(ProjectLine).where(ProjectLine.id == saved_line.id).values(composition_revisions=None)
     )
     await db_session.commit()
 

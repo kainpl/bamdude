@@ -78,9 +78,9 @@ from backend.app.services.line_composition import (
     LineConfig,
     composition,
     default_options,
-    line_composition,
     load_line_configs,
     per_by_line,
+    saved_composition,
     standard_composition,
     standard_per,
 )
@@ -174,8 +174,8 @@ async def _stock_rows(
     )
     configs = await load_line_configs(db, [line.id for line in line_objs])
     compositions = {
-        line.id: line_composition(
-            parts_of.get(line.product_id, []), line.mode, configs[line.id], defaults.get(line.product_id, {})
+        line.id: saved_composition(
+            line, parts_of.get(line.product_id, []), configs[line.id], defaults.get(line.product_id, {})
         )
         for line in line_objs
     }
@@ -624,7 +624,9 @@ async def suggest_stock(
     Writes nothing. An item naming an order line reads that order (WS-13 E13)."""
     if any(item.line_id is not None for item in data.items):
         await ensure(creds, Permission.ORDERS_READ)
-    choices = await _choices_for_items(db, [(item.product_id, item.options) for item in data.items])
+    choices = await _choices_for_items(
+        db, [(item.product_id, item.options if item.line_id is None else []) for item in data.items]
+    )
     requests = [
         stock_pick.PickRequest(item.product_id, chosen, item.part_counts, item.quantity, item.line_id)
         for item, chosen in zip(data.items, choices, strict=True)

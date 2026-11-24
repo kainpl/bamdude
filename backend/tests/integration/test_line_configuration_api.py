@@ -224,9 +224,17 @@ async def test_a_configuration_change_moves_the_reservation_and_is_journaled(com
     body = await _order(committing_client, [{"product_id": pipe["product"].id, "quantity": 3, "from_stock_units": 2}])
     line = body["lines"][0]
     assert line["from_stock_units"] == 2
+    url = f"/api/v1/projects/{body['id']}/lines/{line['id']}/configuration"
+    proposed = {"choices": {str(pipe["group"].id): pipe["angled"].id}, "part_counts": {}}
+    review = await committing_client.put(url, json={**proposed, "dry_run": True})
+    assert review.status_code == 200, review.text
     r = await committing_client.put(
-        f"/api/v1/projects/{body['id']}/lines/{line['id']}/configuration",
-        json={"choices": {str(pipe["group"].id): pipe["angled"].id}, "part_counts": {}},
+        url,
+        json={
+            **proposed,
+            "expected_revision": line["configuration"]["revision"],
+            "review_version": review.json()["review_version"],
+        },
     )
     assert r.status_code == 200, r.text
     after = r.json()["lines"][0]
