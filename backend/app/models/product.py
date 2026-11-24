@@ -135,13 +135,14 @@ class Product(Base):
 
 class ProductPart(Base):
     __tablename__ = "product_parts"
-    __table_args__ = (UniqueConstraint("product_id", "name_key", name="uq_product_parts_key"),)
+    __table_args__ = (
+        UniqueConstraint("product_id", "name_key", name="uq_product_parts_key"),
+        Index("uq_product_parts_composition_identity", "composition_identity", unique=True),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     # Numeric IDs can be reused by SQLite after deleting a catalog part.
-    composition_identity: Mapped[str | None] = mapped_column(
-        String(36), nullable=True, unique=True, default=lambda: str(uuid4())
-    )
+    composition_identity: Mapped[str | None] = mapped_column(String(36), nullable=True, default=lambda: str(uuid4()))
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), index=True)
     kind: Mapped[str] = mapped_column(String(16), nullable=False, default="printed")  # printed | purchased
     name: Mapped[str] = mapped_column(String(512))

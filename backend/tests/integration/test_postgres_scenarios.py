@@ -1023,8 +1023,11 @@ class TestLockProtocol:
         r = _protocol(tmp_path_factory, "f")
         for pair in ("group_then_configuration", "configuration_then_group", "group_then_new_line"):
             assert r[pair]["which"] == "waiting", (pair, r[pair])
+        for pair in ("configuration_then_group", "group_then_new_line"):
             assert (r[pair]["a"], r[pair]["b"]) == ("ok", "ok"), (pair, r[pair])
         g = r["group_then_configuration"]
+        assert g["a"] == "ok" and g["b"].startswith("http:409:") and "line_configuration_stale" in g["b"], g
+        assert g["retry"] == "ok" and g["choice_unchanged_after_conflict"], g
         assert g["has_size"] and g["kept_blue"] and g["key_ok"] and g["kit_unchanged_by_a_new_standard"], g
         c = r["configuration_then_group"]
         assert c["has_size"] and c["kept_blue"] and c["key_ok"], c
