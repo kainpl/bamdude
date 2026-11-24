@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from PIL import Image
+import pytest
+from PIL import Image, ImageDraw, ImageOps
 
 from backend.app.services.label_raster import render_template_png, render_template_raster
 from backend.app.services.label_template import LabelTemplateSpec
@@ -253,3 +254,77 @@ def test_stock_box_prints_the_continuation_in_the_raster():
     assert img.mode == "1"
     x, y, width, size = (round(name[key] * DPMM) for key in ("x_mm", "y_mm", "w_mm", "size_mm"))
     assert _ink(img, (x, y + size + 2, width, size)) > 0.02
+
+
+@pytest.mark.parametrize("dots", [8, 12])
+def test_factory_wrap_keeps_all_descender_pixels(dots):
+    from backend.app.services.label_raster import RasterCanvas
+    from backend.app.services.label_raster_fonts import font_at
+    from backend.app.services.label_seed import BUILTIN_TEMPLATES
+
+    factory = next(t for t in BUILTIN_TEMPLATES if t["builtin_key"] == "box_40x30")
+    name = next(e for e in factory["elements"] if e["content"] == "{display_name}")
+    box = tuple(name[field] for field in ("x_mm", "y_mm", "w_mm", "h_mm"))
+    canvas = RasterCanvas(40, 30, dots)
+    canvas.text(
+        "Magenta gyp",
+        box_mm=box,
+        size_mm=name["size_mm"],
+        bold=True,
+        italic=False,
+        align="left",
+        valign="top",
+        fit="wrap",
+    )
+
+    # Draw the two words at the same font size on a separate, roomy surface.
+    # Their pixel count is invariant under the integer translation into the box.
+    font = font_at(round(name["size_mm"] * dots), bold=True)
+    reference = Image.new("1", (40 * dots, 30 * dots), 1)
+    draw = ImageDraw.Draw(reference)
+    draw.text((50, 50), "Magenta", font=font, fill=0)
+    draw.text((50, 130), "gyp", font=font, fill=0)
+    actual = canvas.image_out()
+    assert actual.histogram()[0] == reference.histogram()[0]
+
+    x, y, w, h = (round(value * dots) for value in box)
+    assert actual.crop((x, y, x + w, y + h)).histogram()[0] == actual.histogram()[0]
+
+
+@pytest.mark.parametrize(("align", "valign"), [("left", "top"), ("center", "middle"), ("right", "bottom")])
+def test_custom_wrap_keeps_complete_glyphs_at_each_vertical_alignment(align, valign):
+    from backend.app.services.label_raster import RasterCanvas
+    from backend.app.services.label_raster_fonts import font_at
+
+    x, y, width, height = 24, 24, 116, 50
+    font = font_at(23, bold=True)
+    canvas = RasterCanvas(40, 30, 8)
+    canvas.text(
+        "Magenta gyp",
+        box_mm=(x / 8, y / 8, width / 8, height / 8),
+        size_mm=23 / 8,
+        bold=True,
+        italic=False,
+        align=align,
+        valign=valign,
+        fit="wrap",
+    )
+
+    reference = Image.new("1", (320, 240), 1)
+    draw = ImageDraw.Draw(reference)
+    for line, top in zip(("Magenta", "gyp"), (50, 120), strict=True):
+        remaining = width - draw.textlength(line, font=font)
+        offset = {"left": 0, "center": remaining / 2, "right": remaining}[align]
+        draw.text((x + offset, top), line, font=font, fill=0)
+    actual = canvas.image_out()
+    assert actual.histogram()[0] == reference.histogram()[0]
+    assert actual.crop((x, y, x + width, y + height)).histogram()[0] == actual.histogram()[0]
+
+    _, ink_top, _, ink_bottom = ImageOps.invert(actual.convert("L")).getbbox()
+    gap_before, gap_after = ink_top - y, y + height - ink_bottom
+    if valign == "middle":
+        assert abs(gap_before - gap_after) <= 1
+    elif valign == "bottom":
+        assert gap_after == 0
+    else:
+        assert gap_before == 0

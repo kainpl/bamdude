@@ -5,6 +5,8 @@ from __future__ import annotations
 import io
 import re
 
+import pytest
+
 from backend.app.services.label_renderer import render_template_pdf, render_template_sheet_pdf
 from backend.app.services.label_template import LabelSheetSpec, LabelTemplateSpec
 
@@ -335,3 +337,37 @@ def test_stock_box_prints_a_long_spool_name_on_two_lines(monkeypatch):
     assert pdf.startswith(b"%PDF-")
     assert not warnings
     assert drawn == ["Magenta", "Orchid", "Shelf", "#42"]
+
+
+@pytest.mark.parametrize("valign", ["top", "middle", "bottom"])
+def test_wrap_clip_path_keeps_complete_pdf_glyphs_at_tight_height(monkeypatch, valign):
+    from PIL import ImageChops
+    from pypdfium2 import PdfDocument
+    from reportlab.pdfgen.canvas import Canvas
+
+    spec = _spec(_text(w_mm=17, h_mm=6.45, size_mm=3, content="Magenta gyp", bold=True, valign=valign, fit="wrap"))
+    clipped, warnings = render_template_pdf(spec, [{}])
+    assert not warnings
+    monkeypatch.setattr(Canvas, "clipPath", lambda *_args, **_kwargs: None)
+    unclipped, _ = render_template_pdf(spec, [{}])
+    images = []
+    for data in (clipped, unclipped):
+        with PdfDocument(data) as document:
+            page = document[0]
+            if data is clipped:
+                assert page.get_textpage().get_text_range().split() == ["Magenta", "gyp"]
+            images.append(page.render(scale=8).to_pil().convert("L"))
+    assert ImageChops.difference(*images).getbbox() is None
+
+
+def test_wrap_ellipsizes_a_complete_line_when_second_line_cannot_fit():
+    from pypdfium2 import PdfDocument
+
+    spec = _spec(_text(w_mm=17, h_mm=5, size_mm=3, content="Magenta gyp", bold=True, fit="wrap"))
+    data, warnings = render_template_pdf(spec, [{}])
+    assert not warnings
+    with PdfDocument(data) as document:
+        text = document[0].get_textpage().get_text_range()
+    assert text.startswith("Magenta")
+    assert text.endswith("…")
+    assert "\n" not in text

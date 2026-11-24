@@ -31,11 +31,28 @@ Box = tuple[float, float, float, float]
 
 
 def wrapped_text(
-    text: str, *, width: float, height: float, size: float, measure: Callable[[str], float]
-) -> tuple[list[str], float]:
-    """Fit up to three lines inside the authored box using the backend's font metrics."""
-    step = size * 1.15
-    max_lines = max(1, min(3, 1 + int((height - size) // step)))
+    text: str,
+    *,
+    width: float,
+    height: float,
+    step: float,
+    measure: Callable[[str], float],
+    vertical_bounds: Callable[[str], tuple[float, float]],
+) -> tuple[list[str], float, float]:
+    """Return complete lines and their vertical ink bounds relative to the first line."""
+    for max_lines in (3, 2, 1):
+        lines = _wrap_lines(text, width, max_lines, measure)
+        if not lines:
+            continue
+        bounds = [vertical_bounds(line) for line in lines]
+        top = min(top + index * step for index, (top, _) in enumerate(bounds))
+        bottom = max(bottom + index * step for index, (_, bottom) in enumerate(bounds))
+        if bottom - top <= height:
+            return lines, top, bottom
+    return [], 0, 0
+
+
+def _wrap_lines(text: str, width: float, max_lines: int, measure: Callable[[str], float]) -> list[str]:
     lines = []
     rest = text
     for index in range(max_lines):
@@ -57,7 +74,7 @@ def wrapped_text(
             at = count
         lines.append(rest[:at].rstrip())
         rest = rest[at:].lstrip()
-    return lines, step
+    return lines
 
 
 class LabelCanvas(Protocol):

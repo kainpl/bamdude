@@ -58,6 +58,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas as rl_canvas
 
 from backend.app.services.label_canvas import draw_template, wrapped_text
+from backend.app.services.label_raster_fonts import font_at
 from backend.app.services.label_template import LabelSheetSpec, LabelTemplateSpec
 
 logger = logging.getLogger(__name__)
@@ -643,23 +644,37 @@ class PdfCanvas:
             size = max(_MIN_TEXT_PT, min(size, box_h))
 
         if fit == "wrap":
-            lines, step = wrapped_text(
-                text, width=box_w, height=box_h, size=size, measure=lambda line: c_stringWidth(line, font, size)
+            ascent, descent = pdfmetrics.getAscentDescent(font, size)
+            step = max(size * 1.15, ascent - descent)
+            # The embedded TTFs are also used by Pillow. Measure at high resolution
+            # relative to the baseline so the bounds scale to fractional PDF points.
+            metric_size = 1000
+            metric_font = font_at(metric_size, bold=font == _FONT_BOLD, italic=font == _FONT_ITALIC)
+
+            def vertical_bounds(line: str) -> tuple[float, float]:
+                if font not in _FONT_FILES:
+                    return -ascent, -descent
+                _, top, _, bottom = metric_font.getbbox(line, anchor="ls")
+                scale = size / metric_size
+                return (top - 1) * scale, (bottom + 1) * scale
+
+            lines, ink_top, ink_bottom = wrapped_text(
+                text,
+                width=box_w,
+                height=box_h,
+                step=step,
+                measure=lambda line: c_stringWidth(line, font, size),
+                vertical_bounds=vertical_bounds,
             )
         else:
             lines, step = [_truncate_to_width(self._c, text, font, size, box_w)], size
+            ink_top, ink_bottom = -size * 0.8, size * 0.2
         if not lines or not lines[0]:
             return
 
-        # Align the whole block vertically and each line horizontally.
-        ascent = size * 0.8
-        block_h = size + (len(lines) - 1) * step
-        top_of_box = bottom + box_h
-        y = {
-            "top": top_of_box - ascent,
-            "middle": bottom + (box_h + block_h) / 2 - ascent,
-            "bottom": bottom + block_h - ascent,
-        }.get(valign, top_of_box - ascent)
+        space = box_h - (ink_bottom - ink_top)
+        offset = {"middle": space / 2, "bottom": space}.get(valign, 0)
+        y = bottom + box_h - offset + ink_top
         if fit == "wrap":
             self._c.saveState()
             bounds = self._c.beginPath()

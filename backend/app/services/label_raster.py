@@ -288,8 +288,16 @@ class RasterCanvas:
         clip_x = clip_y = 0
         tile = None
         if fit == "wrap":
-            lines, step = wrapped_text(
-                text, width=box_w, height=box_h, size=size, measure=lambda line: draw.textlength(line, font=font)
+            step = round(size * 1.15)
+            if isinstance(font, ImageFont.FreeTypeFont):
+                step = max(step, sum(font.getmetrics()))
+            lines, ink_top, ink_bottom = wrapped_text(
+                text,
+                width=box_w,
+                height=box_h,
+                step=step,
+                measure=lambda line: draw.textlength(line, font=font),
+                vertical_bounds=lambda line: font.getbbox(line)[1::2],
             )
             # Clip in label pixels, even for an element partly outside the paper.
             clip_x, clip_y = max(0, x), max(0, y)
@@ -301,15 +309,13 @@ class RasterCanvas:
             draw = ImageDraw.Draw(tile)
         else:
             lines, step = [_truncate(draw, text, font, box_w)], size
+            ink_top, ink_bottom = 0, size
         if not lines or not lines[0]:
             return
 
-        block_h = size + (len(lines) - 1) * step
-        top = {
-            "top": y,
-            "middle": y + (box_h - block_h) / 2,
-            "bottom": y + box_h - block_h,
-        }.get(valign, y)
+        space = box_h - (ink_bottom - ink_top)
+        offset = {"middle": space / 2, "bottom": space}.get(valign, 0)
+        top = y + (round(offset) if fit == "wrap" else offset) - ink_top
         for line in lines:
             width = draw.textlength(line, font=font)
             left = {
