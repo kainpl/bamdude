@@ -53,7 +53,7 @@ interface AssignSpoolModalProps {
    * correction?» question and the two routes. It exists so that door is not a
    * second writer of assignments.
    */
-  fixedSpool?: { id: number; displayName: string; source: 'inventory' | 'spoolman' };
+  fixedSpool?: { id: number; displayName: string; source: 'inventory' | 'spoolman'; labelKey?: string };
   /** Called after a successful assignment, before `onClose`. */
   onAssigned?: () => void;
 }
@@ -464,7 +464,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
       return;
     }
     if (!pickedSpoolId) return;
-    const target = { spoolId: pickedSpoolId, labelKey: scannedSpool?.key };
+    const target = { spoolId: pickedSpoolId, labelKey: fixedSpool ? fixedSpool.labelKey : scannedSpool?.key };
     let selectedSpool: InventorySpool;
     try {
       selectedSpool = target.labelKey

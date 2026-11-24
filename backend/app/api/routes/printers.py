@@ -349,6 +349,7 @@ async def list_usb_cameras(
     cameras = await asyncio.to_thread(external_camera.list_usb_cameras)
     response = {"cameras": cameras}
     if include_configured:
+        devices = set(await asyncio.to_thread(external_camera.usb_device_nodes))
         result = await db.execute(
             select(Printer.id, Printer.external_camera_url).where(
                 Printer.archived.is_(False),
@@ -357,12 +358,11 @@ async def list_usb_cameras(
                 Printer.external_camera_url.is_not(None),
             )
         )
-        devices = {camera["device"] for camera in cameras}
         configured = {}
         for printer_id, url in result.all():
             if url and in_key_scope(request, printer_id):
                 device = external_camera._safe_usb_device_path(url)
-                configured[printer_id] = device is not None and device.as_posix() in devices
+                configured[printer_id] = device in devices
         response["configured_devices_found"] = configured
     return response
 

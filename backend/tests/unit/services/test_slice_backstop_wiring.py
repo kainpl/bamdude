@@ -179,9 +179,9 @@ async def test_only_bambu_stock_process_overrides_are_recorded(
     monkeypatch, source, listed_stock, engine, embedded, expected
 ):
     cloud_listing = AsyncMock(
-        return_value=({"process": [SimpleNamespace(id="chosen", stock_cloud=listed_stock)]}, "ok")
+        return_value=(SimpleNamespace(public_ids={"process": {"chosen"} if listed_stock else set()}), "ok")
     )
-    monkeypatch.setattr("backend.app.api.routes.slicer_presets._fetch_cloud_presets", cloud_listing)
+    monkeypatch.setattr("backend.app.api.routes.slicer_presets._load_bambu_cloud_listing", cloud_listing)
     request = _request("standard")
     request.process_preset = PresetRef(source=source, id="chosen")
     request.process_overrides = {"wall_loops": 5}

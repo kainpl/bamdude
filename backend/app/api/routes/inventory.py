@@ -2127,6 +2127,13 @@ def _spool_label_changed() -> HTTPException:
     )
 
 
+async def _guard_spool_label(db: AsyncSession, spool_id: int, label_key: str) -> None:
+    try:
+        await lock_spool_for_label(db, spool_id, label_key)
+    except SpoolLabelChangedError:
+        raise _spool_label_changed() from None
+
+
 @router.get("/spools/{spool_id}", response_model=SpoolResponse)
 async def get_spool(
     spool_id: int,
@@ -2466,10 +2473,8 @@ async def update_spool(
     try:
         if label_key is not None:
             await _refuse_in_spoolman_mode(db)
-            await lock_spool_for_label(db, spool_id, label_key)
+            await _guard_spool_label(db, spool_id, label_key)
         return await inventory_service.update_spool(db, spool_id, spool_data)
-    except SpoolLabelChangedError:
-        raise _spool_label_changed() from None
     except inventory_service.SpoolNotFoundError:
         raise HTTPException(404, "Spool not found") from None
     except ValueError as exc:
@@ -2691,6 +2696,7 @@ async def replace_k_profiles(
     profiles: list[SpoolKProfileBase],
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+    label_key: Annotated[str | None, Query(pattern=LABEL_KEY_PATTERN)] = None,
 ):
     """Replace all K-profile links for a spool (batch save).
 
@@ -2698,6 +2704,9 @@ async def replace_k_profiles(
     incoming entry the backend resolves the printer's live ``cali_idx`` →
     find-or-create a ``filament_calibration`` cache row → create the link.
     """
+    if label_key is not None:
+        await _refuse_in_spoolman_mode(db)
+        await _guard_spool_label(db, spool_id, label_key)
     if not (await db.execute(select(Spool).where(Spool.id == spool_id))).scalar_one_or_none():
         raise HTTPException(404, "Spool not found")
 
@@ -3016,10 +3025,7 @@ async def _assign_spool(
 
     # 1. Validate spool exists and is not archived
     if data.label_key is not None:
-        try:
-            await lock_spool_for_label(db, data.spool_id, data.label_key)
-        except SpoolLabelChangedError:
-            raise _spool_label_changed() from None
+        await _guard_spool_label(db, data.spool_id, data.label_key)
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == data.spool_id))
     spool = result.scalar_one_or_none()
     if not spool:
@@ -3328,6 +3334,8 @@ async def unassign_spool(
     tray_id: int,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+    spool_id: Annotated[int | None, Query(gt=0)] = None,
+    label_key: Annotated[str | None, Query(pattern=LABEL_KEY_PATTERN)] = None,
 ):
     """Unassign a spool from an AMS slot."""
     from backend.app.main import _get_ams_assignment_lock
@@ -3338,6 +3346,10 @@ async def unassign_spool(
     # (or the callback lost its pass's other unlinks). Nothing was written yet, so nothing is held while
     # this waits.
     async with _get_ams_assignment_lock(printer_id):
+        if label_key is not None:
+            if spool_id is None:
+                raise _spool_label_changed()
+            await _guard_spool_label(db, spool_id, label_key)
         result = await db.execute(
             select(SpoolAssignment)
             .where(
@@ -3348,6 +3360,8 @@ async def unassign_spool(
             .execution_options(populate_existing=True)
         )
         assignment = result.scalar_one_or_none()
+        if label_key is not None and (assignment is None or assignment.spool_id != spool_id):
+            raise _spool_label_changed()
         if not assignment:
             raise HTTPException(404, "Assignment not found")
 

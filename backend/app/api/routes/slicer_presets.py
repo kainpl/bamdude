@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import time
+from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
@@ -81,9 +82,17 @@ _bundled_cache: tuple[float, dict[str, list[UnifiedPreset]]] | None = None
 # presets quickly" against "a busy install doesn't hit the cloud once per
 # modal open per user".
 _CLOUD_TTL_S = 300.0
-_cloud_cache: dict[tuple[int, str], tuple[float, dict[str, list[UnifiedPreset]]]] = {}
 
-# Same shape for Orca Cloud — keyed on (user_id, access_token-fingerprint).
+
+@dataclass(frozen=True)
+class _BambuCloudPresetListing:
+    slots: dict[str, list[UnifiedPreset]]
+    public_ids: dict[str, set[str]]
+
+
+_cloud_cache: dict[tuple[int, str], tuple[float, _BambuCloudPresetListing]] = {}
+
+# Orca Cloud also keys the picker cache on (user_id, access_token-fingerprint).
 _orca_cloud_cache: dict[tuple[int, str], tuple[float, dict[str, list[UnifiedPreset]]]] = {}
 
 
@@ -110,14 +119,21 @@ async def is_stock_bambu_process(db: AsyncSession, user: User | None, ref: Prese
         return True
     if ref.source != "cloud":
         return False
-    slots, status = await _fetch_cloud_presets(db, user, renew=False)
-    return status == "ok" and any(preset.id == ref.id and preset.stock_cloud for preset in slots["process"])
+    listing, _ = await _load_bambu_cloud_listing(db, user, renew=False)
+    return listing is not None and ref.id in listing.public_ids["process"]
 
 
 async def _fetch_cloud_presets(
-    db: AsyncSession, user: User | None, *, refresh: bool = False, renew: bool = True
+    db: AsyncSession, user: User | None, *, refresh: bool = False
 ) -> tuple[dict[str, list[UnifiedPreset]], str]:
-    """Return ``(slots, cloud_status)``. Slots are empty when ``cloud_status != 'ok'``.
+    listing, status = await _load_bambu_cloud_listing(db, user, refresh=refresh)
+    return (listing.slots if listing is not None else _empty_slots()), status
+
+
+async def _load_bambu_cloud_listing(
+    db: AsyncSession, user: User | None, *, refresh: bool = False, renew: bool = True
+) -> tuple[_BambuCloudPresetListing | None, str]:
+    """Load the deduplicated picker and the authoritative public IDs together.
 
     Defence-in-depth: even if a stored ``cloud_token`` survived a permission
     revocation (admin reset, legacy state), users without ``CLOUD_AUTH`` are
@@ -132,11 +148,11 @@ async def _fetch_cloud_presets(
     benefit (#1581).
     """
     if user is not None and not user.has_permission(Permission.CLOUD_AUTH.value):
-        return _empty_slots(), "not_authenticated"
+        return None, "not_authenticated"
 
     token, _email, region = await get_stored_token(db, user)
     if not token:
-        return _empty_slots(), "not_authenticated"
+        return None, "not_authenticated"
 
     user_key = user.id if user is not None else 0
     cache_key = (user_key, _token_fingerprint(token))
@@ -167,15 +183,16 @@ async def _fetch_cloud_presets(
         try:
             raw = await cloud.get_slicer_settings()
         except BambuCloudAuthError:
-            return _empty_slots(), "expired"
+            return None, "expired"
         except BambuCloudError as e:
             logger.warning("Cloud preset fetch failed for user %s: %s", user_key, e)
-            return _empty_slots(), "unreachable"
+            return None, "unreachable"
         except Exception as e:  # noqa: BLE001 — defensive: never crash the modal
             logger.warning("Cloud preset fetch unexpected error for user %s: %s", user_key, e)
-            return _empty_slots(), "unreachable"
+            return None, "unreachable"
 
         slots = _empty_slots()
+        public_ids: dict[str, set[str]] = {}
         for cloud_type, slot in _CLOUD_TYPE_TO_SLOT.items():
             type_data = raw.get(cloud_type, {})
             # The cloud splits presets into "private" (the user's own) and
@@ -187,6 +204,9 @@ async def _fetch_cloud_presets(
             seen_names: set[str] = set()
             private = type_data.get("private", [])
             public = type_data.get("public", [])
+            public_ids[slot] = {
+                str(setting_id) for entry in public if (setting_id := entry.get("setting_id") or entry.get("id"))
+            }
             # A private printer preset's parent, from the list itself: never a
             # detail request per preset (rate-limited, see below).
             names_by_id = (
@@ -204,7 +224,7 @@ async def _fetch_cloud_presets(
                 if not name or not setting_id or name in seen_names:
                     continue
                 seen_names.add(name)
-                preset = UnifiedPreset(id=setting_id, name=name, source="cloud", stock_cloud=index >= len(private))
+                preset = UnifiedPreset(id=setting_id, name=name, source="cloud")
                 if slot == "printer" and index < len(private):
                     preset.inherits = _saved_from(
                         name,
@@ -228,8 +248,9 @@ async def _fetch_cloud_presets(
         # filament_type/colour inherits those values from a same-named local /
         # orca_cloud / standard entry so it can still score for type/colour
         # matches in pickFilamentForSlot.
-        _cloud_cache[cache_key] = (now, slots)
-        return slots, "ok"
+        listing = _BambuCloudPresetListing(slots, public_ids)
+        _cloud_cache[cache_key] = (now, listing)
+        return listing, "ok"
     finally:
         await cloud.close()
 

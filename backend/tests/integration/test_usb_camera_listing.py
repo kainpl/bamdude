@@ -1,6 +1,7 @@
 """Discover only supported USB devices without blocking the HTTP loop."""
 
 import asyncio
+from pathlib import Path
 from threading import Event
 from unittest.mock import patch
 
@@ -63,7 +64,10 @@ async def test_usb_availability_checks_saved_nodes_without_exposing_sources(asyn
     missing = await printer_factory(**setup("/dev/video4"))
     foreign = await printer_factory(**setup("rtsp://private:password@private.example/live"))
     devices = [{"device": "/dev/video2", "name": "Camera"}]
-    with patch("backend.app.services.external_camera.list_usb_cameras", return_value=devices):
+    with (
+        patch("backend.app.services.external_camera.list_usb_cameras", return_value=devices),
+        patch("backend.app.services.external_camera.usb_device_nodes", return_value=[Path("/dev/video2")]),
+    ):
         response = await async_client.get("/api/v1/printers/usb-cameras", params={"include_configured": "true"})
         assert response.status_code == 200, response.text
         assert response.json() == {
@@ -78,3 +82,27 @@ async def test_usb_availability_checks_saved_nodes_without_exposing_sources(asyn
 
     assert scoped.status_code == 200, scoped.text
     assert scoped.json() == {"cameras": devices, "configured_devices_found": {str(missing.id): False}}
+
+
+async def test_present_odd_manual_device_is_not_missing_without_capability_probe(
+    async_client, printer_factory, tmp_path, monkeypatch
+):
+    (tmp_path / "video1").touch()
+    (tmp_path / "video2").touch()
+    found = await printer_factory(
+        external_camera_enabled=True, external_camera_type="usb", external_camera_url="/dev/video01"
+    )
+    missing = await printer_factory(
+        external_camera_enabled=True, external_camera_type="usb", external_camera_url="/dev/video3"
+    )
+    original_glob = Path.glob
+
+    def glob(path, pattern, *args, **kwargs):
+        return original_glob(tmp_path if path == Path("/dev") else path, pattern, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "glob", glob)
+    monkeypatch.setattr("backend.app.services.external_camera.shutil.which", lambda _: None)
+    response = await async_client.get("/api/v1/printers/usb-cameras", params={"include_configured": "true"})
+    assert response.status_code == 200, response.text
+    assert [camera["device"] for camera in response.json()["cameras"]] == ["/dev/video2"]
+    assert response.json()["configured_devices_found"] == {str(found.id): True, str(missing.id): False}

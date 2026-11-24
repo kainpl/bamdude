@@ -1311,8 +1311,11 @@ export function SettingsPage() {
   const updatePrinterMutation = useMutation({
     mutationFn: ({ id, data }: { id: number; data: Partial<{ secret_actions: Partial<Record<'external_camera_url' | 'external_camera_snapshot_url', 'keep' | 'clear' | 'replace'>>; external_camera_url: string | null; external_camera_type: string | null; external_camera_enabled: boolean; external_camera_snapshot_url: string | null; camera_rotation: number; camera_light_auto: CameraLightPolicy }> }) =>
       api.updatePrinter(id, data),
-    onSuccess: () => {
+    onSuccess: (_, { data }) => {
       void invalidatePrinterFleet(queryClient);
+      if ('external_camera_url' in data || 'external_camera_enabled' in data || 'external_camera_type' in data) {
+        void queryClient.invalidateQueries({ queryKey: ['usb-cameras'] });
+      }
       showToast(t('settings.toast.cameraSettingsSaved'), 'success');
     },
     onError: (error: Error) => {

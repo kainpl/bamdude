@@ -99,3 +99,18 @@ async def test_spool_label_survives_lot_change_and_rejects_replacement(db_sessio
     )
     assert assigned.status_code == 200, assigned.text
     assert assigned.json()["spool_id"] == spool_id
+
+    profiles_url = f"{url}/k-profiles"
+    slot_url = f"/api/v1/inventory/assignments/{printer.id}/0/0"
+    stale_profiles = await async_client.put(profiles_url, params=params, json=[])
+    stale_unassign = await async_client.delete(slot_url, params={**params, "spool_id": spool_id})
+    for response in (stale_profiles, stale_unassign):
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"]["error"] == "spool_label_changed"
+    assert (await async_client.get("/api/v1/inventory/assignments")).json()[0]["spool_id"] == spool_id
+
+    current_key = label_key(spool_id, replacement.label_identity)
+    assert (await async_client.put(profiles_url, params={"label_key": current_key}, json=[])).status_code == 200
+    released = await async_client.delete(slot_url, params={"label_key": current_key, "spool_id": spool_id})
+    assert released.status_code == 200, released.text
+    assert (await async_client.get("/api/v1/inventory/assignments")).json() == []

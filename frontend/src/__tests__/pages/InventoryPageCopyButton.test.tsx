@@ -231,3 +231,55 @@ describe('InventoryPage — copy button', () => {
     });
   });
 });
+
+
+describe('spool editor opened by a printed label', () => {
+  it.each(['stale', 'current', 'legacy'])('saves a spool from a %s label', async (label) => {
+    setupHandlers();
+    const versioned = label !== 'legacy';
+    const key = '1'.repeat(32);
+    const reads: Array<string | null> = [];
+    const writes: Array<string | null> = [];
+    const profileWrites: Array<string | null> = [];
+    let lot = label === 'stale' ? 30 : 10;
+    server.use(
+      http.get('/api/v1/inventory/spools/5', ({ request }) => {
+        reads.push(new URL(request.url).searchParams.get('label_key'));
+        return HttpResponse.json({ ...MOCK_SPOOL, lot: 10 });
+      }),
+      http.patch('/api/v1/inventory/spools/5', async ({ request }) => {
+        const proof = new URL(request.url).searchParams.get('label_key');
+        writes.push(proof);
+        if (label === 'stale' && proof === key) {
+          return HttpResponse.json({
+            detail: { error: 'spool_label_changed', message: 'This label no longer matches an active spool.' },
+          }, { status: 409 });
+        }
+        lot = (await request.json() as { lot: number }).lot;
+        return HttpResponse.json({ ...MOCK_SPOOL, lot });
+      }),
+      http.put('/api/v1/inventory/spools/5/k-profiles', ({ request }) => {
+        profileWrites.push(new URL(request.url).searchParams.get('label_key'));
+        return HttpResponse.json([]);
+      }),
+    );
+    window.history.replaceState({}, '', '/inventory?spool=5' + (versioned ? '&src=local&v=2&key=' + key : ''));
+    try {
+      render(<InventoryPageRouter />);
+      const save = await screen.findByRole('button', { name: /^save$/i });
+      expect(reads[0]).toBe(versioned ? key : null);
+      fireEvent.click(save);
+      await waitFor(() => expect(writes).toEqual([versioned ? key : null]));
+      if (label === 'stale') {
+        expect(await screen.findByText('This label no longer matches an active spool.')).toBeInTheDocument();
+        expect(lot).toBe(30);
+        expect(profileWrites).toEqual([]);
+        expect(save).toBeInTheDocument();
+      } else {
+        await waitFor(() => expect(profileWrites).toEqual([versioned ? key : null]));
+      }
+    } finally {
+      window.history.replaceState({}, '', '/inventory');
+    }
+  });
+});

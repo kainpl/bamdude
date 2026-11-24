@@ -13945,8 +13945,8 @@ export const api = {
     }),
   getSpoolKProfiles: (spoolId: number) =>
     request<SpoolKProfile[]>(`/inventory/spools/${spoolId}/k-profiles`),
-  saveSpoolKProfiles: (spoolId: number, profiles: SpoolKProfileInput[]) =>
-    request<SpoolKProfile[]>(`/inventory/spools/${spoolId}/k-profiles`, {
+  saveSpoolKProfiles: (spoolId: number, profiles: SpoolKProfileInput[], labelKey?: string) =>
+    request<SpoolKProfile[]>(`/inventory/spools/${spoolId}/k-profiles${labelKey ? `?label_key=${encodeURIComponent(labelKey)}` : ''}`, {
       method: 'PUT',
       body: JSON.stringify(profiles),
     }),
@@ -14108,8 +14108,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  unassignSpool: (printerId: number, amsId: number, trayId: number) =>
-    request<{ status: string }>(`/inventory/assignments/${printerId}/${amsId}/${trayId}`, { method: 'DELETE' }),
+  unassignSpool: (printerId: number, amsId: number, trayId: number, identity?: { spoolId: number; labelKey: string }) => {
+    const query = identity ? `?spool_id=${identity.spoolId}&label_key=${encodeURIComponent(identity.labelKey)}` : '';
+    return request<{ status: string }>(`/inventory/assignments/${printerId}/${amsId}/${trayId}${query}`, { method: 'DELETE' });
+  },
   getSpoolCatalog: () =>
     request<SpoolCatalogEntry[]>('/inventory/catalog'),
   addCatalogEntry: (data: { name: string; weight: number }) =>

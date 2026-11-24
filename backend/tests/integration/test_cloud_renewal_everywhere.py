@@ -13,6 +13,8 @@ Bambu Cloud is replaced below the HTTP client with hand-built answers.
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 from sqlalchemy import select
@@ -291,19 +293,30 @@ async def test_stock_process_classification_uses_cloud_public_list_and_same_cach
     async_client, db_session, bambu, monkeypatch
 ):
     from backend.app.schemas.slicer import PresetRef
+    from backend.app.services.preset_resolver import resolve_preset_ref
 
     monkeypatch.setattr(slicer_presets, "_cloud_cache", {})
     user = await _sign_in(db_session)
+    name = "0.20mm Standard"
     listing = {
         "print": {
-            "public": [{"setting_id": "public", "name": "Stock Process"}],
-            "private": [{"setting_id": "private", "name": "Own Process"}],
+            "public": [{"setting_id": "public", "name": name}],
+            "private": [{"setting_id": "private", "name": name}],
         },
+        "filament": {"public": [{"setting_id": "filament-only", "name": "Stock PLA"}]},
     }
-    fake = bambu({("GET", SETTINGS): (200, listing)})
-    assert await slicer_presets.is_stock_bambu_process(db_session, user, PresetRef(source="cloud", id="public"))
+    detail = "/v1/iot-service/api/slicer/setting/public"
+    fake = bambu({("GET", SETTINGS): (200, listing), ("GET", detail): (200, {"setting": {"name": name}})})
+    public = PresetRef(source="cloud", id="public")
+    assert json.loads(await resolve_preset_ref(db_session, user, public, "process"))["name"] == name
+    slots, status = await slicer_presets._fetch_cloud_presets(db_session, user)
+    assert status == "ok"
+    assert [preset.id for preset in slots["process"]] == ["private"]
+    assert await slicer_presets.is_stock_bambu_process(db_session, user, public)
     assert not await slicer_presets.is_stock_bambu_process(db_session, user, PresetRef(source="cloud", id="private"))
-    assert not await slicer_presets.is_stock_bambu_process(db_session, user, PresetRef(source="cloud", id="unknown"))
+    assert not await slicer_presets.is_stock_bambu_process(
+        db_session, user, PresetRef(source="cloud", id="filament-only")
+    )
     assert fake.count("GET", SETTINGS) == 1
 
 

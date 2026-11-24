@@ -40,6 +40,7 @@ interface SpoolFormModalProps {
   isOpen: boolean;
   onClose: () => void;
   spool?: InventorySpool | null;
+  labelKey?: string;
   /** 'create' = empty form, 'edit' = mutate the given spool, 'copy' =
    *  pre-fill from the given spool but POST a new row (serial / RFID tag
    *  cleared, weight_used reset to 0). Defaults to 'edit' when a spool is
@@ -58,6 +59,7 @@ export function SpoolFormModal({
   isOpen,
   onClose,
   spool,
+  labelKey,
   mode,
   printersWithCalibrations = [],
   currencySymbol,
@@ -598,7 +600,7 @@ export function SpoolFormModal({
     mutationFn: (data: Record<string, unknown>) =>
       spoolmanMode
         ? api.updateSpoolmanInventorySpool(spool!.id, data as Parameters<typeof api.updateSpoolmanInventorySpool>[1])
-        : api.updateSpool(spool!.id, data as Parameters<typeof api.updateSpool>[1]),
+        : api.updateSpool(spool!.id, data as Parameters<typeof api.updateSpool>[1], labelKey),
     onSuccess: async () => {
       if (spool?.id) {
         const ok = await saveKProfiles(spool.id);
@@ -625,7 +627,7 @@ export function SpoolFormModal({
       if (spoolmanMode) {
         return api.updateSpoolmanInventorySpool(spool!.id, CLEAR_TAG_PAYLOAD as Parameters<typeof api.updateSpoolmanInventorySpool>[1]);
       }
-      return api.updateSpool(spool!.id, CLEAR_TAG_PAYLOAD as Parameters<typeof api.updateSpool>[1]);
+      return api.updateSpool(spool!.id, CLEAR_TAG_PAYLOAD as Parameters<typeof api.updateSpool>[1], labelKey);
     },
     onSuccess: async () => {
       await refreshSpoolQueries();
@@ -694,7 +696,10 @@ export function SpoolFormModal({
         await api.unassignSpoolmanSlot(spool.id);
         return;
       }
-      await api.unassignSpool(spoolAssignment.printer_id, spoolAssignment.ams_id, spoolAssignment.tray_id);
+      await api.unassignSpool(
+        spoolAssignment.printer_id, spoolAssignment.ams_id, spoolAssignment.tray_id,
+        labelKey && spool ? { spoolId: spool.id, labelKey } : undefined,
+      );
     },
     onSuccess: async () => {
       if (spoolmanMode) {
@@ -713,7 +718,9 @@ export function SpoolFormModal({
 
   // Save K-profiles for selected calibrations. Returns false if any error occurred.
   const saveKProfiles = async (spoolId: number): Promise<boolean> => {
-    const saveApi = spoolmanMode ? api.saveSpoolmanKProfiles : api.saveSpoolKProfiles;
+    const saveApi = (id: number, profiles: SpoolKProfileInput[]) => spoolmanMode
+      ? api.saveSpoolmanKProfiles(id, profiles)
+      : api.saveSpoolKProfiles(id, profiles, isEditing ? labelKey : undefined);
 
     if (selectedProfiles.size === 0) {
       try {
@@ -1195,6 +1202,7 @@ export function SpoolFormModal({
             id: spool.id,
             displayName: formatSpoolDisplayName(spool, uiPreferences?.spool_display_template),
             source: spoolmanMode ? 'spoolman' : 'inventory',
+            labelKey,
           }}
           spoolmanMode={spoolmanMode}
           onClose={() => setShowAssignToSlot(false)}

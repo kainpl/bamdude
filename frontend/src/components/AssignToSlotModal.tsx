@@ -24,7 +24,7 @@ import { DEFAULT_SPOOL_DISPLAY_TEMPLATE, formatSpoolDisplayName } from '../utils
  */
 
 interface AssignToSlotModalProps {
-  spool: { id: number; displayName: string; source: 'inventory' | 'spoolman' };
+  spool: { id: number; displayName: string; source: 'inventory' | 'spoolman'; labelKey?: string };
   spoolmanMode: boolean;
   onClose: () => void;
   /** After the assignment went through. */

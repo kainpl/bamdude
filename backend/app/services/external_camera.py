@@ -98,20 +98,21 @@ def _safe_usb_device_path(device: str) -> Path | None:
     return Path(f"/dev/video{int(match.group(1))}")
 
 
-def list_usb_cameras(dev_dir: Path = Path("/dev")) -> list[dict]:
-    """List available USB cameras (V4L2 devices on Linux).
-
-    This calls v4l2-ctl synchronously. Async callers run it off the event loop.
-    """
-    cameras = []
+def usb_device_nodes(dev_dir: Path = Path("/dev")) -> list[Path]:
+    """Enumerate canonical V4L2 nodes without probing their capture support."""
     video_devices: list[Path] = []
     for entry in dev_dir.glob("video*"):
         device = _safe_usb_device_path(f"/dev/{entry.name}")
         if device and device.name == entry.name:
             video_devices.append(device)
+    return video_devices
 
+
+def list_usb_cameras(dev_dir: Path = Path("/dev")) -> list[dict]:
+    """List available USB cameras. Async callers run the V4L2 probe off the event loop."""
+    cameras = []
     v4l2_ctl = shutil.which("v4l2-ctl")
-    for device in sorted(video_devices, key=lambda path: int(path.name.removeprefix("video"))):
+    for device in sorted(usb_device_nodes(dev_dir), key=lambda path: int(path.name.removeprefix("video"))):
         device_path = device.as_posix()
         info = {"device": device_path, "name": device.name, "capabilities": []}
 

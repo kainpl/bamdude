@@ -823,7 +823,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
   const canViewForecast =
     !authLoading && spoolmanModeReady && hasPermission('inventory:forecast_read');
   const [searchParams, setSearchParams] = useSearchParams();
-  const [formModal, setFormModal] = useState<{ spool?: InventorySpool | null; mode: SpoolFormMode } | null>(null);
+  const [formModal, setFormModal] = useState<{ spool?: InventorySpool | null; mode: SpoolFormMode; labelKey?: string } | null>(null);
   const deepLinkHandled = useRef(false);
   const [confirmAction, setConfirmAction] = useState<
     | { type: 'delete' | 'archive' | 'reset-consumed-counter'; spoolId: number }
@@ -1297,7 +1297,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
     // Case 2: spool was fetched individually
     if (deepLinkSpool && (!isVersionedSpoolLink || (!deepLinkFetching && !deepLinkFetchFailed))) {
       clearDeepLinkParam();
-      setFormModal({ spool: deepLinkSpool, mode: 'edit' });
+      setFormModal({ spool: deepLinkSpool, mode: 'edit', labelKey: versionedSpoolLabel?.key });
       return;
     }
 
@@ -1314,6 +1314,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
     deepLinkSpoolId,
     deepLinkInList,
     deepLinkSpool,
+    versionedSpoolLabel?.key,
     isVersionedSpoolLink,
     deepLinkFetching,
     deepLinkFetchFailed,
@@ -3286,6 +3287,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
           onClose={() => setFormModal(null)}
           spool={formModal.spool}
           mode={formModal.mode}
+          labelKey={formModal.labelKey}
           currencySymbol={currencySymbol}
           spoolmanMode={spoolmanMode}
           spoolsQueryKey={spoolsQueryKey}

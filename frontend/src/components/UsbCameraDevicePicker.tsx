@@ -35,8 +35,9 @@ export function UsbCameraDevicePicker({
   // while a printer type change and an unsaved URL draft overlap.
   const device = devicePath(value);
   const manualDevice = devicePath(draft);
-  const found = device ? devices.some((item) => item.device === device) : listing?.configured_devices_found?.[printerId];
-  const showMissing = !!listing && !isFetching && !isError && found === false;
+  const detected = devices.some((item) => item.device === device);
+  const found = listing?.configured_devices_found?.[printerId];
+  const showMissing = stored && !isFetching && !isError && found === false;
 
   return (
     <div className="space-y-2">
@@ -48,7 +49,7 @@ export function UsbCameraDevicePicker({
           id={selectId}
           tone="raised"
           className="min-w-0 flex-1"
-          value={device && found ? device : ''}
+          value={device && detected ? device : ''}
           onChange={(event) => onSelect(event.target.value)}
         >
           <option value="" disabled>

@@ -24,6 +24,18 @@ describe('USB camera devices', () => {
     expect(onRefresh).toHaveBeenCalledOnce();
   });
 
+  it('uses the saved-path presence even when capture discovery omits a manual node', () => {
+    const props = {
+      printerName: 'P1S', printerId: 3, stored: true, value: '/dev/video1',
+      isFetching: false, isError: false, onSelect: vi.fn(), onRefresh: vi.fn(),
+    };
+    const present = { ...listing, configured_devices_found: { 3: true } };
+    const { rerender } = render(<UsbCameraDevicePicker {...props} listing={present} />);
+    expect(screen.queryByText('The configured USB device was not found.')).not.toBeInTheDocument();
+    rerender(<UsbCameraDevicePicker {...props} listing={listing} />);
+    expect(screen.getByText('The configured USB device was not found.')).toBeInTheDocument();
+  });
+
   it('shows a manual fallback even when discovery fails and applies only a completed V4L2 path', () => {
     const onSelect = vi.fn();
     render(<UsbCameraDevicePicker
