@@ -334,6 +334,8 @@ The configuration editor preserves the quantities and descriptions of other save
 
 ### Fixed
 
+- **Bambu Support filaments on X2D.** Print routing recognizes Support for ABS (GFS06) when the printer reports ABS, while keeping ordinary ABS distinct. The mapping dialog shows the checked material and profile for the selected slot, including Ext-R, and explains refusals from the server's routing check.
+
 - A SWAP job keeps its queue claim when its start goes unacknowledged, so late telemetry can still resolve that execution. Info and the print-state API can settle an old detached SWAP instruction after the operator verifies the plate, then release the finished context.
 
 - **Printer presets prioritize the farm model and nozzle.** If the selected source has no matching profile, the picker offers matching profiles from other sources and explains why. The current selection stays available. The farm-model filter matches configured models exactly. Filament lists keep the loaded-filament filter whenever a matching profile is available after relaxing the source filter.

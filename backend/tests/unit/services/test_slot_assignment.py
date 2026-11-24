@@ -97,6 +97,7 @@ async def test_custom_family_k_profiles_are_matchable(db_session):
         ("GFS05", "PLA", "PLA-S"),
         ("GFS04", "PVA", "PVA"),
         ("GFS06", "ABS", "ABS"),
+        ("GFS06", "ABS-S", "ABS"),
         ("GFA00", "PLA", "PLA"),
     ],
 )

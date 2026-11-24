@@ -1,4 +1,4 @@
-import type { PrinterRoutingPreview, RoutingPreview } from '../../api/client';
+import type { PrinterRoutingChannel, PrinterRoutingPreview, RoutingPreview } from '../../api/client';
 
 /** Backend assignment verdict, shared by the button and silent submission. */
 export type FeasibilityState = 'unknown' | 'no_target' | 'blocked_now' | 'blocked_target' | 'ok';
@@ -39,6 +39,13 @@ export interface FeasibilityVerdict {
 export const FEASIBLE: FeasibilityVerdict = { state: 'ok' };
 /** Not a refusal, but not permission to print either. Queuing requires explicit consent. */
 export const UNKNOWN: FeasibilityVerdict = { state: 'unknown' };
+
+export function checkedSlotStatus(channel: PrinterRoutingChannel) {
+  const selected = channel.sources.find(source => source.source_id === channel.selected_source_id);
+  if (selected?.status === 'compatible') return selected.color_matches ? 'match' : 'type_only';
+  if (selected?.status === 'incompatible') return 'mismatch';
+  return !selected && channel.status === 'incompatible' ? 'mismatch' : 'unverified';
+}
 
 /** The full backend assignment is authoritative; a populated UI array is not. */
 export function targetFeasibility(target: PrinterRoutingPreview['targets'][number] | undefined): FeasibilityVerdict {

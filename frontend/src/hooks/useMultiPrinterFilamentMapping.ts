@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { api } from '../api/client';
-import type { PrinterStatus, Printer } from '../api/client';
+import type { PrinterStatus, Printer, PrinterRoutingChannel } from '../api/client';
 import {
   buildLoadedFilaments,
   buildFilamentComparison,
@@ -48,6 +48,8 @@ export interface PrinterMappingResult {
   matchStatus: PrinterMatchStatus;
   /** Authoritative full-assignment refusal, when supplied by the dialog. */
   routingReason?: string;
+  routingChannels?: PrinterRoutingChannel[];
+  routingDualNozzle?: boolean;
   /** Number of slots with exact match (type + color) */
   exactMatches: number;
   /** Number of slots with type-only match */

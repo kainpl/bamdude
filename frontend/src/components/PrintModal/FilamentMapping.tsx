@@ -12,6 +12,8 @@ import { autoAssignRackPositions, rackOptionsForGroup } from '../../utils/nozzle
 import { Select } from '../Select';
 import { SlotPicker, type SlotOption } from './SlotPicker';
 import { useFilamentLabels } from './useFilamentLabels';
+import { RoutingChannelDetails } from './RoutingChannelDetails';
+import { checkedSlotStatus } from './feasibility';
 import type { FilamentMappingProps, RackGroupInfo } from './types';
 
 /**
@@ -32,6 +34,8 @@ export function FilamentMapping({
   plateLabel,
   resolvedMapping,
   routingReason,
+  routingChannels,
+  routingDualNozzle = false,
   nozzleRackChoice,
   onNozzleRackChoiceChange,
 }: FilamentMappingProps & { defaultExpanded?: boolean }) {
@@ -53,6 +57,15 @@ export function FilamentMapping({
   // old panel still painted it yellow, which made the checkbox look inert even
   // though dispatch would subsequently reject that selection.
   const filamentComparison = useMemo(() => {
+    if (routingChannels) return rawFilamentComparison.map(item => {
+      const channel = routingChannels.find(row => row.slot_id === item.slot_id);
+      const loaded = channel
+        ? loadedFilaments.find(source => source.globalTrayId === channel.selected_source_id)
+        : item.loaded;
+      const status = channel ? checkedSlotStatus(channel) : 'unverified';
+      return { ...item, loaded, hasFilament: !!loaded,
+        typeMatch: status === 'match' || status === 'type_only', colorMatch: status === 'match', status };
+    });
     const comparison = Array.isArray(resolvedMapping) ? rawFilamentComparison.map(item => {
       const loaded = loadedFilaments.find(source => source.globalTrayId === resolvedMapping[item.slot_id - 1]);
       const typeMatch = !!loaded && filamentRequirementMatches(item, loaded);
@@ -63,11 +76,12 @@ export function FilamentMapping({
     return requireExactColor
       ? comparison.map(item => item.status === 'type_only' ? { ...item, status: 'mismatch' as const } : item)
       : comparison;
-  }, [requireExactColor, rawFilamentComparison, resolvedMapping, loadedFilaments]);
+  }, [requireExactColor, rawFilamentComparison, resolvedMapping, loadedFilaments, routingChannels]);
   const profileMismatch = rawFilamentComparison.some(item => !item.typeMatch &&
     loadedFilaments.some(source => filamentTypesCompatible(source.type, item.type)) &&
     !loadedFilaments.some(source => filamentRequirementMatches(item, source)));
-  const hasTypeMismatch = Array.isArray(resolvedMapping)
+  const hasTypeMismatch = routingChannels ? filamentComparison.some(item => item.status === 'mismatch')
+    : Array.isArray(resolvedMapping)
     ? filamentComparison.some(item => !item.hasFilament || !item.typeMatch || (requireExactColor && !item.colorMatch))
     : rawTypeMismatch || (requireExactColor && rawColorMismatch);
   const hasColorMismatch = !requireExactColor && filamentComparison.some(item => item.typeMatch && !item.colorMatch);
@@ -302,6 +316,7 @@ export function FilamentMapping({
             // Per-slot strict colour is part of the routing policy, not a pin.
             // Show its control only when the caller can persist that choice.
             const slotId = item.slot_id ?? 0;
+            const channel = routingChannels?.find(row => row.slot_id === slotId);
             const canForceMatch = slotId > 0 && onForceColorMatchChange != null;
             // #1718: sub-brand + colour resolution via the shared hook.
             // Indexing is safe because ``useFilamentLabels`` mirrors the input
@@ -392,7 +407,7 @@ export function FilamentMapping({
                 {/* Slot picker: every slot with a swatch of what is in it. */}
                 <div className="min-w-0 max-sm:col-span-3 max-sm:row-start-2">
                 <SlotPicker
-                  value={item.loaded?.globalTrayId ?? null}
+                  value={channel ? channel.selected_source_id : item.loaded?.globalTrayId ?? null}
                   onChange={(value) => handleSlotChange(slotId, value == null ? '' : String(value))}
                   placeholder={t('printModal.selectSlot')}
                   ariaLabel={t('printModal.slotFor', { filament: resolvedName })}
@@ -402,6 +417,8 @@ export function FilamentMapping({
                       ? 'border-bambu-green/50 text-bambu-green'
                       : item.status === 'type_only'
                       ? 'border-yellow-500 dark:border-yellow-400/50 text-yellow-700 dark:text-yellow-400'
+                      : item.status === 'unverified'
+                      ? 'border-bambu-gray/30 text-bambu-gray'
                       : 'border-orange-500 dark:border-orange-400/50 text-orange-700 dark:text-orange-400'
                   } ${item.isManual ? 'ring-1 ring-blue-400/50' : ''}`}
                   title={item.isManual ? t('printModal.manuallySelected') : t('printModal.autoMatched')}
@@ -445,6 +462,7 @@ export function FilamentMapping({
                       // spool, not from what the printer was told. The mark is
                       // what the row's own status compares (type and colour).
                       const bound = slotSwatches.get(f.globalTrayId);
+                      const checked = channel?.sources.find(source => source.source_id === f.globalTrayId);
                       return {
                         value: f.globalTrayId,
                         slot: f.label,
@@ -454,7 +472,9 @@ export function FilamentMapping({
                         effectType: bound?.effectType,
                         subtype: bound?.subtype,
                         detail: `${remainingLabel}${ftsBadge}`,
-                        exact: filamentRequirementMatches(item, f) && filamentColorMatches(item, f),
+                        exact: routingChannels
+                          ? checked?.status === 'compatible' && checked.color_matches
+                          : filamentRequirementMatches(item, f) && filamentColorMatches(item, f),
                         disabled: ftsInstalled && f.isExternal,
                         disabledReason: t('filamentRouting.feasibility.reason.fts_external_unsupported'),
                       };
@@ -478,12 +498,17 @@ export function FilamentMapping({
                   >
                     <AlertTriangle className="w-3 h-3 text-yellow-600 dark:text-yellow-400" />
                   </span>
+                ) : item.status === 'unverified' ? (
+                  <span className="max-sm:col-start-3 max-sm:row-start-1" title={t('filamentRouting.channelUnverified')}>
+                    <Circle className="w-3 h-3 text-bambu-gray" />
+                  </span>
                 ) : (
                   <span className="max-sm:col-start-3 max-sm:row-start-1" title={routingReason || t(profileMismatch ? 'filamentRouting.feasibility.reason.variant_mismatch' : requireExactColor && rawColorMismatch ? 'printModal.filamentColorMismatch' : 'printModal.filamentTypeNotLoaded')}>
                     <AlertTriangle className="w-3 h-3 text-orange-600 dark:text-orange-400" />
                   </span>
                 )}
               </div>
+              {channel && <RoutingChannelDetails channel={channel} dualNozzle={routingDualNozzle} />}
               {/* Force Color Match checkbox. */}
               {canForceMatch && (
                 <label className="inline-flex items-center gap-1.5 text-xs text-bambu-gray cursor-pointer select-none pl-5">

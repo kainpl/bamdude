@@ -3889,9 +3889,15 @@ class BambuMQTTClient:
                     # Fix: single-nozzle printers (X1C, P1S, A1) report their single
                     # external slot with id=255 in vir_slot, but tray_now=254 when active.
                     # Remap id=255→254 for single-slot printers so active detection works.
-                    # Dual-nozzle (H2D) has 2 slots: id=254 (Ext-L) and id=255 (Ext-R).
-                    if len(vir_slot) == 1 and str(vir_slot[0].get("id", "")) == "255":
-                        vir_slot[0]["id"] = "254"
+                    # A dual-nozzle report can contain just Ext-R: the slot
+                    # count in a delta cannot tell us which machine sent it.
+                    if (
+                        len(vir_slot) == 1
+                        and isinstance(vir_slot[0], dict)
+                        and str(vir_slot[0].get("id", "")) == "255"
+                        and not (self._is_dual_nozzle or is_dual_nozzle_model(self.model))
+                    ):
+                        vir_slot = [{**vir_slot[0], "id": "254"}]
                     self.state.raw_data["vt_tray"] = _merge_vt_tray(self.state.raw_data.get("vt_tray"), vir_slot)
 
             # Handle vt_tray (virtual tray / external spool) data

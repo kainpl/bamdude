@@ -1113,6 +1113,7 @@ export interface AMSTray {
   id: number;
   tray_color: string | null;
   tray_type: string | null;
+  routing_type?: string | null;
   tray_sub_brands: string | null;  // Full name like "PLA Basic", "PETG HF"
   tray_id_name: string | null;  // Bambu filament ID like "A00-Y2" (can decode to color)
   tray_info_idx: string | null;  // Filament preset ID like "GFA00" - maps to cloud setting_id
@@ -7858,6 +7859,26 @@ export interface PrinterRoutingTarget {
   manual_mapping: boolean;
   remap_filament?: boolean;
 }
+export interface PrinterRoutingSourceCheck {
+  source_id: number;
+  kind: 'ams' | 'external';
+  material: string;
+  reported_material: string | null;
+  profile: string | null;
+  status: 'compatible' | 'incompatible' | 'unknown';
+  color_matches: boolean;
+  reason: { code: string; message: string } | null;
+}
+export interface PrinterRoutingChannel {
+  slot_id: number;
+  material: string;
+  profile: string | null;
+  selected_source_id: number | null;
+  status: 'compatible' | 'incompatible' | 'unknown' | null;
+  reason: { code: string; message: string } | null;
+  sources: PrinterRoutingSourceCheck[];
+  omitted_sources: number;
+}
 export interface PrinterRoutingPreview {
   targets: {
     printer_id: number;
@@ -7865,6 +7886,8 @@ export interface PrinterRoutingPreview {
     status: 'compatible' | 'incompatible' | 'unknown';
     mapping: number[] | null;
     reason: { code: string; message: string } | null;
+    channels?: PrinterRoutingChannel[];
+    dual_nozzle?: boolean;
   }[];
 }
 export interface RoutingPreview {

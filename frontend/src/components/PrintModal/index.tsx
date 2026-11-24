@@ -1682,11 +1682,14 @@ export function PrintModal({
     const preview = isMultiPlateSelection ? undefined : targetPreview(result.printerId, selectedPlate);
     if (!preview) return { ...result, routingReason: targetRoutingMessage(preview) };
     const finalMapping = preview.mapping ?? (isManualMapping(result.printerId, selectedPlate) ? result.finalMapping : undefined);
-    const exactMatches = preview.status === 'compatible' ? (routingFilamentReqs?.filaments ?? []).filter(req => {
+    const exactMatches = preview.status === 'compatible' ? (preview.channels?.filter(channel =>
+      channel.sources.some(source => source.source_id === channel.selected_source_id && source.color_matches)
+    ).length ?? (routingFilamentReqs?.filaments ?? []).filter(req => {
       const source = result.loadedFilaments.find(f => f.globalTrayId === finalMapping?.[req.slot_id - 1]);
       return source && filamentColorMatches(req, source);
-    }).length : 0;
+    }).length) : 0;
     return { ...result, finalMapping, exactMatches, routingReason: targetRoutingMessage(preview),
+      routingChannels: preview.channels, routingDualNozzle: preview.dual_nozzle,
       matchStatus: preview.status !== 'compatible' ? 'missing' as const
         : exactMatches === result.totalSlots ? 'full' as const : 'partial' as const };
   });
@@ -3178,6 +3181,8 @@ export function PrintModal({
                 manualMappings={manualMappings}
                 resolvedMapping={targetPreview(effectivePrinterId!, selectedPlate)?.mapping}
                 routingReason={targetRoutingMessage(targetPreview(effectivePrinterId!, selectedPlate))}
+                routingChannels={targetPreview(effectivePrinterId!, selectedPlate)?.channels}
+                routingDualNozzle={targetPreview(effectivePrinterId!, selectedPlate)?.dual_nozzle}
                 onManualMappingChange={(mappings) => { setMappingReviewed(true); setManualMappings(mappings); }}
                 requireExactColor={autoModeOptions.force_color_match}
                 defaultExpanded={!!initialSelectedPrinterIds?.length || (settings?.per_printer_mapping_expanded ?? false)}
@@ -3203,6 +3208,8 @@ export function PrintModal({
                   manualMappings={manualMappingsByPlate[plateId] ?? {}}
                   resolvedMapping={targetPreview(effectivePrinterId!, plateId)?.mapping}
                   routingReason={targetRoutingMessage(targetPreview(effectivePrinterId!, plateId))}
+                  routingChannels={targetPreview(effectivePrinterId!, plateId)?.channels}
+                  routingDualNozzle={targetPreview(effectivePrinterId!, plateId)?.dual_nozzle}
                   onManualMappingChange={(mappings) => {
                     setMappingReviewed(true);
                     setManualMappingsByPlate((prev) => ({ ...prev, [plateId]: mappings }));
