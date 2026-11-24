@@ -328,3 +328,46 @@ def test_custom_wrap_keeps_complete_glyphs_at_each_vertical_alignment(align, val
         assert gap_after == 0
     else:
         assert gap_before == 0
+
+
+@pytest.mark.parametrize(
+    ("text", "words", "align", "width", "height"),
+    [
+        ("jungle green", ("jungle", "green"), "left", 10, 9),
+        ("puff reef", ("puff", "reef"), "right", 10, 9),
+        # "puff" fits by its advance alone. Its outline needs an ellipsis here.
+        ("puff", ("p…",), "center", 5.125, 3.5),
+    ],
+)
+def test_italic_wrap_keeps_complete_raster_glyphs(monkeypatch, text, words, align, width, height):
+    from backend.app.services.label_raster import RasterCanvas
+
+    x = y = 40
+    width_px, height_px = round(width * 8), round(height * 8)
+    reference = Image.new("1", (320, 240), 1)
+    draw = ImageDraw.Draw(reference)
+    original_text = ImageDraw.ImageDraw.text
+    lines = []
+
+    def capture(tile_draw, xy, text, *args, **kwargs):
+        lines.append(text)
+        original_text(draw, (xy[0] + x, xy[1] + y), text, *args, **kwargs)
+        return original_text(tile_draw, xy, text, *args, **kwargs)
+
+    canvas = RasterCanvas(40, 30, 8)
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", capture)
+    canvas.text(
+        text,
+        box_mm=(5, 5, width, height),
+        size_mm=3,
+        italic=True,
+        bold=False,
+        align=align,
+        valign="top",
+        fit="wrap",
+    )
+
+    assert lines == list(words)
+    actual = canvas.image_out()
+    assert actual.histogram()[0] == reference.histogram()[0]
+    assert actual.crop((x, y, x + width_px, y + height_px)).histogram()[0] == actual.histogram()[0]

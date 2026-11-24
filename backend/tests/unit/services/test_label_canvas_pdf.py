@@ -371,3 +371,34 @@ def test_wrap_ellipsizes_a_complete_line_when_second_line_cannot_fit():
     assert text.startswith("Magenta")
     assert text.endswith("…")
     assert "\n" not in text
+
+
+@pytest.mark.parametrize(
+    ("text", "words", "align", "width", "height"),
+    [
+        ("jungle green", ("jungle", "green"), "left", 10, 9),
+        ("puff reef", ("puff", "reef"), "right", 10, 9),
+        # "puff" fits by its advance alone. Its outline needs an ellipsis here.
+        ("puff", ("p…",), "center", 5.125, 3.5),
+    ],
+)
+def test_italic_wrap_keeps_complete_pdf_glyphs(monkeypatch, text, words, align, width, height):
+    from PIL import ImageChops
+    from pypdfium2 import PdfDocument
+    from reportlab.pdfgen.canvas import Canvas
+
+    spec = _spec(
+        _text(x_mm=5, y_mm=5, w_mm=width, h_mm=height, size_mm=3, content=text, italic=True, align=align, fit="wrap")
+    )
+    images = []
+    for clip in (True, False):
+        if not clip:
+            monkeypatch.setattr(Canvas, "clipPath", lambda *_args, **_kwargs: None)
+        data, warnings = render_template_pdf(spec, [{}])
+        assert not warnings
+        with PdfDocument(data) as document:
+            page = document[0]
+            assert page.get_textpage().get_text_range().splitlines() == list(words)
+            images.append(page.render(scale=8).to_pil().convert("L"))
+
+    assert ImageChops.difference(*images).getbbox() is None

@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 #: x, y, width, height — millimetres, from the top-left of the label.
 Box = tuple[float, float, float, float]
 
+#: Left, top, right and bottom relative to the text origin, in canvas units.
+TextBounds = tuple[float, float, float, float]
+
 
 def wrapped_text(
     text: str,
@@ -36,17 +39,21 @@ def wrapped_text(
     width: float,
     height: float,
     step: float,
-    measure: Callable[[str], float],
-    vertical_bounds: Callable[[str], tuple[float, float]],
+    bounds: Callable[[str], TextBounds],
 ) -> tuple[list[str], float, float]:
-    """Return complete lines and their vertical ink bounds relative to the first line."""
+    """Return complete lines and their vertical bounds relative to the first line."""
+
+    def measure(line: str) -> float:
+        left, _, right, _ = bounds(line)
+        return right - left
+
     for max_lines in (3, 2, 1):
         lines = _wrap_lines(text, width, max_lines, measure)
         if not lines:
             continue
-        bounds = [vertical_bounds(line) for line in lines]
-        top = min(top + index * step for index, (top, _) in enumerate(bounds))
-        bottom = max(bottom + index * step for index, (_, bottom) in enumerate(bounds))
+        line_bounds = [bounds(line) for line in lines]
+        top = min(top + index * step for index, (_, top, _, _) in enumerate(line_bounds))
+        bottom = max(bottom + index * step for index, (_, _, _, bottom) in enumerate(line_bounds))
         if bottom - top <= height:
             return lines, top, bottom
     return [], 0, 0

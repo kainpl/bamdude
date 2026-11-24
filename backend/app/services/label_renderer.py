@@ -45,6 +45,7 @@ import io
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from struct import unpack
 from typing import Literal
 
 import qrcode
@@ -57,8 +58,7 @@ from reportlab.pdfbase.pdfmetrics import stringWidth as c_stringWidth
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas as rl_canvas
 
-from backend.app.services.label_canvas import draw_template, wrapped_text
-from backend.app.services.label_raster_fonts import font_at
+from backend.app.services.label_canvas import TextBounds, draw_template, wrapped_text
 from backend.app.services.label_template import LabelSheetSpec, LabelTemplateSpec
 
 logger = logging.getLogger(__name__)
@@ -110,6 +110,34 @@ def _register_label_fonts() -> tuple[str, str, str]:
 
 
 _FONT_REGULAR, _FONT_BOLD, _FONT_ITALIC = _register_label_fonts()
+
+
+def _pdf_wrap_bounds(text: str, font_name: str, size: float, ascent: float, descent: float) -> TextBounds:
+    font = pdfmetrics.getFont(font_name)
+    if not isinstance(font, TTFont):
+        return 0, -ascent, c_stringWidth(text, font_name, size), -descent
+
+    # ReportLab places unshaped glyphs at the PDF advances. Read the bounds
+    # of those same TrueType outlines, including any italic overhang.
+    face = font.face
+    glyf_offset, _ = face.get_table_pos("glyf")
+    scale = size / face.unitsPerEm
+    padding = size / 1000  # Allow for rounding when the PDF is rasterized.
+    left = top = right = bottom = advance = 0.0
+    for char in text:
+        code = ord(char)
+        glyph = face.charToGlyph.get(code, 0)
+        pos, end = face.glyphPos[glyph : glyph + 2]
+        if pos < end:
+            # The four signed bounds follow the contour count in the glyph header.
+            x_min, y_min, x_max, y_max = unpack(">hhhh", face.get_chunk(glyf_offset + pos + 2, 8))
+            left = min(left, advance + x_min * scale - padding)
+            right = max(right, advance + x_max * scale + padding)
+            top = min(top, -y_max * scale - padding)
+            bottom = max(bottom, -y_min * scale + padding)
+        advance += face.charWidths.get(code, face.defaultWidth) * size / 1000
+    return left, top, max(right, advance), bottom
+
 
 TemplateName = Literal[
     "ams_holder_74x33",
@@ -646,25 +674,16 @@ class PdfCanvas:
         if fit == "wrap":
             ascent, descent = pdfmetrics.getAscentDescent(font, size)
             step = max(size * 1.15, ascent - descent)
-            # The embedded TTFs are also used by Pillow. Measure at high resolution
-            # relative to the baseline so the bounds scale to fractional PDF points.
-            metric_size = 1000
-            metric_font = font_at(metric_size, bold=font == _FONT_BOLD, italic=font == _FONT_ITALIC)
 
-            def vertical_bounds(line: str) -> tuple[float, float]:
-                if font not in _FONT_FILES:
-                    return -ascent, -descent
-                _, top, _, bottom = metric_font.getbbox(line, anchor="ls")
-                scale = size / metric_size
-                return (top - 1) * scale, (bottom + 1) * scale
+            def bounds(line: str) -> TextBounds:
+                return _pdf_wrap_bounds(line, font, size, ascent, descent)
 
             lines, ink_top, ink_bottom = wrapped_text(
                 text,
                 width=box_w,
                 height=box_h,
                 step=step,
-                measure=lambda line: c_stringWidth(line, font, size),
-                vertical_bounds=vertical_bounds,
+                bounds=bounds,
             )
         else:
             lines, step = [_truncate_to_width(self._c, text, font, size, box_w)], size
@@ -677,14 +696,19 @@ class PdfCanvas:
         y = bottom + box_h - offset + ink_top
         if fit == "wrap":
             self._c.saveState()
-            bounds = self._c.beginPath()
-            bounds.rect(left, bottom, box_w, box_h)
-            self._c.clipPath(bounds, stroke=0)
+            clip = self._c.beginPath()
+            clip.rect(left, bottom, box_w, box_h)
+            self._c.clipPath(clip, stroke=0)
         try:
             self._c.setFont(font, size)
             for line in lines:
-                width = c_stringWidth(line, font, size)
-                x = {"left": left, "center": left + (box_w - width) / 2, "right": left + box_w - width}.get(align, left)
+                if fit == "wrap":
+                    ink_left, _, ink_right, _ = bounds(line)
+                else:
+                    ink_left, ink_right = 0, c_stringWidth(line, font, size)
+                space = box_w - (ink_right - ink_left)
+                offset = {"center": space / 2, "right": space}.get(align, 0)
+                x = left + offset - ink_left
                 self._c.drawString(x, y, line)
                 y -= step
         finally:

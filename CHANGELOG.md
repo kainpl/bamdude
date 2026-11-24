@@ -325,8 +325,8 @@
 - **Long spool names can continue onto a second line.** Factory label layouts
   use spare space for the name while keeping the QR and spool number in place.
   The label editor offers Wrap for text boxes in PDF and thermal layouts.
-  Wrapping leaves room for descenders and adds an ellipsis to the last complete
-  line when the box runs out of space.
+  Wrapping leaves room for descenders and overhanging italic strokes. When space
+  runs out, the last complete line ends with an ellipsis.
 - **AMS slot cards open on the first tap and from the keyboard.** Tap the slot
   again, tap outside or press Escape to close it. On small screens the card
   scrolls when its actions need more room.
