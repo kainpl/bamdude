@@ -125,7 +125,45 @@ so a bare `up -d` starts nothing whatever compose files are in play.
 | `orca-slicer-api` | **3003** | BamDude's virtual-printer feature reserves 3000 and 3002 |
 | `bambu-studio-api` | **3001** | First free port in that range |
 
-Override via `ORCA_API_PORT` / `BAMBU_API_PORT` in `.env`.
+Override via `ORCA_API_PORT` / `BAMBU_API_PORT` in `.env`. Set
+`SIDECAR_BIND` there to publish both ports on one host address. Leave it
+unset or empty to keep the current all-interface mapping.
+
+Use `SIDECAR_BIND=127.0.0.1` when BamDude runs on the same host with host
+networking. For a bridged BamDude container or a remote server, bind to
+an address that BamDude can reach and use that address in its sidecar
+URLs. Use brackets for IPv6 in both places, for example
+`SIDECAR_BIND=[::1]` and `http://[::1]:3003`.
+
+## Run the sidecars under an unprivileged UID
+
+Rebuild the images before changing the runtime user. The chosen UID/GID
+needs write access to the per-slicer bind mounts (including existing data).
+Keep the slicer's home within the writable mount. Save an override such as
+`compose.non-root.yml` next to `docker-compose.yml`.
+
+```yaml
+services:
+  orca-slicer-api:
+    user: "10001:10001"
+    environment:
+      HOME: /app/data
+  bambu-studio-api:
+    user: "10001:10001"
+    environment:
+      HOME: /app/data
+```
+
+Choose the UID/GID that owns your data directories. Include the override
+on each Compose command, along with the profile you want to run.
+
+```bash
+docker compose -f docker-compose.yml -f compose.non-root.yml --profile all build
+docker compose -f docker-compose.yml -f compose.non-root.yml --profile all up -d
+```
+
+The default recipe still uses the image's default user. A different user
+must be able to write to `./data/orca` or `./data/bambu`.
 
 ## BamDude wiring
 

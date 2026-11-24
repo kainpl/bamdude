@@ -70,6 +70,10 @@
 
 ### Added
 
+- **Slicer sidecars can publish their ports on one host address.** Set
+  `SIDECAR_BIND` in the sidecar stack's `.env` to choose the address for both
+  OrcaSlicer and BambuStudio. Existing port numbers and defaults still work.
+
 - **Edit a project assembly and try again.** After a completed or failed assembly, return to the same inputs and change settings for another attempt. The operator starts the new job explicitly and chooses whether to move previous outputs to the trash.
 
 - **Failed and cancelled prints can keep the printer's timelapse.** When the printer was recording, BamDude uses the same archive and storage checks that protect the scan after a successful print.
@@ -321,6 +325,10 @@
 - **API: `PUT /api/v1/settings/virtual-printer` refuses the settings it no longer applies.** The route dates from when there was one Virtual Printer. It went on accepting `enabled`, `access_code`, `mode`, `model`, `target_printer_id` and `remote_interface_ip`, stored them where nothing reads them and answered as if a Virtual Printer had changed. It now answers 400 and points to the Virtual Printers page (`PUT /api/v1/virtual-printers/{id}`); `archive_name_source` is still set here. BamDude's own interface never used the refused fields.
 
 ### Fixed
+
+- **Both slicer images support running under an unprivileged UID.** The
+  image builds make extracted AppImage files readable and executable where
+  needed. Set a writable data mount and home when overriding the runtime user.
 
 - **Long spool names can continue onto a second line.** Factory label layouts
   use spare space for the name while keeping the QR and spool number in place.
