@@ -96,10 +96,10 @@ def _angled(pipe):
     return {str(pipe["group"].id): pipe["angled"].id}
 
 
-async def _configure(client, order_id, line_id, *, choices=None, counts=None, dry_run=False):
+async def _configure(client, order_id, line_id, *, choices=None, counts=None, dry_run=False, review=None):
     return await client.put(
         f"/api/v1/projects/{order_id}/lines/{line_id}/configuration",
-        json={"choices": choices or {}, "part_counts": counts or {}, "dry_run": dry_run},
+        json={"choices": choices or {}, "part_counts": counts or {}, "dry_run": dry_run, **(review or {})},
     )
 
 
@@ -134,7 +134,11 @@ async def test_printed_parts_a_change_drops_become_bankable_surplus(committing_c
     impact = (await _configure(committing_client, body["id"], line_id, choices=_angled(pipe), dry_run=True)).json()
     # 3 printed for a line of 2: one was surplus already, two become surplus.
     assert [(d["name"], d["printed"]) for d in impact["dropping"]] == [("straight", 2)]
-    r = await _configure(committing_client, body["id"], line_id, choices=_angled(pipe))
+    review = {
+        "expected_revision": body["lines"][0]["configuration"]["revision"],
+        "review_version": impact["review_version"],
+    }
+    r = await _configure(committing_client, body["id"], line_id, choices=_angled(pipe), review=review)
     assert r.status_code == 200, r.text
     parts = {p["name"]: p for p in r.json()["lines"][0]["parts"]}
     assert parts["straight"]["qty_per_unit"] == 0
@@ -234,7 +238,8 @@ async def test_unbinding_a_part_keeps_it_out_of_saved_lines_that_did_not_choose_
             )
         )
     ).all()
-    assert rows == [(angled.id, 0)]
+    # The captured kit excludes it without writing a new order override.
+    assert rows == []
 
 
 # ---- a merge keeps what each line wanted ----
@@ -295,9 +300,16 @@ async def test_a_real_save_does_not_compute_the_dry_run_impact(committing_client
     async def _no(*_a, **_k):
         raise AssertionError("the impact is for the dry run")
 
-    monkeypatch.setattr(line_config, "_dropping", _no)
     body = await _order(committing_client, [{"product_id": pipe["product"].id, "quantity": 1}])
-    r = await _configure(committing_client, body["id"], body["lines"][0]["id"], choices=_angled(pipe))
+    line = body["lines"][0]
+    draft = await _configure(committing_client, body["id"], line["id"], choices=_angled(pipe), dry_run=True)
+    assert draft.status_code == 200, draft.text
+    review = {
+        "expected_revision": line["configuration"]["revision"],
+        "review_version": draft.json()["review_version"],
+    }
+    monkeypatch.setattr(line_config, "_dropping", _no)
+    r = await _configure(committing_client, body["id"], line["id"], choices=_angled(pipe), review=review)
     assert r.status_code == 200, r.text
 
 

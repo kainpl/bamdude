@@ -1677,7 +1677,8 @@ async def create_part(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
-    product = await _get(db, product_id)
+    await product_gate.product_gate(db, [product_id])
+    product = await _get(db, product_id, fresh=True)
     if data.extra_percent and data.kind != "printed":
         raise HTTPException(status_code=422, detail="Extra percentages apply to printed parts only")
     if data.ignored and data.kind != "printed":
@@ -1686,14 +1687,6 @@ async def create_part(
         raise HTTPException(status_code=422, detail=_NOT_IN_KIT)
     if data.aliases is not None and data.kind != "printed":
         raise HTTPException(status_code=400, detail="Purchased parts have no aliases")
-    if data.variant_option_ids:
-        # A part born bound (WS-13 E10 A05, R10): the product gate before anything in
-        # the session changes — it WAITS, as every writer's does — then, behind it, the
-        # state every check below stands on, read fresh: the options (a concurrent
-        # delete may have won — the binding writer checks them), the parts and their
-        # aliases (the duplicate check).
-        await product_gate.product_gate(db, [product.id])
-        product = await _get(db, product_id, fresh=True)
     key = _part_key(data.kind, data.name)
     part = ProductPart(
         product_id=product.id,
@@ -1711,9 +1704,7 @@ async def create_part(
         sort_order=max((p.sort_order for p in product.parts), default=-1) + 1,
         option_links=[],
     )
-    # Into the final composition (K22): the part is not in the database yet, so nothing
-    # is frozen — the saved lines whose choices fit the binding take it, the others do
-    # not; a parts-only line never does.
+    # The new part and its bindings enter the catalog in one transaction.
     try:
         await product_variants.set_part_options(db, part, data.variant_option_ids)
     except product_variants.VariantError as e:
@@ -1739,6 +1730,9 @@ async def update_part(
     _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     product = await _get(db, product_id)
+    if data.model_fields_set & {"name", "extra_percent"}:
+        await product_gate.product_gate(db, [product.id])
+        product = await _get(db, product_id, fresh=True)
     if data.model_fields_set & {"variant_option_ids", "qty_per_unit", "ignored"}:
         # Composition edits affect saved lines too. Serialize the snapshot guard
         # with order configuration and stock writers using the existing gate.

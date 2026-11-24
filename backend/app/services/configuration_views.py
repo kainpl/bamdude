@@ -17,7 +17,7 @@ from sqlalchemy.orm import selectinload
 from backend.app.models.product import ProductPart
 from backend.app.models.product_variant import ProductVariantGroup
 from backend.app.schemas.project import LineChangedPartOut, LineChoiceOut, LineConfigurationOut
-from backend.app.services.line_composition import LineConfig, composition, standard_per
+from backend.app.services.line_composition import LineConfig, composition, composition_from_snapshot, standard_per
 
 
 async def groups_by_product(db: AsyncSession, product_ids: Iterable[int]) -> dict[int, list[ProductVariantGroup]]:
@@ -79,4 +79,71 @@ def configuration_out(
             for p in ordered
             if p.id in cfg.counts
         ],
+    )
+
+
+def changed_part_identity(row: dict, parts: Sequence[dict]) -> str | None:
+    """Resolve descriptions written before they stored their part identity."""
+    if "identity" in row:
+        return row["identity"]
+    matches = [part for part in parts if part["id"] == row["part_id"]]
+    if len(matches) > 1:
+        matches = [part for part in matches if part["name"] == row["name"]]
+    return matches[-1]["identity"] if matches else None
+
+
+def saved_configuration(line, catalog: Sequence[ProductPart], config: LineConfig) -> LineConfigurationOut | None:
+    if not line.composition_revisions:
+        return None
+    latest = line.composition_revisions[-1]
+    parts = latest["parts"]
+    projected = composition_from_snapshot(line.product_id, parts, catalog)
+    live = {part.id: part.composition_identity for part in catalog if not part.ignored}
+    saved_parts = [
+        {
+            "part_id": part.id,
+            "identity": part.composition_identity,
+            "name": part.name,
+            "kind": part.kind,
+            "qty": qty,
+            "in_catalog": live.get(part.id) == part.composition_identity,
+            "manual": row.get("manual", False),
+        }
+        for (part, qty), row in zip(projected, parts, strict=True)
+        if not part.ignored
+    ]
+    # Live rows form the editor's lookup. Archived rows keep their document order.
+    saved_parts.sort(key=lambda row: (not row["in_catalog"], row["part_id"] if row["in_catalog"] else 0))
+    view_ids = {
+        **{identity: pid for pid, identity in live.items()},
+        **{row["identity"]: row["part_id"] for row in saved_parts},
+    }
+    next_archived = min(0, *(row["part_id"] for row in saved_parts)) - 1 if saved_parts else -1
+    changed_parts = []
+    count_identities = {}
+    for row in latest["configuration"]["changed_parts"]:
+        identity = changed_part_identity(row, parts)
+        part_id = view_ids.get(identity)
+        if part_id is None:
+            # Older revisions did not record the identity of a zero override.
+            # A surviving count row still belongs to the live part: catalog deletion clears it.
+            legacy_live = "identity" not in row and identity is None and config.counts.get(row["part_id"]) == row["qty"]
+            if legacy_live and row["part_id"] in live:
+                part_id = row["part_id"]
+                identity = live[part_id]
+            else:
+                part_id = next_archived
+                next_archived -= 1
+        changed_parts.append({**row, "part_id": part_id})
+        if identity is not None and live.get(part_id) == identity:
+            count_identities[part_id] = identity
+    return LineConfigurationOut.model_validate(
+        {
+            **latest["configuration"],
+            "changed_parts": changed_parts,
+            "saved_parts": saved_parts,
+            "count_identities": count_identities,
+            "revision": len(line.composition_revisions),
+            "origin": latest["origin"],
+        }
     )

@@ -99,6 +99,8 @@ async def load_supply(db: AsyncSession, ctx: OrderContext) -> Supply:
                 counts=configs[line.id].counts if line.id in configs else {},
                 # The capacity fields are independent of requested quantity.
                 quantity=1,
+                saved_kit=composition_of(ctx, line),
+                saved_key=line.config_key,
             )
             for line in lines
         ],
@@ -149,10 +151,13 @@ def offers_for(
     for line, suggestion in zip(asked, suggestions, strict=True):
         shelf = shelves.get(line.product_id, {})
         ready = 0
-        if suggestion.position_id is not None:
-            available = ready_left.setdefault(suggestion.position_id, suggestion.finished_free)
-            ready = min(wants[line.id], available)
-            ready_left[suggestion.position_id] -= ready
+        for item_id, free in suggestion.free_by_position.items():
+            available = ready_left.setdefault(item_id, free)
+            take = min(wants[line.id] - ready, available)
+            ready += take
+            ready_left[item_id] -= take
+            if ready == wants[line.id]:
+                break
         kit = counted(composition_of(ctx, line))
         held = {pf.part_id: pf.allocated_qty for pf in figures[line.id].parts}
         # Extras contribute to remaining demand but cannot fill the base-kit

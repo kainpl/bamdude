@@ -161,7 +161,14 @@ async def test_a_configuration_change_moves_the_ready_units(committing_client, d
     dry = await committing_client.put(url, json={**body, "dry_run": True})
     assert dry.status_code == 200, dry.text
     assert (dry.json()["finished_before"], dry.json()["finished_after"]) == (2, 1)
-    r = await committing_client.put(url, json=body)
+    r = await committing_client.put(
+        url,
+        json={
+            **body,
+            "expected_revision": line["configuration"]["revision"],
+            "review_version": dry.json()["review_version"],
+        },
+    )
     assert r.status_code == 200, r.text
     assert (await db_session.get(StockItem, angled.id, populate_existing=True)).reserved == 1
     assert (await _standard(db_session, farm)).reserved == 0

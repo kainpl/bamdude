@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight, ClipboardCheck, Clock, ListPlus, Package, Pl
 import { api } from '../../api/client';
 import type { Order, ProjectLine } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
+import { useAuth } from '../../contexts/AuthContext';
 import { getColorName } from '../../utils/colors';
 import { ActionConfirm } from '../workshop/ActionConfirm';
 import { CardActionMenu, CardActionMenuItem } from '../CardActionMenu';
@@ -14,6 +15,7 @@ import { LineEditDialog } from './LineEditDialog';
 import { AddToOrderDialog } from './add-to-order/AddToOrderDialog';
 import { Button } from '../Button';
 import { LineConfigDialog } from './LineConfigDialog';
+import { AddLinePartDialog } from './AddLinePartDialog';
 import { CONFIG_ACCENT_CLASS, isNonStandardConfiguration, lineConfigLabel } from './lineConfigLabel';
 import { configBlockedReason } from './lineGates';
 import { invalidateOrderViews, refreshPartImageRefs } from '../../utils/queryInvalidation';
@@ -67,12 +69,15 @@ export function OrderLinesTable({ order, canEdit, headingLevel = 2, onQueuePlan,
   const { t } = useTranslation();
   const Heading = headingLevel === 3 ? 'h3' : 'h2';
   const { showToast } = useToast();
+  const { hasPermission } = useAuth();
   const queryClient = useQueryClient();
 
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [editing, setEditing] = useState<ProjectLine | null>(null);
   const [deleting, setDeleting] = useState<ProjectLine | null>(null);
-  const [configuring, setConfiguring] = useState<ProjectLine | null>(null);
+  const [configuringId, setConfiguringId] = useState<number | null>(null);
+  const configuring = order.lines.find((line) => line.id === configuringId);
+  const [addingPart, setAddingPart] = useState<ProjectLine | null>(null);
   const [adding, setAdding] = useState(false);
   const orderActive = order.status === 'active';
 
@@ -215,6 +220,13 @@ export function OrderLinesTable({ order, canEdit, headingLevel = 2, onQueuePlan,
                             {t('orders.lines.oneOff')}
                           </span>
                         )}
+                        {line.configuration?.origin && (
+                          <small className="block text-xs text-bambu-gray">{t(
+                            line.configuration.origin === 'migration'
+                              ? 'orders.lines.compositionMigrated'
+                              : 'orders.lines.compositionAtOrder',
+                          )}</small>
+                        )}
                         <small className="block mt-0.5 text-xs text-bambu-gray" data-testid={`line-${line.id}-config`}>
                           {line.product_sku && (
                             <>
@@ -336,11 +348,23 @@ export function OrderLinesTable({ order, canEdit, headingLevel = 2, onQueuePlan,
                                   title={blocked ?? undefined}
                                   onSelect={() => {
                                     close();
-                                    setConfiguring(line);
+                                    setConfiguringId(line.id);
                                   }}
                                 >
                                   {t('orders.lines.menuConfigure')}
                                 </CardActionMenuItem>
+                                {orderActive && hasPermission('products:read') && (
+                                  <CardActionMenuItem
+                                    disabled={blocked != null}
+                                    title={blocked ?? undefined}
+                                    onSelect={() => {
+                                      close();
+                                      setAddingPart(line);
+                                    }}
+                                  >
+                                    {t('orders.lines.addLinePart')}
+                                  </CardActionMenuItem>
+                                )}
                                 <CardActionMenuItem
                                   onSelect={() => {
                                     close();
@@ -418,16 +442,26 @@ export function OrderLinesTable({ order, canEdit, headingLevel = 2, onQueuePlan,
           line={order.lines.find((l) => l.id === editing.id) ?? editing}
           onClose={() => setEditing(null)}
           onConfigure={() => {
-            // The configuration dialog seeds from the line it is given and PUTs the whole
-            // body — so it gets the line as the order holds it now (final review M2).
-            setConfiguring(order.lines.find((l) => l.id === editing.id) ?? editing);
+            setConfiguringId(editing.id);
             setEditing(null);
           }}
         />
       )}
 
       {configuring && (
-        <LineConfigDialog orderId={order.id} orderCode={order.code} line={configuring} onClose={() => setConfiguring(null)} />
+        <LineConfigDialog orderId={order.id} orderCode={order.code} line={configuring} onClose={() => setConfiguringId(null)} />
+      )}
+      {addingPart && (
+        <AddLinePartDialog
+          orderId={order.id}
+          line={addingPart}
+          onClose={() => setAddingPart(null)}
+          onSaved={() => {
+            setExpanded((prev) => new Set([...prev, addingPart.id]));
+            invalidate();
+            setAddingPart(null);
+          }}
+        />
       )}
 
       {deleting && (

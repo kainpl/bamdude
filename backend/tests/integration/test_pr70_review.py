@@ -134,8 +134,12 @@ async def test_line_cannot_hide_received_extras_but_can_reconfigure_before_movem
     before = await state(committing_client, s)
     response = await committing_client.put(url, json={"part_counts": {str(s["a"].id): 0}, "choices": {}})
     assert response.status_code == 200, response.text
-    response = await committing_client.put(url, json={"part_counts": {}, "choices": {}})
+    revision = response.json()["lines"][0]["configuration"]["revision"]
+    response = await committing_client.put(url, json={"part_counts": {}, "choices": {}, "expected_revision": revision})
     assert response.status_code == 200, response.text
+    revision = response.json()["lines"][0]["configuration"]["revision"]
+    assert revision == before["lines"][0]["configuration"]["revision"] + 2
+    before["lines"][0]["configuration"]["revision"] = revision
     assert await state(committing_client, s) == before
     await archive(db_session, s, status="completed", quantities=(33, 10))
     response = await committing_client.post(
@@ -146,7 +150,9 @@ async def test_line_cannot_hide_received_extras_but_can_reconfigure_before_movem
     )
     assert response.status_code == 200, response.text
     before = await state(committing_client, s)
-    response = await committing_client.put(url, json={"part_counts": {str(s["a"].id): 0}, "choices": {}})
+    response = await committing_client.put(
+        url, json={"part_counts": {str(s["a"].id): 0}, "choices": {}, "expected_revision": revision}
+    )
     assert response.status_code == 409, response.text
     assert await state(committing_client, s) == before
 

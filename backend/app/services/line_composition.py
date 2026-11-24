@@ -107,6 +107,82 @@ def line_composition(
     return composition(parts, mode, set(chosen.values()), config.counts)
 
 
+def snapshot_parts(comp: Composition) -> list[dict]:
+    return [
+        {
+            "id": getattr(part, "snapshot_catalog_id", part.id),
+            "identity": part.composition_identity,
+            "name": part.name,
+            "kind": part.kind,
+            "qty": qty,
+            "ignored": bool(part.ignored),
+            "variant": is_variant_part(part),
+        }
+        for part, qty in comp
+    ]
+
+
+def saved_composition(line, catalog: Sequence[ProductPart], config: LineConfig, defaults=None) -> Composition:
+    """Read the document, falling back only for rows without a captured revision."""
+    if not line.composition_revisions:
+        return line_composition(catalog, line.mode, config, defaults)
+    return composition_from_snapshot(line.product_id, line.composition_revisions[-1]["parts"], catalog)
+
+
+def composition_from_snapshot(product_id: int, snapshot: Sequence[dict], catalog: Sequence[ProductPart]) -> Composition:
+    by_id = {part.id: part for part in catalog}
+    result = []
+    used = set(by_id)
+    next_archived = -max((abs(row["id"]) for row in snapshot), default=0) - 1
+    for row in snapshot:
+        catalog_id = row["id"]
+        live = by_id.get(catalog_id)
+        if live is not None and live.composition_identity != row["identity"]:
+            live = None
+        part_id = catalog_id
+        if live is None and (row["kind"] == "purchased" or part_id in used):
+            part_id = -abs(catalog_id)
+            if part_id in used:
+                part_id = next_archived
+                next_archived -= 1
+        used.add(part_id)
+        # Keep the document's name and membership while allowing established
+        # readers to use current sourcing metadata for an extant identity.
+        part = ProductPart(
+            id=part_id,
+            composition_identity=row["identity"],
+            product_id=product_id,
+            name=row["name"],
+            kind=row["kind"],
+            ignored=row["ignored"],
+            unit_price=live.unit_price if live is not None else None,
+            sourcing_url=live.sourcing_url if live is not None else None,
+        )
+        part.snapshot_variant = row["variant"]
+        part.snapshot_catalog_id = catalog_id
+        result.append((part, row["qty"]))
+    return result
+
+
+def is_variant_part(part: ProductPart) -> bool:
+    captured = getattr(part, "snapshot_variant", None)
+    return captured if captured is not None else bool(part.bound)
+
+
+def part_identity(part: ProductPart) -> str:
+    return part.composition_identity or str(part.id)
+
+
+def kit_signature(parts: Sequence[dict]) -> tuple[tuple[str, int], ...]:
+    return tuple(sorted((row["identity"] or str(row["id"]), row["qty"]) for row in parts))
+
+
+def stock_composition(item, parts: Sequence[ProductPart], config: LineConfig, defaults=None) -> Composition:
+    if item.composition_parts is not None:
+        return composition_from_snapshot(item.product_id, item.composition_parts, parts)
+    return line_composition(parts, "product", config, defaults)
+
+
 def standard_composition(parts: Sequence[ProductPart], default_option_ids: set[int]) -> Composition:
     """The product's own kit: the standard option of every group, standard counts."""
     return composition(parts, "product", default_option_ids, {})
@@ -198,9 +274,9 @@ async def compositions_for_lines(
     configs = await load_line_configs(db, [line.id for line in lines])
     defaults = await default_options(db, {line.product_id for line in lines})
     return {
-        line.id: line_composition(
+        line.id: saved_composition(
+            line,
             parts_by_product.get(line.product_id, []),
-            line.mode,
             configs.get(line.id, LineConfig()),
             defaults.get(line.product_id, {}),
         )
@@ -215,9 +291,9 @@ async def compositions_for_items(
     configs = await load_item_configs(db, [item.id for item in items])
     defaults = await default_options(db, {item.product_id for item in items})
     return {
-        item.id: line_composition(
+        item.id: stock_composition(
+            item,
             parts_by_product.get(item.product_id, []),
-            "product",
             configs.get(item.id, LineConfig()),
             defaults.get(item.product_id, {}),
         )

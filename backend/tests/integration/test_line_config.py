@@ -309,22 +309,32 @@ async def _configurations(db):
 
 
 @pytest.mark.asyncio
-async def test_widening_a_binding_freezes_only_the_line_it_would_bring_the_part_into(db_session):
+async def test_widening_a_binding_preserves_the_captured_kit(db_session):
     box = await _box(db_session, bound=("400",))
     body, lines = box["body"], box["lines"]
-    assert await line_config.freeze_binding(db_session, body, _bound(box, "400", "600")) == 1
-    assert await _counts(db_session, lines["600"].id) == {body.id: 0}
-    assert lines["600"].config_key == f"{box['group'].id}={box['weight']['600'].id}|{body.id}=0"
-    assert await _counts(db_session, lines["400"].id) == {}
+    before = await _configurations(db_session)
+    assert await line_config.freeze_binding(db_session, body, _bound(box, "400", "600")) == 0
+    bind(body, box["weight"]["400"], box["weight"]["600"])
+    await db_session.flush()
+    assert await _configurations(db_session) == before
+    assert [(part.id, qty) for part, qty in await part_stock.line_composition_of(db_session, lines["600"])] == [
+        (body.id, 2)
+    ]
 
 
 @pytest.mark.asyncio
-async def test_narrowing_a_binding_freezes_the_old_standard_count(db_session):
+async def test_narrowing_a_binding_preserves_the_captured_count(db_session):
     box = await _box(db_session, bound=("400", "600"))
     body, lines = box["body"], box["lines"]
-    assert await line_config.freeze_binding(db_session, body, _bound(box, "400")) == 1
-    assert await _counts(db_session, lines["600"].id) == {body.id: 2}
-    assert await _counts(db_session, lines["400"].id) == {}
+    before = await _configurations(db_session)
+    assert await line_config.freeze_binding(db_session, body, _bound(box, "400")) == 0
+    bind(body, box["weight"]["400"])
+    await db_session.flush()
+    assert await _configurations(db_session) == before
+    for line in lines.values():
+        assert [(part.id, qty) for part, qty in await part_stock.line_composition_of(db_session, line)] == [
+            (body.id, 2)
+        ]
 
 
 @pytest.mark.asyncio
@@ -352,11 +362,8 @@ async def test_a_binding_change_that_would_merge_two_positions_is_refused_and_wr
 
 
 @pytest.mark.asyncio
-async def test_a_change_in_one_group_of_a_two_group_binding_freezes_only_the_kit_it_moves(db_session):
-    """Body is bound to weight {400, 600} AND view {solid}. Narrowing the weight to {400}
-    takes body out of the 600 + solid line's kit — that line keeps its old count. The
-    400 + solid line's kit does not move, and neither does a 600 + mesh line's: body was
-    never in it (the view group still says no), so there is nothing to keep."""
+async def test_a_change_in_one_group_preserves_all_captured_kits(db_session):
+    """Saved kits retain body from the original unbound catalog, across two groups."""
     product = Product(name="Jar")
     db_session.add(product)
     await db_session.flush()
@@ -377,16 +384,20 @@ async def test_a_change_in_one_group_of_a_two_group_binding_freezes_only_the_kit
     bind(body, w400, w600, solid)
     await db_session.commit()
     narrowed = {weight.id: frozenset({w400.id}), view.id: frozenset({solid.id})}
-    assert await line_config.freeze_binding(db_session, body, narrowed) == 1
-    assert await _counts(db_session, moves.id) == {body.id: 2}
-    assert await _counts(db_session, stays.id) == {}
-    assert await _counts(db_session, never.id) == {}
+    before = await _configurations(db_session)
+    assert await line_config.freeze_binding(db_session, body, narrowed) == 0
+    bind(body, w400, solid)
+    await db_session.flush()
+    assert await _configurations(db_session) == before
+    for line in (moves, stays, never):
+        assert [(part.id, qty) for part, qty in await part_stock.line_composition_of(db_session, line)] == [
+            (body.id, 2)
+        ]
 
 
 @pytest.mark.asyncio
 async def test_a_line_that_already_counts_the_part_is_left_alone(db_session):
-    """A saved line that says how many bodies it wants keeps saying it: widening the
-    binding freezes the 600 line without a count, and not the one that counts 3."""
+    """A saved line keeps its explicit count while another keeps its original default."""
     # Every line saved while body is unbound, then body bound to 400 (see ``_box``): the
     # counted line's 600 is a closed combination no door saves now — its count does not open it.
     box = await _box(db_session, bound=())
@@ -399,9 +410,15 @@ async def test_a_line_that_already_counts_the_part_is_left_alone(db_session):
     )
     bind(body, box["weight"]["400"])
     await db_session.commit()
-    assert await line_config.freeze_binding(db_session, body, _bound(box, "400", "600")) == 1
-    assert await _counts(db_session, lines["600"].id) == {body.id: 0}
-    assert await _counts(db_session, counted.id) == {body.id: 3}
+    before = await _configurations(db_session)
+    assert await line_config.freeze_binding(db_session, body, _bound(box, "400", "600")) == 0
+    bind(body, box["weight"]["400"], box["weight"]["600"])
+    await db_session.flush()
+    assert await _configurations(db_session) == before
+    for line, expected in ((lines["600"], 2), (counted, 3)):
+        assert [(part.id, qty) for part, qty in await part_stock.line_composition_of(db_session, line)] == [
+            (body.id, expected)
+        ]
 
 
 @pytest.mark.asyncio
