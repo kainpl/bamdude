@@ -2,6 +2,8 @@
 
 ### Security
 
+- Updated i18next to 26.3.4 to address [GHSA-6jcc-5g8w-32mx](https://github.com/advisories/GHSA-6jcc-5g8w-32mx).
+
 - The part thumbnail renderer uses Node.js 24.22.3 on 64-bit platforms and 22.23.5 on 32-bit ARM. Both updates include Node.js security fixes.
 
 - **Removing a user from Administrators takes effect on their next request.** This also clears their legacy admin role. BamDude refuses changes that would leave no active administrator.
