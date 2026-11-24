@@ -88,10 +88,14 @@ async def test_sdk_base_over_real_socket(async_client, runtime, mode):
                 "bamdude_list_state_issues",
                 "bamdude_explain_recovery",
                 "bamdude_get_period_summary",
+                "bamdude_search_orders",
+                "bamdude_get_order_progress",
+                "bamdude_get_order_work",
             }
             result = await client.call_tool("bamdude_get_capabilities", {})
             data = result.structured_content["data"]
-            assert data["enabled_modules"] == ["base", "diagnostics"]
+            assert data["enabled_modules"] == ["base", "diagnostics", "orders"]
+            assert data["orders_contract"] == 1
             assert data["auth"] == "api_key"
             guide = await client.call_tool("bamdude_get_usage_guide", {})
             assert "never in a chat" in guide.structured_content["data"]["guide"]
