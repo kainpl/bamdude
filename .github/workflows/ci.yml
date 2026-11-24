@@ -292,9 +292,10 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
       - name: Run PostgreSQL scenarios
-        # Outlive the largest nested wrapper (26 minutes, including cleanup).
-        # Per-scenario and subprocess watchdogs remain in force inside.
-        timeout-minutes: 30
+        # The runner reached 80% in 30 minutes with no failing scenarios.
+        # Allow the full suite to finish on slower runners. Per-scenario and
+        # subprocess watchdogs remain in force.
+        timeout-minutes: 45
         env:
           TEST_POSTGRES_URL: postgresql://bamdude:bamdude@localhost:5432/bamdude_ci
         run: |
