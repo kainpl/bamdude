@@ -3,6 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, ApiError, type LinePartAdd, type ProjectLine } from '../../api/client';
 import { Button } from '../Button';
+import { Select } from '../Select';
 import { WorkshopDialog } from '../workshop/WorkshopDialog';
 
 const fieldClass = 'w-full rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2 text-white';
@@ -135,7 +136,7 @@ export function AddLinePartDialog({
           </label>
           <label className="block space-y-1 text-sm">
             <span>{t('orders.lines.choosePart')}</span>
-            <select className={fieldClass} value={selected?.id ?? 0} onChange={(e) => {
+            <Select className="block w-full" value={selected?.id ?? 0} onChange={(e) => {
               const part = parts.find((p) => p.id === Number(e.target.value));
               setDraft(part ? { identity: part.part_identity, quantity: String(part.suggested_qty) } : null);
               save.reset();
@@ -148,7 +149,7 @@ export function AddLinePartDialog({
                   {all && data?.variant_available && !part.compatible ? ` · ${t('orders.lines.otherVariant')}` : ''}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
           <label className="block space-y-1 text-sm">
             <span>{t(line.mode === 'parts' ? 'orders.lines.totalParts' : 'orders.lines.partsPerUnit')}</span>
