@@ -128,7 +128,16 @@ function serve(useSlicerApi: boolean) {
     ),
     http.get('/api/v1/library/files/:id/assembly', ({ params }) => {
       recordAsked.push(String(params.id));
-      return HttpResponse.json({ detail: 'gone' }, { status: 404 });
+      return HttpResponse.json({
+        printer: {
+          printer: { source: 'local', id: '1' },
+          process: { source: 'local', id: '10' },
+          filament: { source: 'local', id: '20' },
+          nozzle: 1,
+          model: 'X1C',
+          bed_type: 'Engineering Plate',
+        },
+      });
     }),
     http.get('/api/v1/slicer/health/:kind', () => HttpResponse.json({ healthy: false, error: 'offline', url: null })),
     http.get('/api/v1/slicer/preset-values', () => HttpResponse.json({ resolved: false, values: {}, reason: 'x' })),
@@ -176,6 +185,7 @@ describe('FileManagerPage — slicing a file "Assemble project" wrote', () => {
     expect(within(slice).getByText(WRITTEN[0].name)).toBeInTheDocument();
     // A file the assembly wrote: the dialog asks what it was built from.
     await waitFor(() => expect(recordAsked).toEqual(['77']));
+    await waitFor(() => expect(within(slice).getByRole('combobox', { name: 'Bed plate' })).toHaveValue('Engineering Plate'));
     // The summary is still there, beneath: the second file can be sliced next.
     expect(screen.getByTestId('assemble-summary')).toBe(summary);
     expect(within(summary).getByRole('button', { name: `Slice ${WRITTEN[1].name}` })).toBeInTheDocument();

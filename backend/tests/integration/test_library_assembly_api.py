@@ -102,7 +102,7 @@ async def farm(db_session, tmp_path, monkeypatch):
                 "printer_model": "Custom Delta",
             },
         ),
-        ("process", "process", {"layer_height": "0.2"}),
+        ("process", "process", {"layer_height": "0.2", "curr_bed_type": "Cool Plate"}),
         ("filament", "filament", {"filament_type": ["PLA"], "filament_id": "GFL99"}),
     ]:
         name = f"Test {key}"
@@ -218,7 +218,28 @@ async def test_assemble_two_files_for_one_printer(async_client, db_session, farm
     assert [part["name"] for part in record["parts"]] == ["frame.stl", "lid.stl"]
     assert record["parts"][1]["quantity"] == 3 and record["layout"]["spacing"] == 2.0
     assert record["printer"]["printer"] == {"source": "local", "id": str(farm["presets"]["x1"])}
+    assert record["printer"]["bed_type"] is None
+    with zipfile.ZipFile(farm["tmp"] / made.file_path) as archive:
+        assert json.loads(archive.read("Metadata/project_settings.config"))["curr_bed_type"] == "Cool Plate"
     assert record["set_files"] == [{"id": made.id, "filename": made.filename}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_each_printers_bed_type_is_written_and_returned_for_relayout(async_client, db_session, farm):
+    body = _body(farm, [("lid", {})], printers=("x1", "small"))
+    body["slicer"] = "bambu_studio"
+    requested = ["Engineering Plate", "Textured PEI Plate"]
+    for target, plate in zip(body["targets"], requested, strict=True):
+        target["bed_type"] = plate
+    job = await _finish(async_client, await async_client.post(f"{API}/library/assemble", json=body))
+    files = {file.id: file for file in await _assembled_files(db_session)}
+    for row, plate in zip(job["result"]["printers"], requested, strict=True):
+        file_id = row["files"][0]["library_file_id"]
+        record = (await async_client.get(f"{API}/library/files/{file_id}/assembly")).json()
+        assert record["printer"]["bed_type"] == plate
+        with zipfile.ZipFile(farm["tmp"] / files[file_id].file_path) as archive:
+            assert json.loads(archive.read("Metadata/project_settings.config"))["curr_bed_type"] == plate
 
 
 @pytest.mark.asyncio
@@ -305,6 +326,20 @@ async def test_the_request_limits(async_client, farm):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_bambu_studio_rejects_the_orca_only_bed_type(async_client, farm):
+    body = _body(farm, [("lid", {})])
+    body["slicer"] = "bambu_studio"
+    body["targets"][0]["bed_type"] = "Textured Cool Plate"
+    response = await async_client.post(f"{API}/library/assemble", json=body)
+    assert response.status_code == 422
+    assert "only with OrcaSlicer" in response.json()["detail"]
+    body["slicer"] = "orcaslicer"
+    job = await _finish(async_client, await async_client.post(f"{API}/library/assemble", json=body))
+    assert job["result"]["printers"][0]["status"] == "ok"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_a_source_changed_during_the_job_publishes_nothing(async_client, db_session, farm, monkeypatch):
     real = assembly_job.run_assembly
 
@@ -332,7 +367,7 @@ async def test_relayout_with_wider_spacing_writes_a_new_file_and_trashes_the_old
     old_id = first["result"]["printers"][0]["files"][0]["library_file_id"]
     body = {
         "parts": [{"quantity": 2}, {"quantity": 5}],
-        "targets": [_row(farm)],
+        "targets": [{**_row(farm), "bed_type": "Engineering Plate"}],
         "layout": {"spacing": 6.0},
         "name": "jar",
         "trash_previous": True,
@@ -345,6 +380,9 @@ async def test_relayout_with_wider_spacing_writes_a_new_file_and_trashes_the_old
     assert new.id != old_id
     record = (await async_client.get(f"{API}/library/files/{new.id}/assembly")).json()
     assert record["layout"]["spacing"] == 6.0 and [p["quantity"] for p in record["parts"]] == [2, 5]
+    assert record["printer"]["bed_type"] == "Engineering Plate"
+    with zipfile.ZipFile(farm["tmp"] / new.file_path) as archive:
+        assert json.loads(archive.read("Metadata/project_settings.config"))["curr_bed_type"] == "Engineering Plate"
     assert [p["name"] for p in record["parts"]] == ["frame.stl", "lid.stl"]
     assert (await db_session.get(LibraryFile, old_id, populate_existing=True)).deleted_at is not None
 

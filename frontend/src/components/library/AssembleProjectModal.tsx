@@ -11,6 +11,7 @@ import {
   type AssemblyJobState,
   type AssemblyPrinterResult,
   type AssemblyProgress,
+  type BedType,
   type LibraryFileListItem,
   type PresetRef,
   type SlicerPipeline,
@@ -29,15 +30,21 @@ import { Button } from '../Button';
 import { Modal } from '../Modal';
 import { Select } from '../Select';
 import { Toggle } from '../Toggle';
+import { BedPlateSelect } from '../slicing-setup/BedPlateSelect';
 import { PipelineSelect } from '../slicing-setup/PipelineSelect';
 import { PresetFilters } from '../slicing-setup/PresetFilters';
 import { PresetListStatus } from '../slicing-setup/PresetListStatus';
+import { SlicerChoice } from '../slicing-setup/SlicerChoice';
+import { useSlicerChoice } from '../slicing-setup/useSlicerChoice';
+import type { SlicerKind } from '../../hooks/useSlicerHealth';
 import { PresetSelect } from '../slicing-setup/PresetSelect';
 import { applyPipeline } from '../slicing-setup/applyPipeline';
 import { POLICIES, useChoiceFields, type ChoicePolicy } from '../slicing-setup/choiceState';
 import { buildPresetField } from '../slicing-setup/presetSets';
+import { useBedPlate } from '../slicing-setup/useBedPlate';
 import { usePresetCatalogue } from '../slicing-setup/usePresetCatalogue';
 import { usePresetFilters, type PresetFiltersState } from '../slicing-setup/usePresetFilters';
+import { useSavePipeline } from '../slicing-setup/useSavePipeline';
 import {
   MAX_COPIES,
   MAX_TARGETS,
@@ -96,7 +103,7 @@ const fieldKey = (rowKey: string, slot: RowSlot) => `${rowKey}:${slot}`;
 /** The printer name and compatibility index a row's process and filament are judged against. */
 function rowContext(data: UnifiedPresetsResponse, printer: PresetRef | null, models: Record<string, string>) {
   const name = printer ? (findPreset(data, printer, 'printer')?.name ?? null) : null;
-  const compat = buildCompatibilityIndex(models, buildPrinterParents(data, printer?.source ?? null));
+  const compat = buildCompatibilityIndex(models, buildPrinterParents(data, printer?.source ?? null), data);
   return { name, compat };
 }
 
@@ -115,8 +122,8 @@ function defaultsFor(
   const { name, compat } = rowContext(data, chosen, models);
   return {
     printer: chosen,
-    process: pickProcessDefault(data, name, compat),
-    filament: pickFilamentForSlot(data, { type: 'PLA', color: '' }, name, compat),
+    process: pickProcessDefault(data, name, compat, null, chosen?.source),
+    filament: pickFilamentForSlot(data, { type: 'PLA', color: '' }, name, compat, chosen?.source),
   };
 }
 
@@ -135,12 +142,14 @@ function TargetEditor({
   data,
   models,
   refs,
+  slicer,
   gone,
   filters,
   parentsBySource,
   removable,
   onPick,
   onApplySet,
+  onBedPlate,
   onNozzle,
   onRemove,
 }: {
@@ -149,12 +158,14 @@ function TargetEditor({
   data: UnifiedPresetsResponse;
   models: Record<string, string>;
   refs: Record<RowSlot, PresetRef | null>;
+  slicer: SlicerKind | null;
   gone: Record<RowSlot, boolean>;
   filters: PresetFiltersState;
   parentsBySource: ReturnType<typeof buildParentsBySource>;
   removable: boolean;
   onPick: (slot: RowSlot, ref: PresetRef | null) => void;
   onApplySet: (set: SlicerPipeline) => { name: string; changed: string[]; unresolved: string[] };
+  onBedPlate: (bed: BedType) => void;
   onNozzle: (nozzle: number) => void;
   onRemove: () => void;
 }) {
@@ -162,8 +173,15 @@ function TargetEditor({
   const info = useQuery(printerInfoQuery(refs.printer));
   const nozzles = info.data?.nozzles ?? [];
   const presetGone = SLOTS.some((slot) => gone[slot]);
+  const canSave = slicer !== null && SLOTS.every((slot) => !gone[slot] && findPreset(data, refs[slot], slot) !== null);
+  const save = useSavePipeline();
+  const bed = useBedPlate(slicer, { selection: { value: target.bedType, onChange: onBedPlate } });
   const [applied, setApplied] = useState<{ name: string; changed: string[] } | null>(null);
   const [unresolved, setUnresolved] = useState<string[]>([]);
+  const clearAppliedSet = () => {
+    setApplied(null);
+    setUnresolved([]);
+  };
 
   // The row's own printer judges its process and filament, and its loaded test (spec §7.3).
   const { name: printerName, compat } = useMemo(() => rowContext(data, refs.printer, models), [data, refs.printer, models]);
@@ -179,8 +197,7 @@ function TargetEditor({
   }, [data, filters, printerName, compat, parentsBySource, refs.printer, refs.process, refs.filament]);
   const showAll = filters.turnOff;
   const pick = (slot: RowSlot, ref: PresetRef | null) => {
-    setApplied(null);
-    setUnresolved([]);
+    clearAppliedSet();
     onPick(slot, ref);
   };
 
@@ -218,11 +235,27 @@ function TargetEditor({
       <PipelineSelect
         onApply={(set) => {
           const out = onApplySet(set);
+          if (bed.applyFromSet(set.bed_type).result === 'applied') out.changed.push(t('slice.bedType.label'));
           setApplied({ name: out.name, changed: out.changed });
           setUnresolved(out.unresolved);
         }}
         applied={applied}
         unresolved={unresolved}
+        save={{
+          canSave,
+          pending: save.isPending,
+          onSave: (name) => {
+            const { printer, process, filament } = refs;
+            if (!canSave || !printer || !process || !filament) return Promise.reject(new Error(t('slice.allPresetsRequired')));
+            return save.mutateAsync({
+              name,
+              printer_preset: printer,
+              process_preset: process,
+              filament_presets: [filament],
+              bed_type: bed.value,
+            });
+          },
+        }}
       />
       <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
         {SLOTS.map((slot) => (
@@ -231,30 +264,42 @@ function TargetEditor({
             label={labels[slot]}
             field={fields[slot]}
             value={refs[slot]}
+            slicer={slicer}
             gone={gone[slot]}
             onShowAll={showAll}
             onChange={(ref) => pick(slot, ref)}
           />
         ))}
+        <BedPlateSelect
+          value={bed.value}
+          onChange={(plate) => {
+            clearAppliedSet();
+            bed.choose(plate);
+          }}
+          slicer={slicer}
+          note={bed.note}
+          disabled={slicer === null}
+        />
+        {nozzles.length > 1 && (
+          <label className="block text-xs text-bambu-gray">
+            <span className="block mb-1">{t('fileManager.assemble.nozzle')}</span>
+            <Select
+              className="w-full"
+              value={String(target.nozzle)}
+              onChange={(event) => onNozzle(Number(event.target.value))}
+              aria-label={t('fileManager.assemble.nozzleFor', { number: index + 1 })}
+            >
+              {nozzles.map((nozzle) => (
+                <option key={nozzle.index} value={nozzle.index}>
+                  {nozzles.length === 2
+                    ? t(nozzle.index === 1 ? 'fileManager.assemble.nozzleLeft' : 'fileManager.assemble.nozzleRight')
+                    : t('fileManager.assemble.nozzleNumber', { number: nozzle.index })}
+                </option>
+              ))}
+            </Select>
+          </label>
+        )}
       </div>
-      {nozzles.length > 1 && (
-        <label className="flex items-center gap-2 text-xs text-bambu-gray">
-          <span>{t('fileManager.assemble.nozzle')}</span>
-          <Select
-            value={String(target.nozzle)}
-            onChange={(event) => onNozzle(Number(event.target.value))}
-            aria-label={t('fileManager.assemble.nozzleFor', { number: index + 1 })}
-          >
-            {nozzles.map((nozzle) => (
-              <option key={nozzle.index} value={nozzle.index}>
-                {nozzles.length === 2
-                  ? t(nozzle.index === 1 ? 'fileManager.assemble.nozzleLeft' : 'fileManager.assemble.nozzleRight')
-                  : t('fileManager.assemble.nozzleNumber', { number: nozzle.index })}
-              </option>
-            ))}
-          </Select>
-        </label>
-      )}
       {presetGone && (
         <p className="text-xs text-amber-400 flex items-center gap-1">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
@@ -494,7 +539,8 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
   const relayout = mode.kind === 'relayout';
 
   // The family's catalogue, filters and choice state (spec slicing-setup §7.3).
-  const catalogue = usePresetCatalogue();
+  const slicer = useSlicerChoice(null, { catalogueOnly: true });
+  const catalogue = usePresetCatalogue({ slicer: slicer.forPresets });
   const filters = usePresetFilters({ source: true, farmModels: true, loaded: true });
   const choices = useChoiceFields<string>();
   const printerModels = useQuery({ queryKey: ['slicerPrinterModels'], queryFn: api.getPrinterModels });
@@ -557,7 +603,7 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
         const ref = target[slot];
         choices.dispatch(
           fieldKey(target.key, slot),
-          { kind: 'seed', ref, origin: 'record', listed: ref !== null && findPreset(data, ref, slot) !== null },
+          { kind: 'seed', ref, origin: 'record', listed: ref !== null && findPreset(catalogue.rawData ?? data, ref, slot) !== null },
           POLICY[slot],
         );
       }
@@ -571,25 +617,26 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
   useEffect(() => {
     if (!seeded || !data || !form || seenData.current === data) return;
     seenData.current = data;
+    const raw = catalogue.rawData ?? data;
     for (const target of form.targets) {
-      const printer = refsOf(target.key).printer;
-      const picks = () => defaultsFor(data, printer, models);
       choices.dispatch(
         fieldKey(target.key, 'printer'),
         {
           kind: 'refresh',
-          listed: (r) => findPreset(data, r, 'printer') !== null,
-          usable: () => true,
+          listed: (r) => findPreset(raw, r, 'printer') !== null,
+          usable: (r) => findPreset(data, r, 'printer') !== null,
           repick: () => defaultsFor(data, null, models).printer,
         },
         POLICY.printer,
       );
+      const printer = refsOf(target.key).printer;
+      const picks = () => defaultsFor(data, printer, models);
       for (const slot of ['process', 'filament'] as const) {
         choices.dispatch(
           fieldKey(target.key, slot),
           {
             kind: 'refresh',
-            listed: (r) => findPreset(data, r, slot) !== null,
+            listed: (r) => findPreset(raw, r, slot) !== null,
             usable: usableFor(data, slot, printer, models),
             repick: () => picks()[slot],
           },
@@ -604,21 +651,26 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
   // follow it, a process or filament chosen by hand stays (R6), the nozzle
   // starts over.
   const pickInRow = (rowKey: string, slot: RowSlot, ref: PresetRef | null) => {
+    const before = choices.get(fieldKey(rowKey, slot)).ref;
     choices.dispatch(fieldKey(rowKey, slot), { kind: 'personPicked', ref }, POLICY[slot]);
-    if (slot === 'printer') followPrinter(rowKey);
+    if (slot === 'printer') followPrinter(rowKey, before?.source !== ref?.source);
   };
   // The row's printer changed — by hand or by a saved set, as Slice and
   // calibration follow every printer change: its automatic process and
   // filament are re-checked, a choice made by hand or by the set stays, the
   // nozzle starts over.
-  const followPrinter = (rowKey: string) => {
+  const followPrinter = (rowKey: string, sourceChanged: boolean) => {
     if (!data) return;
     const printer = choices.get(fieldKey(rowKey, 'printer')).ref;
     const picks = defaultsFor(data, printer, models);
     for (const s of ['process', 'filament'] as const) {
       choices.dispatch(
         fieldKey(rowKey, s),
-        { kind: 'printerChanged', usable: usableFor(data, s, printer, models), repick: () => picks[s] },
+        {
+          kind: 'printerChanged',
+          usable: sourceChanged ? () => false : usableFor(data, s, printer, models),
+          repick: () => picks[s],
+        },
         POLICY[s],
       );
     }
@@ -627,7 +679,7 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
       targets: current.targets.map((target) => (target.key === rowKey ? { ...target, nozzle: 1 } : target)),
     }));
   };
-  // A saved set into ONE row: printer, process and slot 0's filament; its plate is not the row's (R11).
+  // Apply preset refs to one row. The row's bed plate uses the shared picker.
   const applySetInRow = (rowKey: string, set: SlicerPipeline) => {
     const changed: string[] = [];
     const unresolved: string[] = [];
@@ -643,6 +695,7 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
       ['process', out.process],
       ['filament', out.filaments[0] ?? null],
     ];
+    const previousPrinterSource = refsOf(rowKey).printer?.source;
     for (const [slot, entry] of entries) {
       if (entry === null) continue;
       if ('unresolved' in entry) {
@@ -653,7 +706,7 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
       if (before?.source !== entry.ref.source || before?.id !== entry.ref.id) changed.push(labels[slot]);
       choices.dispatch(fieldKey(rowKey, slot), { kind: 'pipelineApplied', ref: entry.ref }, POLICY[slot]);
     }
-    if (changed.includes(labels.printer)) followPrinter(rowKey);
+    if (changed.includes(labels.printer)) followPrinter(rowKey, previousPrinterSource !== refsOf(rowKey).printer?.source);
     return { name: set.name, changed, unresolved };
   };
   const removeRow = (rowKey: string) => {
@@ -671,6 +724,11 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
       ...current,
       targets: current.targets.map((target) => (target.key === rowKey ? { ...target, nozzle } : target)),
     }));
+  const setBedPlate = (rowKey: string, bedType: BedType) =>
+    update((current) => ({
+      ...current,
+      targets: current.targets.map((target) => (target.key === rowKey ? { ...target, bedType } : target)),
+    }));
 
   // What is validated and sent: the form with each row's current choices.
   const effectiveForm: AssembleForm | null = form
@@ -684,11 +742,16 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
   const printerUnusable =
     printerInfos.some((info) => info.isError) ||
     (form?.targets ?? []).some((target) => SLOTS.some((slot) => goneOf(target.key)[slot]));
+  const allPresetsListed = slicer.forPresets !== null && data != null && effectiveForm != null && effectiveForm.targets.every((target) =>
+    SLOTS.every((slot) => findPreset(data, target[slot], slot) !== null),
+  );
   const submit = useMutation({
-    mutationFn: () =>
-      relayout
-        ? api.relayoutFile(mode.fileId, toRelayoutRequest(effectiveForm as AssembleForm))
-        : api.assembleProject(toRequest(effectiveForm as AssembleForm)),
+    mutationFn: () => {
+      if (!allPresetsListed) throw new Error(t('slice.allPresetsRequired'));
+      return relayout
+        ? api.relayoutFile(mode.fileId, toRelayoutRequest(effectiveForm as AssembleForm, slicer.forPresets))
+        : api.assembleProject(toRequest(effectiveForm as AssembleForm, slicer.forPresets));
+    },
     onMutate: () => setSubmitError(null),
     onSuccess: (job) => setJobId(job.job_id),
     onError: (error) =>
@@ -922,6 +985,7 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
           </div>
           <p className="text-xs text-bambu-gray">{t('fileManager.assemble.targetsHint')}</p>
           {/* Once, above the rows (spec §7.3). */}
+          <SlicerChoice value={slicer.forPresets} onChange={slicer.choose} catalogueOnly />
           <PresetListStatus catalogue={catalogue} />
           <PresetFilters filters={filters} parts={{ source: true, farmModels: true, loaded: true }} />
           {form.targets.map((target, index) => (
@@ -932,12 +996,14 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
               data={data}
               models={models}
               refs={refsOf(target.key)}
+              slicer={slicer.forPresets}
               gone={goneOf(target.key)}
               filters={filters}
               parentsBySource={parentsBySource}
               removable={form.targets.length > 1}
               onPick={(slot, ref) => pickInRow(target.key, slot, ref)}
               onApplySet={(set) => applySetInRow(target.key, set)}
+              onBedPlate={(bed) => setBedPlate(target.key, bed)}
               onNozzle={(nozzle) => setNozzle(target.key, nozzle)}
               onRemove={() => removeRow(target.key)}
             />
@@ -1029,7 +1095,7 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
         <Button variant="secondary" onClick={onClose} disabled={submit.isPending}>
           {t('common.cancel')}
         </Button>
-        <Button variant="primary" onClick={() => submit.mutate()} disabled={issues.length > 0 || printerUnusable || submit.isPending}>
+        <Button variant="primary" onClick={() => submit.mutate()} disabled={issues.length > 0 || !allPresetsListed || printerUnusable || submit.isPending}>
           {submit.isPending && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}
           {relayout ? t('fileManager.assemble.relayoutSubmit') : t('fileManager.assemble.submit')}
         </Button>

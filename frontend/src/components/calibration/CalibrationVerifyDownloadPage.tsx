@@ -9,6 +9,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { tempDefaultsForFilament } from '../../utils/calibrationTemp';
 import { usePresetCatalogue } from '../slicing-setup/usePresetCatalogue';
+import { useSlicerChoice } from '../slicing-setup/useSlicerChoice';
 import { CalibrationSlicingSection, type CalibrationPresetChoice } from './CalibrationSlicingSection';
 import { EMPTY_CALIBRATION_CHOICE, choiceDecidedNow } from './calibrationChoice';
 
@@ -34,10 +35,11 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
   const { t } = useTranslation();
   const { showToast } = useToast();
 
-  // The section owns the catalogue; the page reads the same listing for the
-  // chosen filament's stored flow ratio and type.
+  // The page and section share the same slicer and catalogue revision.
   const { hasPermission } = useAuth();
-  const catalogue = usePresetCatalogue({ enabled: hasPermission('library:upload') });
+  const canPickPresets = hasPermission('library:upload');
+  const slicer = useSlicerChoice(`bamdude:slicer-pick:calibration:${printerId}`);
+  const catalogue = usePresetCatalogue({ enabled: canPickPresets, slicer: slicer.forPresets });
   const presets = catalogue.data;
 
   // The slicer, the bed plate and the preset triplet, as the section decided them.
@@ -228,7 +230,7 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
       cali_mode: caliMode,
       spec: buildSpec(),
       bed_type: bedType,
-      ...(slicing.slicer ? { slicer: slicing.slicer } : {}),
+      ...(slicer.effective ? { slicer: slicer.effective } : {}),
     };
     if (isFlowRate) body.pass_n = flowPassN;
     setIsBaking(true);
@@ -331,6 +333,8 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
           needsPresetPicker
           nozzle={nozzleDiameter}
           slot={null}
+          catalogue={catalogue}
+          slicer={slicer}
           value={slicing}
           onChange={setSlicing}
           disabled={isDownloading || isBaking}

@@ -32,6 +32,7 @@ import {
   pickFamilyFilament,
   pickPrinterFallback,
   pickProcessForField,
+  presetTiersForPrinter,
 } from '../../utils/slicePresetPicker';
 import {
   buildCompatibilityIndex,
@@ -49,9 +50,9 @@ import { applyPipeline } from '../slicing-setup/applyPipeline';
 import { POLICIES, useChoiceFields, type ChoiceEvent, type ChoicePolicy } from '../slicing-setup/choiceState';
 import { buildPresetField } from '../slicing-setup/presetSets';
 import { useBedPlate } from '../slicing-setup/useBedPlate';
-import { usePresetCatalogue } from '../slicing-setup/usePresetCatalogue';
+import type { PresetCatalogue } from '../slicing-setup/usePresetCatalogue';
 import { usePresetFilters } from '../slicing-setup/usePresetFilters';
-import { useSlicerChoice } from '../slicing-setup/useSlicerChoice';
+import type { useSlicerChoice } from '../slicing-setup/useSlicerChoice';
 
 /** The loaded slot the filament is picked for; `key` = `${extruderId}:${amsId}:${slotId}`. */
 export interface CalibrationSlot {
@@ -86,6 +87,8 @@ interface Props {
   needsPresetPicker: boolean;
   nozzle: number;
   slot: CalibrationSlot | null;
+  catalogue: PresetCatalogue;
+  slicer: ReturnType<typeof useSlicerChoice>;
   value: CalibrationPresetChoice;
   onChange: (v: CalibrationPresetChoice) => void;
   disabled?: boolean;
@@ -104,6 +107,8 @@ export function CalibrationSlicingSection({
   needsPresetPicker,
   nozzle,
   slot,
+  catalogue,
+  slicer,
   value,
   onChange,
   disabled,
@@ -115,12 +120,10 @@ export function CalibrationSlicingSection({
 
   // Without library:upload there is no catalogue: no request, a sentence, and
   // Start is unavailable (spec §9).
-  const catalogue = usePresetCatalogue({ enabled: canSlice });
   const data = catalogue.data;
   // The family facts come from the farm read, on the preset page of a slicing
   // method only — the read is enabled with every switch off.
   const filters = usePresetFilters({ source: true, farmRead: preset && needsPresetPicker ? 'always' : 'switches' });
-  const slicer = useSlicerChoice(`bamdude:slicer-pick:calibration:${printerId}`);
   const bed = useBedPlate(slicer.effective);
 
   const printerQuery = useQuery({
@@ -145,7 +148,10 @@ export function CalibrationSlicingSection({
   const selectedPrinter = data && printerRef ? findPreset(data, printerRef, 'printer') : null;
   const selectedPrinterName = selectedPrinter?.name ?? null;
   const printerParents = useMemo(() => buildPrinterParents(data, printerRef?.source ?? null), [data, printerRef?.source]);
-  const compatIndex = useMemo(() => buildCompatibilityIndex(printerModels, printerParents), [printerModels, printerParents]);
+  const compatIndex = useMemo(
+    () => buildCompatibilityIndex(printerModels, printerParents, data),
+    [printerModels, printerParents, data],
+  );
 
   // R4: the proven match, one function for the list, Start and the sets.
   const proven = useCallback(
@@ -205,10 +211,13 @@ export function CalibrationSlicingSection({
     return first ? { source: first.source, id: first.id } : null;
   };
   const pickProcess = (d: UnifiedPresetsResponse): PresetRef | null =>
-    pickProcessForField(d, processField?.pickKeep ?? (() => true), selectedPrinterName, compatIndex, preset ? { fittingOnly: true } : undefined);
+    pickProcessForField(d, processField?.pickKeep ?? (() => true), selectedPrinterName, compatIndex, {
+      fittingOnly: preset,
+      printerSource,
+    });
   const pickFilament = (d: UnifiedPresetsResponse): PresetRef | null => {
-    if (preset) return familyAnswered ? pickFamilyFilament(d, familyRefs, selectedPrinterName, compatIndex) : null;
-    const all = TIER_ORDER.flatMap((tier) => d[tier].filament).filter((p) => !mismatch(p, 'filament'));
+    if (preset) return familyAnswered ? pickFamilyFilament(d, familyRefs, selectedPrinterName, compatIndex, printerSource) : null;
+    const all = presetTiersForPrinter(printerSource).flatMap((tier) => d[tier].filament).filter((p) => !mismatch(p, 'filament'));
     const first = all.find((p) => filamentField?.pickKeep(p) ?? true) ?? all[0];
     return first ? { source: first.source, id: first.id } : null;
   };
@@ -224,6 +233,7 @@ export function CalibrationSlicingSection({
   // The first pick: once the listing and (preset page) the physical model are in.
   const [seeded, setSeeded] = useState(false);
   const seenData = useRef<UnifiedPresetsResponse | undefined>(undefined);
+  const seenPrinterSource = useRef(printerSource);
   useEffect(() => {
     if (seeded || !data || (preset && physicalModel === null)) return;
     seenData.current = data;
@@ -235,21 +245,28 @@ export function CalibrationSlicingSection({
   // The printer context: automatic process and filament picks follow.
   useEffect(() => {
     if (!seeded || !data) return;
-    choices.dispatch('process', { kind: 'printerChanged', usable: usable(data, 'process'), repick: () => pickProcess(data) }, POLICY.process);
-    choices.dispatch('filament', { kind: 'printerChanged', usable: usable(data, 'filament'), repick: () => pickFilament(data) }, POLICY.filament);
+    const sourceChanged = seenPrinterSource.current !== printerSource;
+    seenPrinterSource.current = printerSource;
+    choices.dispatch('process', {
+      kind: 'printerChanged', usable: sourceChanged ? () => false : usable(data, 'process'), repick: () => pickProcess(data),
+    }, POLICY.process);
+    choices.dispatch('filament', {
+      kind: 'printerChanged', usable: sourceChanged ? () => false : usable(data, 'filament'), repick: () => pickFilament(data),
+    }, POLICY.filament);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seeded, selectedPrinterName, compatIndex]);
+  }, [seeded, selectedPrinterName, printerSource, compatIndex]);
 
   // A new listing: R6's refresh for every field.
   useEffect(() => {
     if (!seeded || !data || seenData.current === data) return;
     seenData.current = data;
-    choices.dispatch('printer', { kind: 'refresh', listed: listed(data, 'printer'), usable: () => true, repick: () => pickPrinter(data) }, POLICY.printer);
+    const raw = catalogue.rawData ?? data;
+    choices.dispatch('printer', { kind: 'refresh', listed: listed(raw, 'printer'), usable: listed(data, 'printer'), repick: () => pickPrinter(data) }, POLICY.printer);
     const named: FieldKey[] = [];
     for (const key of ['process', 'filament'] as const) {
       const event: ChoiceEvent = {
         kind: 'refresh',
-        listed: listed(data, key),
+        listed: listed(raw, key),
         usable: usable(data, key),
         repick: () => (key === 'process' ? pickProcess(data) : pickFilament(data)),
       };
@@ -467,6 +484,7 @@ export function CalibrationSlicingSection({
             label={fieldLabel.printer}
             field={printerField}
             value={printerRef}
+            slicer={slicer.forPresets}
             gone={choices.get('printer').gone}
             notProven={preset && printerRef !== null && !printerProven}
             otherModel={otherModel}
@@ -478,6 +496,7 @@ export function CalibrationSlicingSection({
             label={fieldLabel.process}
             field={processField}
             value={processRef}
+            slicer={slicer.forPresets}
             onShowAll={showAll}
             onChange={(ref) => pickByHand('process', ref)}
             disabled={disabled}
@@ -487,6 +506,7 @@ export function CalibrationSlicingSection({
               label={fieldLabel.filament}
               field={filamentField}
               value={filamentRef}
+              slicer={slicer.forPresets}
               onShowAll={showAll}
               onChange={(ref) => pickByHand('filament', ref)}
               disabled={disabled}

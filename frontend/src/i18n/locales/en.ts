@@ -3005,14 +3005,16 @@ export default {
     noPrinters: 'No printers to update.',
     batchStarted: 'Firmware upload task created',
     batchError: 'Could not start the firmware update',
+    activeUpload: 'Firmware · {{status}}',
     status: {
       pending: 'Pending',
       uploading: 'Uploading',
-      uploaded: 'Uploaded',
+      uploaded: 'Transferred to SD card',
       applying: 'Applying',
       applied: 'Applied',
       skipped: 'Skipped',
       failed: 'Failed',
+      interrupted: 'Interrupted',
     },
     manualApply: {
       generic: 'On the printer screen, open Settings → Firmware and start the update (it reads the file from the SD card).',
@@ -3559,10 +3561,10 @@ export default {
       loading: 'Loading saved settings…',
       loadError: 'Could not load saved settings.',
       confirmDelete: 'Delete these saved settings? This cannot be undone.',
-      staleWarning: 'One or more referenced presets no longer exist. Re-save from the Slice dialog to fix.',
+      staleWarning: 'One or more referenced presets no longer exist. Pick replacements in Slice or Assemble project, then save the settings again.',
       empty: {
         title: 'Nothing saved yet.',
-        howto: 'Open the Slice dialog for any file, pick your printer / process / filaments / bed type, then click "Save these settings". They will appear here.'
+        howto: 'In Slice or in a printer row in Assemble project, choose the printer, process, filament and bed plate. Click "Save these settings" to add them here.'
       },
       field: {
         name: 'Name',
@@ -6124,6 +6126,8 @@ export default {
     },
     noCatalogue: 'Choosing presets here needs the right to slice files.',
     fromPreset: 'Preset to start from',
+    presetSlicer: 'Slicer for presets',
+    otherSlicer: 'The selected profile is from the other slicer’s cloud. Choose a profile or switch slicers.',
   },
   slice: {
     title: 'Slice model',

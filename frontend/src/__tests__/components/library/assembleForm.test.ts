@@ -93,7 +93,7 @@ describe('assembleForm', () => {
         { file_id: 4, quantity: 6, fill: false, orientation: 'as_is' },
         { file_id: 9, quantity: 1, fill: true, orientation: 'x+90' },
       ],
-      targets: [{ printer_preset: ref('1'), process_preset: ref('2'), filament_preset: ref('3'), nozzle: 2 }],
+      targets: [{ printer_preset: ref('1'), process_preset: ref('2'), filament_preset: ref('3'), nozzle: 2, bed_type: 'Textured PEI Plate' }],
       layout: { spacing: 1.5, rotation_step: 90, centre: true, split_plates: true },
       name: 'jars',
     });

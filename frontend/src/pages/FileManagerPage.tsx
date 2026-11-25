@@ -819,6 +819,10 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
 // ``isSliceable(file)`` / ``isMultiPlate(file)`` replace the two
 // filename-suffix helpers that used to live here.
 
+function canAssembleFile(file: LibraryFileListItem): boolean {
+  return ['stl', 'obj', 'step', 'stp'].includes((file.file_type ?? '').toLowerCase());
+}
+
 // File Card
 interface FileCardProps {
   file: LibraryFileListItem;
@@ -845,6 +849,7 @@ interface FileCardProps {
   onDetails?: (file: LibraryFileListItem) => void;
   onRename?: (file: LibraryFileListItem) => void;
   onSwapDeclaration?: (file: LibraryFileListItem) => void;
+  onAssemble?: (file: LibraryFileListItem) => void;
   onRelayout?: (file: LibraryFileListItem) => void;
   onLink?: (file: LibraryFileListItem) => void;
   onGenerateThumbnail?: (file: LibraryFileListItem) => void;
@@ -965,7 +970,7 @@ function ThumbnailMenuEntry({ file, t, hasPermission, canModify, onGenerate, onC
   );
 }
 
-function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onAddToOrder, onSlice, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onViewImage, onViewPdf, onDetails, onModelCard, onDownload, onRename, onSwapDeclaration, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onMove, onTags, onDelete }: {
+function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onAddToOrder, onSlice, onAssemble, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onViewImage, onViewPdf, onDetails, onModelCard, onDownload, onRename, onSwapDeclaration, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onMove, onTags, onDelete }: {
   file: LibraryFileListItem;
   t: TFunction;
   hasPermission: (permission: Permission) => boolean;
@@ -986,6 +991,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   onRename: (f: LibraryFileListItem) => void;
   /** The file's swap declaration for future prints (swap-source-declaration spec r3 §7). */
   onSwapDeclaration?: (f: LibraryFileListItem) => void;
+  onAssemble?: (f: LibraryFileListItem) => void;
   onRelayout?: (f: LibraryFileListItem) => void;
   onGenerateThumbnail: (f: LibraryFileListItem) => void;
   onCancelThumbnail?: (f: LibraryFileListItem) => void;
@@ -1097,6 +1103,15 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
               >
                 {useSlicerApi ? <Cog className="w-3.5 h-3.5" /> : <ExternalLink className="w-3.5 h-3.5" />}
                 {useSlicerApi ? t('slice.action') : t('modelViewer.openInSlicer')}
+              </button>
+            )}
+            {canAssembleFile(file) && onAssemble && hasPermission('library:upload') && (
+              <button
+                className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                onClick={() => { onAssemble(file); closeMenu(); }}
+              >
+                <LayoutGrid className="w-3.5 h-3.5" />
+                {t('fileManager.assemble.action')}
               </button>
             )}
             {file.can_relayout && onRelayout && hasPermission('library:upload') && (
@@ -1278,7 +1293,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onOpen, onViewImage, onViewPdf, onDetails, onModelCard, onRename, onSwapDeclaration, onLink, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onPlateGallery, onAddToOrder, onMove, dragProps, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onAssemble, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onOpen, onViewImage, onViewPdf, onDetails, onModelCard, onRename, onSwapDeclaration, onLink, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onPlateGallery, onAddToOrder, onMove, dragProps, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   // ⚠️ The two modes need different permissions: slicing through the sidecar
   // writes a new library file, while opening in a desktop slicer is a download.
   const sliceDisabled = useSlicerApi ? !hasPermission('library:upload') : !hasPermission('library:read');
@@ -1644,6 +1659,15 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
                 >
                   {useSlicerApi ? <Cog className="w-3.5 h-3.5" /> : <ExternalLink className="w-3.5 h-3.5" />}
                   {useSlicerApi ? t('slice.action') : t('modelViewer.openInSlicer')}
+                </button>
+              )}
+              {canAssembleFile(file) && onAssemble && hasPermission('library:upload') && (
+                <button
+                  className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                  onClick={() => { onAssemble(file); closeActions(); }}
+                >
+                  <LayoutGrid className="w-3.5 h-3.5" />
+                  {t('fileManager.assemble.action')}
                 </button>
               )}
               {file.can_relayout && onRelayout && hasPermission('library:upload') && (
@@ -2880,9 +2904,7 @@ export function FileManagerPage() {
     () => (files ?? []).filter((f) => selectedFiles.includes(f.id)),
     [files, selectedFiles],
   );
-  const notAssemblable = selectedForAssembly.filter(
-    (f) => !['stl', 'obj', 'step', 'stp'].includes((f.file_type ?? '').toLowerCase()),
-  );
+  const notAssemblable = selectedForAssembly.filter((file) => !canAssembleFile(file));
   const assemblyBlocked = notAssemblable.length > 0;
 
   // Schedule one file from its own ⋮ menu — a run over one file, which leaves
@@ -3100,6 +3122,8 @@ export function FileManagerPage() {
     setAddToOrderTarget({ file, plateIndex });
   };
 
+  const assembleOne = (file: LibraryFileListItem) => setAssembleMode({ kind: 'new', files: [file] });
+
   const renderFileCard = (file: LibraryFileListItem) => (
     <FileCard
       key={file.id}
@@ -3116,6 +3140,7 @@ export function FileManagerPage() {
       }}
       onPrint={setPrintFile}
       onSlice={setSliceFile}
+      onAssemble={assembleOne}
       onRelayout={(f) => setAssembleMode({ kind: 'relayout', fileId: f.id, filename: f.filename })}
       onOpenInSlicer={handleOpenInSlicer}
       useSlicerApi={settings?.use_slicer_api ?? false}
@@ -4450,6 +4475,7 @@ export function FileManagerPage() {
                         onSchedule={scheduleOne}
                         onAddToOrder={openAddToOrder}
                         onSlice={setSliceFile}
+                        onAssemble={assembleOne}
                         onRelayout={(f) => setAssembleMode({ kind: 'relayout', fileId: f.id, filename: f.filename })}
                         onOpenInSlicer={handleOpenInSlicer}
                         useSlicerApi={settings?.use_slicer_api ?? false}

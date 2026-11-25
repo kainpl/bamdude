@@ -1,7 +1,7 @@
 import { AlertTriangle, Cog, Loader2 } from 'lucide-react';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 
 import { Modal } from './Modal';
 import SlicerSettingsPanel from './SlicerSettingsPanel';
@@ -50,6 +50,7 @@ import { buildPresetField } from './slicing-setup/presetSets';
 import { useBedPlate } from './slicing-setup/useBedPlate';
 import { usePresetCatalogue } from './slicing-setup/usePresetCatalogue';
 import { usePresetFilters } from './slicing-setup/usePresetFilters';
+import { useSavePipeline } from './slicing-setup/useSavePipeline';
 import { useSlicerChoice } from './slicing-setup/useSlicerChoice';
 
 export type SliceSource =
@@ -274,10 +275,6 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   const slicerPickStorageKey = `bamdude:slicer-pick:${source.kind}:${source.id}`;
   const slicer = useSlicerChoice(slicerPickStorageKey);
   const sliceSlicer = slicer.effective;
-  // The bed plate (R8), sent as ``--curr-bed-type``. Remembered when chosen;
-  // an OrcaSlicer-only plate is changed for Bambu Studio and put back after.
-  const bed = useBedPlate(sliceSlicer);
-  const bedType = bed.value;
 
   // The picked process preset's effective values, flattened by the sidecar.
   // ⚠️ Without this the settings panel shows OrcaSlicer's compiled-in defaults —
@@ -393,7 +390,6 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
         })
       : t('slice.filament', 'Filament profile');
 
-  const queryClient = useQueryClient();
   // The presets an assembled project was built from, by source and id. The
   // file itself names them by name only, and a name can exist in two sources
   // (Bambu Cloud lists the stock presets under the bundle's names) — the
@@ -408,13 +404,15 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     staleTime: 60_000,
   });
   const builtFrom = isAssembled ? assemblyQuery.data?.printer : undefined;
+  const bed = useBedPlate(sliceSlicer, { initial: builtFrom?.bed_type });
+  const bedType = bed.value;
   // The dialog's own context for the first pick (R5 *when*): the plates (the
   // file's embedded printer and process) and, for an assembled project, its
   // record. ⚠️ A warm shared catalogue does not bring the first pick forward:
   // a disabled query still hands back its cached data, so the pick effect
   // below asks this flag, not the data.
   const contextReady = !platesQuery.isLoading && !needsPlatePicker && !(isAssembled && assemblyQuery.isLoading);
-  const catalogue = usePresetCatalogue({ enabled: contextReady });
+  const catalogue = usePresetCatalogue({ enabled: contextReady, slicer: slicer.forPresets });
   const data = catalogue.data;
   // The source segment and the farm switches (R2, D4): what the lists OFFER.
   // A filter replaces no choice; the automatic picks read their pick offer.
@@ -445,8 +443,8 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // source may have been saved from another printer.
   const printerParents = useMemo(() => buildPrinterParents(data, printerSource), [data, printerSource]);
   const compatIndex = useMemo<PrinterCompatibilityIndex>(
-    () => buildCompatibilityIndex(printerModelsQuery.data ?? {}, printerParents),
-    [printerModelsQuery.data, printerParents],
+    () => buildCompatibilityIndex(printerModelsQuery.data ?? {}, printerParents, data),
+    [printerModelsQuery.data, printerParents, data],
   );
   // Each printer preset's identity is read through ITS source's lineage.
   const parentsBySource = useMemo(() => buildParentsBySource(data), [data]);
@@ -551,6 +549,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   const pickProcess = (d: UnifiedPresetsResponse): PresetRef | null =>
     pickProcessForField(d, processField?.pickKeep ?? (() => true), selectedPrinterName, compatIndex, {
       file: { ref: builtFrom?.process ?? null, name: embeddedProcess },
+      printerSource,
     });
   const pickFilament = (d: UnifiedPresetsResponse, slot: PlateFilament): PresetRef | null =>
     // The preset the project itself names for this slot comes first (a file
@@ -568,8 +567,9 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       { type: slot.type, color: slot.color },
       selectedPrinterName,
       compatIndex,
+      printerSource,
     )
-    ?? pickFilamentForSlot(d, { type: slot.type, color: slot.color }, selectedPrinterName, compatIndex);
+    ?? pickFilamentForSlot(d, { type: slot.type, color: slot.color }, selectedPrinterName, compatIndex, printerSource);
   // An automatic pick is kept while it is usable: the process while it fits
   // the printer; a filament while it fits AND states the plate's material — a
   // PETG profile does not survive on a PLA plate (#2982).
@@ -593,6 +593,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // printer context below, on the next render, with that printer known.
   const [seeded, setSeeded] = useState(false);
   const seenData = useRef<UnifiedPresetsResponse | undefined>(undefined);
+  const seenPrinterSource = useRef(printerSource);
   useEffect(() => {
     if (seeded || !data || !contextReady) return;
     seenData.current = data;
@@ -606,14 +607,18 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // hand stays, marked beside its field when it is for another printer.
   useEffect(() => {
     if (!seeded || !data) return;
+    const sourceChanged = seenPrinterSource.current !== printerSource;
+    seenPrinterSource.current = printerSource;
     choices.dispatch(
       'process',
-      { kind: 'printerChanged', usable: processUsable(data), repick: () => pickProcess(data) },
+      { kind: 'printerChanged', usable: sourceChanged ? () => false : processUsable(data), repick: () => pickProcess(data) },
       POLICIES.sliceProcess,
     );
-    forEachFilament((slot) => ({ kind: 'printerChanged', usable: filamentUsable(data, slot), repick: () => pickFilament(data, slot) }));
+    forEachFilament((slot) => ({
+      kind: 'printerChanged', usable: sourceChanged ? () => false : filamentUsable(data, slot), repick: () => pickFilament(data, slot),
+    }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seeded, selectedPrinterName, compatIndex]);
+  }, [seeded, selectedPrinterName, printerSource, compatIndex]);
 
   // The slot list changed. A new COUNT renumbers the slots (slot 2 of the new
   // plate is not slot 2 of the old one): every slot is picked again and its
@@ -645,10 +650,11 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   useEffect(() => {
     if (!seeded || !data || seenData.current === data) return;
     seenData.current = data;
-    const listed = (slot: Slot) => (r: PresetRef) => findPreset(data, r, slot) !== null;
+    const raw = catalogue.rawData ?? data;
+    const listed = (slot: Slot) => (r: PresetRef) => findPreset(raw, r, slot) !== null;
     choices.dispatch(
       'printer',
-      { kind: 'refresh', listed: listed('printer'), usable: () => true, repick: () => pickPrinter(data) },
+      { kind: 'refresh', listed: listed('printer'), usable: (r) => findPreset(data, r, 'printer') !== null, repick: () => pickPrinter(data) },
       POLICIES.slicePrinter,
     );
     const named: ('process' | number)[] = [];
@@ -794,9 +800,8 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // defaults before the slicer returned the real slot map.
   // Upstream Bambuddy commit a64cfbbd.
   const isReady =
-    !choiceBlocked &&
+    selectionSendable() &&
     filamentReqsQuery.isSuccess &&
-    filamentPresets.length > 0 &&
     (!isMultiPlate || sliceAllPlates || selectedPlate != null);
   const isEnqueuing = enqueueMutation.isPending;
 
@@ -818,22 +823,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     setUnresolvedBundleSlots(null);
     setAppliedSet(null);
   };
-  const createPipelineMutation = useMutation({
-    mutationFn: (body: {
-      name: string;
-      printer_preset: PresetRef;
-      process_preset: PresetRef;
-      filament_presets: PresetRef[];
-      bed_type: string | null;
-    }) => api.createSlicerPipeline(body),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['slicer-pipelines'] });
-      showToast(t('slice.pipelines.toast.saved', 'Pipeline saved'), 'success');
-    },
-    onError: (err: Error) => {
-      showToast(err.message || t('slice.pipelines.toast.saveFailed', 'Save failed'), 'error');
-    },
-  });
+  const createPipelineMutation = useSavePipeline();
 
   // A person's pick in one field: it becomes that field's choice and retires
   // the notes about the last applied set.
@@ -1201,6 +1191,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                 label={t('slice.printer', 'Printer profile')}
                 field={printerField}
                 value={printerPreset}
+                slicer={slicer.forPresets}
                 gone={choices.get('printer').gone}
                 onShowAll={showAll}
                 onChange={(ref) => pickByHand('printer', ref, POLICIES.slicePrinter)}
@@ -1216,6 +1207,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                 label={t('slice.process', 'Process profile')}
                 field={processField}
                 value={processPreset}
+                slicer={slicer.forPresets}
                 onShowAll={showAll}
                 onChange={(ref) => {
                   setGoneChoices((gone) => gone.filter((g) => g !== 'process'));
@@ -1268,6 +1260,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                     label={label}
                     field={filamentField}
                     value={filamentPresets[idx] ?? null}
+                    slicer={slicer.forPresets}
                     onShowAll={showAll}
                     onChange={(ref) => {
                       setGoneChoices((gone) => gone.filter((g) => g !== idx));

@@ -62,6 +62,12 @@ def test_free_rotation_and_search_round_trip_explicitly():
     assert len(rotations(15)) == 24
 
 
+def test_legacy_record_without_a_bed_type():
+    raw = json.loads(dump(_record()))
+    del raw["printer"]["bed_type"]
+    assert load(json.dumps(raw).encode()).printer.bed_type is None
+
+
 def test_rotations_per_step():
     assert rotations(0) == (0.0,) and rotations(180) == (0.0, 180.0)
     assert rotations(90) == (0.0, 90.0, 180.0, 270.0) and len(rotations(45)) == 8

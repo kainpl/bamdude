@@ -46,6 +46,7 @@ def compose_project_settings(
     *,
     nozzle: int,
     nozzle_count: int,
+    bed_type: str | None = None,
 ) -> bytes:
     """The settings of a single-filament project printed with extruder ``nozzle`` (1-based)."""
     config: dict = {}
@@ -77,4 +78,6 @@ def compose_project_settings(
         # reach the layout was not made for. It keeps both keys when it saves or slices.
         config["filament_map"] = [str(nozzle)]
         config["filament_map_mode"] = "Manual"
+    if bed_type is not None:
+        config["curr_bed_type"] = bed_type
     return json.dumps(config, indent=4, sort_keys=True, ensure_ascii=False).encode("utf-8")

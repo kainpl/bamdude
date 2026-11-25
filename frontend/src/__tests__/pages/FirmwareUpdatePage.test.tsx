@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { FirmwareUpdatePage } from '../../pages/FirmwareUpdatePage';
@@ -153,4 +153,41 @@ describe('FirmwareUpdatePage', () => {
     await waitFor(() => expect(screen.getByText('Single')).toBeInTheDocument());
     expect(screen.getByText(/01\.00\.00\.00/)).toBeInTheDocument();
   });
+
+  it('restores an active batch and replaces its progress and terminal states using polling alone', async () => {
+    const common = {
+      model: 'P1S', from_version: '01.00.00.00', to_version: '01.02.00.00', message: null, error: null,
+    };
+    const running = {
+      id: 12, created_at: null, source: 'bulk', status: 'running', total: 2, succeeded: 0, skipped: 0, failed: 0,
+      items: [
+        { ...common, printer_id: 1, status: 'uploading', percent: 42 },
+        { ...common, printer_id: 2, status: 'pending', percent: null },
+      ],
+    };
+    let complete = false;
+    server.use(
+      http.get('/api/v1/firmware/batch', ({ request }) =>
+        HttpResponse.json(complete && new URL(request.url).searchParams.has('active_only') ? [] : [running])),
+      http.get('/api/v1/firmware/batch/12', () => HttpResponse.json(complete ? {
+        ...running, status: 'completed', succeeded: 1, failed: 1,
+        items: [
+          { ...common, printer_id: 1, status: 'uploaded', percent: 100, message: 'firmware.manualApply.a1' },
+          { ...common, printer_id: 2, status: 'failed', percent: null, error: 'Printer refused storage (553)' },
+        ],
+      } : running)),
+    );
+    render(<FirmwareUpdatePage />);
+    const batch = await screen.findByRole('heading', { name: 'Upgrade Status · #12' });
+    const panel = within(batch.parentElement!);
+    expect(await panel.findByRole('progressbar', { name: 'Alpha: Upgrade Status' })).toHaveAttribute('value', '42');
+    expect(panel.getByText('Pending')).toBeInTheDocument();
+    const upgrade = await screen.findByRole('button', { name: /Upgrade \(1\)/i }, { timeout: 5000 });
+    expect(upgrade).toBeDisabled();
+    complete = true;
+    expect(await panel.findByText('Transferred to SD card', undefined, { timeout: 5000 })).toBeInTheDocument();
+    expect(panel.getByText('Printer refused storage (553)')).toBeInTheDocument();
+    expect(panel.queryByRole('progressbar')).not.toBeInTheDocument();
+    expect(upgrade).toBeEnabled();
+  }, 10_000);
 });

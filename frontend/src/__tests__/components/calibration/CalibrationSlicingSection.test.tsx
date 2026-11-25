@@ -4,7 +4,7 @@
  */
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -24,6 +24,9 @@ import {
 } from '../../../components/calibration/CalibrationSlicingSection';
 import { EMPTY_CALIBRATION_CHOICE } from '../../../components/calibration/calibrationChoice';
 import { __resetSharedMemoryForTests } from '../../../components/slicing-setup/memory';
+import { usePresetCatalogue } from '../../../components/slicing-setup/usePresetCatalogue';
+import { useSlicerChoice } from '../../../components/slicing-setup/useSlicerChoice';
+import { useAuth } from '../../../contexts/AuthContext';
 import { __resetPresetContextForTests, bumpPresetContext } from '../../../utils/presetContext';
 import { pickFamilyFilament } from '../../../utils/slicePresetPicker';
 import { EMPTY_COMPATIBILITY_INDEX } from '../../../utils/slicerPrinterMatch';
@@ -83,6 +86,9 @@ let latest: CalibrationPresetChoice = EMPTY_CALIBRATION_CHOICE;
 type SectionProps = Partial<Parameters<typeof CalibrationSlicingSection>[0]>;
 function Harness(props: SectionProps) {
   const [value, setValue] = useState<CalibrationPresetChoice>(EMPTY_CALIBRATION_CHOICE);
+  const enabled = useAuth().hasPermission('library:upload');
+  const slicer = useSlicerChoice('bamdude:slicer-pick:calibration:1', { enabled });
+  const catalogue = usePresetCatalogue({ enabled, slicer: slicer.forPresets });
   return (
     <CalibrationSlicingSection
       printerId={1}
@@ -90,6 +96,8 @@ function Harness(props: SectionProps) {
       needsPresetPicker
       nozzle={0.4}
       slot={SLOT_A}
+      slicer={slicer}
+      catalogue={catalogue}
       value={value}
       onChange={(v) => {
         latest = v;
@@ -146,6 +154,24 @@ beforeEach(() => {
   __resetPresetContextForTests();
   latest = EMPTY_CALIBRATION_CHOICE;
   auth.permissions = new Set(['library:upload', 'printers:read', 'pipelines:read']);
+});
+
+it.each(['preset', 'verify'] as const)('filters the %s calibration catalogue by the active slicer', async (mode) => {
+  const tier = (source: 'cloud' | 'orca_cloud', tag: string) => ({
+    printer: [std(A1_04, { id: `${tag}1`, source })],
+    process: [std(A1_PROCESS, { id: `${tag}2`, source })],
+    filament: [std(BASIC, { id: `${tag}3`, source, filament_type: 'PLA' })],
+  });
+  spies({ presets: { ...listing(), cloud: tier('cloud', 'stock'), orca_cloud: tier('orca_cloud', 'orca') } });
+  vi.mocked(api.getSlicerHealth).mockResolvedValue({ healthy: true, version: '2.3', error: null, url: null } as never);
+  localStorage.setItem('bamdude:presets:source-filter', 'all');
+  mount({ mode });
+  const fields = await Promise.all(['Printer profile', 'Process profile', 'Filament profile'].map(field));
+  expect(fields.flatMap(options)).toEqual(expect.arrayContaining(['cloud:stock1', 'cloud:stock2', 'cloud:stock3']));
+  expect(fields.flatMap(options).some((value) => value.startsWith('orca_cloud:'))).toBe(false);
+  fireEvent.click(screen.getByRole('button', { name: /OrcaSlicer/ }));
+  await waitFor(() => expect(fields.flatMap(options)).toEqual(expect.arrayContaining(['orca_cloud:orca1', 'orca_cloud:orca2', 'orca_cloud:orca3'])));
+  expect(fields.flatMap(options).some((value) => value.startsWith('cloud:'))).toBe(false);
 });
 afterEach(() => vi.restoreAllMocks());
 

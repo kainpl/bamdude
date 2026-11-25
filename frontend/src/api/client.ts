@@ -6262,17 +6262,13 @@ export interface UnifiedPreset {
   // Populated for local-preset filament entries; ``null`` for cloud /
   // standard (the listing doesn't resolve the full JSON for those).
   filament_flow_ratio?: number | null;
-  // The slicer's own compatible_printers list (process / filament slots),
-  // populated for the local tier. The SliceModal + calibration matcher
-  // (slicerPrinterMatch) uses it as the authoritative compatibility signal
-  // against the selected printer; null on cloud / standard stubs, where the
-  // matcher falls back to the `@BBL <model> <nozzle>` name convention (#1325).
+  // Own compatible-printer list (process / filament slots). Thin entries
+  // may inherit compatibility from the preset they were saved from.
   compatible_printers?: string[] | null;
-  // Printer slot only: the name of the preset this one was saved from, for a
-  // preset that is not a system preset. Read through `utils/printerPresetParents`
-  // — a renamed printer preset takes its model, nozzle and compatible presets
-  // from this parent. Never the identity sent to the slicer.
+  // Name of the preset a custom preset was saved from.
   inherits?: string | null;
+  // Exact Bambu Cloud base ID when known for a process or filament preset.
+  inherits_id?: string | null;
 }
 
 export interface UnifiedPresetsBySlot {
@@ -6427,6 +6423,7 @@ export interface AssemblyTarget {
   filament_preset: PresetRef;
   /** 1-based extruder the parts are printed with. */
   nozzle: number;
+  bed_type?: BedType | null;
 }
 
 export interface AssemblyLayout {
@@ -6442,6 +6439,7 @@ export interface AssemblyRequest {
   targets: AssemblyTarget[];
   layout: AssemblyLayout;
   name: string;
+  slicer?: 'orcaslicer' | 'bambu_studio';
 }
 
 export interface RelayoutRequest extends AssemblyRequest {
@@ -6458,7 +6456,7 @@ export interface AssemblyRecordResponse {
   set_id: string;
   base_name: string;
   parts: { name: string; quantity: number; fill: boolean; orientation: AssemblyOrientation }[];
-  printer: { printer: PresetRef; process: PresetRef; filament: PresetRef; nozzle: number; model: string };
+  printer: { printer: PresetRef; process: PresetRef; filament: PresetRef; nozzle: number; model: string; bed_type?: string | null };
   layout: AssemblyLayout;
   plates: { plate: number; counts: Record<string, number>; fill: boolean }[];
   set_files: { id: number; filename: string }[];
@@ -17427,7 +17425,8 @@ export const firmwareApi = {
       body: JSON.stringify({ targets, skip_printing: skipPrinting }),
     }),
   getBatch: (runId: number) => request<FirmwareBatchRun>(`/firmware/batch/${runId}`),
-  listBatches: () => request<FirmwareBatchRun[]>('/firmware/batch'),
+  listBatches: (activeOnly = false) =>
+    request<FirmwareBatchRun[]>(`/firmware/batch${activeOnly ? '?active_only=true' : ''}`),
   downloadToStore: (model: string, version: string) =>
     request<{ model: string; version: string; cached: boolean }>('/firmware/store/download', {
       method: 'POST',
@@ -17452,6 +17451,7 @@ export interface FirmwareBatchItem {
   status: string;
   message: string | null;
   error: string | null;
+  percent?: number | null;
 }
 export interface FirmwareBatchRun {
   id: number;

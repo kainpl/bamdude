@@ -19,22 +19,25 @@ function read(key: string): SlicerKind | null {
   }
 }
 
-export function useSlicerChoice(memoryKey: string): {
+export function useSlicerChoice(memoryKey: string | null, options?: { catalogueOnly?: boolean; enabled?: boolean }): {
   effective: SlicerKind | null;
+  forPresets: SlicerKind | null;
   picked: SlicerKind | null;
   choose: (k: SlicerKind) => void;
 } {
-  const [picked, setPicked] = useState<SlicerKind | null>(() => read(memoryKey));
-  const orca = useSlicerHealth('orcaslicer');
-  const bambu = useSlicerHealth('bambu_studio');
-  const settings = useQuery({ queryKey: ['ui-preferences'], queryFn: api.getUiPreferences, staleTime: 60_000 });
+  const [picked, setPicked] = useState<SlicerKind | null>(() => memoryKey === null ? null : read(memoryKey));
+  const enabled = options?.enabled ?? true;
+  const catalogueOnly = options?.catalogueOnly ?? false;
+  const orca = useSlicerHealth('orcaslicer', undefined, enabled && !catalogueOnly);
+  const bambu = useSlicerHealth('bambu_studio', undefined, enabled && !catalogueOnly);
+  const settings = useQuery({ queryKey: ['ui-preferences'], queryFn: api.getUiPreferences, staleTime: 60_000, enabled });
   const preferred = asKind(settings.data?.preferred_slicer);
 
   const choose = useCallback(
     (kind: SlicerKind) => {
       setPicked(kind);
       try {
-        if (typeof localStorage !== 'undefined') localStorage.setItem(memoryKey, kind);
+        if (memoryKey !== null && typeof localStorage !== 'undefined') localStorage.setItem(memoryKey, kind);
       } catch {
         /* private mode / quota — the choice lives for this form */
       }
@@ -42,15 +45,19 @@ export function useSlicerChoice(memoryKey: string): {
     [memoryKey],
   );
 
-  let effective: SlicerKind | null;
-  if (orca.isLoading || bambu.isLoading) effective = null;
-  else {
+  const preferredOrDefault = picked ?? preferred ?? (settings.isPending ? null : 'bambu_studio');
+  let effective: SlicerKind | null = null;
+  let forPresets: SlicerKind | null = null;
+  if (enabled && catalogueOnly) {
+    effective = forPresets = preferredOrDefault;
+  } else if (enabled && !orca.isLoading && !bambu.isLoading) {
     const orcaUp = orca.data?.healthy === true;
     const bambuUp = bambu.data?.healthy === true;
     if (orcaUp && !bambuUp) effective = 'orcaslicer';
     else if (bambuUp && !orcaUp) effective = 'bambu_studio';
-    else if (orcaUp && bambuUp) effective = picked ?? preferred ?? 'bambu_studio';
+    else if (orcaUp && bambuUp) effective = preferredOrDefault;
     else effective = picked ?? preferred;
+    forPresets = effective ?? preferredOrDefault;
   }
-  return { effective, picked, choose };
+  return { effective, forPresets, picked, choose };
 }

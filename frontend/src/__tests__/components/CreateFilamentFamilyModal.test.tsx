@@ -28,6 +28,7 @@ vi.mock('../../api/client', () => ({
     getCloudStatus: vi.fn().mockResolvedValue({ is_authenticated: false, email: null }),
     orcaCloudStatus: vi.fn().mockResolvedValue({ connected: false }),
     getSlicerPresets: vi.fn(),
+    getCloudSettingDetail: vi.fn().mockResolvedValue({ name: 'Cloud PETG', setting: {} }),
     getSettings: vi.fn().mockResolvedValue({}),
     // read by the providers the test render wraps the dialog in
     getUiPreferences: vi.fn().mockResolvedValue({}),
@@ -152,7 +153,7 @@ describe('CreateFilamentFamilyModal', () => {
   };
   const fromPreset = () => fireEvent.click(screen.getByLabelText('From an existing preset'));
 
-  it('no Standard tier, and the list can be searched', async () => {
+  it('filters the preset picker by slicer and keeps it searchable', async () => {
     vi.mocked(api.getSlicerPresets).mockResolvedValue(
       tiers({
         local: [fil('local', '7', 'My PETG')],
@@ -167,8 +168,17 @@ describe('CreateFilamentFamilyModal', () => {
     const select = (await screen.findByLabelText('Preset to start from')) as HTMLSelectElement;
     await waitFor(() => expect(Array.from(select.options).map((o) => o.value)).toContain('local:7'));
     const values = Array.from(select.options).map((o) => o.value);
-    expect(values).toEqual(expect.arrayContaining(['local:7', 'cloud:PFUSx', 'orca_cloud:o1']));
+    expect(values).toEqual(expect.arrayContaining(['local:7', 'cloud:PFUSx']));
+    expect(values).not.toContain('orca_cloud:o1');
     expect(values).not.toContain('standard:Generic PETG');
+    fireEvent.change(select, { target: { value: 'cloud:PFUSx' } });
+    fireEvent.click(screen.getByRole('button', { name: 'OrcaSlicer' }));
+    expect(Array.from(select.options).map((o) => o.value)).toContain('orca_cloud:o1');
+    expect(Array.from(select.options).map((o) => o.value)).not.toContain('cloud:PFUSx');
+    expect(select).toHaveValue('');
+    expect(screen.getByText(/selected profile is from the other slicer/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'BambuStudio' }));
+    expect(select).toHaveValue('cloud:PFUSx');
     expect(screen.getByRole('button', { name: /Search: Preset to start from/ })).toBeInTheDocument();
   });
 

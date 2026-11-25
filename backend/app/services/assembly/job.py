@@ -191,7 +191,12 @@ async def _prepare_rows(plan: Plan) -> tuple[list[Row], list]:
                     continue
                 row.bed_size = geometry.bed_size
                 row.settings = compose_project_settings(
-                    process, filament, printer, nozzle=request.nozzle, nozzle_count=len(geometry.nozzles)
+                    process,
+                    filament,
+                    printer,
+                    nozzle=request.nozzle,
+                    nozzle_count=len(geometry.nozzles),
+                    bed_type=request.bed_type,
                 )
                 await db.commit()  # the walker cached the parents it fetched
             except PresetUnresolved as error:
@@ -259,6 +264,7 @@ def _stage(root: Path, plan: Plan, rows: list[Row]) -> None:
                     "filament": row.request.filament_preset.model_dump(),
                     "nozzle": row.request.nozzle,
                     "model": row.model or "",
+                    "bed_type": row.request.bed_type,
                 },
             }
         )

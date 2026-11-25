@@ -143,7 +143,7 @@ describe('CalibrationVerifyDownloadPage', () => {
       .mockResolvedValue({ blob: new Blob(['x']), filename: 'probe.3mf' });
     const user = userEvent.setup();
     mount();
-    await waitFor(() => expect(sliceButton()).toBeEnabled());
+    await waitFor(() => expect(sliceButton()).toBeEnabled(), { timeout: 5000 });
     let release: (v: UnifiedPresetsResponse) => void = () => undefined;
     vi.mocked(api.getSlicerPresets).mockImplementation(
       () => new Promise<UnifiedPresetsResponse>((resolve) => (release = resolve)),

@@ -50,6 +50,7 @@ class BatchItemOut(BaseModel):
     status: str
     message: str | None
     error: str | None
+    percent: int | None = None
 
 
 class BatchRunOut(BaseModel):

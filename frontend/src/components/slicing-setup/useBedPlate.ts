@@ -4,16 +4,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { BedType } from '../../api/client';
 import type { SlicerKind } from '../../hooks/useSlicerHealth';
-import { ALLOWED_BED_TYPES, BED_PLATE_MEMORY_KEY, DEFAULT_BED_TYPE, ORCA_ONLY_BED_TYPES, type BedTypeNote } from './bedPlates';
-
-function remembered(): BedType {
-  try {
-    const stored = typeof localStorage === 'undefined' ? null : localStorage.getItem(BED_PLATE_MEMORY_KEY);
-    return (ALLOWED_BED_TYPES as string[]).includes(stored ?? '') ? (stored as BedType) : DEFAULT_BED_TYPE;
-  } catch {
-    return DEFAULT_BED_TYPE;
-  }
-}
+import { BED_PLATE_MEMORY_KEY, bedPlateForSlicer, isBedType, rememberedBedPlate, type BedTypeNote } from './bedPlates';
 
 function remember(bed: BedType): void {
   try {
@@ -25,54 +16,52 @@ function remember(bed: BedType): void {
 
 export type BedPlateApplication = { result: 'applied' | 'unchanged' } | { result: 'refused'; reason: 'unknown' | 'orcaOnly' };
 
-export function useBedPlate(effective: SlicerKind | null): {
+export function useBedPlate(
+  effective: SlicerKind | null,
+  options?: { initial?: string | null; selection?: { value: BedType; onChange: (bed: BedType) => void } },
+): {
   value: BedType;
   note: BedTypeNote | null;
   choose: (bed: BedType) => void;
   applyFromSet: (bed: string | null) => BedPlateApplication;
 } {
-  const [value, setValue] = useState<BedType>(remembered);
-  const [note, setNote] = useState<BedTypeNote | null>(null);
+  const [remembered] = useState(rememberedBedPlate);
+  const [picked, setPicked] = useState<BedType | null>(null);
+  const [refusal, setRefusal] = useState<BedTypeNote | null>(null);
+  const { initial, selection } = options ?? {};
+  const raw = selection?.value ?? picked ?? (isBedType(initial) ? initial : remembered);
+  const value = bedPlateForSlicer(raw, effective);
+  const note = refusal ?? (value !== raw ? { kind: 'reset' as const, bed: raw } : null);
 
-  // A plate only OrcaSlicer has cannot stay picked for Bambu Studio; it is
-  // changed to the default and said so — and put back when OrcaSlicer returns.
   useEffect(() => {
-    if (effective !== 'bambu_studio' || !ORCA_ONLY_BED_TYPES.includes(value)) return;
-    setNote({ kind: 'reset', bed: value });
-    setValue(DEFAULT_BED_TYPE);
-  }, [effective, value]);
-  useEffect(() => {
-    if (effective !== 'orcaslicer' || note === null || note.kind === 'unknown') return;
-    if (note.kind === 'reset' && (ALLOWED_BED_TYPES as string[]).includes(note.bed)) setValue(note.bed as BedType);
-    setNote(null);
-  }, [effective, note]);
+    if (effective === 'orcaslicer') setRefusal((current) => current?.kind === 'slicer' ? null : current);
+  }, [effective]);
 
+  const setSelection = selection?.onChange ?? setPicked;
   const choose = useCallback((bed: BedType) => {
-    setNote(null);
-    setValue(bed);
+    setRefusal(null);
+    setSelection(bed);
     remember(bed);
-  }, []);
+  }, [setSelection]);
 
   const applyFromSet = useCallback(
     (bed: string | null): BedPlateApplication => {
       if (!bed) {
-        setNote((current) => (current && current.kind !== 'reset' ? null : current));
+        setRefusal(null);
         return { result: 'unchanged' };
       }
-      if (!(ALLOWED_BED_TYPES as string[]).includes(bed)) {
-        setNote({ kind: 'unknown', bed });
+      if (!isBedType(bed)) {
+        setRefusal({ kind: 'unknown', bed });
         return { result: 'refused', reason: 'unknown' };
       }
-      if (effective === 'bambu_studio' && (ORCA_ONLY_BED_TYPES as string[]).includes(bed)) {
-        setNote({ kind: 'slicer', bed });
+      if (bedPlateForSlicer(bed, effective) !== bed) {
+        setRefusal({ kind: 'slicer', bed });
         return { result: 'refused', reason: 'orcaOnly' };
       }
-      setNote(null);
-      setValue(bed as BedType);
-      remember(bed as BedType);
+      choose(bed);
       return bed === value ? { result: 'unchanged' } : { result: 'applied' };
     },
-    [effective, value],
+    [choose, effective, value],
   );
 
   return { value, note, choose, applyFromSet };

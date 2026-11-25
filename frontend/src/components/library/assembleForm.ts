@@ -8,9 +8,12 @@ import type {
   AssemblyRecordResponse,
   AssemblyRequest,
   AssemblyRotationStep,
+  BedType,
   PresetRef,
   RelayoutRequest,
 } from '../../api/client';
+import type { SlicerKind } from '../../hooks/useSlicerHealth';
+import { bedPlateForSlicer, isBedType, rememberedBedPlate } from '../slicing-setup/bedPlates';
 
 export const MAX_COPIES = 2000;
 export const MAX_TARGETS = 8;
@@ -35,6 +38,7 @@ export interface TargetRow {
   process: PresetRef | null;
   filament: PresetRef | null;
   nozzle: number;
+  bedType: BedType;
 }
 
 export interface AssembleForm {
@@ -56,7 +60,7 @@ let nextKey = 0;
 
 export function emptyTarget(): TargetRow {
   nextKey += 1;
-  return { key: `target-${nextKey}`, printer: null, process: null, filament: null, nozzle: 1 };
+  return { key: `target-${nextKey}`, printer: null, process: null, filament: null, nozzle: 1, bedType: rememberedBedPlate() };
 }
 
 function stem(filename: string): string {
@@ -109,6 +113,7 @@ export function formFromRecord(record: AssemblyRecordResponse): AssembleForm {
         process: record.printer.process,
         filament: record.printer.filament,
         nozzle: record.printer.nozzle,
+        ...(isBedType(record.printer.bed_type) ? { bedType: record.printer.bed_type } : {}),
       },
     ],
     spacing: String(record.layout.spacing),
@@ -164,7 +169,7 @@ function layoutOf(form: AssembleForm): AssemblyLayout {
 }
 
 /** Call only for a form `validate` found nothing in. */
-export function toRequest(form: AssembleForm): AssemblyRequest {
+export function toRequest(form: AssembleForm, slicer: SlicerKind | null = null): AssemblyRequest {
   return {
     parts: form.parts.map((part) => ({
       ...(part.fileId !== undefined ? { file_id: part.fileId } : {}),
@@ -177,12 +182,14 @@ export function toRequest(form: AssembleForm): AssemblyRequest {
       process_preset: target.process as PresetRef,
       filament_preset: target.filament as PresetRef,
       nozzle: target.nozzle,
+      bed_type: bedPlateForSlicer(target.bedType, slicer),
     })),
     layout: layoutOf(form),
     name: form.name.trim(),
+    ...(slicer ? { slicer } : {}),
   };
 }
 
-export function toRelayoutRequest(form: AssembleForm): RelayoutRequest {
-  return { ...toRequest(form), trash_previous: form.trashPrevious };
+export function toRelayoutRequest(form: AssembleForm, slicer: SlicerKind | null = null): RelayoutRequest {
+  return { ...toRequest(form, slicer), trash_previous: form.trashPrevious };
 }

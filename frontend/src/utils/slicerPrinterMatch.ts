@@ -4,8 +4,8 @@
 // Compatibility is resolved in this order, stopping on the first non-unknown
 // answer:
 //
-//   1. Imported (local-tier) presets carry the slicer's own
-//      `compatible_printers` list — an exact list of printer-preset names.
+//   1. The preset's own or inherited `compatible_printers` list — exact
+//      printer-preset names.
 //   2. The `@<printer>` naming convention, in both shapes the slicer
 //      writes: `@BBL <model>` on shipped cloud / standard presets, and
 //      `@Bambu Lab <model> <size> nozzle` on presets a user saved for a
@@ -17,9 +17,15 @@
 // stays in the main list, and only a preset that resolves to a *different*
 // printer is pushed into an "Other printers" group.
 
+import type { PresetSource, UnifiedPreset, UnifiedPresetsResponse } from '../api/client';
+import { isOwnBambuCloudId, TIER_ORDER } from './presetPickerUtils';
 import { printerPresetLineage, type PrinterParents } from './printerPresetParents';
 
 export type PrinterCompatibility = 'match' | 'mismatch' | 'unknown';
+type DependentSlot = 'process' | 'filament';
+type DependentPreset = Pick<UnifiedPreset, 'name' | 'compatible_printers' | 'inherits' | 'inherits_id'>
+  & Partial<Pick<UnifiedPreset, 'source' | 'id'>>;
+type PresetsBySource = Record<PresetSource, { byName: Map<string, UnifiedPreset>; byId: Map<string, UnifiedPreset> }>;
 
 // Lookup table consumed by `presetCompatibility`. `bambuModelByShortCode`
 // is the @BBL token → printer-preset fragment map derived from the backend's
@@ -33,6 +39,7 @@ export interface PrinterCompatibilityIndex {
   // `compatible_printers` list and its name may not parse as a model; the
   // slicer checks against its parent, so the matcher counts both names.
   printerParents?: PrinterParents;
+  dependentPresets?: Record<DependentSlot, PresetsBySource>;
 }
 
 /** An empty index — used when the model map hasn't loaded yet. */
@@ -103,10 +110,16 @@ function buildShortCodeMap(
 export function buildCompatibilityIndex(
   printerModels: Record<string, string> = {},
   printerParents: PrinterParents = {},
+  listing?: UnifiedPresetsResponse | null,
 ): PrinterCompatibilityIndex {
+  const indexSlot = (slot: DependentSlot) => Object.fromEntries(TIER_ORDER.map((source) => [source, {
+    byName: new Map(listing?.[source][slot].map((preset) => [preset.name, preset])),
+    byId: new Map(listing?.[source][slot].map((preset) => [preset.id, preset])),
+  }])) as PresetsBySource;
   return {
     bambuModelByShortCode: buildShortCodeMap(printerModels),
     printerParents,
+    dependentPresets: listing ? { process: indexSlot('process'), filament: indexSlot('filament') } : undefined,
   };
 }
 
@@ -202,16 +215,15 @@ function sameNozzle(a: string, b: string): boolean {
 //      Returned with a null token: the size can rule a printer OUT, but
 //      says nothing about which models the profile belongs to.
 function extractPrinterTag(presetName: string): { token: string | null; nozzle: string | null } | null {
-  const cleaned = stripTrailingParenthetical(presetName);
+  // A saved copy can keep the slicer's printer tag and append a label, e.g.
+  // "0.20mm Standard @BBL A1M - chornob". Strip it only from the tag.
+  const at = presetName.lastIndexOf('@');
+  if (at < 0) return null;
+  const tag = presetName.slice(at).split(/\s+[-–—]\s+/, 1)[0];
+  const cleaned = stripTrailingParenthetical(tag);
   const bbl = extractBblToken(cleaned);
   if (bbl) return bbl;
-  // The printer tag is a suffix by convention, so read from the LAST '@' —
-  // a stray earlier one ("My @work PLA @Bambu Lab H2D 0.4 nozzle") must not
-  // swallow it. Anything that doesn't parse as a Bambu printer preset name
-  // falls through to 'unknown', never to a guessed mismatch.
-  const at = cleaned.lastIndexOf('@');
-  if (at < 0) return null;
-  const suffix = cleaned.slice(at + 1).trim();
+  const suffix = cleaned.slice(1).trim();
   const longForm = extractPrinterPresetModel(suffix);
   if (longForm) return { token: longForm.model, nozzle: longForm.nozzle };
   const nozzleOnly = suffix.match(/^([\d.]+)\s*(?:mm)?\s*(?:nozzle)?$/i);
@@ -222,6 +234,22 @@ function extractPrinterTag(presetName: string): { token: string | null; nozzle: 
     }
   }
   return null;
+}
+
+function dependentPresetLineage(preset: DependentPreset, lookup: PresetsBySource | undefined): DependentPreset[] {
+  const lineage = [preset];
+  let current = preset;
+  while (current.inherits && lineage.length < 9 && !current.compatible_printers?.length) {
+    const own = current.source && lookup?.[current.source];
+    const namedParent = current.inherits;
+    const parent = (own && (current.inherits_id ? own.byId.get(current.inherits_id) : own.byName.get(namedParent)))
+      ?? lookup?.standard.byName.get(namedParent)
+      ?? { name: namedParent };
+    if (lineage.includes(parent)) break;
+    lineage.push(parent);
+    current = parent;
+  }
+  return lineage;
 }
 
 /**
@@ -297,8 +325,8 @@ function classifyByBambuName(
  *                the caller must not hide it.
  */
 export function presetCompatibility(
-  preset: { name: string; compatible_printers?: string[] | null },
-  _slot: 'process' | 'filament',
+  preset: DependentPreset,
+  slot: DependentSlot,
   selectedPrinterName: string | null,
   index: PrinterCompatibilityIndex,
 ): PrinterCompatibility {
@@ -308,32 +336,31 @@ export function presetCompatibility(
   // parent of a printer preset saved under a name of its own, so any of these
   // names counts as the selected printer.
   const lineage = printerPresetLineage(selectedPrinterName, index.printerParents);
-  // (1) Imported presets carry the slicer's own compatible_printers list —
-  // authoritative when set.
-  const compat = preset.compatible_printers;
-  if (compat && compat.length > 0) {
+  const lookup = index.dependentPresets?.[slot];
+  const dependentLineage = dependentPresetLineage(preset, lookup);
+  for (const candidate of dependentLineage) {
+    // Stock Bambu Cloud entries may omit a list the bundled profile has.
+    // A user's namesake from another source supplies no compatibility evidence.
+    const builtin = candidate.source === 'cloud' && candidate.id && !isOwnBambuCloudId(candidate.id)
+      ? lookup?.standard.byName.get(candidate.name)
+      : undefined;
+    const compat = candidate.compatible_printers?.length ? candidate.compatible_printers : builtin?.compatible_printers;
+    if (!compat?.length) continue;
     // Compared with the clone prefix off both sides: a list names the system
     // printer while the selected clone carries "# ", or the other way round.
     const names = lineage.map(stripUserClonePrefix);
     return compat.some((name) => names.includes(stripUserClonePrefix(name))) ? 'match' : 'mismatch';
   }
-  // (2) BambuStudio's `@BBL <model>` name convention — covers cloud /
-  // standard presets that don't carry compatible_printers. A name of the
-  // user's own may not parse as a model at all (or parse as a wrong one), so
-  // the nearest parent that can be read decides whenever the own name does not
-  // already match.
-  const own = classifyByBambuName(preset.name, selectedPrinterName, index.bambuModelByShortCode);
-  if (own === 'match') return own;
-  // A match anywhere up the chain is a match; failing that, the farthest
-  // ancestor that can be read decides — it is the one nearest a system preset,
-  // whose name is the reliable one.
-  let inherited: PrinterCompatibility = 'unknown';
-  for (const ancestor of lineage.slice(1)) {
-    const answer = classifyByBambuName(preset.name, ancestor, index.bambuModelByShortCode);
-    if (answer === 'match') return answer;
-    if (answer !== 'unknown') inherited = answer;
+  // A cloud printer alias can omit its nozzle even though its base states it.
+  const machine = lineage.find((name) => extractPrinterPresetModel(name)?.nozzle != null)
+    ?? lineage.find((name) => extractPrinterPresetModel(name))
+    ?? selectedPrinterName;
+  // With no compatibility list, prefer the tag of the underlying profile.
+  for (const candidate of dependentLineage.reverse()) {
+    const answer = classifyByBambuName(candidate.name, machine, index.bambuModelByShortCode);
+    if (answer !== 'unknown') return answer;
   }
-  return inherited === 'unknown' ? own : inherited;
+  return 'unknown';
 }
 
 /**

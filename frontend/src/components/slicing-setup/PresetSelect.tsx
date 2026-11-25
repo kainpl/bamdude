@@ -9,10 +9,12 @@ import { useId } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { PresetRef, UnifiedPreset } from '../../api/client';
+import type { SlicerKind } from '../../hooks/useSlicerHealth';
 import { presetGroupOf, type PresetGroup } from '../../utils/presetDisplayOrder';
 import { fromRefValue, toRefValue } from '../../utils/presetPickerUtils';
 import { colourInputValue } from '../../utils/sliceFilamentColours';
 import { Select } from '../Select';
+import { presetSourceFitsSlicer } from './presetScope';
 import type { PresetField, SoftFilterId } from './presetSets';
 
 const GROUP_LABELS: Record<PresetGroup, { key: string; fallback: string }> = {
@@ -27,6 +29,7 @@ interface PresetSelectProps {
   label: string;
   field: PresetField;
   value: PresetRef | null;
+  slicer?: SlicerKind | null;
   onChange: (ref: PresetRef | null) => void;
   disabled?: boolean;
   /** The chosen ref left the listing and blocks the action until a person picks. */
@@ -46,6 +49,7 @@ export function PresetSelect({
   label,
   field,
   value,
+  slicer,
   onChange,
   disabled,
   gone,
@@ -62,6 +66,8 @@ export function PresetSelect({
   const blocked = disabled || (field.boundEmpty && !field.boundFallback) || entryCount === 0;
 
   const notes: Note[] = [];
+  const outsideSlicer = !!(slicer && value && !presetSourceFitsSlicer(value.source, slicer));
+  if (outsideSlicer) notes.push({ key: 'slicer', text: t('slicingSetup.otherSlicer') });
   if (field.pinnedOutside === 'otherPrinter') {
     notes.push({ key: 'other', text: t('slice.presetForOtherPrinter', 'This profile is listed for another printer than the selected one.') });
   }
@@ -93,7 +99,7 @@ export function PresetSelect({
         <Select
           id={selectId}
           className="flex-1 min-w-0"
-          value={toRefValue(value)}
+          value={outsideSlicer ? '' : toRefValue(value)}
           onChange={(e) => onChange(fromRefValue(e.target.value))}
           disabled={blocked}
           aria-describedby={notes.length > 0 ? notes.map(noteId).join(' ') : undefined}

@@ -141,7 +141,7 @@ describe('SliceModal — how a preset list is ordered', () => {
     },
   };
 
-  it("lists the user's own sources first, then the stock ones, each sorted", async () => {
+  it("lists the user's own sources first and stock profiles next for Bambu Studio", async () => {
     serve(listing);
     open();
 
@@ -149,7 +149,6 @@ describe('SliceModal — how a preset list is ordered', () => {
     await waitFor(() => expect(process.querySelectorAll('optgroup').length).toBeGreaterThan(0));
     expect(groupsOf(process)).toEqual([
       ['Imported', ['0.08mm Mine', '0.20mm Mine', 'Zebra draft']],
-      ['Orca Cloud', ['Orca tuned']],
       ['Bambu Cloud — my presets', ['My cloud process']],
       // The same stock preset, once per source: a name is not an identity,
       // and the two copies are different content.

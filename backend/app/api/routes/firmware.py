@@ -30,7 +30,7 @@ from backend.app.schemas.firmware_batch import (
     StoreDownloadResponse,
 )
 from backend.app.services import firmware_store
-from backend.app.services.firmware_batch import BatchTarget, _is_printing, firmware_batch_service
+from backend.app.services.firmware_batch import BatchTarget, _is_printing, firmware_batch_service, item_percent
 from backend.app.services.firmware_check import get_firmware_service
 from backend.app.services.firmware_profiles import get_firmware_profile
 from backend.app.services.firmware_update import (
@@ -382,11 +382,12 @@ async def _installable_versions(model: str):
 
 
 def _batch_run_to_out(run: FirmwareBatchRun, items: list[FirmwareBatchItem]) -> BatchRunOut:
+    interrupted = run.status == "running" and run.id not in firmware_batch_service.active_run_ids()
     return BatchRunOut(
         id=run.id,
         created_at=run.created_at.isoformat() if run.created_at else None,
         source=run.source,
-        status=run.status,
+        status="interrupted" if interrupted else run.status,
         total=run.total,
         succeeded=run.succeeded,
         skipped=run.skipped,
@@ -397,9 +398,10 @@ def _batch_run_to_out(run: FirmwareBatchRun, items: list[FirmwareBatchItem]) -> 
                 model=i.model,
                 from_version=i.from_version,
                 to_version=i.to_version,
-                status=i.status,
+                status="interrupted" if interrupted and i.status in ("pending", "uploading", "applying") else i.status,
                 message=i.message,
                 error=i.error,
+                percent=item_percent(i),
             )
             for i in items
         ],
@@ -493,15 +495,36 @@ async def get_batch(
 
 @router.get("/batch", response_model=list[BatchRunOut])
 async def list_batches(
+    request: Request,
+    active_only: bool = False,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.FIRMWARE_READ),
 ):
-    runs = (await db.execute(select(FirmwareBatchRun).order_by(FirmwareBatchRun.id.desc()).limit(50))).scalars().all()
-    out: list[BatchRunOut] = []
-    for run in runs:
-        items = (await db.execute(select(FirmwareBatchItem).where(FirmwareBatchItem.run_id == run.id))).scalars().all()
-        out.append(_batch_run_to_out(run, items))
-    return out
+    stmt = select(FirmwareBatchRun).order_by(FirmwareBatchRun.id.desc())
+    if active_only:
+        active_ids = firmware_batch_service.active_run_ids()
+        if not active_ids:
+            return []
+        stmt = stmt.where(FirmwareBatchRun.id.in_(active_ids))
+    else:
+        stmt = stmt.limit(50)
+    runs = (await db.scalars(stmt)).all()
+    if not runs:
+        return []
+    items = await db.scalars(
+        select(FirmwareBatchItem)
+        .where(FirmwareBatchItem.run_id.in_([run.id for run in runs]))
+        .order_by(FirmwareBatchItem.id)
+    )
+    by_run: dict[int, list[FirmwareBatchItem]] = {run.id: [] for run in runs}
+    for item in items:
+        if not active_only or in_key_scope(request, item.printer_id):
+            by_run[item.run_id].append(item)
+    return [
+        _batch_run_to_out(run, by_run[run.id])
+        for run in runs
+        if not active_only or (run.status == "running" and by_run[run.id])
+    ]
 
 
 @router.post("/store/download", response_model=StoreDownloadResponse)

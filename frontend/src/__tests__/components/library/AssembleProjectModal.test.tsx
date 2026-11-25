@@ -11,6 +11,7 @@ import { SliceJobTrackerProvider } from '../../../contexts/SliceJobTrackerContex
 import { server } from '../../mocks/server';
 import { render } from '../../utils';
 import { __resetSharedMemoryForTests } from '../../../components/slicing-setup/memory';
+import { BED_PLATE_MEMORY_KEY } from '../../../components/slicing-setup/bedPlates';
 
 const preset = (id: string, name: string, extra: Record<string, unknown> = {}) => ({ id, name, source: 'local', ...extra });
 const EMPTY = { printer: [], process: [], filament: [] };
@@ -171,6 +172,7 @@ describe('long layout search', () => {
 });
 
 beforeEach(() => {
+  localStorage.removeItem(BED_PLATE_MEMORY_KEY);
   posted = [];
   cancelled = 0;
   jobState = { job_id: 31, status: 'completed', kind: 'assembly', progress: null, result: okResult() };
@@ -244,6 +246,7 @@ describe('AssembleProjectModal', () => {
     fireEvent.click(within(part(1)).getByRole('checkbox', { name: 'Fill a plate with lid.stl' }));
     fireEvent.change(within(dialog).getByRole('textbox', { name: 'Gap between parts, mm' }), { target: { value: '3' } });
     fireEvent.click(within(dialog).getByRole('switch', { name: 'A separate file for each plate' }));
+    fireEvent.change(within(target(0)).getByRole('combobox', { name: 'Bed plate' }), { target: { value: 'Cool Plate' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Assemble' }));
 
     const summary = await screen.findByTestId('assemble-summary');
@@ -260,8 +263,10 @@ describe('AssembleProjectModal', () => {
           process_preset: { source: 'local', id: '10' },
           filament_preset: { source: 'local', id: '20' },
           nozzle: 1,
+          bed_type: 'Cool Plate',
         },
       ],
+      slicer: 'bambu_studio',
       layout: { spacing: 3, rotation_step: 90, centre: true, split_plates: true },
       name: 'jar +1',
     });
@@ -487,6 +492,7 @@ describe('AssembleProjectModal', () => {
             filament: { source: 'local', id: '20' },
             nozzle: 2,
             model: 'H2D',
+            bed_type: 'Engineering Plate',
           },
           layout: { spacing: 4, rotation_step: 45, centre: false, split_plates: false },
           plates: [],
@@ -500,6 +506,7 @@ describe('AssembleProjectModal', () => {
     expect(within(part(1)).getByRole('checkbox', { name: 'Fill a plate with lid.stl' })).toBeChecked();
     expect(within(target(0)).getByRole('combobox', { name: 'Printer' })).toHaveValue('local:2');
     await waitFor(() => expect(within(target(0)).getByRole('combobox', { name: 'Nozzle of printer 1' })).toHaveValue('2'));
+    expect(within(target(0)).getByRole('combobox', { name: 'Bed plate' })).toHaveValue('Engineering Plate');
     expect(within(dialog).getByRole('textbox', { name: 'Gap between parts, mm' })).toHaveValue('4');
     const trash = within(dialog).getByRole('checkbox', { name: 'Move the previous file to the trash' });
     expect(trash).toBeChecked();
@@ -516,7 +523,7 @@ describe('AssembleProjectModal', () => {
       ],
       layout: { spacing: 4, rotation_step: 45, centre: false, split_plates: false },
     });
-    expect((posted[0].body.targets as { nozzle: number }[])[0].nozzle).toBe(2);
+    expect(posted[0].body.targets).toMatchObject([{ nozzle: 2, bed_type: 'Engineering Plate' }]);
   });
 
   it('starts on a machine preset, not on a model card that has no print area', async () => {
@@ -592,7 +599,7 @@ describe('AssembleProjectModal', () => {
 
 // --- The rows on the slicing-setup family (plan r6 Task 19, spec §7.3, R5, R6) ---
 
-type Listing = typeof PRESETS;
+type Listing = Record<keyof typeof PRESETS, typeof PRESETS.local>;
 let listing: Listing = PRESETS;
 const withLocal = (over: Partial<Listing['local']>): Listing => ({ ...PRESETS, local: { ...PRESETS.local, ...over } });
 const serveListing = () => server.use(http.get('/api/v1/slicer/presets', () => HttpResponse.json(listing)));
@@ -643,6 +650,32 @@ describe('AssembleProjectModal — rows on the slicing-setup family', () => {
     expect(within(target(0)).queryByRole('group', { name: 'Preset source' })).toBeNull();
   });
 
+  it('starts from the preferred slicer and scopes every row without a sidecar', async () => {
+    const cloudTier = (source: 'cloud' | 'orca_cloud', tag: string) => ({
+      printer: [preset(`${tag}1`, 'Bambu Lab X1 Carbon 0.4 nozzle', { source })],
+      process: [preset(`${tag}2`, '0.20mm Standard @BBL X1C', { source })],
+      filament: [preset(`${tag}3`, 'Generic PLA @BBL X1C', { source, filament_type: 'PLA' })],
+    });
+    listing = { ...PRESETS, cloud: cloudTier('cloud', 'PPUS'), orca_cloud: cloudTier('orca_cloud', 'o') };
+    server.use(http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({ preferred_slicer: 'orcaslicer' })));
+    open();
+    await ready();
+    expect(screen.getByRole('button', { name: 'OrcaSlicer' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Add printer' }));
+    const expectVisible = (allowed: string, hidden: string) => {
+      for (const row of [0, 1]) {
+        for (const label of ['Printer', 'Process', 'Filament'] as const) {
+          const values = Array.from(field(row, label).options, (option) => option.value);
+          expect(values.some((value) => value.startsWith(allowed))).toBe(true);
+          expect(values.some((value) => value.startsWith(hidden))).toBe(false);
+        }
+      }
+    };
+    expectVisible('orca_cloud:', 'cloud:');
+    fireEvent.click(screen.getByRole('button', { name: 'BambuStudio' }));
+    expectVisible('cloud:', 'orca_cloud:');
+  });
+
   it('new row: 0.4 machine preset, no pick when only model cards', async () => {
     listing = withLocal({
       printer: [preset('c', 'Bambu Lab A1'), preset('6', 'Bambu Lab A1 0.6 nozzle'), preset('4', 'Bambu Lab A1 0.4 nozzle')],
@@ -674,6 +707,37 @@ describe('AssembleProjectModal — rows on the slicing-setup family', () => {
     await waitFor(() => expect(field(0, 'Printer')).toHaveValue('local:2'));
     expect(field(0, 'Process')).toHaveValue('local:11');
     expect(field(0, 'Filament')).toHaveValue('local:21');
+  });
+
+  it('changing source on the same printer re-picks automatic settings and preserves a manual selection', async () => {
+    const printer = 'Bambu Lab X1 Carbon 0.4 nozzle';
+    const fit = { compatible_printers: [printer] };
+    listing = {
+      ...PRESETS,
+      local: {
+        ...PRESETS.local,
+        process: [preset('10', '0.20mm Standard', fit)],
+        filament: [preset('20', 'PLA', { ...fit, filament_type: 'PLA' })],
+      },
+      cloud: {
+        printer: [preset('PMUS1', printer, { source: 'cloud' })],
+        process: [preset('PPUS10', '0.20mm Standard', { ...fit, source: 'cloud' })],
+        filament: [preset('PFUS20', 'PLA', { ...fit, source: 'cloud', filament_type: 'PLA' })],
+      },
+    };
+    open();
+    await ready();
+    expect(field(0, 'Process')).toHaveValue('local:10');
+    expect(field(0, 'Filament')).toHaveValue('local:20');
+    fireEvent.change(field(0, 'Printer'), { target: { value: 'cloud:PMUS1' } });
+    expect(field(0, 'Process')).toHaveValue('cloud:PPUS10');
+    expect(field(0, 'Filament')).toHaveValue('cloud:PFUS20');
+
+    fireEvent.change(field(0, 'Process'), { target: { value: 'local:10' } });
+    fireEvent.change(field(0, 'Printer'), { target: { value: 'local:1' } });
+    fireEvent.change(field(0, 'Printer'), { target: { value: 'cloud:PMUS1' } });
+    expect(field(0, 'Process')).toHaveValue('local:10');
+    expect(field(0, 'Filament')).toHaveValue('cloud:PFUS20');
   });
 
   it('an automatic process re-picks after a refresh drops it; an explicit one blocks', async () => {
@@ -823,7 +887,7 @@ describe('AssembleProjectModal — rows on the slicing-setup family', () => {
               printer_preset: { source: 'local', id: '2' },
               process_preset: { source: 'local', id: '11' },
               filament_presets: [{ source: 'local', id: '20' }],
-              bed_type: null,
+              bed_type: 'Engineering Plate',
             },
           ],
         }),
@@ -840,6 +904,58 @@ describe('AssembleProjectModal — rows on the slicing-setup family', () => {
     expect(field(1, 'Printer')).toHaveValue('local:2');
     expect(field(0, 'Printer')).toHaveValue('local:1');
     expect(field(0, 'Process')).toHaveValue('local:10');
+    expect(within(target(1)).getByRole('combobox', { name: 'Bed plate' })).toHaveValue('Engineering Plate');
+    expect(within(target(0)).getByRole('combobox', { name: 'Bed plate' })).toHaveValue('Textured PEI Plate');
+  });
+
+  it('saves the chosen row and uses the slicer-compatible plate in both requests', async () => {
+    let saved: Record<string, unknown> | undefined;
+    server.use(
+      http.get('/api/v1/slicer-pipelines/', () => HttpResponse.json({ pipelines: saved ? [{ ...saved, id: 9 }] : [] })),
+      http.post('/api/v1/slicer-pipelines/', async ({ request }) => {
+        saved = await request.json() as Record<string, unknown>;
+        return HttpResponse.json({ ...saved, id: 9 }, { status: 201 });
+      }),
+    );
+    open();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'OrcaSlicer' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add printer' }));
+    await waitFor(() => expect(field(1, 'Printer')).toHaveValue('local:1'));
+    fireEvent.change(field(1, 'Printer'), { target: { value: 'local:2' } });
+    const first = within(target(0)).getByRole('combobox', { name: 'Bed plate' });
+    const second = within(target(1)).getByRole('combobox', { name: 'Bed plate' });
+    fireEvent.change(first, { target: { value: 'Cool Plate' } });
+    fireEvent.change(second, { target: { value: 'Textured Cool Plate' } });
+    fireEvent.click(screen.getByRole('button', { name: 'BambuStudio' }));
+    expect(first).toHaveValue('Cool Plate');
+    expect(second).toHaveValue('Textured PEI Plate');
+    expect(within(target(1)).getByText(/available only with OrcaSlicer/)).toBeInTheDocument();
+    const row = within(target(1));
+    const save = row.getByRole('button', { name: 'Save these settings' });
+    await waitFor(() => expect(save).toBeEnabled());
+    fireEvent.click(save);
+    fireEvent.change(row.getByRole('textbox', { name: 'Name for these slice settings' }), { target: { value: 'H2D PEI' } });
+    fireEvent.click(row.getByRole('button', { name: 'Save' }));
+    expect(await within(target(0)).findByRole('option', { name: 'H2D PEI' })).toBeInTheDocument();
+    expect(saved).toEqual({
+      name: 'H2D PEI',
+      printer_preset: { source: 'local', id: '2' },
+      process_preset: { source: 'local', id: '10' },
+      filament_presets: [{ source: 'local', id: '20' }],
+      bed_type: 'Textured PEI Plate',
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'OrcaSlicer' }));
+    expect(second).toHaveValue('Textured Cool Plate');
+    fireEvent.click(screen.getByRole('button', { name: 'BambuStudio' }));
+    const submit = screen.getByRole('button', { name: 'Assemble' });
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(submit);
+    await screen.findByTestId('assemble-summary');
+    expect(posted[0].body).toMatchObject({
+      slicer: 'bambu_studio',
+      targets: [{ bed_type: 'Cool Plate' }, { bed_type: 'Textured PEI Plate' }],
+    });
   });
 
   it('a set that changes the printer re-picks the automatic field it could not fill', async () => {

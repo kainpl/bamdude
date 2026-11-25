@@ -44,6 +44,7 @@ from backend.app.services.assembly.presets import PresetUnresolved, flatten
 from backend.app.services.assembly.zone import GeometryUnknown, OriginUnsupported, printer_geometry
 from backend.app.services.preview_artifacts import disk as preview_disk
 from backend.app.services.preview_protocol import STEP_PRINT_INPUT_BYTES
+from backend.app.services.slicer_routing import refuse_bed_type_for_slicer
 
 router = APIRouter(prefix="/library", tags=["library"])
 
@@ -123,6 +124,8 @@ async def assemble_project(
     api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """Enqueue an assembly of the chosen STL / OBJ / STEP files. Returns 202 + job id; poll ``GET /slice-jobs/{id}``."""
+    for target in body.targets:
+        refuse_bed_type_for_slicer(target.bed_type, body.slicer)
     if any(part.file_id is None for part in body.parts):
         raise HTTPException(422, "Every part of a new assembly names its file")
     actor, _scope, files = await _visible_files(db, http_request, current_user, [part.file_id for part in body.parts])
@@ -264,6 +267,8 @@ async def relayout_file(
     creds: RequestCredentials = Depends(request_credentials),
 ):
     """Lay an assembled project out again from the models stored in it. Returns 202 + job id."""
+    for target in body.targets:
+        refuse_bed_type_for_slicer(target.bed_type, body.slicer)
     actor, file, record, members = await _assembled(db, http_request, current_user, file_id)
     if len(body.parts) != len(record.parts):
         raise HTTPException(422, "The parts do not match the assembled project")
