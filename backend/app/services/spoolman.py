@@ -1758,6 +1758,9 @@ class SpoolmanClient:
 
             import json
 
+            # The create's own boundary (C047 acceptance A02): a delete of the number Spoolman
+            # returns, admitted after this ticket — running or finished by then — refuses it.
+            post_ticket = spoolman_binding_fence.ticket()
             created = await self.create_spool(
                 filament_id=filament_id,
                 remaining_weight=remaining,
@@ -1778,7 +1781,7 @@ class SpoolmanClient:
             )
             # extra.tag stays written beside the native tags: an older Spoolman
             # reads nothing else, and a downgrade loses nothing.
-            spoolman_binding_fence.current_operation().add(created["id"], created=True)
+            spoolman_binding_fence.current_operation().add(created["id"], created=True, issued=post_ticket)
             await self.add_native_tags(created, reel_uids, tag_format)
             return created
 

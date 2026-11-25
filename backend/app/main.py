@@ -2439,11 +2439,18 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState, *, stock_res
 
         try:
             from backend.app.models.print_usage_event import EVENT_RESUME
+            from backend.app.services import spoolman_activity
             from backend.app.services.print_usage_journal import active_archive_id, journal_lock, record_event
 
             # The journal lock before the session, as the stock insertion takes it: the external
-            # claim below holds SQLite's writer and must not wait for it (post-rebuild review).
-            async with _get_ams_assignment_lock(printer_id), journal_lock(printer_id), async_session() as db:
+            # claim below holds SQLite's writer and must not wait for it (post-rebuild review). Its
+            # Spoolman admission comes before the lane (C047 acceptance A05).
+            async with (
+                spoolman_activity.first_evidence("external_resume"),
+                _get_ams_assignment_lock(printer_id),
+                journal_lock(printer_id),
+                async_session() as db,
+            ):
                 archive_id = await active_archive_id(db, printer_id)
                 # The id may name the next printer's run by now (spec gh109-o1 r2 R6).
                 if archive_id is not None and printer_manager.session_still_lives(printer_id):
@@ -3290,12 +3297,18 @@ async def on_stock_spool_inserted(printer_id: int, event: dict):
     logger = logging.getLogger(__name__)
     from sqlalchemy.orm import selectinload
 
+    from backend.app.services import spoolman_activity
     from backend.app.services.auto_stock_spool import claim_on_insertion
     from backend.app.services.print_usage_journal import journal_lock
 
     # The journal lock BEFORE the session: the claim takes SQLite's writer at once and must
-    # never wait for an in-process lock while it holds it (post-rebuild review).
-    async with _get_ams_assignment_lock(printer_id), journal_lock(printer_id):
+    # never wait for an in-process lock while it holds it (post-rebuild review). The Spoolman
+    # admission of its journal facts comes before the lane (C047 acceptance A05).
+    async with (
+        spoolman_activity.first_evidence("stock_insertion"),
+        _get_ams_assignment_lock(printer_id),
+        journal_lock(printer_id),
+    ):
         key = (printer_id, event["ams_id"], event["tray_id"])
         token = (event["generation"], event["sequence"])
         if token <= _stock_insertion_seen.get(key, (-1, -1)):
@@ -7217,14 +7230,17 @@ async def _restore_usage_tracking_session_locked(
 
         client = printer_manager.get_client(printer_id)
         if client is not None and generation is not None:
+            from backend.app.services import spoolman_source
             from backend.app.services.print_usage_journal import (
                 binding_snapshot,
                 deliver_pending_replay,
                 queue_replay,
             )
 
-            # The bindings the replay names its facts with, read under the journal lock; then
-            # this session's own work ends, so the replay's write never waits for its writer.
+            # The bindings the replay names its facts with, read under the journal lock, and the
+            # Spoolman database they belong to (C047 acceptance A01); then this session's own work
+            # ends, so the replay's write never waits for its writer.
+            bindings_stamp = spoolman_source.base_generation()
             bindings = await binding_snapshot(db, printer_id)
             await db.commit()
             # A reconnect during those awaits replaced the client and carried the hold to the new
@@ -7239,6 +7255,7 @@ async def _restore_usage_tracking_session_locked(
                 tail_origin=tail.origin if tail is not None else None,
                 tail_open_layer=tail.start.layer_num if tail is not None else 0,
                 bindings=bindings,
+                bindings_stamp=bindings_stamp,
             ):
                 queue_replay(printer_id, client.take_replay_batches(), archive_id=archive_id)
                 await deliver_pending_replay(printer_id)
@@ -7316,6 +7333,7 @@ async def _abandon_held_journal_locked(printer_id: int, generation: int) -> bool
     waited for the lock carried it to a new client. The caller holds the journal lock.
     """
     from backend.app.core import database
+    from backend.app.services import spoolman_source
     from backend.app.services.print_usage_journal import (
         active_archive_id,
         binding_snapshot,
@@ -7324,6 +7342,8 @@ async def _abandon_held_journal_locked(printer_id: int, generation: int) -> bool
     )
 
     bindings = archive_id = None
+    # The Spoolman database the snapshot's numbers belong to (C047 acceptance A01).
+    bindings_stamp = spoolman_source.base_generation()
     try:
         # The factory the journal writes with, looked up now (as ``deliver_pending_replay`` does).
         async with database.async_session() as db:
@@ -7332,7 +7352,7 @@ async def _abandon_held_journal_locked(printer_id: int, generation: int) -> bool
     except Exception:  # noqa: BLE001 - the write then reads them, still under this lock
         logging.getLogger(__name__).exception("Binding snapshot for printer %s failed", printer_id)
     client = printer_manager.get_client(printer_id)
-    if client is None or not client.abandon_journal_hold(generation, bindings=bindings):
+    if client is None or not client.abandon_journal_hold(generation, bindings=bindings, bindings_stamp=bindings_stamp):
         return False
     queue_replay(printer_id, client.take_replay_batches(), archive_id=archive_id)
     await deliver_pending_replay(printer_id)

@@ -27,13 +27,23 @@ Process memory only; one application process (spec §C6).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import contextvars
 import logging
 from collections import Counter
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
 WINDOW = "accounting_window"
+
+# The task whose first-evidence record is open in this context: a nested entry by the SAME task
+# (a lane holder that took its admission before the lane, then the journal lock inside) reuses
+# it. A child task inherits the variable but is another task, so it is admitted on its own.
+_evidence_task: contextvars.ContextVar[asyncio.Task | None] = contextvars.ContextVar(
+    "spoolman_first_evidence_task", default=None
+)
 
 
 class _Activity:
@@ -107,27 +117,61 @@ async def arecord(kind: str):
         yield
 
 
+def hold(kind: str) -> Callable[[], None]:
+    """An activity record whose end is not a ``with`` — work handed to a task of its own.
+
+    Published now, synchronously; the returned release ends it, once (later calls do
+    nothing). The caller publishes it while its own record is still open, so the
+    protection never lapses between them, and releases it when the task is done —
+    from ``add_done_callback``, which also runs for a task cancelled before it started.
+    """
+    _activity._enter(kind)
+    released = False
+
+    def release() -> None:
+        nonlocal released
+        if not released:
+            released = True
+            _activity._leave(kind)
+
+    return release
+
+
+def evidence_held() -> bool:
+    """This task holds a first-evidence record (see :func:`first_evidence`)."""
+    task = asyncio.current_task()
+    return task is not None and _evidence_task.get() is task
+
+
 @contextlib.asynccontextmanager
 async def first_evidence(kind: str):
     """A writer of a print's first Spoolman evidence (S41, S44).
 
-    Waits — outside SQLite's writer, with no uncommitted writes — until no change
-    of the Spoolman database is in flight, then in ONE synchronous step checks
-    that again and publishes its record. Whatever it read before this point it
-    must prove again inside. The record lasts until the body ends (its commit or
-    rollback); from then on the durable predicate (an archive ``printing``) keeps
-    the database from changing.
+    Waits — outside SQLite's writer, with no uncommitted writes, and before the
+    lanes it takes (acceptance A05) — until no change of the Spoolman database is
+    in flight, then in ONE synchronous step checks that again and publishes its
+    record. Whatever it read before this point it must prove again inside. The
+    record lasts until the body ends (its commit or rollback); from then on the
+    durable predicate (an archive ``printing``) keeps the database from changing.
+
+    Nested in the same task (a lane holder admitted before its lane, then the
+    journal lock inside), it reuses the open record: no second wait, no second record.
     """
     from backend.app.services import spoolman_source  # noqa: PLC0415
 
+    if evidence_held():
+        yield
+        return
     while True:
         await spoolman_source.wait_no_base_change()
         if not spoolman_source.base_change_in_flight():
             _activity._enter(kind)
             break
+    token = _evidence_task.set(asyncio.current_task())
     try:
         yield
     finally:
+        _evidence_task.reset(token)
         _activity._leave(kind)
 
 

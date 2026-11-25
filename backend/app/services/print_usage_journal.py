@@ -14,7 +14,7 @@ PostgreSQL only — this codebase never sets ``PRAGMA foreign_keys``.
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Any
@@ -168,9 +168,35 @@ async def deliver_pending_replay(printer_id: int) -> None:
             logger.debug("[UsageJournal] Printer %d: no replay to take from the client", printer_id)
     if not _pending_replays.get(printer_id):
         return
-    writer = loop.create_task(_write_pending_replays(printer_id), name=f"usage-journal-replay-{printer_id}")
-    _replay_writers[printer_id] = writer
+    writer = _start_replay_writer(loop, printer_id)
     await asyncio.shield(writer)
+
+
+def _start_replay_writer(loop: asyncio.AbstractEventLoop, printer_id: int) -> asyncio.Task:
+    """The shielded writer, owning its own Spoolman activity record (C047 acceptance A01).
+
+    The record is published before the task exists — while the caller's own record (the
+    journal lock's first evidence) is still open, so the protection never lapses — and it
+    ends when the task is done: after its commit, or its proven rollback, or a cancellation
+    before it ran. A holder cancelled while it waits therefore never leaves a writer
+    unprotected: a change of the Spoolman database keeps refusing until the write is over.
+    Synchronous: nothing can run between the record and the task.
+    """
+    from backend.app.services import spoolman_activity, spoolman_source
+
+    if spoolman_source.base_change_in_flight():
+        # Only a holder of the journal lock reaches here, and it was admitted with no base
+        # change in flight, which none can start while its record is open.
+        raise RuntimeError("a restart replay started while a change of the Spoolman database was in flight")
+    release = spoolman_activity.hold("usage_journal_replay")
+    try:
+        writer = loop.create_task(_write_pending_replays(printer_id), name=f"usage-journal-replay-{printer_id}")
+    except BaseException:
+        release()
+        raise
+    writer.add_done_callback(lambda _task: release())
+    _replay_writers[printer_id] = writer
+    return writer
 
 
 async def _write_pending_replays(printer_id: int) -> None:
@@ -220,12 +246,35 @@ async def _write_pending_replays(printer_id: int) -> None:
 
 async def _write_replay_batch(db: AsyncSession, printer_id: int, batch) -> int | None:
     """Every fact of ``batch``, in order, into the archive of the print it ran for; no commit.
-    None when no printing archive of that print takes it."""
+    None when no printing archive of that print takes it.
+
+    A Spoolman number the batch names was read when its bindings were (the seed's snapshot, a
+    held change) — possibly in an earlier hold of the lock than this write. It is written only
+    while the Spoolman database is still the one it was read under (``bindings_stamp``); else
+    that fact's Spoolman spool is unknown — a frozen ``None``, which no writer fills from the
+    binding of the moment — and the built-in spool keeps its name (C047 acceptance A01). The
+    writer's own activity record keeps the database from changing until the commit.
+    """
+    from backend.app.services import spoolman_source
+
     archive_id = await tail_archive(db, printer_id, generation=batch.generation, subtask_id=batch.subtask_id)
     if archive_id is None:
         return None
+    stamp = getattr(batch, "bindings_stamp", None)
+    same_base = stamp is not None and stamp == spoolman_source.base_generation()
+    unproven = 0
     for fact in batch.facts:
+        if not same_base and fact.ids is not None and fact.ids[1] is not None:
+            fact = replace(fact, ids=(fact.ids[0], None))
+            unproven += 1
         await _write_replay_fact(db, printer_id, archive_id, fact)
+    if unproven:
+        logger.warning(
+            "[UsageJournal] Printer %d: %d replayed fact(s) named a Spoolman spool read under another Spoolman "
+            "database (or unstamped); their Spoolman spool is recorded as unknown",
+            printer_id,
+            unproven,
+        )
     return len(batch.facts)
 
 
@@ -719,6 +768,11 @@ async def ensure_tail_recorded(
     except Exception:  # noqa: BLE001
         held = False
     if held and generation is not None:
+        from backend.app.services import spoolman_source
+
+        # Which Spoolman database the numbers read here belong to: the seed writes them much
+        # later, and only under the same base (C047 acceptance A01).
+        stamp = spoolman_source.base_generation()
         outgoing = await freeze_spool_ids(db, printer_id, tray)
         incoming = None
         if new_spool_id is not None or new_spoolman_spool_id is not None:
@@ -726,7 +780,7 @@ async def ensure_tail_recorded(
                 new_spool_id if new_spool_id is not None else outgoing[0],
                 new_spoolman_spool_id if new_spoolman_spool_id is not None else outgoing[1],
             )
-        if client.note_held_binding_change(generation, tray, outgoing, incoming):
+        if client.note_held_binding_change(generation, tray, outgoing, incoming, stamp=stamp):
             logger.info(
                 "[UsageJournal] Tray %d on printer %d re-linked while its journal waits for the seed; "
                 "the reel going out is %s/%s",

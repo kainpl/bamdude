@@ -54,7 +54,7 @@ from backend.app.schemas.spoolman import (
     SpoolmanFilamentPatch,
     SpoolmanSlotAssignmentEnriched,
 )
-from backend.app.services import spool_drying, spoolman_binding_fence
+from backend.app.services import spool_drying, spoolman_activity, spoolman_binding_fence
 from backend.app.services.ams_slot_presence import tray_definitely_empty
 from backend.app.services.location_service import (
     enrich_spool_dicts_with_location_id,
@@ -1780,9 +1780,12 @@ async def assign_spoolman_slot(
     # The remote lookup above ran outside every lock; the binding and its journal facts
     # change under the slot's assignment lock — the one the internal assignment, insertion
     # and RFID reconciliation take — and the journal lock, in that order (post-rebuild
-    # F-R3). Nothing below waits on the network until both are released.
+    # F-R3). Nothing below waits on the network until both are released. The journal facts are
+    # first Spoolman facts: their admission is waited for BEFORE the lane, so a change of the
+    # Spoolman database never keeps it taken (C047 acceptance A05).
     await db.commit()  # no read transaction is carried into the locks
     async with (
+        spoolman_activity.first_evidence("spoolman_slot_assignment"),
         _get_ams_assignment_lock(body.printer_id),
         journal_lock(body.printer_id),
         spoolman_binding_fence.entered([body.spoolman_spool_id], issued),

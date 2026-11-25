@@ -392,8 +392,21 @@ async def delete_spool(spool_id: int) -> DeleteOutcome:
         handed_over = True
     finally:
         if not handed_over:
-            await client.close()
+            await _close_quietly(client, spool_id)
     return await asyncio.shield(task)
+
+
+async def _close_quietly(client, spool_id: int) -> None:
+    """Close this delete's own client; a failure is logged, never the delete's answer (acceptance A03).
+
+    The outcome is already decided — a refusal, a confirmed delete, an unknown result — and
+    a transport that would not tear down changes none of it."""
+    try:
+        await client.close()
+    except Exception:  # noqa: BLE001 - logged; the decided outcome stands
+        logger.warning(
+            "[SPOOLMAN] Delete of spool %s: its Spoolman client did not close cleanly", spool_id, exc_info=True
+        )
 
 
 def _try_admit(spool_id: int, source: _Source, a0: int, f0: int, slots, client) -> asyncio.Task:
@@ -441,15 +454,14 @@ async def _delete_and_clean(spool_id: int, source: _Source, client) -> DeleteOut
         return outcome
     finally:
         spoolman_binding_fence.release_delete(spool_id)
-        try:
-            await client.close()
-        finally:
-            logger.info(
-                "[SPOOLMAN] Delete of spool %s: %s (%.0f ms)",
-                spool_id,
-                outcome_label,
-                (time.monotonic() - started) * 1000,
-            )
+        # Still inside the task the runtime owns: the drain waits for this close attempt too.
+        await _close_quietly(client, spool_id)
+        logger.info(
+            "[SPOOLMAN] Delete of spool %s: %s (%.0f ms)",
+            spool_id,
+            outcome_label,
+            (time.monotonic() - started) * 1000,
+        )
 
 
 def _is_timeout(exc: BaseException) -> bool:
@@ -500,17 +512,13 @@ async def delete_many(spool_ids: list[int]) -> dict:
         try:
             outcome = await delete_spool(spool_id)
         except HTTPException as exc:
-            detail = exc.detail
-            error: dict = {"id": spool_id, "status": exc.status_code}
-            if isinstance(detail, dict):
-                error["detail"] = str(detail.get("message", ""))
-                if isinstance(detail.get("error"), str):
-                    error["code"] = detail["error"]
-                if isinstance(detail.get("reasons"), list):
-                    error["reasons"] = detail["reasons"]
-            else:
-                error["detail"] = str(detail)
-            errors.append(error)
+            errors.append(_bulk_error(spool_id, exc))
+            continue
+        except Exception:
+            # One spool's unexpected failure never costs the others their attempt, nor the
+            # spools already deleted their place in the answer (acceptance A03).
+            logger.exception("[SPOOLMAN] Bulk delete: spool %s failed unexpectedly", spool_id)
+            errors.append({"id": spool_id, "status": 500, "detail": "Unexpected error"})
             continue
         deleted += 1
         if outcome.warning:
@@ -519,6 +527,21 @@ async def delete_many(spool_ids: list[int]) -> dict:
                 warning["slots"] = [{"printer_id": p, "ams_id": a, "tray_id": t} for p, a, t in outcome.slots]
             warnings.append(warning)
     return {"deleted": deleted, "warnings": warnings, "errors": errors}
+
+
+def _bulk_error(spool_id: int, exc: HTTPException) -> dict:
+    """One refused or failed spool of a bulk delete: its status, code, reasons and text."""
+    detail = exc.detail
+    error: dict = {"id": spool_id, "status": exc.status_code}
+    if isinstance(detail, dict):
+        error["detail"] = str(detail.get("message", ""))
+        if isinstance(detail.get("error"), str):
+            error["code"] = detail["error"]
+        if isinstance(detail.get("reasons"), list):
+            error["reasons"] = detail["reasons"]
+    else:
+        error["detail"] = str(detail)
+    return error
 
 
 def reset_for_tests() -> None:

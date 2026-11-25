@@ -2993,7 +2993,7 @@ async def assign_spool(
 
     from contextlib import AsyncExitStack
 
-    from backend.app.services import spool_single_slot
+    from backend.app.services import spool_single_slot, spoolman_activity
 
     # A spool sits in one slot: assigning it here takes it out of its other
     # slots, and the rows of ANOTHER printer are deleted under that printer's
@@ -3005,8 +3005,11 @@ async def assign_spool(
         {data.printer_id, *await spool_single_slot.printers_holding(db, spool_id=data.spool_id, keep=keep)}
     )
 
-    # A manual answer must not race insertion/RFID reconciliation on this slot.
+    # A manual answer must not race insertion/RFID reconciliation on this slot. The journal
+    # write inside is a first Spoolman fact: its admission is waited for BEFORE the lanes, so a
+    # change of the Spoolman database never keeps them taken (C047 acceptance A05).
     async with AsyncExitStack() as locks:
+        await locks.enter_async_context(spoolman_activity.first_evidence("spool_assignment"))
         for printer_id in lock_ids:
             await locks.enter_async_context(_get_ams_assignment_lock(printer_id))
         response, vacated = await _assign_spool(data, db, preset_owner, locked=set(lock_ids))

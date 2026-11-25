@@ -171,10 +171,45 @@ class TestTheFence:
         assert fence.snapshot(7) is not None, "the number taken first was given back"
 
     def test_a_created_number_says_so(self):
+        post_ticket = fence.ticket()
         assert fence.admit_delete(SPOOL, fence.snapshot(SPOOL))
         with fence.tag_operation() as operation, pytest.raises(SpoolBeingDeleted) as refused:
-            operation.add(SPOOL, created=True)
+            operation.add(SPOOL, created=True, issued=post_ticket)
         assert refused.value.created
+
+    def test_a_delete_finished_after_the_post_ticket_refuses_the_created_number(self):
+        """A02: the create's own ticket sees a delete admitted AND released while the POST ran."""
+        with fence.tag_operation(issued=fence.ticket()) as operation:
+            post_ticket = fence.ticket()
+            assert fence.admit_delete(SPOOL, fence.snapshot(SPOOL))
+            fence.release_delete(SPOOL)  # the delete is over before the POST answers
+            with pytest.raises(SpoolBeingDeleted) as refused:
+                operation.add(SPOOL, created=True, issued=post_ticket)
+        assert refused.value.created and refused.value.number == SPOOL
+
+    def test_a_number_deleted_before_the_post_is_the_new_spools(self):
+        """A02: Spoolman may give a deleted number to the new spool; a delete over before the POST is no refusal."""
+        assert fence.admit_delete(SPOOL, fence.snapshot(SPOOL))
+        fence.release_delete(SPOOL)
+        with fence.tag_operation() as operation:
+            operation.add(SPOOL, created=True, issued=fence.ticket())
+            assert operation.owns(SPOOL)
+
+    def test_a_created_number_needs_its_post_ticket(self):
+        with fence.tag_operation() as operation, pytest.raises(ValueError):
+            operation.add(SPOOL, created=True)
+
+    def test_an_owned_number_is_not_judged_by_the_older_batch_ticket(self):
+        """A02: a batch commit's guard does not refuse a number the operation proved later and still marks."""
+        batch_ticket = fence.ticket()
+        assert fence.admit_delete(SPOOL, fence.snapshot(SPOOL))
+        fence.release_delete(SPOOL)
+        with fence.tag_operation(issued=batch_ticket) as operation:
+            operation.add(SPOOL, created=True, issued=fence.ticket())
+            with fence.enter([SPOOL], batch_ticket):
+                pass
+        with pytest.raises(SpoolBeingDeleted), fence.enter([SPOOL], batch_ticket):
+            pass  # outside the operation the old ticket still refuses
 
 
 # --- the source (§C1) ---------------------------------------------------------------
@@ -517,6 +552,278 @@ class TestTheDoor:
         (task,) = list(spoolman_delete.delete_runtime.tasks)
         await asyncio.wait_for(task, 1)
         assert client.deleted == [SPOOL]
+
+    async def test_a_failed_close_keeps_the_confirmed_delete(self, db_session, client, monkeypatch):
+        """A03: the transport's teardown is no part of the answer."""
+        await _spoolman(db_session)
+        monkeypatch.setattr(client, "close", AsyncMock(side_effect=OSError("teardown failed")))
+        outcome = await spoolman_delete.delete_spool(SPOOL)
+        assert outcome.as_response() == {"status": "deleted"}
+        assert client.deleted == [SPOOL] and not fence.deleting(SPOOL)
+        assert not spoolman_delete.delete_runtime.tasks, "the task ended after its close attempt"
+
+    async def test_a_failed_close_keeps_a_refusal(self, db_session, client, monkeypatch):
+        await _spoolman(db_session)
+        spoolman_activity.enter_window()
+        monkeypatch.setattr(client, "close", AsyncMock(side_effect=OSError("teardown failed")))
+        try:
+            with pytest.raises(HTTPException) as refused:
+                await spoolman_delete.delete_spool(SPOOL)
+        finally:
+            spoolman_activity.leave_window()
+        assert refused.value.detail["error"] == "print_closing"
+
+    async def test_a_failed_close_does_not_stop_the_bulk(self, db_session, client, monkeypatch):
+        """A03: a confirmed delete keeps its place in the answer and the next spool is tried."""
+        await _spoolman(db_session)
+        monkeypatch.setattr(client, "close", AsyncMock(side_effect=OSError("teardown failed")))
+        client.spool = {"id": 0, "extra": {}, "tags": []}
+        result = await spoolman_delete.delete_many([17, 18])
+        assert result == {"deleted": 2, "warnings": [], "errors": []}
+        assert client.deleted == [17, 18]
+
+    async def test_an_unexpected_failure_is_one_bulk_error(self, db_session, client, monkeypatch):
+        await _spoolman(db_session)
+        real = spoolman_delete.delete_spool
+
+        async def one_breaks(spool_id):
+            if spool_id == 17:
+                raise RuntimeError("boom")
+            return await real(spool_id)
+
+        monkeypatch.setattr(spoolman_delete, "delete_spool", one_breaks)
+        client.spool = {"id": 0, "extra": {}, "tags": []}
+        result = await spoolman_delete.delete_many([17, 18])
+        assert result["deleted"] == 1 and [e["id"] for e in result["errors"]] == [17]
+        assert result["errors"][0]["status"] == 500
+        assert client.deleted == [18]
+
+
+# --- a restart replay owns its record; its numbers carry their base (acceptance A01) ---
+
+
+@pytest.fixture
+def journal_state():
+    from backend.app.services import print_usage_journal as journal
+
+    journal.forget_tail_state()
+    yield journal
+    journal.forget_tail_state()
+
+
+def _queue(journal, printer_id, ids, *, stamp):
+    from backend.app.services.bambu_mqtt import ReplayBatch, ReplayFact
+
+    batch = ReplayBatch(1, None, (ReplayFact("tail_start", 0, 10, False, ids),), bindings_stamp=stamp)
+    journal.queue_replay(printer_id, [batch])
+
+
+async def _events(db):
+    return (await db.execute(select(PrintUsageEvent.spool_id, PrintUsageEvent.spoolman_spool_id))).all()
+
+
+class TestTheReplayOwnsItsRecord:
+    async def test_a_cancelled_holder_leaves_the_writer_its_record(
+        self, db_session, printer_factory, journal_state, monkeypatch
+    ):
+        """A01: the writer's record outlives its cancelled caller and ends after the writer's commit."""
+        printer = await printer_factory()
+        await _printing(db_session, printer)
+        _queue(journal_state, printer.id, (None, 17), stamp=spoolman_source.base_generation())
+        paused, resume = asyncio.Event(), asyncio.Event()
+        original = journal_state._write_replay_batch
+
+        async def pause_before_commit(db, printer_id, batch):
+            written = await original(db, printer_id, batch)
+            paused.set()
+            await resume.wait()
+            return written
+
+        monkeypatch.setattr(journal_state, "_write_replay_batch", pause_before_commit)
+
+        async def holder():
+            async with journal_state.journal_lock(printer.id):
+                pass
+
+        caller = asyncio.create_task(holder())
+        await asyncio.wait_for(paused.wait(), 2)
+        writer = journal_state._replay_writers[printer.id]
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert not writer.done()
+        assert spoolman_activity.records_open(), "the writer keeps its own record"
+        async with spoolman_source.guard():
+            with pytest.raises(spoolman_source.SourceRefused) as refused:
+                spoolman_source.begin_base_change()
+        assert refused.value.reason == spoolman_source.PRINT_ACCOUNTING
+        resume.set()
+        await asyncio.wait_for(writer, 2)
+        assert not spoolman_activity.records_open()
+        assert await _events(db_session) == [(None, 17)], "written once"
+
+    async def test_a_writer_cancelled_before_it_ran_releases_its_record(self, journal_state):
+        _queue(journal_state, 1, (None, 17), stamp=0)
+        writer = journal_state._start_replay_writer(asyncio.get_running_loop(), 1)
+        assert spoolman_activity.records_open()
+        writer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer
+        assert not spoolman_activity.records_open()
+        assert journal_state._pending_replays.get(1), "the batch waits for the next holder"
+
+    async def test_a_failed_write_releases_and_the_next_holder_writes_it(
+        self, db_session, printer_factory, journal_state, monkeypatch
+    ):
+        printer = await printer_factory()
+        await _printing(db_session, printer)
+        _queue(journal_state, printer.id, (None, 17), stamp=spoolman_source.base_generation())
+        original = journal_state._write_replay_batch
+        calls = []
+
+        async def fail_once(db, printer_id, batch):
+            calls.append(1)
+            if len(calls) == 1:
+                await original(db, printer_id, batch)
+                raise RuntimeError("the first write rolls back")
+            return await original(db, printer_id, batch)
+
+        monkeypatch.setattr(journal_state, "_write_replay_batch", fail_once)
+        async with journal_state.journal_lock(printer.id):
+            pass
+        assert not spoolman_activity.records_open() and await _events(db_session) == []
+        async with journal_state.journal_lock(printer.id):
+            pass
+        assert not spoolman_activity.records_open()
+        assert await _events(db_session) == [(None, 17)]
+
+
+class TestTheBindingsStamp:
+    async def _bump_base(self):
+        async with spoolman_source.guard():
+            with spoolman_source.base_change():
+                spoolman_source.bump_base_generation()
+
+    async def test_a_number_read_under_another_base_is_written_unknown(
+        self, db_session, printer_factory, journal_state
+    ):
+        """A01: a Spoolman number that outlived its hold across a base change is not written; the built-in id is."""
+        printer = await printer_factory()
+        await _printing(db_session, printer)
+        _queue(journal_state, printer.id, (5, 17), stamp=spoolman_source.base_generation())
+        await self._bump_base()
+        async with journal_state.journal_lock(printer.id):
+            pass
+        assert await _events(db_session) == [(5, None)]
+
+    async def test_the_same_base_keeps_the_number(self, db_session, printer_factory, journal_state):
+        printer = await printer_factory()
+        await _printing(db_session, printer)
+        await self._bump_base()
+        _queue(journal_state, printer.id, (5, 17), stamp=spoolman_source.base_generation())
+        async with journal_state.journal_lock(printer.id):
+            pass
+        assert await _events(db_session) == [(5, 17)]
+
+    async def test_an_unstamped_batch_writes_no_spoolman_number(self, db_session, printer_factory, journal_state):
+        printer = await printer_factory()
+        await _printing(db_session, printer)
+        _queue(journal_state, printer.id, (5, 17), stamp=None)
+        async with journal_state.journal_lock(printer.id):
+            pass
+        assert await _events(db_session) == [(5, None)]
+
+    async def test_the_base_moves_only_inside_a_base_change(self):
+        with pytest.raises(RuntimeError):
+            spoolman_source.bump_base_generation()  # no guard
+        async with spoolman_source.guard():
+            with pytest.raises(RuntimeError):
+                spoolman_source.bump_base_generation()  # the guard, but no base change
+        assert spoolman_source.base_generation() == 0
+
+    def test_the_batch_carries_the_smallest_stamp_of_its_sources(self):
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+        from backend.tests.unit.services.test_tail_refill_latch import ORIGIN, ams, feed, first_packet, refill
+
+        def joined():
+            c = BambuMQTTClient(ip_address="1.2.3.4", serial_number="20PC047A01", access_code="1")
+            c._previous_gcode_state = "RUNNING"
+            c._previous_gcode_file = "plate.3mf"
+            c.state.raw_data = {"ams": ams(""), "vt_tray": [{"id": 254}, {"id": 255}]}
+            c.on_tray_change = MagicMock()
+            c.on_usage_event = MagicMock()
+            c.on_feed_event = MagicMock()
+            c.on_print_running_observed = MagicMock()
+            first_packet(c, 254)
+            refill(c)
+            feed(c, 254, layer=41)
+            feed(c, ORIGIN, layer=43)
+            return c
+
+        def seeded(held_stamp, *, held=True):
+            c = joined()
+            generation = c.journal_generation()
+            if held:
+                assert c.note_held_binding_change(generation, ORIGIN, (5, 17), (6, 18), stamp=held_stamp)
+            assert c.seed_usage_journal(
+                generation,
+                log=[(ORIGIN, 0)],
+                last_loaded_tray=ORIGIN,
+                tail_origin=ORIGIN,
+                bindings={ORIGIN: (5, 17)},
+                bindings_stamp=5,
+            )
+            (batch,) = c.take_replay_batches()
+            return batch.bindings_stamp
+
+        assert seeded(3) == 3, "a held change read earlier"
+        assert seeded(None) is None, "an unstamped held change"
+        assert seeded(None, held=False) == 5, "the snapshot alone"
+
+
+# --- the admission comes before the lane (acceptance A05) -----------------------------
+
+
+class TestTheAdmissionBeforeTheLane:
+    async def test_a_nested_admission_in_the_same_task_reuses_the_record(self):
+        async with spoolman_activity.first_evidence("outer"):
+            revision = spoolman_activity.revision()
+            async with spoolman_activity.first_evidence("inner"):
+                assert spoolman_activity.revision() == revision
+                assert "inner" not in spoolman_activity._activity.open
+        assert not spoolman_activity.records_open()
+
+    async def test_a_child_task_is_admitted_on_its_own(self):
+        async with spoolman_activity.first_evidence("outer"):
+
+            async def child():
+                async with spoolman_activity.first_evidence("child"):
+                    return "child" in spoolman_activity._activity.open
+
+            assert await asyncio.create_task(child())
+
+    async def test_the_lane_stays_free_while_a_stock_insertion_waits(self, db_session, printer_factory, monkeypatch):
+        from backend.app import main
+
+        printer = await printer_factory()
+        claim = AsyncMock(return_value={"reason": "not_stock"})
+        monkeypatch.setattr("backend.app.services.auto_stock_spool.claim_on_insertion", claim)
+        event = {"ams_id": 0, "tray_id": 0, "generation": 1, "sequence": 1}
+        main._stock_insertion_seen.pop((printer.id, 0, 0), None)
+        lane = main._get_ams_assignment_lock(printer.id)
+        async with spoolman_source.guard():
+            spoolman_source.begin_base_change()
+            try:
+                waiting = asyncio.create_task(main.on_stock_spool_inserted(printer.id, event))
+                await asyncio.sleep(0.05)
+                assert not waiting.done()
+                assert not lane.locked(), "the lane is not held while the admission waits"
+                async with asyncio.timeout(1), lane:
+                    pass
+            finally:
+                spoolman_source.end_base_change()
+        await asyncio.wait_for(waiting, 2)
+        claim.assert_awaited_once()
 
 
 # --- writers meet the fence (S27, S32, S37) -----------------------------------------

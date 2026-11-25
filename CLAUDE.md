@@ -200,7 +200,7 @@ build when the rule is broken. `Vault: inv-x` is the maintainer's note
 - **A slot "matches its spool" when it shows the type WE wrote, not the material column** (`tray_types_written_for`). Vault: `inv-slot-matches-what-we-wrote`.
 - **A spool without a family keeps ITS type on the slot; only the profile is borrowed** (`family_for_material`, never `generic_family_for_material`). Vault: `inv-a-spool-without-a-profile-keeps-its-type`.
 - **A spool sits in one slot and leaves it only on proof.** A spool number is never handed out again. Vault: `inv-a-spool-sits-in-one-slot-and-leaves-it-on-proof`.
-- **A Spoolman spool printed with is archived, not deleted** (one door, `services/spoolman_delete.py`; the source guard, the activity revision and the binding fence admit it in one synchronous step). Vault: `60-specs/c047-spool-id-never-reissued-spec.md`.
+- **A Spoolman spool printed with is archived, not deleted** (one door, `services/spoolman_delete.py`; the source guard, the activity revision and the binding fence admit it in one synchronous step). Vault: `inv-spoolman-spool-printed-with-is-archived`.
 - **The remain% weight sync waits for the booking** (`usage_tracker.print_is_unbooked`). Vault: `inv-weight-sync-waits-for-the-booking`.
 - **Refilling an inactive AMS slot is not another empty reel** (`without_stale_refill_runouts`). Vault: `inv-runout-zero-only-from-unambiguous-ecodes`.
 - **The K-profile table is filed per nozzle diameter; the cache prunes only what a held table dropped.** Binders ask `utils/slot_nozzle.slot_nozzle`. Vault: `inv-kprofile-table-per-nozzle`.

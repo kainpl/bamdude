@@ -17,6 +17,11 @@ Spec ``60-specs/c047-spool-id-never-reissued-spec.md`` (vault), §C1 and §C5.
   record is open, BEFORE its fresh SQL read of the durable predicate, and
   cleared after its commit or rollback (S41, S44). First-evidence writers wait
   for it (``spoolman_activity.first_evidence``).
+- **Base generation** — raised by every base change that passed its predicate
+  (a later rollback leaves it raised: a stamp then only errs towards "unknown").
+  A Spoolman number read under one base and written later — a restart replay
+  that outlived the hold it was read in — is written only under the same base
+  generation (acceptance A01).
 - **Charge ownership** — the accounting tail of a finished print (report,
   partial report, runout correction, history, tracking delete) registers here
   before its first write (S40). Full restore and shutdown close the gate and
@@ -60,6 +65,7 @@ class ChargeOwnership:
 class _SourceRuntime:
     def __init__(self) -> None:
         self.generation = 0
+        self.base_generation = 0
         self.charge_admitting = True
         self._loop: asyncio.AbstractEventLoop | None = None
         self._lock: asyncio.Lock | None = None
@@ -95,6 +101,20 @@ def bump_generation() -> int:
     require_held()
     _rt.generation += 1
     return _rt.generation
+
+
+def base_generation() -> int:
+    """Which Spoolman database a number read now belongs to (a stamp; see the module docstring)."""
+    return _rt.base_generation
+
+
+def bump_base_generation() -> int:
+    """Raise the base generation — only a base change, under the guard, with its flag set."""
+    require_held()
+    if not _rt._base_in_flight:
+        raise RuntimeError("the base generation moves only inside a base change")
+    _rt.base_generation += 1
+    return _rt.base_generation
 
 
 # --- the guard ----------------------------------------------------------------
@@ -248,5 +268,6 @@ async def quiesce_charges(timeout: float) -> bool:
 
 def reset_for_tests() -> None:
     _rt.generation = 0
+    _rt.base_generation = 0
     _rt.charge_admitting = True
     _rt._loop = None

@@ -83,6 +83,12 @@ def _stale(entry: _Number, issued: int | None) -> bool:
 
 def _enter_one(number: int, issued: int) -> None:
     entry = _fence.at(number)
+    operation = _current.get()
+    if operation is not None and operation.owns(number):
+        # The operation proved this number when it took it (against its own ticket, or a
+        # created number against the ticket of its POST) and its mark has refused every delete
+        # since: an older ticket of the whole batch says nothing more (acceptance A02).
+        issued = None
     if _stale(entry, issued):
         raise SpoolBeingDeleted(number)
     entry.writers += 1
@@ -144,17 +150,23 @@ class TagOperation:
     issued: int | None
     owned: set[int] = field(default_factory=set)
 
-    def add(self, number: int, *, created: bool = False) -> None:
+    def add(self, number: int, *, created: bool = False, issued: int | None = None) -> None:
         """Take one more number into the operation — synchronous, never waits.
 
         ``created``: the number came back from a confirmed create (S37); its
-        refusal says so.
+        refusal says so. It is proved against ``issued`` — the :func:`ticket`
+        taken right before that create's POST (acceptance A02): a delete of the
+        number admitted after it, still running or already finished, refuses.
+        A number deleted before the POST, which Spoolman then gave to the new
+        spool, is the new spool's.
         """
         number = int(number)
         if number in self.owned:
             return
+        if created and issued is None:
+            raise ValueError("a created number is proved against the ticket of its POST")
         try:
-            _mark(number, None if created else self.issued)
+            _mark(number, issued if created else self.issued)
         except SpoolBeingDeleted as exc:
             raise SpoolBeingDeleted(number, created=created) from exc
         self.owned.add(number)

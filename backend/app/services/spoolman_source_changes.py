@@ -168,6 +168,7 @@ class SourceChange:
                 self._base = True
                 if await protected_print_exists(db):
                     raise spoolman_source.SourceRefused(spoolman_source.PRINT_ACCOUNTING)
+                spoolman_source.bump_base_generation()
         except spoolman_source.SourceRefused as exc:
             raise refusal(exc) from exc
         spoolman_source.bump_generation()
