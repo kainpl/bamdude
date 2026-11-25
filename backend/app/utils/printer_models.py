@@ -25,6 +25,8 @@ PRINTER_MODEL_MAP = {
     "Bambu Lab X2D": "X2D",
     "Bambu Lab A2L": "A2L",
     "Bambu Lab N8": "N8",
+    "Bambu Lab H3C": "H3C",
+    "Bambu Lab P3C": "P3C",
 }
 
 # Map from printer_model_id (internal codes in slice_info.config) to short names
@@ -66,6 +68,12 @@ PRINTER_MODEL_ID_MAP = {
     "O1C": "H2C",
     "O1C2": "H2C",
     "O1S": "H2S",
+    # H3C / P3C (BS v02.09.02.62 catalog): recognised by name and code only. Both mount
+    # their hotends from a rack (nine / seven nozzles); none of the rack, AMS or
+    # chamber behaviour is inferred from that -- support is its own project (audit
+    # 1.3.2/N01), so they sit in none of the capability sets below.
+    "N10": "H3C",
+    "N11": "P3C",
 }
 
 

@@ -8497,6 +8497,9 @@ export function AddPrinterModal({
                   onChange={(e) => setForm({ ...form, model: e.target.value })}
                 >
                   <option value="">{t('printers.modal.selectModel')}</option>
+                  <optgroup label="H3 Series">
+                    <option value="H3C">H3C</option>
+                  </optgroup>
                   <optgroup label="H2 Series">
                     <option value="H2C">H2C</option>
                     <option value="H2D">H2D</option>
@@ -8512,6 +8515,7 @@ export function AddPrinterModal({
                     <option value="X1">X1</option>
                   </optgroup>
                   <optgroup label="P Series">
+                    <option value="P3C">P3C</option>
                     <option value="P2S">P2S</option>
                     <option value="P1S">P1S</option>
                     <option value="P1P">P1P</option>
@@ -9194,6 +9198,9 @@ export function EditPrinterModal({
                   onChange={(e) => setForm({ ...form, model: e.target.value })}
                 >
                   <option value="">{t('printers.modal.selectModel')}</option>
+                  <optgroup label="H3 Series">
+                    <option value="H3C">H3C</option>
+                  </optgroup>
                   <optgroup label="H2 Series">
                     <option value="H2C">H2C</option>
                     <option value="H2D">H2D</option>
@@ -9209,6 +9216,7 @@ export function EditPrinterModal({
                     <option value="X1">X1</option>
                   </optgroup>
                   <optgroup label="P Series">
+                    <option value="P3C">P3C</option>
                     <option value="P2S">P2S</option>
                     <option value="P1S">P1S</option>
                     <option value="P1P">P1P</option>

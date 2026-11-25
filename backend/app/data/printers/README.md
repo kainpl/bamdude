@@ -1,12 +1,15 @@
 # Bambu Lab printer configs (mirrored from BambuStudio)
 
-The full JSON catalog from BambuStudio's `resources/printers/`: one file per
-printer model, plus `filaments_blacklist.json`. All fields are mirrored, not
-only `compatible_machine`. These files are the data-driven source of truth for
+The whole of BambuStudio's `resources/printers/`: one JSON file per printer
+model, `filaments_blacklist.json`, and the three files beside them
+(`ams_load.gcode`, `ams_unload.gcode`, `version.txt` — the catalog's own
+version). Every file and every field is mirrored, including the ones nothing in
+BamDude reads yet (owner, 2026-11-25: keep them, they may be needed), not only
+`compatible_machine`. These files are the data-driven source of truth for
 per-model device capabilities and G-code model compatibility.
 
-- **Source:** BambuStudio `resources/printers/` @ tag **`v02.08.04.57`**
-  (commit `f977235e6`, checked 2026-09-27; `origin/master` has the same tree).
+- **Source:** BambuStudio `resources/printers/` @ tag **`v02.09.02.62`**
+  (commit `23a337589`, checked 2026-11-25; `origin/master` is the same commit).
 - **Consumed by:** `backend/app/utils/printer_configs.py` (loader and capability
   resolvers) and `backend/app/utils/model_compatibility.py`.
 - **Local BS checkout** (not in this repo): `D:/Development/bamdude/references/BambuStudio/`.
@@ -37,8 +40,8 @@ file using each JSON's own `display_name` / `model_id`, so it is independent of
 ### Code ↔ model (from the JSONs' own `display_name`)
 
 `BL-P001`=X1C · `BL-P002`=X1 · `C11`=**P1P** · `C12`=**P1S** · `C13`=X1E ·
-`N1`=A1 mini · `N2S`=A1 · `N6`=X2D · `N7`=P2S · `N8`=N8 · `N9`=A2L · `O1C`/`O1C2`=H2C ·
-`O1D`=H2D · `O1E`=H2D Pro · `O1S`=H2S.
+`N1`=A1 mini · `N2S`=A1 · `N6`=X2D · `N7`=P2S · `N8`=N8 · `N9`=A2L · `N10`=H3C ·
+`N11`=P3C · `O1C`/`O1C2`=H2C · `O1D`=H2D · `O1E`=H2D Pro · `O1S`=H2S.
 
 > `PRINTER_MODEL_ID_MAP` in `printer_models.py` was corrected to match these
 > JSONs (`C11`=P1P, `C12`=P1S; `BL-P001`=X1C, `BL-P002`=X1 added). This loader
@@ -47,6 +50,17 @@ file using each JSON's own `display_name` / `model_id`, so it is independent of
 
 `N8` first appears in the mirrored `v02.08.04.57` catalog. Its name and code
 are recognized; hardware behavior is not inferred from its sparse config.
+
+`N10` (H3C, nine-nozzle rack) and `N11` (P3C, seven-nozzle rack) first appear in
+`v02.09.02.62`. They are recognized by name, code and firmware line only; the
+data-driven readers (device calibrations, fan names) answer for them from their
+files, but no hand-kept capability set names them — their rack, AMS and chamber
+are a separate project (upstream audit 1.3.2/N01).
+
+`filaments_blacklist.json` gained rule fields in `v02.09.02.62` (`ams_type_id`,
+`group`, `priority`, `white_names`, `nozzle_flows`, `hide_in`, `filament_id_vec`).
+The file is mirrored but nothing in BamDude reads it yet, so they change no
+behavior; whoever starts reading it must implement them, not ignore them.
 
 ## Re-sync protocol (when BS ships new firmware/features)
 
@@ -58,9 +72,9 @@ note before mirroring it, since a flag enabled in a beta can still be reverted.
    `origin/master` is ahead of it. The reference working tree may still be on
    an older detached tag; do not copy from that working tree without checking.
 2. List `resources/printers/*.json` at the chosen ref with `git ls-tree`.
-   Copy **every** model JSON and `filaments_blacklist.json` from that ref's Git
-   objects (`git show <ref>:resources/printers/<name>`), including newly added
-   files. Identify removed files rather than silently keeping stale models.
+   Copy **every** file — each model JSON, `filaments_blacklist.json` and the
+   non-JSON files — from that ref's Git objects
+   (`git show <ref>:resources/printers/<name>`), including newly added files. Identify removed files rather than silently keeping stale models.
 3. Compare the parsed JSON of **every** mirrored file with the chosen ref, and
    review the full field-level diff against the previous mirror: names, IDs,
    serial prefixes, firmware overrides, capabilities, compatibility, and
@@ -71,15 +85,15 @@ note before mirroring it, since a flag enabled in a beta can still be reverted.
 
 > ⚠️ **A byte diff can show all model files as changed.** Our
 > pre-commit `end-of-file-fixer` appends a trailing newline that BS's copies do
-> not have — one byte per file, no content difference. On 2026-09-27, all 16
-> model JSONs plus the blacklist parsed identically to `v02.08.04.57`. Run this
+> not have — one byte per file, no content difference. On 2026-11-25, all 18
+> model JSONs plus the blacklist parsed identically to `v02.09.02.62`. Run this
 > Python snippet from the BamDude repo root to verify a mirror:
 >
 > ```python
 > import json, subprocess
 > from pathlib import Path
 > ref = 'D:/Development/bamdude/references/BambuStudio'
-> tag = 'v02.08.04.57'
+> tag = 'v02.09.02.62'
 > local = Path('backend/app/data/printers')
 > paths = subprocess.check_output(['git', '-C', ref, 'ls-tree', '-r', '--name-only', tag, 'resources/printers'], text=True).splitlines()
 > names = {Path(p).name for p in paths if p.endswith('.json')}

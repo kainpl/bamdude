@@ -237,6 +237,15 @@ class TestLabels:
 
         assert airduct_fan_label(model, mode=0, sub_mode=-1, part_id=3) == ("chamber", "Chamber")
 
+    def test_the_p3c_names_part_3_by_mode_and_the_h3c_its_chamber_fan_part_15(self):
+        """From the 02.09 descriptions: P3C part 3 is Exhaust in cooling, Filter in heating."""
+        from backend.app.utils.printer_configs import airduct_fan_label
+
+        assert airduct_fan_label("P3C", mode=0, sub_mode=-1, part_id=3) == ("exhaust", "Exhaust")
+        assert airduct_fan_label("P3C", mode=1, sub_mode=-1, part_id=3) == ("filter", "Filter")
+        assert airduct_fan_label("H3C", mode=0, sub_mode=-1, part_id=15) == ("chamber", "Chamber")
+        assert airduct_fan_label("N10", mode=1, sub_mode=-1, part_id=2) == ("rightHeating", "Right(Heating)")
+
     def test_an_unknown_model_gets_the_bambustudio_default_too(self):
         from backend.app.utils.printer_configs import airduct_fan_label
 
@@ -250,7 +259,7 @@ class TestLabels:
         # A model whose config names nothing for this part.
         assert airduct_fan_label("H2D", mode=0, sub_mode=-1, part_id=10) == (None, None)
 
-    @pytest.mark.parametrize("model", ["P2S", "X2D"])
+    @pytest.mark.parametrize("model", ["P2S", "X2D", "H3C", "P3C"])
     def test_every_label_these_models_use_is_translatable(self, model):
         """No silent English on the two models this feature targets.
 

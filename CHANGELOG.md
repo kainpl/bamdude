@@ -78,6 +78,8 @@ The configuration editor preserves the quantities and descriptions of other save
 
 ### Added
 
+- **Bambu Lab H3C and P3C are recognised.** Their names, model codes and firmware release pages are known now, so they can be added with the right model, carry their own name on the card and get the firmware update check. The printer descriptions BamDude mirrors from Bambu Studio come from 02.09.02.62. Their nozzle racks, the H3C's AMS 3H and their chambers are not supported yet, and nothing about them is guessed: such a printer is treated like a model BamDude knows nothing special about.
+
 - **A nozzle's used time and switch count.** The nozzle hover cards, for the rack and for both hotends, show how long a nozzle has printed and how many times it has been switched in, when the printer's firmware reports them, as Bambu Studio's hotend details do. A nozzle without them shows neither.
 
 - **Choose a USB camera for a printer from detected devices.** Refresh the list after connecting a camera or mapping it into Docker. BamDude checks the presence of the saved device path and accepts a path entered by hand.

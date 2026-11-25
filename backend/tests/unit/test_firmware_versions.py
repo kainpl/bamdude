@@ -109,6 +109,38 @@ async def test_wiki_extraction_fallback_accepts_fullwidth_parens():
     assert versions[0][1] == "20260401"
 
 
+# The H3C page heads each release "OTA 01.01.03.00" under id="ota-01010300" and
+# gives no date (its live page, checked 2026-11-25). Release notes mention other
+# versions in prose, which must stay out as on every other page.
+H3C_OTA_ANCHOR_SAMPLE = """
+<h2 id="ota-01010300">OTA 01.01.03.00</h2>
+<p>Requires AMS firmware 00.00.07.14 or later.</p>
+<h2 id="ota-01010000">OTA 01.01.00.00</h2>
+"""
+
+
+@pytest.mark.asyncio
+async def test_wiki_extraction_reads_the_h3c_ota_headings():
+    svc = FirmwareCheckService()
+    mock_resp = AsyncMock()
+    mock_resp.status_code = 200
+    mock_resp.text = H3C_OTA_ANCHOR_SAMPLE
+    with patch.object(svc._client, "get", AsyncMock(return_value=mock_resp)) as get:
+        versions = await svc._fetch_all_versions_from_wiki("h3c")
+
+    assert versions == [("01.01.03.00", None), ("01.01.00.00", None)]
+    assert get.await_args.args[0].endswith("/en/h3c/manual/firmware-release-history")
+
+
+@pytest.mark.parametrize(("model", "code", "key"), [("H3C", "N10", "h3c"), ("P3C", "N11", "p3c")])
+def test_the_new_models_check_their_own_firmware_line(model, code, key):
+    from backend.app.services.firmware_check import API_KEY_TO_DEV_MODEL, API_KEY_TO_WIKI_PATH, MODEL_TO_API_KEY
+
+    assert MODEL_TO_API_KEY[model] == MODEL_TO_API_KEY[code] == key
+    assert API_KEY_TO_DEV_MODEL[key] == code
+    assert API_KEY_TO_WIKI_PATH[key] == f"/en/{key}/manual/firmware-release-history"
+
+
 @pytest.mark.asyncio
 async def test_get_available_versions_merges_sources():
     """
