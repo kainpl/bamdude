@@ -1499,6 +1499,20 @@ _NOZZLE_FLOW_LETTER_MAP: dict[str, str] = {
 }
 
 
+def nozzle_counter(value: object) -> int | None:
+    """A nozzle's own counter from its ``nozzle_info`` entry, or None when absent.
+
+    BambuStudio reads two (``DevNozzleSystem``, "maybe not contains"): ``p_t``,
+    the seconds this nozzle has printed, and ``c_t``, how many times it has been
+    switched into use. Firmware that does not report one leaves it out, and that
+    stays None so the card shows nothing rather than a confident zero. A bool is
+    an int to Python but never a count.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return None
+    return int(value)
+
+
 def _parse_nozzle_type(raw: str | None) -> tuple[str, str]:
     """Decode the printer's nozzle_type into (material, flow).
 
@@ -7852,6 +7866,8 @@ class BambuMQTTClient:
                                 # H2C uses "fila_id", H2D uses "filament_id"
                                 "filament_id": str(n.get("filament_id") or n.get("fila_id", "")),
                                 "filament_type": str(n.get("tray_type", "") or n.get("filament_type", "")),
+                                "print_time_s": nozzle_counter(n.get("p_t")),
+                                "switch_count": nozzle_counter(n.get("c_t")),
                             }
                             for i, n in enumerate(nozzle_info)
                         ],

@@ -1202,6 +1202,10 @@ export interface NozzleRackSlot {
   filament_color: string;  // RGBA hex ("00000000" = no filament)
   filament_id: string;
   filament_type: string;  // Material type (e.g. "PLA", "PETG")
+  // The nozzle's own counters (BambuStudio's "Used time" / "Switch Count");
+  // null when the firmware does not report them.
+  print_time_s?: number | null;  // seconds printed ("p_t")
+  switch_count?: number | null;  // times switched into use ("c_t")
 }
 
 export interface PrintOptions {

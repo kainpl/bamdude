@@ -67,6 +67,10 @@ const MODEL_DISPLAY_MAP: Record<string, string> = {
   'N8': 'N8',
   // A2 Series
   'N9': 'A2L',
+  // H3C / P3C (BS 02.09 catalog): identity only -- their nozzle rack, AMS and
+  // chamber are a separate project, so no capability set names them.
+  'N10': 'H3C',
+  'N11': 'P3C',
   // P Series (BS configs: P1P=C11, P1S=C12, P2S=N7)
   'C11': 'P1P',
   'C12': 'P1S',
@@ -92,6 +96,8 @@ const MODEL_DISPLAY_MAP: Record<string, string> = {
   'H2D Pro': 'H2D Pro',
   'H2C': 'H2C',
   'H2S': 'H2S',
+  'H3C': 'H3C',
+  'P3C': 'P3C',
 };
 
 export function mapModelCode(ssdpModel: string | null | undefined): string {
@@ -122,6 +128,8 @@ const MODEL_LONG_NAME_MAP: Record<string, string> = {
   'Bambu Lab X2D': 'X2D',
   'Bambu Lab A2L': 'A2L',
   'Bambu Lab N8': 'N8',
+  'Bambu Lab H3C': 'H3C',
+  'Bambu Lab P3C': 'P3C',
 };
 
 /**

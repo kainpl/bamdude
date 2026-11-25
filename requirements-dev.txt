@@ -26,11 +26,20 @@ ruff==0.15.15
 # Security scanning
 bandit[sarif]>=1.7.0
 pip-audit>=2.7.0
-# Transitive of pip-audit -> CacheControl. 1.2.1 patches GHSA-6v7p-g79w-8964.
-msgpack>=1.2.1
+# Transitive of pip-audit -> CacheControl. 1.2.1 patched GHSA-6v7p-g79w-8964;
+# 1.2.3 fixes CVE-2026-114613 (the C extension leaks a decoded map value).
+msgpack>=1.2.3
+# Transitive of bandit[sarif] -> sarif-om -> pbr: setuptools before 84.1.0 has
+# GHSA-xmj3-9gf7-h52w (a wheel's namespace_packages path on Windows).
+setuptools>=84.1.0
 
 # Git hook runner. .pre-commit-config.yaml is committed and the hook is
 # installed in every working copy, so without this a freshly built venv cannot
 # commit at all — `git commit` dies with "No module named pre_commit". It was
 # only ever present because older venvs had it installed by hand.
 pre-commit>=4.0.0
+# Transitive of pre-commit -> virtualenv: virtualenv before 21.14.10 and
+# filelock before 4.2.1 carry the advisories pip-audit flags on 21.7.0 / 3.32.0
+# (wheel seeding, activation-script quoting; lock-file modes and paths).
+virtualenv>=21.14.10
+filelock>=4.2.1

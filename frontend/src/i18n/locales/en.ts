@@ -1384,6 +1384,8 @@ export default {
     nozzleStatus: 'Status',
     nozzleFilament: 'Filament',
     nozzleWear: 'Wear',
+    nozzleUsedTime: 'Used time',
+    nozzleSwitchCount: 'Switch count',
     nozzleMaxTemp: 'Max Temp',
     nozzleSerial: 'Serial',
     nozzleHardenedSteel: 'Hardened Steel',
@@ -1761,6 +1763,10 @@ export default {
       partCooling: 'Part Cooling Fan',
       auxiliary: 'Auxiliary Fan',
       chamber: 'Chamber Fan',
+      exhaust: 'Exhaust Fan',
+      filter: 'Filter Fan',
+      leftHeating: 'Left Heating Fan',
+      rightHeating: 'Right Heating Fan',
       // BambuStudio's own names for the airduct fans, per model and per mode.
       // The same part id is a different fan on a P2S and an X2D, so these are
       // never chosen by id — the backend resolves the name from the mirrored
@@ -1805,8 +1811,6 @@ export default {
         2: 'Exhaust',
         3: 'Full cooling',
       },
-      leftHeating: 'Left Heating Fan',
-      rightHeating: 'Right Heating Fan'
     },
     // HMS errors
     clickToViewHmsErrors: 'Click to view HMS errors',

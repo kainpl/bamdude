@@ -6,6 +6,8 @@ The configuration editor preserves the quantities and descriptions of other save
 
 ### Security
 
+- **Updating BamDude now moves the libraries past their known advisories.** The update installs the requirements without upgrading a package that already meets them, so the minimum versions decide what an existing install keeps. They are now Pillow 13.0.0, PyJWT 2.15.1, cryptography 50.0.0, aiohttp 3.14.4, urllib3 2.8.0, certifi 2026.10.18, multidict 6.9.1 and pyasn1 0.6.5: the first releases with the fixes `pip-audit` lists against the versions an older install kept. A new install already took the newest releases. The Docker build's own pip moves to 26.2.
+
 - Updated i18next to 26.3.4 to address [GHSA-6jcc-5g8w-32mx](https://github.com/advisories/GHSA-6jcc-5g8w-32mx).
 
 - The part thumbnail renderer uses Node.js 24.22.3 on 64-bit platforms and 22.23.5 on 32-bit ARM. Both updates include Node.js security fixes.
@@ -75,6 +77,10 @@ The configuration editor preserves the quantities and descriptions of other save
   address is no longer rejected by its additional loopback-only default check.
 
 ### Added
+
+- **Bambu Lab H3C and P3C are recognised.** Their names, model codes and firmware release pages are known now, so they can be added with the right model, carry their own name on the card and get the firmware update check. The printer descriptions BamDude mirrors from Bambu Studio come from 02.09.02.62. Their nozzle racks, the H3C's AMS 3H and their chambers are not supported yet, and nothing about them is guessed: such a printer is treated like a model BamDude knows nothing special about.
+
+- **A nozzle's used time and switch count.** The nozzle hover cards, for the rack and for both hotends, show how long a nozzle has printed and how many times it has been switched in, when the printer's firmware reports them, as Bambu Studio's hotend details do. A nozzle without them shows neither.
 
 - **Choose a USB camera for a printer from detected devices.** Refresh the list after connecting a camera or mapping it into Docker. BamDude checks the presence of the saved device path and accepts a path entered by hand.
 
@@ -344,6 +350,8 @@ The configuration editor preserves the quantities and descriptions of other save
 
 ### Removed
 
+- **The unused web-push dependency.** `pywebpush` was installed with BamDude, but nothing ever sent a push message, and the service worker's push and notification-click handlers that waited for one are gone too. `scripts/import_spoolman.py` and `scripts/update_hms_actions.py` now use `httpx`, which BamDude already ships: the `requests` they used was only ever there because `pywebpush` brought it in.
+
 - **Every print is archived.** A leftover per-printer "auto-archive" flag with no control in the interface could still, if switched off through the API, stop a printer's prints from being archived and their filament and energy from being recorded. The flag is no longer read and the API no longer accepts it.
 
 - **Settings: two controls that did nothing are gone.** *Default printer* and *Save thumbnails* were saved and never read.
@@ -352,7 +360,12 @@ The configuration editor preserves the quantities and descriptions of other save
 
 ### Fixed
 
+- **The X1 Carbon, P1S and P2S no longer show a wired connection.** They have no Ethernet port, as the manufacturer's own guides say, but BamDude counted them among the wired printers, so a Wi-Fi signal of exactly -90 dBm (the value a wired printer reports with Wi-Fi off) showed an Ethernet badge in place of the signal strength.
+
+- **The exhaust fan is named as the printer and Bambu Studio name it.** On the H2D, H2D Pro, H2C, H2S, P2S and X2D the printer card and the air-duct dialog called it the chamber fan. Bambu Studio calls that fan "Exhaust" unless the printer's own description renames it, which only the X1 family and the P1S do. The X2D's heating-mode fans (Left and Right Heating Fan) appeared in English in both languages; they are translated now.
+
 - **A Spoolman spool BamDude has printed with is archived, not deleted.** Deleting a Spoolman spool used to check only whether its slot fed a running print, so a spool with print history could be deleted and its number later charged to another spool. Now a Spoolman spool with usage history in BamDude, one a running print can still charge (by its slot, its tray tag or the print's journal), or one a print is finishing with is refused with the reason, as the built-in inventory does; archive it instead. A delete that Spoolman confirmed also removes the spool's slot and K-profile links here, and says so when it could not. Bulk delete reports deleted, refused and failed spools separately. While a print is accounted in Spoolman, the Spoolman address or database cannot be changed, so a spool number frozen during the print is never charged to another Spoolman; switching Spoolman on or off and "same database" still work. Usage history is recorded under the Spoolman that was actually charged, a full restore waits for an in-flight Spoolman charge or delete, and opening the usage history no longer writes anything.
+
 - **A deleted spool's number is never handed out again.** On SQLite, deleting the newest spool gave its number to the next one, so a printed numeric label, a slot record or a label job still naming it pointed at a different spool. The upgrade gives the spool table a counter that starts above every number the database still remembers, including numbers that only the history, labels or slots of deleted spools carry. The counter now also survives moving between SQLite and PostgreSQL and the portable backup. A used spool is still archived, not deleted.
 
 - **Bambu Studio keeps process overrides when reopening a sliced 3MF.** Exports based on a built-in or stock Bambu Cloud process record the settings changed in BamDude, including when a private preset shares the stock name.

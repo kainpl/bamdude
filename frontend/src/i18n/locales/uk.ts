@@ -1408,6 +1408,8 @@ export default {
     nozzleStatus: 'Статус',
     nozzleFilament: 'Філамент',
     nozzleWear: 'Знос',
+    nozzleUsedTime: 'Напрацювання',
+    nozzleSwitchCount: 'Кількість перемикань',
     nozzleMaxTemp: 'Макс. температура',
     nozzleSerial: 'Серійний номер',
     nozzleHardenedSteel: 'Загартована сталь',
@@ -1787,6 +1789,10 @@ export default {
       partCooling: 'Вентилятор охолодження деталі',
       auxiliary: 'Допоміжний вентилятор',
       chamber: 'Вентилятор камери',
+      exhaust: 'Витяжний вентилятор',
+      filter: 'Фільтрувальний вентилятор',
+      leftHeating: 'Лівий нагрівальний',
+      rightHeating: 'Правий нагрівальний',
       // Власні назви BambuStudio для вентиляторів airduct — по моделі й режиму.
       // Той самий part id це різний вентилятор на P2S і X2D, тож за id їх ніколи
       // не обирають: бекенд визначає назву з дзеркаленого конфігу принтера й
@@ -1826,8 +1832,6 @@ export default {
         2: 'Витяжка',
         3: 'Повне охолодження',
       },
-      leftHeating: 'Лівий нагрівальний',
-      rightHeating: 'Правий нагрівальний'
     },
     // HMS errors
     clickToViewHmsErrors: 'Натисніть для перегляду помилок HMS',

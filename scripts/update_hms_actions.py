@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-import requests
+import httpx
 
 HMS_ACTIONS_JSON_PATH = "backend/app/data/hms_actions.json"
 HMS_REQUEST_URL = "https://e.bambulab.com/hms/GetActionImage.php"
@@ -45,7 +45,7 @@ HMS_ID_TO_ACTION_NAME_MAP: dict[int, str] = {
 async def main():
     error_to_action_map: dict[str, list[str]] = {}
     # get the json response from the url
-    response = requests.get(HMS_REQUEST_URL)
+    response = httpx.get(HMS_REQUEST_URL, timeout=60, follow_redirects=True)
     if response.status_code == 200:
         data = response.json()
         ready_data = {}

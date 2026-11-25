@@ -1629,6 +1629,54 @@ class TestNozzleRackData:
         assert slot["filament_color"] == "FF8800"
         assert slot["filament_id"] == "F42"
         assert slot["filament_type"] == "ABS"
+        # Not in this frame: unknown, never a zero the card would show.
+        assert slot["print_time_s"] is None
+        assert slot["switch_count"] is None
+
+    def test_nozzle_counters_are_read_as_bambustudio_reads_them(self, mqtt_client):
+        """``p_t`` (seconds printed) and ``c_t`` (times switched in), per nozzle.
+
+        BambuStudio reads both from each ``nozzle_info`` entry when present
+        (``DevNozzleSystem``) and shows them as "Used time" / "Switch Count".
+        Anything that is not a non-negative number stays unknown.
+        """
+        payload = {
+            "print": {
+                "device": {
+                    "nozzle": {
+                        "info": [
+                            {"id": 0, "type": "HS00", "diameter": "0.4", "p_t": 7380, "c_t": 0},
+                            {"id": 16, "type": "HH01", "diameter": "0.6", "p_t": 125.0, "c_t": 42},
+                            {"id": 17, "type": "HS00", "diameter": "0.4", "p_t": -1, "c_t": True},
+                            {"id": 18, "type": "HS00", "diameter": "0.4", "p_t": "3600"},
+                        ]
+                    }
+                }
+            }
+        }
+        mqtt_client._process_message(payload)
+
+        by_id = {n["id"]: n for n in mqtt_client.state.nozzle_rack}
+        assert (by_id[0]["print_time_s"], by_id[0]["switch_count"]) == (7380, 0)
+        assert (by_id[16]["print_time_s"], by_id[16]["switch_count"]) == (125, 42)
+        assert (by_id[17]["print_time_s"], by_id[17]["switch_count"]) == (None, None)
+        assert (by_id[18]["print_time_s"], by_id[18]["switch_count"]) == (None, None)
+
+    def test_nozzle_counters_travel_in_the_websocket_payload(self, mqtt_client):
+        """The card reads the WebSocket payload as well as REST; both carry the counters."""
+        from backend.app.schemas.printer import NozzleRackSlot
+        from backend.app.services.printer_manager import printer_state_to_dict
+
+        mqtt_client._process_message(
+            {
+                "print": {
+                    "device": {"nozzle": {"info": [{"id": 16, "type": "HH01", "diameter": "0.6", "p_t": 90, "c_t": 3}]}}
+                }
+            }
+        )
+        slot = printer_state_to_dict(mqtt_client.state)["nozzle_rack"][0]
+        assert (slot["print_time_s"], slot["switch_count"]) == (90, 3)
+        assert NozzleRackSlot(**slot).switch_count == 3
 
     def test_nozzle_info_updates_nozzle_state(self, mqtt_client):
         """Nozzle info for IDs 0,1 decodes the BS 4-char code into canonical material + flow."""

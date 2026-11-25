@@ -217,6 +217,41 @@ class TestLabels:
 
         assert airduct_fan_label("X1C", mode=0, sub_mode=-1, part_id=3) == ("chamber", "Chamber")
 
+    @pytest.mark.parametrize("model", ["H2D", "H2D Pro", "H2C", "H2S", "P2S", "X2D"])
+    def test_an_unnamed_part_3_is_the_exhaust_fan_as_bambustudio_calls_it(self, model):
+        """BS names FAN_CHAMBER_0_IDX "Exhaust" unless the printer's config renames it.
+
+        ``FanControlPopupNew::get_fan_func_name`` reads the config first and falls
+        back to ``s_fan_func_name``; only the X1 family and the P1S configs say
+        "Chamber". Our fallback used to be the chamber fan, so every H2 model, the
+        P2S and the X2D showed a name neither the printer nor BS uses (#3521).
+        """
+        from backend.app.utils.printer_configs import airduct_fan_label
+
+        for mode in (0, 1):
+            assert airduct_fan_label(model, mode=mode, sub_mode=-1, part_id=3) == ("exhaust", "Exhaust")
+
+    @pytest.mark.parametrize("model", ["X1C", "X1", "X1E", "P1S"])
+    def test_the_configs_that_rename_part_3_still_say_chamber(self, model):
+        from backend.app.utils.printer_configs import airduct_fan_label
+
+        assert airduct_fan_label(model, mode=0, sub_mode=-1, part_id=3) == ("chamber", "Chamber")
+
+    def test_the_p3c_names_part_3_by_mode_and_the_h3c_its_chamber_fan_part_15(self):
+        """From the 02.09 descriptions: P3C part 3 is Exhaust in cooling, Filter in heating."""
+        from backend.app.utils.printer_configs import airduct_fan_label
+
+        assert airduct_fan_label("P3C", mode=0, sub_mode=-1, part_id=3) == ("exhaust", "Exhaust")
+        assert airduct_fan_label("P3C", mode=1, sub_mode=-1, part_id=3) == ("filter", "Filter")
+        assert airduct_fan_label("H3C", mode=0, sub_mode=-1, part_id=15) == ("chamber", "Chamber")
+        assert airduct_fan_label("N10", mode=1, sub_mode=-1, part_id=2) == ("rightHeating", "Right(Heating)")
+
+    def test_an_unknown_model_gets_the_bambustudio_default_too(self):
+        from backend.app.utils.printer_configs import airduct_fan_label
+
+        assert airduct_fan_label("NOT-A-PRINTER", mode=0, sub_mode=-1, part_id=3) == ("exhaust", "Exhaust")
+        assert airduct_fan_label(None, mode=0, sub_mode=-1, part_id=10) == (None, None)
+
     def test_a_recognised_label_carries_an_i18n_key_and_an_unknown_one_does_not(self):
         from backend.app.utils.printer_configs import airduct_fan_label
 
@@ -224,7 +259,7 @@ class TestLabels:
         # A model whose config names nothing for this part.
         assert airduct_fan_label("H2D", mode=0, sub_mode=-1, part_id=10) == (None, None)
 
-    @pytest.mark.parametrize("model", ["P2S", "X2D"])
+    @pytest.mark.parametrize("model", ["P2S", "X2D", "H3C", "P3C"])
     def test_every_label_these_models_use_is_translatable(self, model):
         """No silent English on the two models this feature targets.
 
@@ -238,3 +273,26 @@ class TestLabels:
                 key, raw = airduct_fan_label(model, mode=mode, sub_mode=0, part_id=part_id)
                 assert raw, f"{model} mode={mode} part={part_id} unnamed"
                 assert key, f"{model} mode={mode} part={part_id} → {raw!r} has no i18n key"
+
+    @pytest.mark.parametrize("locale", ["en", "uk"])
+    def test_every_key_the_backend_sends_exists_under_printers_fans(self, locale):
+        """The card and the air-duct dialog read ``printers.fans.<label_key>``.
+
+        ``leftHeating`` / ``rightHeating`` once sat under ``printers.airduct``:
+        the backend sent the key, ``t()`` found nothing and fell back to BS's raw
+        English, so the X2D's heating-mode fan read "Left(Heating)" in both
+        languages and no test noticed — the backend test above only checks that a
+        key exists on the backend side.
+        """
+        import re
+        from pathlib import Path
+
+        from backend.app.utils.printer_configs import _BS_FAN_LABEL_KEYS
+
+        root = Path(__file__).resolve().parents[4]
+        text = (root / "frontend" / "src" / "i18n" / "locales" / f"{locale}.ts").read_text(encoding="utf-8")
+        block = re.search(r"^    fans: \{\n(.*?)^    \},\n", text, re.M | re.S)
+        assert block, "printers.fans block not found"
+        keys = set(re.findall(r"^      (\w+):", block.group(1), re.M))
+        missing = sorted(set(_BS_FAN_LABEL_KEYS.values()) - keys)
+        assert not missing, f"{locale}.ts printers.fans lacks {missing}"

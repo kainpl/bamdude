@@ -99,7 +99,7 @@ COPY backend/app/services/__init__.py backend/app/services/step_runtime_child.py
      backend/app/services/worker_env.py ./backend/app/services/
 COPY backend/app/data/step_runtime_manifest.json backend/app/data/step_runtime_closure.json ./backend/app/data/
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --root-user-action=ignore --upgrade 'pip>=26.1.2' \
+    pip install --root-user-action=ignore --upgrade 'pip>=26.2' \
  && pip install --root-user-action=ignore -r requirements.txt \
  && { python -m backend.app.step_runtime install --app-dir /app --import-only \
         $( [ "$STEP_PREVIEW_CANDIDATE" = 1 ] && echo --allow-candidate ) || [ "$?" -eq 3 ]; } \

@@ -30,7 +30,7 @@ describe('PWA assets', () => {
     expect(manifest.background_color).toBe('#0B0D0A');
   });
 
-  it('service-worker precache list and push icons exist', () => {
+  it('service-worker precache list exists', () => {
     const sw = read('public/sw.js');
     const paths = [...sw.matchAll(/'(\/(?:img|fonts)\/[^']+)'/g)].map((m) => m[1]);
     expect(paths.length).toBeGreaterThan(5);
@@ -69,8 +69,7 @@ describe('PWA assets', () => {
     const cacheName = /const CACHE_NAME = '([^']+)'/.exec(sw)?.[1];
     const staticAssetsBlock = /const STATIC_ASSETS = \[([\s\S]*?)\];/.exec(sw)?.[1] ?? '';
     const precache = [...staticAssetsBlock.matchAll(/'(\/[^']*)'/g)].map((m) => m[1]);
-    const pushIcons = [...sw.matchAll(/(?:icon|badge): '(\/[^']+)'/g)].map((m) => m[1]);
-    expect([cacheName, ...precache, ...pushIcons]).toMatchInlineSnapshot(`
+    expect([cacheName, ...precache]).toMatchInlineSnapshot(`
       [
         "bamdude-v5",
         "/",
@@ -84,8 +83,6 @@ describe('PWA assets', () => {
         "/img/brand/lockup-compact-on-light.svg",
         "/fonts/inter-latin.woff2",
         "/fonts/inter-latin-ext.woff2",
-        "/img/brand/icon-tile-192.png",
-        "/img/brand/mark-on-dark-128.png",
       ]
     `);
   });

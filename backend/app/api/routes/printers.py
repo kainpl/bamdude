@@ -1626,6 +1626,8 @@ async def _build_printer_status(
             filament_color=n.get("filament_color", ""),
             filament_id=n.get("filament_id", ""),
             filament_type=n.get("filament_type", ""),
+            print_time_s=n.get("print_time_s"),
+            switch_count=n.get("switch_count"),
         )
         for n in (state.nozzle_rack or [])
     ]

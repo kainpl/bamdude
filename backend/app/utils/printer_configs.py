@@ -461,7 +461,17 @@ _BS_FAN_LABEL_KEYS = {
     "left(heating)": "leftHeating",
     "right(heating)": "rightHeating",
     "chamber": "chamber",
+    "exhaust": "exhaust",
+    "filter": "filter",
 }
+
+# What BambuStudio calls a part the printer's config does not name
+# (``FanControlPopupNew::get_fan_func_name`` falls back to ``s_fan_func_name``).
+# Only part 3 is here because it is the one our screens otherwise misnamed: BS
+# calls FAN_CHAMBER_0_IDX "Exhaust", and only the X1 Carbon, X1, X1E and P1S
+# configs rename it "Chamber" (under mode -1). Read without this, every H2 model,
+# the P2S and the X2D showed "Chamber Fan" where the printer and BS say exhaust.
+_BS_DEFAULT_FAN_LABELS = {3: "Exhaust"}
 
 
 def airduct_fan_label(model: str | None, mode: int, sub_mode: int, part_id: int) -> tuple[str | None, str | None]:
@@ -469,7 +479,8 @@ def airduct_fan_label(model: str | None, mode: int, sub_mode: int, part_id: int)
 
     Returns ``(i18n_key, raw_bs_label)``. Either may be ``None``: an unmapped
     label yields ``(None, "Something New")`` so the caller can still show it, and
-    a model whose config names nothing yields ``(None, None)``.
+    a part the config does not name yields BS's own default name for it
+    (``_BS_DEFAULT_FAN_LABELS``), or ``(None, None)`` when BS has none either.
 
     ⚠️ **The same part id is a different fan on different models — and in
     different modes.** From the configs we mirror:
@@ -495,7 +506,7 @@ def airduct_fan_label(model: str | None, mode: int, sub_mode: int, part_id: int)
     cfg = load_printer_config(model)
     fans = cfg.get("fan") if cfg else None
     if not isinstance(fans, dict):
-        return None, None
+        fans = {}
 
     for mode_key in (str(mode), "-1"):
         by_part = fans.get(mode_key)
@@ -508,6 +519,9 @@ def airduct_fan_label(model: str | None, mode: int, sub_mode: int, part_id: int)
             value = value.get(str(sub_mode)) or value.get("-1")
         if isinstance(value, str) and value:
             return _BS_FAN_LABEL_KEYS.get(value.strip().lower()), value
+    default = _BS_DEFAULT_FAN_LABELS.get(part_id)
+    if default:
+        return _BS_FAN_LABEL_KEYS.get(default.lower()), default
     return None, None
 
 

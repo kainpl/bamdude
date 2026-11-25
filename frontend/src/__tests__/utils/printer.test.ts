@@ -115,6 +115,18 @@ describe('normalizeModelName', () => {
     expect(normalizeModelName(code)).toBe(expected);
   });
 
+  // BambuStudio 02.09's catalog adds the H3C (N10) and P3C (N11); both spellings
+  // name them, and neither picks up another model's picture.
+  it.each([
+    ['N10', 'H3C'],
+    ['Bambu Lab H3C', 'H3C'],
+    ['N11', 'P3C'],
+    ['Bambu Lab P3C', 'P3C'],
+  ])('names the new model %s as %s', (spelling, expected) => {
+    expect(normalizeModelName(spelling)).toBe(expected);
+    expect(getPrinterImage(spelling)).toBe('/img/printers/default.png');
+  });
+
   it('leaves a short name alone and strips the prefix off one it does not know', () => {
     expect(normalizeModelName('X1C')).toBe('X1C');
     expect(normalizeModelName('Bambu Lab Z9')).toBe('Z9');

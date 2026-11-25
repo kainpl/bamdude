@@ -3065,6 +3065,8 @@ def printer_state_to_dict(
                 # A push replaces the whole rack, so without this every one
                 # dropped the slot's material label (upstream 808e461c5).
                 "filament_type": n.get("filament_type", ""),
+                "print_time_s": n.get("print_time_s"),
+                "switch_count": n.get("switch_count"),
             }
             for n in (state.nozzle_rack or [])
         ],

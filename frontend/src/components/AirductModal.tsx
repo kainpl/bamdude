@@ -85,7 +85,7 @@ export function AirductModal({
         (f.part_id === 1
           ? t('printers.fans.partCooling')
           : f.part_id === 3
-            ? t('printers.fans.chamber')
+            ? t('printers.fans.exhaust')
             : t('printers.fans.auxiliary')));
 
   // Part cooling first, then left before right — the sides are mirrored between

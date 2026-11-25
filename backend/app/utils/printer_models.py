@@ -25,6 +25,8 @@ PRINTER_MODEL_MAP = {
     "Bambu Lab X2D": "X2D",
     "Bambu Lab A2L": "A2L",
     "Bambu Lab N8": "N8",
+    "Bambu Lab H3C": "H3C",
+    "Bambu Lab P3C": "P3C",
 }
 
 # Map from printer_model_id (internal codes in slice_info.config) to short names
@@ -66,6 +68,12 @@ PRINTER_MODEL_ID_MAP = {
     "O1C": "H2C",
     "O1C2": "H2C",
     "O1S": "H2S",
+    # H3C / P3C (BS v02.09.02.62 catalog): recognised by name and code only. Both mount
+    # their hotends from a rack (nine / seven nozzles); none of the rack, AMS or
+    # chamber behaviour is inferred from that -- support is its own project (audit
+    # 1.3.2/N01), so they sit in none of the capability sets below.
+    "N10": "H3C",
+    "N11": "P3C",
 }
 
 
@@ -151,26 +159,22 @@ NO_EXTERNAL_STORAGE_MODELS = frozenset(
 )
 
 
-# Models with an ethernet port.
-# X1, P1P, A1, A1 Mini do NOT have ethernet.
+# Models with an ethernet port. Bambu's printer descriptions carry no such flag,
+# so this is the hardware as the manufacturer documents it: the X1/X1C and P1S
+# quick-start guides and the P2S specification list Wi-Fi only (they sat here by
+# mistake until 2026-11-25), the X1E specification lists Ethernet. X1, P1P, A1
+# and A1 Mini have none either.
 ETHERNET_MODELS = frozenset(
     [
         # Display names (uppercase, no spaces)
-        "X1C",
         "X1E",
-        "P1S",
-        "P2S",
         "X2D",
         "H2D",
         "H2DPRO",
         "H2C",
         "H2S",
-        # Internal codes (hyphen-stripped). X1C=BLP001, X1E=C13, P1S=C12 have
-        # ethernet; plain X1 (BLP002) and P1P (C11) do NOT — their codes stay out.
-        "BLP001",  # X1C
+        # Internal codes (hyphen-stripped)
         "C13",  # X1E
-        "C12",  # P1S
-        "N7",  # P2S
         "N6",  # X2D
         "O1D",  # H2D
         "O1E",  # H2D Pro
