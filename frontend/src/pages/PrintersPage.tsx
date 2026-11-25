@@ -480,6 +480,20 @@ function NozzleSlotHoverCard({ slot, index, activeStatus, filamentName, children
                   </div>
                 )}
 
+                {/* Used time and switch count — only when the firmware reports them */}
+                {slot.print_time_s != null && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-[length:var(--pc-t10,10px)] uppercase tracking-wider text-bambu-gray font-medium">{t('printers.nozzleUsedTime')}</span>
+                    <span className="text-xs text-white font-semibold">{formatDuration(slot.print_time_s, t)}</span>
+                  </div>
+                )}
+                {slot.switch_count != null && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-[length:var(--pc-t10,10px)] uppercase tracking-wider text-bambu-gray font-medium">{t('printers.nozzleSwitchCount')}</span>
+                    <span className="text-xs text-white font-semibold">{slot.switch_count}</span>
+                  </div>
+                )}
+
                 {/* Max Temp (hide if 0) */}
                 {slot.max_temp > 0 && (
                   <div className="flex items-center justify-between">
@@ -618,6 +632,18 @@ function DualNozzleHoverCard({ leftSlot, rightSlot, activeNozzle, filamentInfo, 
           <div className="flex items-center justify-between">
             <span className="text-[length:var(--pc-t10,10px)] text-bambu-gray">{t('printers.nozzleWear')}</span>
             <span className="text-xs text-white font-semibold">{slot.wear}%</span>
+          </div>
+        )}
+        {slot.print_time_s != null && (
+          <div className="flex items-center justify-between">
+            <span className="text-[length:var(--pc-t10,10px)] text-bambu-gray">{t('printers.nozzleUsedTime')}</span>
+            <span className="text-xs text-white font-semibold">{formatDuration(slot.print_time_s, t)}</span>
+          </div>
+        )}
+        {slot.switch_count != null && (
+          <div className="flex items-center justify-between">
+            <span className="text-[length:var(--pc-t10,10px)] text-bambu-gray">{t('printers.nozzleSwitchCount')}</span>
+            <span className="text-xs text-white font-semibold">{slot.switch_count}</span>
           </div>
         )}
         {/* Serial and max temp only available on the right (removable) nozzle */}

@@ -1142,6 +1142,45 @@ describe('PrintersPage', () => {
       expect(slotTexts).toEqual(['-', '0.2', '0.6', '0.8', '1.0', '1.2']);
     });
 
+    it("shows a rack nozzle's used time and switch count when the firmware reports them", async () => {
+      // BambuStudio's hotend details read p_t (seconds printed) and c_t (times
+      // switched in) per nozzle. A nozzle whose firmware leaves them out shows
+      // neither row — an unknown is not "0h".
+      const withCounters = {
+        ...h2cStatus,
+        nozzle_rack: h2cStatus.nozzle_rack.map((n) =>
+          n.id === 16 ? { ...n, print_time_s: 7380, switch_count: 42 } : n,
+        ),
+      };
+      server.use(
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json(withCounters)),
+      );
+      const user = userEvent.setup();
+
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText('Nozzle Rack').length).toBeGreaterThan(0);
+      });
+      const chips = () =>
+        Array.from(
+          screen.getAllByText('Nozzle Rack')[0].parentElement!.querySelectorAll('span[data-rack-diameter]'),
+        ) as HTMLElement[];
+
+      await user.hover(chips()[0]);
+      expect(await screen.findByText('Used time')).toBeInTheDocument();
+      expect(screen.getByText('2h 3m')).toBeInTheDocument();
+      expect(screen.getByText('Switch count')).toBeInTheDocument();
+      expect(screen.getByText('42')).toBeInTheDocument();
+
+      await user.unhover(chips()[0]);
+      await waitFor(() => expect(screen.queryByText('Used time')).not.toBeInTheDocument());
+      await user.hover(chips()[1]);
+      expect(await screen.findByText('SN-17')).toBeInTheDocument();
+      expect(screen.queryByText('Used time')).not.toBeInTheDocument();
+      expect(screen.queryByText('Switch count')).not.toBeInTheDocument();
+    });
+
     it('labels every rack position 1..6 regardless of which nozzles are present (upstream d0e217f6)', async () => {
       // The numbering is positional, not a count of what is loaded: an empty
       // position keeps its number, so "the nozzle in R4" — the name the print

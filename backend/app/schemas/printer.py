@@ -425,6 +425,9 @@ class NozzleRackSlot(BaseModel):
     filament_color: str = ""  # RGBA hex ("00000000" = no filament)
     filament_id: str = ""  # Bambu filament ID
     filament_type: str = ""  # Material type (e.g. "PLA", "PETG")
+    # The nozzle's own counters, as BambuStudio reads them (None = not reported):
+    print_time_s: int | None = None  # seconds this nozzle has printed ("p_t")
+    switch_count: int | None = None  # times it was switched into use ("c_t")
 
 
 class AirductFan(BaseModel):

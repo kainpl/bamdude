@@ -1408,6 +1408,8 @@ export default {
     nozzleStatus: 'Статус',
     nozzleFilament: 'Філамент',
     nozzleWear: 'Знос',
+    nozzleUsedTime: 'Напрацювання',
+    nozzleSwitchCount: 'Кількість перемикань',
     nozzleMaxTemp: 'Макс. температура',
     nozzleSerial: 'Серійний номер',
     nozzleHardenedSteel: 'Загартована сталь',

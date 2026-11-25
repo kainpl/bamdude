@@ -1384,6 +1384,8 @@ export default {
     nozzleStatus: 'Status',
     nozzleFilament: 'Filament',
     nozzleWear: 'Wear',
+    nozzleUsedTime: 'Used time',
+    nozzleSwitchCount: 'Switch count',
     nozzleMaxTemp: 'Max Temp',
     nozzleSerial: 'Serial',
     nozzleHardenedSteel: 'Hardened Steel',

@@ -78,6 +78,8 @@ The configuration editor preserves the quantities and descriptions of other save
 
 ### Added
 
+- **A nozzle's used time and switch count.** The nozzle hover cards, for the rack and for both hotends, show how long a nozzle has printed and how many times it has been switched in, when the printer's firmware reports them, as Bambu Studio's hotend details do. A nozzle without them shows neither.
+
 - **Choose a USB camera for a printer from detected devices.** Refresh the list after connecting a camera or mapping it into Docker. BamDude checks the presence of the saved device path and accepts a path entered by hand.
 
 - **Assign a spool by scanning its label.** Pick an AMS slot or storage location, scan a current BamDude inventory label with the camera or from a photo, and confirm the spool. New labels stay tied to their original record during editing and assignment even when a spool number is reused. Reprint older labels to use the scanner.
