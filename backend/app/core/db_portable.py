@@ -263,6 +263,8 @@ async def _export_pg_to_sqlite(engine, metadata, output_path: Path) -> None:
                     async with conn.stream(statement) as result:
                         async for rows in result.partitions(500):
                             dst.executemany(insert, [serialize(row) for row in rows])
+                if conn.dialect.name == "postgresql":
+                    await _carry_id_counters(conn, portable, dst)
                 if "settings" in portable.tables:
                     from backend.app.core.schema_repair_state import PORTABLE, VERSION, encode
 
@@ -298,6 +300,29 @@ async def _export_pg_to_sqlite(engine, metadata, output_path: Path) -> None:
 
 def _quote(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
+
+
+async def _carry_id_counters(conn, portable, dst) -> None:
+    """Give the copy's AUTOINCREMENT tables the counter PostgreSQL has reached (C047, spec §B).
+
+    Rows inserted with explicit ids leave ``sqlite_sequence`` at the largest id that
+    is left, so a deleted newest row would get its number back on the copy. The
+    sequence is read here, after the export's snapshot began: a sequence lives
+    outside MVCC, so the value can only be larger than the snapshot's — a safe margin.
+    """
+    from backend.app.core import pg_sequences
+
+    for table in portable.tables.values():
+        if not table.dialect_options["sqlite"].get("autoincrement") or "id" not in table.c:
+            continue
+        state = await pg_sequences.sequence_state(conn, table.name)
+        if state is None or state.issued < 1:
+            continue
+        current = dst.execute("SELECT seq FROM sqlite_sequence WHERE name = ?", (table.name,)).fetchone()
+        if current is None:
+            dst.execute("INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)", (table.name, state.issued))
+        elif current[0] < state.issued:
+            dst.execute("UPDATE sqlite_sequence SET seq = ? WHERE name = ?", (state.issued, table.name))
 
 
 def _pg_predicate(sql: str, booleans: set[str]) -> str:
@@ -527,6 +552,40 @@ async def _fk_transaction(engine, connection=None):
     else:
         async with connection.begin_nested():
             yield connection
+
+
+def _source_id_bounds(src, table_names) -> dict[str, int]:
+    """The id high-water mark of each table, read from the SQLite file itself (C047, spec §B).
+
+    ``sqlite_sequence`` keeps the counter of an AUTOINCREMENT table even after it
+    has emptied. A file older than m261 has no counter for ``spool``: its bound is
+    the frozen registry of ``core/spool_id_bound.py`` — every number the file still
+    remembers, the orphaned usage history of spools deleted before the 409 rule
+    included. That history itself is not carried (owner, 2026-11-25): the existing
+    FK repair removes it, only its numbers stay reserved. Reads only.
+    """
+    from backend.app.core import spool_id_bound
+
+    names = set(table_names)
+    bounds: dict[str, int] = {}
+    if src.execute("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'sqlite_sequence'").fetchone():
+        for name, seq in src.execute("SELECT name, seq FROM sqlite_sequence").fetchall():
+            if name in names and isinstance(seq, int) and not isinstance(seq, bool):
+                bounds[name] = max(seq, bounds.get(name, seq))
+    if "spool" in names:
+        spool = spool_id_bound.sqlite_bound(src, spool_id_bound.sqlite_applied_versions(src))
+        if spool is not None:
+            bounds["spool"] = max(spool, bounds.get("spool", spool))
+        orphans = spool_id_bound.sqlite_orphan_history(src)
+        if orphans:
+            logger.warning(
+                "The source holds %d usage-history row(s) naming spools it no longer has "
+                "(deleted before a used spool had to be archived)",
+                orphans,
+            )
+        if "spool" in bounds:
+            logger.info("Highest spool number the source remembers: %d", bounds["spool"])
+    return bounds
 
 
 async def _add_foreign_key(
@@ -935,6 +994,10 @@ async def _import_prepared_to_postgres(engine, metadata, prepared, *, acceptance
         # this "may raise an error in a future release", and an order it made up
         # once put library_files ahead of library_folders (upstream 58ea7a36).
         table_names = sorted(reflected.tables)
+        # C047: the numbers' high-water marks, read from the file itself before
+        # anything is loaded — the FK restore below (or the conformer after the
+        # chain) may purge rows whose numbers must still never be handed out.
+        id_bounds = _source_id_bounds(src, table_names)
 
         # Phase 1: Drop and recreate the schema, then strip foreign keys IN THE
         # DATABASE before loading data.
@@ -1102,23 +1165,23 @@ async def _import_prepared_to_postgres(engine, metadata, prepared, *, acceptance
                 imported += 1
                 logger.info("Imported %d rows into %s", count, table_name)
 
-            # New tables have new sequences: reset only the ones that actually
-            # exist, and fail the transaction if one cannot be restored.
+            # New tables have new sequences: raise only the ones that actually
+            # exist, and fail the transaction if one cannot be raised. The bound is
+            # the loaded MAX(id), the file's own counter (a table that has emptied
+            # keeps it) and, for spool, every number the file still remembers (C047).
             if is_postgres():
+                from backend.app.core import pg_sequences
+
                 for table_name in table_names:
                     if "id" not in reflected.tables[table_name].c:
                         continue
-                    sequence = (
-                        await conn.execute(
-                            text("SELECT pg_get_serial_sequence(:table, 'id')"), {"table": _quote(table_name)}
-                        )
-                    ).scalar()
-                    if sequence:
-                        max_id = (await conn.execute(text(f"SELECT MAX(id) FROM {_quote(table_name)}"))).scalar()  # noqa: S608
-                        if max_id is not None:
-                            await conn.execute(
-                                text("SELECT setval(:sequence, :value)"), {"sequence": sequence, "value": max_id}
-                            )
+                    if await pg_sequences.sequence_state(conn, table_name) is None:
+                        continue
+                    max_id = (await conn.execute(text(f"SELECT MAX(id) FROM {_quote(table_name)}"))).scalar()  # noqa: S608
+                    found = [v for v in (max_id, id_bounds.get(table_name)) if isinstance(v, int)]
+                    await pg_sequences.raise_to(
+                        conn, table_name, max(found) if found else None, plain=False, required=True
+                    )
 
             # Phase 3: Put the foreign keys back, exactly as they were. One that the
             # rows forbid is repaired the way the key itself would have — see
@@ -1173,6 +1236,8 @@ async def _import_prepared_to_postgres(engine, metadata, prepared, *, acceptance
         _request_conform()
 
         logger.info("Cross-database import complete: %d tables imported", imported)
+        if "spool" in id_bounds:
+            logger.info("Spool numbers up to %d stay reserved in the imported database", id_bounds["spool"])
         return imported
 
 

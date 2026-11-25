@@ -129,9 +129,48 @@ async def _bootstrap_existing(engine) -> None:
         logger.info("Bootstrapped existing BamDude 3.0.1 install (m000+m001 marked as applied)")
 
 
+def _owns_sqlite_transaction(mod) -> bool:
+    """Whether the migration, on SQLite, owns its transaction and ``PRAGMA foreign_keys`` itself.
+
+    Such a module exposes ``upgrade_sqlite(dbapi_connection)`` (C047, spec §A). SQLite ignores
+    the pragma inside a transaction, so a rebuild that must run with foreign keys off cannot
+    live inside the runner's ``engine.begin()``; its PostgreSQL arm still goes through ``upgrade``.
+    """
+    return bool(getattr(mod, "sqlite_owns_transaction", False))
+
+
+async def _run_sqlite_self_managed(engine, mod) -> None:
+    """Run ``mod.upgrade_sqlite`` on one pooled connection with no transaction open on it.
+
+    The SAME entry serves the pending run and the DEBUG replay. Nothing is executed through
+    SQLAlchemy before the hand-over, so neither SQLAlchemy nor the driver has begun a
+    transaction, and the runner does not touch ``PRAGMA foreign_keys`` here. A connection
+    whose rollback or pragma restore the helper could not prove — or that an interruption
+    left in an unknown state — is invalidated, never returned to the pool.
+    """
+    from backend.app.migrations._sqlite_autoincrement import SelfManagedFailure
+
+    async with engine.connect() as conn:
+        raw = await conn.get_raw_connection()
+        dbapi = raw.dbapi_connection
+        try:
+            outcome = await conn.run_sync(lambda _sync: mod.upgrade_sqlite(dbapi))
+        except SelfManagedFailure as exc:
+            if not exc.connection_safe:
+                await conn.invalidate()
+            raise
+        except BaseException:
+            await conn.invalidate()
+            raise
+        if not outcome.connection_safe:
+            logger.warning("Migration %s left its connection in an unproven state; discarding it", mod.version)
+            await conn.invalidate()
+
+
 async def _run_pending(engine, session_factory) -> None:
     """Discover and run all pending migrations sequentially."""
     from backend.app.core.config import settings as app_settings
+    from backend.app.core.db_dialect import is_sqlite
 
     applied = await _get_applied_versions(engine)
     migrations = _discover_migrations()
@@ -142,7 +181,9 @@ async def _run_pending(engine, session_factory) -> None:
         if latest in applied:
             try:
                 head = next(m["module"] for m in migrations if m["version"] == latest)
-                if hasattr(head, "replay"):
+                if is_sqlite() and _owns_sqlite_transaction(head):
+                    await _run_sqlite_self_managed(engine, head)
+                elif hasattr(head, "replay"):
                     async with engine.begin() as conn:
                         await head.replay(conn)
                 else:
@@ -171,10 +212,10 @@ async def _run_pending(engine, session_factory) -> None:
         try:
             phase = "DDL"
             # DDL phase (schema changes) - FK off for safety (SQLite only)
-            if hasattr(mod, "upgrade"):
+            if is_sqlite() and _owns_sqlite_transaction(mod):
+                await _run_sqlite_self_managed(engine, mod)
+            elif hasattr(mod, "upgrade"):
                 async with engine.begin() as conn:
-                    from backend.app.core.db_dialect import is_sqlite
-
                     if is_sqlite():
                         await conn.execute(text("PRAGMA foreign_keys = OFF"))
                     await mod.upgrade(conn)

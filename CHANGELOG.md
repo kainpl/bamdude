@@ -330,6 +330,8 @@
 
 ### Fixed
 
+- **A deleted spool's number is never handed out again.** On SQLite, deleting the newest spool gave its number to the next one, so a printed numeric label, a slot record or a label job still naming it pointed at a different spool. The upgrade gives the spool table a counter that starts above every number the database still remembers, including numbers that only the history, labels or slots of deleted spools carry. The counter now also survives moving between SQLite and PostgreSQL and the portable backup. A used spool is still archived, not deleted.
+
 - **Bambu Studio keeps process overrides when reopening a sliced 3MF.** Exports based on a built-in or stock Bambu Cloud process record the settings changed in BamDude, including when a private preset shares the stock name.
 
 - **Both slicer images support running under an unprivileged UID.** The
