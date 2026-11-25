@@ -356,6 +356,8 @@ The configuration editor preserves the quantities and descriptions of other save
 
 ### Fixed
 
+- **The exhaust fan is named as the printer and Bambu Studio name it.** On the H2D, H2D Pro, H2C, H2S, P2S and X2D the printer card and the air-duct dialog called it the chamber fan. Bambu Studio calls that fan "Exhaust" unless the printer's own description renames it, which only the X1 family and the P1S do. The X2D's heating-mode fans (Left and Right Heating Fan) appeared in English in both languages; they are translated now.
+
 - **A deleted spool's number is never handed out again.** On SQLite, deleting the newest spool gave its number to the next one, so a printed numeric label, a slot record or a label job still naming it pointed at a different spool. The upgrade gives the spool table a counter that starts above every number the database still remembers, including numbers that only the history, labels or slots of deleted spools carry. The counter now also survives moving between SQLite and PostgreSQL and the portable backup. A used spool is still archived, not deleted.
 
 - **Bambu Studio keeps process overrides when reopening a sliced 3MF.** Exports based on a built-in or stock Bambu Cloud process record the settings changed in BamDude, including when a private preset shares the stock name.
