@@ -393,8 +393,8 @@ The bot is a full aiogram 3.x interface, not just a notification channel.
   docs PR there — or at least a paragraph in your PR description that the
   maintainer can lift into one.
 - The README's feature list is for headline features only.
-- Engineering contracts live in the code, tests and `CLAUDE.md`; release
-  operations are maintainer-only.
+- Engineering contracts live in the code, tests, `CLAUDE.md` and
+  `docs/development/invariants/`; release operations are maintainer-only.
 - In code, prefer a comment that says *why* over one that says *what*. If you
   tried an approach and rejected it, leave one line saying so next to the code
   that won — the repository only keeps the winner otherwise.
@@ -409,6 +409,10 @@ own daily tools. What the repository gives them:
   checklists for adding an endpoint, a column, a permission or a translation.
   Claude Code loads it by itself; **`AGENTS.md`** points every other tool at it.
   Read it before the first change, not after the first failing test.
+- **`docs/development/invariants/`** — the full text of every invariant
+  `CLAUDE.md` lists in short form: why it holds, the traps it closes and what
+  was rejected, one file per area under the same headings. Read the area's
+  file before changing code its rules name.
 - **A code graph.** Every release attaches `bamdude-code-graph-<version>.json.gz`
   (and a `.report.md` overview) — the functions, classes and cross-file
   relationships of the whole repository, clustered into communities. Gunzip it
@@ -417,9 +421,9 @@ own daily tools. What the repository gives them:
   refreshes it after your edits, with no API key.
 - **A knowledge base.** Design decisions, rejected alternatives and known traps
   live in the maintainer's Obsidian vault (`bamdude.obsidian`), which is not
-  public; the `Vault:` pointers in `CLAUDE.md` are paths inside it. What a
-  contributor needs from it is in `CLAUDE.md` itself, the migration docstrings
-  and the CHANGELOG.
+  public; the `Vault:` pointers in `CLAUDE.md` and the invariant files are
+  paths inside it. What a contributor needs from it is in `CLAUDE.md`,
+  `docs/development/invariants/`, the migration docstrings and the CHANGELOG.
 - **`.mcp.example.json`** — the MCP servers the maintainer wires into Claude
   Code (filesystem, GitHub, Playwright, the SQLite database, the vault), with
   placeholders where a token goes. Copy it to `.mcp.json` (ignored) and keep
@@ -440,8 +444,8 @@ are the ones agents get wrong, so they are spelled out:
 - **Invariants are not suggestions.** If a change needs to break something
   `CLAUDE.md` says must not be broken, the PR description names which one and
   why — that is a design conversation, not a code review.
-- **The guide is code.** A sentence in `CLAUDE.md` the code no longer agrees
-  with is a bug; fix it in the same PR as the code.
+- **The guide is code.** A sentence in `CLAUDE.md` or an invariant file the
+  code no longer agrees with is a bug; fix it in the same PR as the code.
 
 ## Submitting a pull request
 

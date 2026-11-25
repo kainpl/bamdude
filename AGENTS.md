@@ -6,6 +6,12 @@ first whatever assistant you are. It covers the architecture, the commands that
 actually verify a change, the invariants that must not be broken, and the
 checklist for adding an endpoint, a column, a permission or a translation.
 
+`CLAUDE.md` keeps each invariant in short form; the full text — why it holds,
+the traps, what was rejected — is in
+[`docs/development/invariants/`](docs/development/invariants/README.md), one
+file per area under the same headings. Read the area's file before changing
+code its rules name.
+
 The seven things that most often go wrong for an agent here:
 
 1. **Every user-facing string exists in `en` and `uk`** — frontend locales and
@@ -28,14 +34,16 @@ The seven things that most often go wrong for an agent here:
    not proof that its claims or physical effects ended. Preserve the shared
    stale-claim guards for Retry, Clone and plate-clear Repeat. MQTT changes
    must cover PREPARE/SLICING and reconnects as well as direct IDLE → RUNNING;
-   follow the layer-order and observed-run invariants in `CLAUDE.md`.
+   follow the layer-order and observed-run invariants in
+   `docs/development/invariants/printers.md`.
 
 7. **A change is not done until what describes it is current.** When behaviour
    changes, update in the same batch the CHANGELOG, the documentation site
    (`docs.bamdude.top`, English and Ukrainian pages), the landing when a
-   feature is new or its scope changes, and the maintainer's knowledge base —
-   and correct the statements the change made false. See *Adding Features*
-   in `CLAUDE.md`.
+   feature is new or its scope changes, an invariant's short entry in
+   `CLAUDE.md` and its full text in `docs/development/invariants/` when a rule
+   changes, and the maintainer's knowledge base — and correct the statements
+   the change made false. See *Adding Features* in `CLAUDE.md`.
 
 `CONTRIBUTING.md` has the setup, the CI checks and the house rules, including
 a section on working with an AI assistant.
