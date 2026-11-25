@@ -565,6 +565,53 @@ def _printer_file_admission_bootstrap():
 
 
 @pytest.fixture(autouse=True)
+def _reset_spoolman_c047_runtime():
+    """C047 part 2: the Spoolman source, activity, fence and delete runtimes are process memory.
+
+    Every test starts with open gates, generation 0 and nothing open; a test that
+    closes the delete or charge gate (a restore) never leaks it into the next one.
+    """
+    from backend.app.services import (
+        spoolman_activity,
+        spoolman_binding_fence,
+        spoolman_delete,
+        spoolman_source,
+    )
+
+    for reset in (spoolman_source, spoolman_activity, spoolman_binding_fence, spoolman_delete):
+        reset.reset_for_tests()
+    yield
+
+
+@pytest.fixture
+def spoolman_charge_admitted(monkeypatch):
+    """A print's accounting tail admitted with a Spoolman snapshot (C047 S33) — for tests that drive
+    ``report_usage`` / ``cleanup_tracking`` through patched settings and a patched client.
+
+    The snapshot's mode follows the test's patched ``routes.settings.get_setting`` (unpatched: on);
+    the client is whatever the test gave ``_get_spoolman_client_with_fallback``; the token is fixed.
+    """
+    from backend.app.services import spoolman_charge, spoolman_source
+
+    async def _admit(label, db=None):
+        from backend.app.api.routes import settings as settings_routes
+
+        try:
+            enabled = await settings_routes.get_setting(db, "spoolman_enabled")
+        except Exception:  # noqa: BLE001 — an unpatched reader on no session: the mode is on
+            enabled = "true"
+        ownership = spoolman_source.register_charge(label)
+        if ownership is None:
+            return None
+        return spoolman_charge.ChargeContext(
+            ownership, str(enabled).strip().lower() == "true", "http://spoolman.test", "token-test"
+        )
+
+    monkeypatch.setattr(spoolman_charge, "admit", _admit)
+    return "token-test"
+
+
+@pytest.fixture(autouse=True)
 async def _cancel_leaked_asyncio_tasks():
     """Cancel asyncio tasks that leaked past the test body.
 

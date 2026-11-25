@@ -43,6 +43,7 @@ async def write_sync_results(
     read: dict[tuple[int, int], int] | None,
     changes: list[tuple[int, int, int]],
     empties: list[tuple[int, int]],
+    issued: int | None = None,
 ) -> list[tuple[int, int]]:
     """Apply one printer's sync results; return the ``(ams_id, tray_id)`` that moved.
 
@@ -52,60 +53,73 @@ async def write_sync_results(
 
     ``changes`` are ``(ams_id, tray_id, spool_id)`` the sync resolved; ``empties``
     the slots it saw without a spool. Commits; raises after a rollback.
+
+    ``issued`` is the binding ticket the sync took before loading its cache
+    (C047 §C3): under the printer's lane, every number of ``changes`` enters the
+    fence's guard, ascending, before the first DML, and stays in it through the
+    commit or the rollback — ``SpoolBeingDeleted`` refuses the whole write.
     """
     from backend.app.main import _get_ams_assignment_lock  # noqa: PLC0415
-    from backend.app.services import spool_single_slot  # noqa: PLC0415
+    from backend.app.services import spool_single_slot, spoolman_binding_fence  # noqa: PLC0415
 
     moved: list[tuple[int, int]] = []
     vacated: list[tuple[int, int, int]] = []
+    numbers = [spool_id for _ams, _tray, spool_id in changes]
     async with _get_ams_assignment_lock(printer_id):
-        try:
-            for ams_id, tray_id, spool_id in changes:
-                slot = {"printer_id": printer_id, "ams_id": ams_id, "tray_id": tray_id}
-                if read is None:
-                    await db.execute(_UPSERT, {**slot, "spool_id": spool_id})
-                    moved.append((ams_id, tray_id))
-                    continue
-                was = read.get((ams_id, tray_id))
-                if was == spool_id:
-                    # Nothing to change — and a hand unassignment made meanwhile stays.
-                    continue
-                if was is None:
-                    result = await db.execute(_INSERT_IF_STILL_EMPTY, {**slot, "spool_id": spool_id})
-                else:
-                    result = await db.execute(_REPOINT_IF_UNCHANGED, {**slot, "spool_id": spool_id, "read": was})
-                if result.rowcount:
-                    moved.append((ams_id, tray_id))
-            # A spool sits in one slot (owner decision Р7): a spool this sync
-            # just put into a slot leaves its other ledger rows, on any printer —
-            # except a slot that feeds a running print. Rows only; conditional on
-            # what was read, as every write here.
-            for ams_id, tray_id, spool_id in changes:
-                if (ams_id, tray_id) not in moved:
-                    continue
-                released = await spool_single_slot.release_other_spoolman_slots(
-                    db, spoolman_spool_id=spool_id, keep=(printer_id, ams_id, tray_id), refuse=False
-                )
-                vacated += released.vacated
-            for ams_id, tray_id in empties:
-                slot = {"printer_id": printer_id, "ams_id": ams_id, "tray_id": tray_id}
-                if read is None:
-                    await db.execute(_DELETE, slot)
-                    moved.append((ams_id, tray_id))
-                    continue
-                was = read.get((ams_id, tray_id))
-                if was is None:
-                    # Read without a row: one that exists now is somebody's hand assignment.
-                    continue
-                result = await db.execute(_DELETE_IF_UNCHANGED, {**slot, "read": was})
-                if result.rowcount:
-                    moved.append((ams_id, tray_id))
-            await db.commit()
-        except Exception:
-            await db.rollback()
-            raise
+        with spoolman_binding_fence.enter(numbers, spoolman_binding_fence.ticket() if issued is None else issued):
+            await _apply(db, printer_id, read, changes, empties, moved, vacated)
     # This printer's own vacated slots are reported with ``moved``; the others
     # are announced here, after the commit.
     moved += [(a, t) for p, a, t in vacated if p == printer_id]
     await spool_single_slot.announce([slot for slot in vacated if slot[0] != printer_id])
     return list(dict.fromkeys(moved))
+
+
+async def _apply(db, printer_id, read, changes, empties, moved, vacated) -> None:
+    from backend.app.services import spool_single_slot  # noqa: PLC0415
+
+    try:
+        for ams_id, tray_id, spool_id in changes:
+            slot = {"printer_id": printer_id, "ams_id": ams_id, "tray_id": tray_id}
+            if read is None:
+                await db.execute(_UPSERT, {**slot, "spool_id": spool_id})
+                moved.append((ams_id, tray_id))
+                continue
+            was = read.get((ams_id, tray_id))
+            if was == spool_id:
+                # Nothing to change — and a hand unassignment made meanwhile stays.
+                continue
+            if was is None:
+                result = await db.execute(_INSERT_IF_STILL_EMPTY, {**slot, "spool_id": spool_id})
+            else:
+                result = await db.execute(_REPOINT_IF_UNCHANGED, {**slot, "spool_id": spool_id, "read": was})
+            if result.rowcount:
+                moved.append((ams_id, tray_id))
+        # A spool sits in one slot (owner decision Р7): a spool this sync
+        # just put into a slot leaves its other ledger rows, on any printer —
+        # except a slot that feeds a running print. Rows only; conditional on
+        # what was read, as every write here.
+        for ams_id, tray_id, spool_id in changes:
+            if (ams_id, tray_id) not in moved:
+                continue
+            released = await spool_single_slot.release_other_spoolman_slots(
+                db, spoolman_spool_id=spool_id, keep=(printer_id, ams_id, tray_id), refuse=False
+            )
+            vacated += released.vacated
+        for ams_id, tray_id in empties:
+            slot = {"printer_id": printer_id, "ams_id": ams_id, "tray_id": tray_id}
+            if read is None:
+                await db.execute(_DELETE, slot)
+                moved.append((ams_id, tray_id))
+                continue
+            was = read.get((ams_id, tray_id))
+            if was is None:
+                # Read without a row: one that exists now is somebody's hand assignment.
+                continue
+            result = await db.execute(_DELETE_IF_UNCHANGED, {**slot, "read": was})
+            if result.rowcount:
+                moved.append((ams_id, tray_id))
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise

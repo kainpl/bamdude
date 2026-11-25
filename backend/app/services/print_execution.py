@@ -397,12 +397,25 @@ async def recheck_start(db, printer_id, decision, *, still_current):
 
 
 async def publish_start(db, archive, decision, *, options=None, still_current=None):
-    """The FIRST visible archive commit includes all old markers and closes."""
-    from backend.app.services.print_claims import observe_claim
-    from backend.app.services.queue_ops import claim_lanes
+    """The FIRST visible archive commit includes all old markers and closes.
+
+    A print going to ``printing`` is a first Spoolman fact (C047 S41, S44): after
+    the preflight snapshot is released, and before the process guards, the
+    publication waits until no change of the Spoolman database is in flight and
+    publishes its activity record; the record lasts until this commit.
+    """
+    from backend.app.services import spoolman_activity
 
     # Release only the preflight read snapshot, before taking process guards.
     await db.commit()
+    async with spoolman_activity.first_evidence("print_start"):
+        return await _publish_start_locked(db, archive, decision, options=options, still_current=still_current)
+
+
+async def _publish_start_locked(db, archive, decision, *, options=None, still_current=None):
+    from backend.app.services.print_claims import observe_claim
+    from backend.app.services.queue_ops import claim_lanes
+
     async with (
         queue_sources.storage_mutation(),
         claim_lanes(

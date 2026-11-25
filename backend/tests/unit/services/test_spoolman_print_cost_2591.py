@@ -295,7 +295,7 @@ class TestTheWiring:
         assert "cost_out.add(" in self._source(fn)
 
     def test_the_completion_writer_settles_the_archive(self):
-        source = self._source(spoolman_tracking.report_usage)
+        source = self._source(spoolman_tracking._report_usage)
         assert source.count("cost_out=print_cost") >= 4
         assert 'await _settle_charges(db, archive_id, print_cost, status="completed")' in source
 

@@ -834,15 +834,7 @@
     },
     {
       "site": [
-        "api/routes/settings.py::clear_stray_builtin_assignments",
-        "sqlalchemy.delete",
-        "backend.app.models.spool_assignment.SpoolAssignment"
-      ],
-      "owner_policy": "Outside C parent purge: api/routes/settings.py::clear_stray_builtin_assignments retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
-    },
-    {
-      "site": [
-        "api/routes/settings.py::reset_settings",
+        "api/routes/settings.py::_reset_settings",
         "db.delete",
         "setting"
       ],
@@ -850,7 +842,7 @@
     },
     {
       "site": [
-        "api/routes/settings.py::update_spoolman_settings",
+        "api/routes/settings.py::_write_spoolman_settings",
         "sqlalchemy.delete",
         "backend.app.models.spool_assignment.SpoolAssignment"
       ],
@@ -858,11 +850,19 @@
     },
     {
       "site": [
-        "api/routes/settings.py::update_spoolman_settings",
+        "api/routes/settings.py::_write_spoolman_settings",
         "sqlalchemy.delete",
         "backend.app.models.spoolman_slot_assignment.SpoolmanSlotAssignment"
       ],
       "owner_policy": "Outside C parent purge: api/routes/settings.py::update_spoolman_settings retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/settings.py::clear_stray_builtin_assignments",
+        "sqlalchemy.delete",
+        "backend.app.models.spool_assignment.SpoolAssignment"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/settings.py::clear_stray_builtin_assignments retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
     },
     {
       "site": [
@@ -882,11 +882,19 @@
     },
     {
       "site": [
-        "api/routes/spoolman.py::unlink_spool",
+        "api/routes/spoolman.py::_unlink_spool",
         "sqlalchemy.delete",
         "backend.app.models.spoolman_slot_assignment.SpoolmanSlotAssignment"
       ],
       "owner_policy": "Outside C parent purge: api/routes/spoolman.py::unlink_spool retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/spoolman_inventory.py::_replace_k_profiles",
+        "sqlalchemy.delete",
+        "backend.app.models.spoolman_k_profile.SpoolmanKProfile"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/spoolman_inventory.py::save_spoolman_k_profiles retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
     },
     {
       "site": [
@@ -895,14 +903,6 @@
         "backend.app.models.spoolman_slot_assignment.SpoolmanSlotAssignment"
       ],
       "owner_policy": "Outside C parent purge: api/routes/spoolman_inventory.py::get_spoolman_slot_assignment retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
-    },
-    {
-      "site": [
-        "api/routes/spoolman_inventory.py::save_spoolman_k_profiles",
-        "sqlalchemy.delete",
-        "backend.app.models.spoolman_k_profile.SpoolmanKProfile"
-      ],
-      "owner_policy": "Outside C parent purge: api/routes/spoolman_inventory.py::save_spoolman_k_profiles retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
     },
     {
       "site": [
@@ -2122,7 +2122,15 @@
     },
     {
       "site": [
-        "services/spoolman_tracking.py::attach_recovered_3mf",
+        "services/spoolman_delete.py::_clean_up",
+        "sqlalchemy.delete",
+        "backend.app.models.spoolman_k_profile.SpoolmanKProfile"
+      ],
+      "owner_policy": "Outside C parent purge: services/spoolman_delete.py::_clean_up (C047 part 2) removes the K links of a Spoolman spool whose remote DELETE was confirmed, in one transaction with its slot rows, under the Spoolman source guard and only for the same source generation; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/spoolman_tracking.py::_attach_recovered_3mf",
         "sqlalchemy.delete",
         "backend.app.models.active_print_spoolman.ActivePrintSpoolman"
       ],
@@ -2130,7 +2138,7 @@
     },
     {
       "site": [
-        "services/spoolman_tracking.py::cleanup_tracking",
+        "services/spoolman_tracking.py::_cleanup_tracking",
         "sqlalchemy.delete",
         "backend.app.models.active_print_spoolman.ActivePrintSpoolman"
       ],
@@ -2138,7 +2146,7 @@
     },
     {
       "site": [
-        "services/spoolman_tracking.py::report_usage",
+        "services/spoolman_tracking.py::_report_usage",
         "db.delete",
         "tracking"
       ],
@@ -2146,7 +2154,7 @@
     },
     {
       "site": [
-        "services/spoolman_tracking.py::store_print_data",
+        "services/spoolman_tracking.py::_store_print_data",
         "sqlalchemy.delete",
         "backend.app.models.active_print_spoolman.ActivePrintSpoolman"
       ],
@@ -2928,6 +2936,20 @@
     },
     {
       "site": [
+        "main.py::_on_print_complete_windowed",
+        "backend.app.main._on_print_complete_impl"
+      ],
+      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
+        "main.py::_on_print_complete_windowed",
+        "backend.app.services.queue_leftovers.retire_for_printer"
+      ],
+      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
         "main.py::_on_print_start_impl",
         "backend.app.main._bind_print_file_analysis_context"
       ],
@@ -3020,16 +3042,9 @@
     {
       "site": [
         "main.py::on_print_complete",
-        "backend.app.main._on_print_complete_impl"
+        "backend.app.main._on_print_complete_windowed"
       ],
-      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
-    },
-    {
-      "site": [
-        "main.py::on_print_complete",
-        "backend.app.services.queue_leftovers.retire_for_printer"
-      ],
-      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+      "owner_policy": "C047 part 2: the Spoolman accounting window wrapper; it opens the window before the first await and calls the unchanged completion owner, whose policy is adjudicated under its own name"
     },
     {
       "site": [
@@ -3341,10 +3356,17 @@
     },
     {
       "site": [
-        "services/print_execution.py::publish_start",
+        "services/print_execution.py::_publish_start_locked",
         "backend.app.services.print_claims.observe_claim"
       ],
       "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "services/print_execution.py::publish_start",
+        "backend.app.services.print_execution._publish_start_locked"
+      ],
+      "owner_policy": "C047 part 2: the first-evidence wrapper of the start publication; it waits for no Spoolman base change and calls the unchanged publication, whose policy is adjudicated under its own name"
     },
     {
       "site": [

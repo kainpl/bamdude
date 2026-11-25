@@ -5,6 +5,7 @@ import { Archive, ArrowDown, ArrowUp, ArrowUpDown, Clock, Loader2, Package, X } 
 import { api } from '../api/client';
 import type { SpoolUsageListItem } from '../api/client';
 import { PaginationBar } from './PaginationBar';
+import { spoolmanSourceRefusalText } from '../utils/spoolmanSourceRefusal';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { getSwatchStyle, resolveSpoolColorName } from '../utils/colors';
@@ -210,7 +211,11 @@ export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool
       queryClient.invalidateQueries({ queryKey: ['usage-history'] });
       queryClient.invalidateQueries({ queryKey: ['spool-usage'] });
     },
-    onError: () => showToast(t('common.error'), 'error'),
+    onError: (error: Error) => {
+      // Refused while a print is being charged to Spoolman (C047 §C1): a moment, not a failure.
+      const refused = spoolmanSourceRefusalText(error, t);
+      showToast(refused ?? t('common.error'), refused ? 'warning' : 'error');
+    },
   });
 
   const params = useMemo(() => ({

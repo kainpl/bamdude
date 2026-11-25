@@ -19,8 +19,6 @@ from backend.app.services.spoolman import (
     SpoolmanClientError,
     SpoolmanNotFoundError,
     SpoolmanUnavailableError,
-    get_spoolman_client,
-    init_spoolman_client,
 )
 from backend.app.services.spoolman_weights import spool_net_weight, spool_price_per_gram
 from backend.app.utils.filament_remaining import usable_remain_percent
@@ -114,6 +112,41 @@ def _resolve_spool_tag(tray_info: dict, printer_serial: str = "", global_tray_id
     if global_tray_id is not None:
         return _get_fallback_spool_tag(printer_serial, global_tray_id)
     return ""
+
+
+EXTERNAL_HOLDERS = (254, 255)
+
+
+def attribution_tray_tag(ams_trays: dict, global_tray_id: int, printer_serial: str) -> str:
+    """The tag a print charge resolves a tray's spool by — the ONE rule (C047 S26, S34).
+
+    Both the charge writer and the delete's guard ask this, so they cannot part:
+
+    - a tray with a non-empty record in the start snapshot — its RFID, else its
+      fallback tag (an empty record ``{}`` counts as no record, as the writer's
+      ``if not tray_info`` always did);
+    - the external holders 254 / 255 without a record — their fallback tag: the
+      holder may be in the mapping without having been listed at print start;
+    - any other tray without a record — no tag. An invalid id from an old mapping
+      (256, which ``list[int]`` lets through) is not a holder and gets none.
+    """
+    tray_info = ams_trays.get(global_tray_id)
+    if tray_info:
+        return _resolve_spool_tag(tray_info, printer_serial, global_tray_id)
+    if global_tray_id in EXTERNAL_HOLDERS:
+        return _resolve_spool_tag({}, printer_serial, global_tray_id)
+    return ""
+
+
+def guard_tray_tags(ams_trays: dict, printer_serial: str) -> set[str]:
+    """Every tag a running print's final charge could resolve a spool by (C047 S26).
+
+    The tray a charge takes its weight from is known only at completion (stored
+    mapping, tray log, live state), so the guard takes the superset: every tray
+    of the snapshot with a record, and the two external holders always.
+    """
+    trays = {tray for tray, info in ams_trays.items() if isinstance(tray, int) and info} | set(EXTERNAL_HOLDERS)
+    return {tag for tray in trays if (tag := attribution_tray_tag(ams_trays, tray, printer_serial))}
 
 
 async def _get_printer_serial(printer_id: int) -> str:
@@ -308,6 +341,24 @@ async def store_print_data(
     ams_mapping: list[int] | None = None,
     plate_id: int | None = None,
 ):
+    """First-evidence writer (C047 S41): see ``_store_print_data``."""
+    from backend.app.services import spoolman_activity  # noqa: PLC0415
+
+    async with spoolman_activity.first_evidence("spoolman_tracking"):
+        return await _store_print_data(
+            printer_id, archive_id, file_path, db, printer_manager, ams_mapping=ams_mapping, plate_id=plate_id
+        )
+
+
+async def _store_print_data(
+    printer_id: int,
+    archive_id: int,
+    file_path: str,
+    db,
+    printer_manager,
+    ams_mapping: list[int] | None = None,
+    plate_id: int | None = None,
+):
     """Store Spoolman tracking data at print start (persisted to database).
 
     Per-print tracking is the primary weight-update path for Spoolman, mirroring
@@ -476,6 +527,31 @@ async def attach_recovered_3mf(
     plate_id: int | None = None,
     archive_identity: str | None = None,
 ) -> str:
+    """First-evidence writer (C047 S41): see ``_attach_recovered_3mf``."""
+    from backend.app.services import spoolman_activity  # noqa: PLC0415
+
+    async with spoolman_activity.first_evidence("spoolman_tracking"):
+        return await _attach_recovered_3mf(
+            printer_id,
+            archive_id,
+            file_path,
+            db,
+            printer_manager,
+            plate_id=plate_id,
+            archive_identity=archive_identity,
+        )
+
+
+async def _attach_recovered_3mf(
+    printer_id: int,
+    archive_id: int,
+    file_path: str,
+    db,
+    printer_manager,
+    *,
+    plate_id: int | None = None,
+    archive_identity: str | None = None,
+) -> str:
     """Give the print's tracking the 3MF that arrived after print start (upstream 005b34af6).
 
     ``store_print_data`` ran once, with whatever the start download left: a row with no 3MF figures, or no
@@ -616,7 +692,32 @@ async def cleanup_tracking(
 
     ``completion`` is the completion event's own figures; without it only the captured
     ``last_layer_num`` / ``last_progress`` are known (see ``_report_partial_usage``).
-    ``status`` is the print's outcome, for its usage-history rows."""
+    ``status`` is the print's outcome, for its usage-history rows.
+
+    ONE charge ownership covers the partial report, the runout correction after it
+    and the tracking delete (C047 S36, S40): one snapshot, one client, one token. A
+    closed charge gate (restore, shutdown) writes nothing."""
+    from backend.app.services import spoolman_charge  # noqa: PLC0415
+
+    async with spoolman_charge.owning(f"cleanup_tracking archive={archive_id}", db) as charge:
+        if charge is None:
+            return
+        await _cleanup_tracking(
+            printer_id, archive_id, db, last_layer_num, last_progress, completion, status, charge=charge
+        )
+
+
+async def _cleanup_tracking(
+    printer_id: int,
+    archive_id: int,
+    db,
+    last_layer_num: int | None,
+    last_progress: int | None,
+    completion: CompletionSnapshot | None,
+    status: str,
+    *,
+    charge,
+):
     from backend.app.models.active_print_spoolman import ActivePrintSpoolman
 
     # Get tracking data first (needed for partial usage reporting)
@@ -640,6 +741,7 @@ async def cleanup_tracking(
             last_progress=last_progress,
             completion=completion,
             status=status,
+            charge=charge,
         )
     except Exception as e:
         logger.warning("[SPOOLMAN] Partial usage report failed: %s", e)
@@ -647,11 +749,9 @@ async def cleanup_tracking(
     # A runout that aborted the print still emptied the spool — the zero
     # correction applies to failures exactly as to completions.
     try:
-        from backend.app.api.routes.settings import get_setting
-
-        spoolman_enabled = await get_setting(db, "spoolman_enabled")
-        if spoolman_enabled and spoolman_enabled.lower() == "true":
-            client = await _get_spoolman_client_with_fallback()
+        # The same ownership, snapshot and client as the partial report above (C047 S36).
+        if charge.enabled:
+            client = await _get_spoolman_client_with_fallback(charge)
             if client:
                 events = await _load_journal_events(printer_id, archive_id)
                 await _apply_runout_zero_corrections_spoolman(client, events, archive_id)
@@ -722,6 +822,8 @@ class _PrintCost:
     archive_id: int | None = None
     history_status: str = "completed"
     observed: list[_ObservedCharge] = field(default_factory=list)
+    # The token of the Spoolman the charges land in — from the charge's admission (C047 S33).
+    source_token: str | None = None
 
     def add(self, grams: float, spool: dict | None, label: str, *, spool_id: int | None = None) -> None:
         """Record ``grams`` charged to ``spool``. Call only after the charge succeeded.
@@ -983,24 +1085,16 @@ async def _apply_runout_zero_corrections_spoolman(client, journal_events: list, 
     return updated
 
 
-async def _get_spoolman_client_with_fallback():
-    """Get Spoolman client, initializing from settings if needed.
+async def _get_spoolman_client_with_fallback(charge=None):
+    """The client a print's accounting tail charges with: its charge's OWN client (C047 S33, S36).
 
-    Returns (client, is_healthy) tuple. Client may be None.
+    Built on the address of the charge's snapshot and health-checked once; never
+    the global client, which ``/disconnect`` and ``/connect`` close under it even
+    when the settings did not change. None when there is no reachable Spoolman.
     """
-    client = await get_spoolman_client()
-    if not client:
-        async with async_session() as db:
-            from backend.app.api.routes.settings import get_setting
-
-            spoolman_url = await get_setting(db, "spoolman_url")
-            if spoolman_url:
-                client = await init_spoolman_client(spoolman_url)
-
-    if not client or not await client.health_check():
+    if charge is None:
         return None
-
-    return client
+    return await charge.client()
 
 
 async def _resolve_spool_id_via_slot_assignment(printer_id: int, ams_id: int, tray_id: int) -> int | None:
@@ -1142,7 +1236,7 @@ async def _report_spool_usage_for_slots(
         # the colour and material already pay for.
         spool_obj: dict | None = None
 
-        spool_tag = _resolve_spool_tag(tray_info, printer_serial, global_tray_id)
+        spool_tag = attribution_tray_tag(ams_trays, global_tray_id, printer_serial)
         if spool_tag:
             spool = await client.find_spool_by_tag(spool_tag)
             if spool:
@@ -1439,6 +1533,8 @@ async def _report_partial_usage(
     last_progress: int | None = None,
     completion: CompletionSnapshot | None = None,
     status: str = "failed",
+    *,
+    charge,
 ):
     """Report what a print that stopped used: the slicer's per-slot estimate scaled by
     how far each slot got along its own G-code timeline (``partial_slot_grams`` — the
@@ -1465,10 +1561,9 @@ async def _report_partial_usage(
             logger.debug("[SPOOLMAN] Partial usage reporting disabled by setting")
             return
 
-        # Check if Spoolman is enabled
-        spoolman_enabled = await get_setting(db, "spoolman_enabled")
-        if not spoolman_enabled or spoolman_enabled.lower() != "true":
-            return
+    # Whether there is a Spoolman at all comes from the cleanup's charge snapshot (C047 S33, S36).
+    if not charge.enabled:
+        return
 
     # The printer's state is still read for what it alone holds — the tray chronology in the
     # client's memory and the remain% readings — never for the layer, layer count or progress.
@@ -1514,7 +1609,12 @@ async def _report_partial_usage(
     # What the aborted print was actually charged, for the archive: its weight
     # is what was used, not the estimate, and the cost follows (#2591, D6).
     partial_archive_id = getattr(tracking, "archive_id", None)
-    print_cost = _PrintCost(printer_id=printer_id, archive_id=partial_archive_id, history_status=status)
+    print_cost = _PrintCost(
+        printer_id=printer_id,
+        archive_id=partial_archive_id,
+        history_status=status,
+        source_token=charge.token,
+    )
     # Filament read and not charged to any spool — from every branch below, said once.
     uncharged: list[tuple[int, float]] = []
 
@@ -1544,7 +1644,7 @@ async def _report_partial_usage(
 
     # Not reachable: nothing can be charged, but what the print used is still worked out
     # below, so the loss can be named (``_say_usage_lost``) instead of dropped.
-    client = await _get_spoolman_client_with_fallback() or None
+    client = await _get_spoolman_client_with_fallback(charge)
 
     # The print's journal: runout boundaries on any slot's tray, and — for a one-slot print —
     # the tray chronology's unknown feeds and identities. Read whatever the slot count.
@@ -1815,6 +1915,21 @@ def _completion_slot_to_tray(
 
 
 async def report_usage(printer_id: int, archive_id: int, completion: CompletionSnapshot | None = None):
+    """Report a completed print's usage to Spoolman — inside ONE charge ownership (C047 §C1).
+
+    The ownership is admitted before the tail's first write (the tracking row's
+    delete), holds the snapshot's own client and token, and ends after the last
+    write. A closed charge gate (restore, shutdown) writes nothing.
+    """
+    from backend.app.services import spoolman_charge  # noqa: PLC0415
+
+    async with spoolman_charge.owning(f"report_usage archive={archive_id}") as charge:
+        if charge is None:
+            return
+        await _report_usage(printer_id, archive_id, completion, charge)
+
+
+async def _report_usage(printer_id: int, archive_id: int, completion: CompletionSnapshot | None, charge):
     """Report filament usage to Spoolman after print completion.
 
     ``completion`` is the completion event's own figures — the plate's layer count, the
@@ -1866,12 +1981,11 @@ async def report_usage(printer_id: int, archive_id: int, completion: CompletionS
             logger.debug("[SPOOLMAN] No usage data or remain-snapshot for archive %s", archive_id)
             return
 
-        # Check if Spoolman is enabled
-        spoolman_enabled = await get_setting(db, "spoolman_enabled")
-        if not spoolman_enabled or spoolman_enabled.lower() != "true":
+        # Whether there is a Spoolman at all comes from the charge's own snapshot (C047 S33).
+        if not charge.enabled:
             return
 
-        client = await _get_spoolman_client_with_fallback()
+        client = await _get_spoolman_client_with_fallback(charge)
 
         # Consult the live printer state for the tray-change log written by
         # ``bambu_mqtt.py`` on every mid-print ``tray_now`` change. When there's
@@ -1971,7 +2085,9 @@ async def report_usage(printer_id: int, archive_id: int, completion: CompletionS
         slot_materials: dict[int, str] = {}
         # Every charge that lands is recorded here — its weight, and its money
         # when the spool has a price — for the archive to settle on (#2591).
-        print_cost = _PrintCost(printer_id=printer_id, archive_id=archive_id, history_status="completed")
+        print_cost = _PrintCost(
+            printer_id=printer_id, archive_id=archive_id, history_status="completed", source_token=charge.token
+        )
         handled_global_tray_ids: set[int] = set()
         # Filament read and not charged to any Spoolman spool (audit D4).
         uncharged: list[tuple[int, float]] = []
@@ -2383,6 +2499,7 @@ async def _record_usage_history(charges: _PrintCost) -> None:
             archive_id=charges.archive_id,
             status=charges.history_status,
             charges=list(charges.observed),
+            source_token=charges.source_token,
         )
     except Exception as exc:  # noqa: BLE001 — history must never fail a usage report
         logger.warning(

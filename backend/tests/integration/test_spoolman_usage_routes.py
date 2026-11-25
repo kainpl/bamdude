@@ -69,11 +69,17 @@ def spoolman_client():
 
 
 async def _charge(spool, grams, *, status="completed", rate=0.02, printer_id=None):
+    # A charge carries the token its admission persisted (C047 S33) — here, the owner's path.
+    from backend.app.core import database
+
+    async with database.async_session() as db:
+        token = await history.source_token(db)
     await history.record_print(
         printer_id=printer_id,
         archive_id=None,
         status=status,
         charges=[history.Charge(spool_id=spool["id"], grams=grams, rate=rate, spool=spool)],
+        source_token=token,
     )
 
 

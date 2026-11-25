@@ -11,6 +11,7 @@ from typing import Literal
 
 import httpx
 
+from backend.app.services import spoolman_binding_fence
 from backend.app.services.color_catalog_lookup import (
     CatalogColor,
     best_product_line_match,
@@ -872,6 +873,11 @@ class SpoolmanClient:
         elif spool_weight is not None:
             data["spool_weight"] = spool_weight
 
+        if extra is not None and "tag" in extra:
+            # A write of ``extra.tag`` may move how a charge resolves this spool (C047 S23).
+            with spoolman_binding_fence.mutating(spool_id):
+                response = await self._request_spool("PATCH", spool_id, json_body=data, operation="update")
+            return response.json()
         response = await self._request_spool("PATCH", spool_id, json_body=data, operation="update")
         return response.json()
 
@@ -1097,7 +1103,8 @@ class SpoolmanClient:
         body: dict = {"uid": uid}
         if tag_format:
             body["format"] = tag_format
-        response = await self._tag_request("POST", f"/spool/{spool_id}/tag", json=body)
+        with spoolman_binding_fence.mutating(spool_id):  # C047 S23: a tag mutation
+            response = await self._tag_request("POST", f"/spool/{spool_id}/tag", json=body)
         if response.status_code == 400:
             raise SpoolmanClientError(f"Spoolman refused tag {uid!r}", 400, response.text[:500])
         if response.status_code != 409:
@@ -1119,10 +1126,11 @@ class SpoolmanClient:
 
     async def unlink_native_tag(self, spool_id: int, uid: str) -> None:
         """Remove a native tag from a spool; a tag the spool does not hold is not an error."""
-        try:
-            await self._tag_request("DELETE", f"/spool/{spool_id}/tag/{uid}")
-        except SpoolmanNotFoundError:
-            pass
+        with spoolman_binding_fence.mutating(spool_id):  # C047 S23: a tag mutation
+            try:
+                await self._tag_request("DELETE", f"/spool/{spool_id}/tag/{uid}")
+            except SpoolmanNotFoundError:
+                pass
 
     async def unlink_all_native_tags(self, spool: dict) -> None:
         """Remove every native tag a spool carries. A spool without any costs no request."""
@@ -1594,6 +1602,35 @@ class SpoolmanClient:
         auto_add_unknown_rfid: bool = True,
         db=None,
     ) -> dict | None:
+        """One tray inside a tag operation (C047 S32): the caller's (a manual sync, held to its commit), else its own.
+
+        A spool number the sync proves is taken into the operation BEFORE any tag
+        mutation of it; a spool it creates, right after the POST. A number being
+        deleted raises ``SpoolBeingDeleted`` (``created`` set after a confirmed POST).
+        """
+        with spoolman_binding_fence.ensure_operation():
+            return await self._sync_ams_tray(
+                tray,
+                printer_name,
+                disable_weight_sync=disable_weight_sync,
+                cached_spools=cached_spools,
+                inventory_remaining=inventory_remaining,
+                spoolman_spool_id_hint=spoolman_spool_id_hint,
+                auto_add_unknown_rfid=auto_add_unknown_rfid,
+                db=db,
+            )
+
+    async def _sync_ams_tray(
+        self,
+        tray: AMSTray,
+        printer_name: str,
+        disable_weight_sync: bool = False,
+        cached_spools: list[dict] | None = None,
+        inventory_remaining: float | None = None,
+        spoolman_spool_id_hint: int | None = None,
+        auto_add_unknown_rfid: bool = True,
+        db=None,
+    ) -> dict | None:
         """Sync one AMS tray to Spoolman; creates the spool on first sight, updates weight otherwise.
 
         ``db`` is a session for the colour catalogue: with it a NEW Bambu roll is
@@ -1652,6 +1689,7 @@ class SpoolmanClient:
             reel_uids = [tray.tray_uuid if tray.tray_uuid != zero_uuid else "", chip_uid]
             if existing:
                 logger.info("Updating existing spool %s for tag %s...", existing["id"], spool_tag[:16])
+                spoolman_binding_fence.current_operation().add(existing["id"])
                 await self.add_native_tags(existing, reel_uids, tag_format)
                 # Only a Bambu roll's tray names its own filament (as upstream):
                 # under any other tag the preset is what the slot was last told.
@@ -1740,6 +1778,7 @@ class SpoolmanClient:
             )
             # extra.tag stays written beside the native tags: an older Spoolman
             # reads nothing else, and a downgrade loses nothing.
+            spoolman_binding_fence.current_operation().add(created["id"], created=True)
             await self.add_native_tags(created, reel_uids, tag_format)
             return created
 

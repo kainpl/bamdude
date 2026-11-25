@@ -1454,5 +1454,15 @@
   "«{}»: only {} can be assembled": "«{}»: зібрати можна лише {}",
   "«{}»: only {} can be issued": "«{}»: видати можна лише {}",
   "«{}»: only {} can be received": "«{}»: оприбуткувати можна лише {}",
-  "«{}»: only {} can be written off": "«{}»: списати можна лише {}"
+  "«{}»: only {} can be written off": "«{}»: списати можна лише {}",
+  "A print is being charged to Spoolman right now. Try again in a moment": "Друк саме списується у Spoolman. Спробуйте за мить",
+  "A print is finishing and may still charge this spool. Try again in a moment": "Друк завершується і ще може списати цю котушку. Спробуйте за мить",
+  "Spoolman delete or charge work has not stopped; restart before restoring": "Видалення чи списання у Spoolman ще не завершилися; перезапустіть застосунок перед відновленням",
+  "Spoolman deletes are paused while a restore runs": "Поки триває відновлення, видалення у Spoolman призупинено",
+  "Spoolman did not confirm the delete; check the spool in Spoolman": "Spoolman не підтвердив видалення; перевірте котушку у Spoolman",
+  "Spoolman settings or its history are changing right now. Try again": "Налаштування Spoolman або його історію саме змінюють. Спробуйте ще раз",
+  "The spool changed while it was being checked. Try again": "Котушка змінилася під час перевірки. Спробуйте ще раз",
+  "The spool was created in Spoolman but not bound because of a concurrent delete": "Котушку створено у Spoolman, але не прив’язано через конкурентне видалення",
+  "This spool is being deleted": "Цю котушку саме видаляють",
+  "While a print is accounted in Spoolman, the Spoolman address or database cannot be changed. Try again after the print finishes": "Поки друк веде облік у Spoolman, адресу чи базу Spoolman змінити не можна. Спробуйте після завершення друку"
 }

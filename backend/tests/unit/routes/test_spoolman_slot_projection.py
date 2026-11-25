@@ -78,6 +78,8 @@ def _spoolman_stub() -> SimpleNamespace:
         # A Spoolman from before native tags (0.27): nothing is linked there.
         link_native_tags=AsyncMock(return_value=[]),
         health_check=AsyncMock(return_value=True),
+        # The re-link finds the tag's other holders before its first mutation (C047 S27).
+        get_spools=AsyncMock(return_value=[]),
     )
 
 

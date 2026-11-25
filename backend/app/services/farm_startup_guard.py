@@ -371,5 +371,8 @@ class FarmReadyMiddleware:
                 from backend.app.services.auto_queue_return_runtime import auto_queue_return_runtime
 
                 auto_queue_return_runtime.open_admission()
+                from backend.app.services.spoolman_delete import delete_runtime as spoolman_delete_runtime
+
+                spoolman_delete_runtime.open_admission()
 
         return await self.app(scope, receive, ready_send)

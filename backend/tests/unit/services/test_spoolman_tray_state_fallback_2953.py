@@ -93,7 +93,7 @@ class TestTheCompletionMapping:
 class TestTheWriter:
     @staticmethod
     def _source() -> str:
-        return re.sub(r"\s+", " ", inspect.getsource(spoolman_tracking.report_usage))
+        return re.sub(r"\s+", " ", inspect.getsource(spoolman_tracking._report_usage))
 
     def test_report_usage_resolves_the_mapping_through_the_helper(self):
         assert (

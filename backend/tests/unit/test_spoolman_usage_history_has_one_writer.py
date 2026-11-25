@@ -61,6 +61,9 @@ READERS = {
     APP / "services" / "spoolman_usage_history.py",
     APP / "services" / "spoolman_usage_service.py",
     APP / "services" / "forecast_engine.py",
+    # The Spoolman delete door (C047 part 2): it refuses a spool with history of the
+    # current source, read only after S0 proved Spoolman mode on.
+    APP / "services" / "spoolman_delete.py",
     APP / "models" / "spoolman_usage_history.py",
     APP / "models" / "__init__.py",
 }

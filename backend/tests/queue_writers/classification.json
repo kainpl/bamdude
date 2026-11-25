@@ -610,7 +610,7 @@
   "r3": "listed",
   "rule": "unchanged (observe_claim) · r5 R20/A25: the target header re-read under the lane; missing or another recovery_identity -> refusal"
  },
- "backend/app/main.py::on_print_complete": {
+ "backend/app/main.py::_on_print_complete_windowed": {
   "class": "helper",
   "lock": "helper",
   "owner": "-",
@@ -1226,7 +1226,7 @@
   "r3": "listed",
   "rule": "unchanged · r5 L6(b): its explicit lock of a header / job / AutoQueue row is FOR NO KEY UPDATE"
  },
- "backend/app/services/print_execution.py::publish_start": {
+ "backend/app/services/print_execution.py::_publish_start_locked": {
   "class": "lane:claim_lanes(archives)",
   "lock": "lane",
   "owner": "own session",

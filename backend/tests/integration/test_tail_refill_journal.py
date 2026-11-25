@@ -34,7 +34,8 @@ from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.services import print_usage_journal as journal
 from backend.app.services.print_usage_journal import RunoutResult
 
-pytestmark = pytest.mark.integration  # asyncio_mode = "auto" runs the coroutines
+# asyncio_mode = "auto" runs the coroutines; C047 part 2: the accounting tail runs inside an admitted charge.
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("spoolman_charge_admitted")]
 
 AMS, SLOT = 0, 2
 TRAY = AMS * 4 + SLOT

@@ -3,7 +3,7 @@ usage list in Spoolman mode (m228, upstream 1d86cff5a).
 
 Shaped like the built-in inventory's ``/inventory/usage`` endpoints so the same
 frontend components read both, but a separate door: the rows live in their own
-table, are fenced to the current Spoolman (``spoolman_usage_history.source_token``),
+table, are fenced to the current Spoolman (``spoolman_usage_history.current_token``),
 and every route here refuses while Spoolman mode is off — the built-in
 inventory never reads them.
 
@@ -40,7 +40,7 @@ from backend.app.schemas.spool_usage import (
     SpoolUsageSpoolRef,
     SpoolUsageTotals,
 )
-from backend.app.services import spoolman_usage_history, spoolman_usage_service
+from backend.app.services import spoolman_source_changes, spoolman_usage_history, spoolman_usage_service
 
 router = APIRouter(prefix="/spoolman/inventory", tags=["spoolman-inventory"])
 
@@ -70,7 +70,7 @@ async def get_spoolman_usage_facets(
 ):
     """The History view's filter options, over every row of the current Spoolman."""
     await _require_spoolman_mode(db)
-    token = await spoolman_usage_history.source_token(db)
+    token = await spoolman_usage_history.current_token(db)
     facets = await spoolman_usage_service.usage_facets(
         db, filters=spoolman_usage_service.build_filters(source_token=token)
     )
@@ -97,9 +97,16 @@ async def keep_previous_spoolman_usage_source(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
-    """The address changed but it is the SAME Spoolman database: its history comes along."""
+    """The address changed but it is the SAME Spoolman database: its history comes along.
+
+    A change of the source (C047 §C1): under the source guard, refused only while a
+    print is being charged (``keep_previous`` names the same database, so it is no
+    change of the base); the lazy transition and the move commit together.
+    """
     await _require_spoolman_mode(db)
-    await spoolman_usage_history.keep_previous_source(db)
+    async with spoolman_source_changes.owning(db) as change:
+        await change.decide(db, record_changes=True)
+        await spoolman_usage_history.keep_previous_source(db)
     await ws_manager.broadcast({"type": "inventory_changed"})
     return SpoolmanUsageSourceState(**await spoolman_usage_history.source_state(db))
 
@@ -109,9 +116,15 @@ async def rotate_spoolman_usage_source(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
-    """A NEW Spoolman database behind the same address: usage history starts over."""
+    """A NEW Spoolman database behind the same address: usage history starts over.
+
+    A change of the BASE (C047 §C1, S38): refused while any print accounts in
+    Spoolman — the numbers it froze belong to the database being left.
+    """
     await _require_spoolman_mode(db)
-    await spoolman_usage_history.rotate_source(db)
+    async with spoolman_source_changes.owning(db) as change:
+        await change.decide(db, rotate=True)
+        await spoolman_usage_history.rotate_source(db)
     await ws_manager.broadcast({"type": "inventory_changed"})
     return SpoolmanUsageSourceState(**await spoolman_usage_history.source_state(db))
 
@@ -149,7 +162,7 @@ async def get_spoolman_usage_history(
     """
     await _require_spoolman_mode(db)
     filters = spoolman_usage_service.build_filters(
-        source_token=await spoolman_usage_history.source_token(db),
+        source_token=await spoolman_usage_history.current_token(db),
         statuses=status or None,
         printer_id=printer_id,
         spool_id=spool_id,
@@ -221,7 +234,7 @@ async def get_spoolman_spool_usage(
     await _require_spoolman_mode(db)
     registered = await _registered_of(db, spool_id)
     rows = await spoolman_usage_service.spool_usage(
-        db, source_token=await spoolman_usage_history.source_token(db), spool_id=spool_id
+        db, source_token=await spoolman_usage_history.current_token(db), spool_id=spool_id
     )
     own = [r for r in rows if spoolman_usage_history.belongs_to(r.spool_registered, r.created_at, registered)]
     return [

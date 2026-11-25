@@ -51,6 +51,32 @@ async def _rows(db_session) -> list[SpoolmanUsageHistory]:
     )
 
 
+async def _token(db_session) -> str | None:
+    """The token a charge's admission persists and carries (C047 S33): the owner's path, under the guard."""
+    from backend.app.services import spoolman_source
+
+    async with spoolman_source.guard():
+        token = await history.persist_source(db_session)
+        await db_session.commit()
+    return token
+
+
+async def _keep(db_session) -> int:
+    """ "Same database" as its route runs it: under the source guard (C047 §C1)."""
+    from backend.app.services import spoolman_source
+
+    async with spoolman_source.guard():
+        return await history.keep_previous_source(db_session)
+
+
+async def _rotate(db_session) -> None:
+    """ "New database" as its route runs it: under the source guard (C047 §C1)."""
+    from backend.app.services import spoolman_source
+
+    async with spoolman_source.guard():
+        await history.rotate_source(db_session)
+
+
 async def _charge_two_slots(monkeypatch, db_session, *, fail=False, status="completed"):
     """One print: 100 g off a 40.00/kg spool (tag) and 50 g off an unpriced one (tag)."""
     await _rate(db_session, "20")
@@ -58,7 +84,9 @@ async def _charge_two_slots(monkeypatch, db_session, *, fail=False, status="comp
     tags = {0: "TRAY0", 1: "TRAY1"}
     monkeypatch.setattr(spoolman_tracking, "_resolve_spool_tag", lambda _info, _serial, tray: tags[tray])
     client = _Client({"TRAY0": _full(41, price=40.0), "TRAY1": _full(42)}, fail=fail)
-    charges = _PrintCost(printer_id=None, archive_id=archive.id, history_status=status)
+    charges = _PrintCost(
+        printer_id=None, archive_id=archive.id, history_status=status, source_token=await _token(db_session)
+    )
     await _report_spool_usage_for_slots(
         client,
         [(1, 100.0), (2, 50.0)],
@@ -107,7 +135,7 @@ class TestEveryLandedChargeIsARow:
     async def test_a_charge_whose_spool_was_not_handed_over_is_still_history(self, db_session):
         """The price fetch failed, the charge landed: grams and spool id are known."""
         await _spoolman(db_session)
-        charges = _PrintCost(printer_id=None, archive_id=None)
+        charges = _PrintCost(printer_id=None, archive_id=None, source_token=await _token(db_session))
         charges.add(12.5, None, "journal", spool_id=77)
         await _settle_charges(db_session, None, charges, status="completed")
         (row,) = await _rows(db_session)
@@ -128,7 +156,7 @@ class TestEveryLandedChargeIsARow:
 
         monkeypatch.setattr(spoolman_tracking, "_resolve_spool_id_via_slot_assignment", _assigned)
         client = _Client({"X": _full(55, price=30.0)})
-        charges = _PrintCost(printer_id=None, archive_id=None)
+        charges = _PrintCost(printer_id=None, archive_id=None, source_token=await _token(db_session))
         await _report_remain_delta_for_slots(
             client,
             printer_id=1,
@@ -219,36 +247,38 @@ class TestTheWiring:
         assert "cost_out" not in source and "spoolman_usage_history" not in source
 
     def test_both_writers_tell_the_accumulator_which_print_it_is(self):
-        assert "_PrintCost(printer_id=printer_id, archive_id=archive_id" in self._source(spoolman_tracking.report_usage)
-        assert "_PrintCost(printer_id=printer_id, archive_id=partial_archive_id" in self._source(
-            spoolman_tracking._report_partial_usage
-        )
+        full = self._source(spoolman_tracking._report_usage)
+        partial = self._source(spoolman_tracking._report_partial_usage)
+        assert re.search(r"_PrintCost\( ?printer_id=printer_id, archive_id=archive_id", full)
+        assert re.search(r"_PrintCost\( ?printer_id=printer_id, archive_id=partial_archive_id", partial)
+        # The token of the Spoolman the charges land in comes from the charge's admission (C047 S33).
+        assert "source_token=charge.token" in full and "source_token=charge.token" in partial
 
 
 class TestTheSourceToken:
     @pytest.mark.asyncio
     async def test_no_address_means_no_spoolman_to_name(self, db_session):
-        assert await history.source_token(db_session) is None
+        assert await _token(db_session) is None
 
     @pytest.mark.asyncio
     async def test_the_token_is_stable_for_one_address(self, db_session):
         await _spoolman(db_session, "http://Spoolman.local:7912/")
-        first = await history.source_token(db_session)
+        first = await _token(db_session)
         row = (await db_session.execute(select(Settings).where(Settings.key == "spoolman_url"))).scalar_one()
         row.value = "http://spoolman.local:7912"  # the same address, written differently
         await db_session.commit()
-        assert first and await history.source_token(db_session) == first
+        assert first and await _token(db_session) == first
 
     @pytest.mark.asyncio
     async def test_another_address_is_another_spoolman(self, monkeypatch, db_session):
         await _spoolman(db_session)
         await _charge_two_slots(monkeypatch, db_session)
-        old = await history.source_token(db_session)
+        old = await _token(db_session)
 
         row = (await db_session.execute(select(Settings).where(Settings.key == "spoolman_url"))).scalar_one()
         row.value = "http://other-host:7912"
         await db_session.commit()
-        new = await history.source_token(db_session)
+        new = await _token(db_session)
 
         assert new and new != old
         assert {r.source_token for r in await _rows(db_session)} == {old}, "the old rows stay, under the old source"
@@ -258,11 +288,11 @@ class TestTheSourceToken:
     @pytest.mark.asyncio
     async def test_a_cleared_address_keeps_the_token(self, db_session):
         await _spoolman(db_session)
-        token = await history.source_token(db_session)
+        token = await _token(db_session)
         row = (await db_session.execute(select(Settings).where(Settings.key == "spoolman_url"))).scalar_one()
         row.value = ""
         await db_session.commit()
-        assert await history.source_token(db_session) == token
+        assert await _token(db_session) == token
 
     @pytest.mark.asyncio
     async def test_the_operator_can_say_it_is_the_same_database(self, monkeypatch, db_session):
@@ -272,8 +302,8 @@ class TestTheSourceToken:
         row.value = "http://renamed-host:7912"
         await db_session.commit()
 
-        assert await history.keep_previous_source(db_session) == 2
-        token = await history.source_token(db_session)
+        assert await _keep(db_session) == 2
+        token = await _token(db_session)
         assert {r.source_token for r in await _rows(db_session)} == {token}
         assert (await history.source_state(db_session))["previous_rows"] == 0
 
@@ -281,16 +311,16 @@ class TestTheSourceToken:
     async def test_the_operator_can_say_it_is_a_new_database(self, monkeypatch, db_session):
         await _spoolman(db_session)
         await _charge_two_slots(monkeypatch, db_session)
-        old = await history.source_token(db_session)
-        await history.rotate_source(db_session)
-        assert await history.source_token(db_session) != old
+        old = await _token(db_session)
+        await _rotate(db_session)
+        assert await _token(db_session) != old
         assert (await history.source_state(db_session))["rows"] == 0
 
     async def _move_to(self, db_session, url: str) -> str:
         row = (await db_session.execute(select(Settings).where(Settings.key == "spoolman_url"))).scalar_one()
         row.value = url
         await db_session.commit()
-        return await history.source_token(db_session)
+        return await _token(db_session)
 
     @pytest.mark.asyncio
     async def test_going_back_to_a_known_address_finds_its_history_again(self, monkeypatch, db_session):
@@ -298,7 +328,7 @@ class TestTheSourceToken:
         running once in between, orphaned every row for good (review accounting I1)."""
         await _spoolman(db_session)
         await _charge_two_slots(monkeypatch, db_session)
-        first = await history.source_token(db_session)
+        first = await _token(db_session)
 
         assert await self._move_to(db_session, "https://spoolman.local:7912") != first
         assert await self._move_to(db_session, "http://spoolman.local:7912/") == first
@@ -317,14 +347,14 @@ class TestTheSourceToken:
 
         state = await history.source_state(db_session)
         assert (state["previous_rows"], state["previous_url"]) == (2, "http://spoolman.local:7912")
-        assert await history.keep_previous_source(db_session) == 2
+        assert await _keep(db_session) == 2
 
     @pytest.mark.asyncio
     async def test_a_history_kept_for_a_renamed_host_is_there_under_the_old_name_too(self, monkeypatch, db_session):
         await _spoolman(db_session)
         await _charge_two_slots(monkeypatch, db_session)
         renamed = await self._move_to(db_session, "http://renamed-host:7912")
-        await history.keep_previous_source(db_session)
+        await _keep(db_session)
 
         assert await self._move_to(db_session, "http://spoolman.local:7912") == renamed
         assert (await history.source_state(db_session))["rows"] == 2
@@ -333,8 +363,8 @@ class TestTheSourceToken:
     async def test_a_database_declared_new_stays_new_after_a_round_trip(self, monkeypatch, db_session):
         await _spoolman(db_session)
         await _charge_two_slots(monkeypatch, db_session)
-        await history.rotate_source(db_session)
-        fresh = await history.source_token(db_session)
+        await _rotate(db_session)
+        fresh = await _token(db_session)
 
         await self._move_to(db_session, "http://elsewhere:7912")
         assert await self._move_to(db_session, "http://spoolman.local:7912") == fresh

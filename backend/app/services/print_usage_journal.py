@@ -54,28 +54,48 @@ def journal_lock(printer_id: int) -> "JournalLock":
 
 
 class JournalLock:
-    """``async with journal_lock(printer_id)``: the lock, then the printer's pending replays."""
+    """``async with journal_lock(printer_id)``: the lock, then the printer's pending replays.
 
-    __slots__ = ("_lock", "_printer_id")
+    Every journal write is a first Spoolman fact of its print (C047 S41, S44): before the
+    lock — the owner's boundary, ahead of the shielded replay and the body — the holder
+    waits until no change of the Spoolman database is in flight and publishes its
+    activity record, kept until the lock is released (after the holder's commit).
+    """
+
+    __slots__ = ("_evidence", "_lock", "_printer_id")
 
     def __init__(self, printer_id: int, lock: asyncio.Lock) -> None:
         self._printer_id = printer_id
         self._lock = lock
+        self._evidence = None
 
     def locked(self) -> bool:
         return self._lock.locked()
 
     async def __aenter__(self) -> "JournalLock":
-        await self._lock.acquire()
+        from backend.app.services import spoolman_activity
+
+        evidence = spoolman_activity.first_evidence("usage_journal")
+        await evidence.__aenter__()
+        try:
+            await self._lock.acquire()
+        except BaseException:
+            await evidence.__aexit__(None, None, None)
+            raise
         try:
             await deliver_pending_replay(self._printer_id)
         except BaseException:
             self._lock.release()
+            await evidence.__aexit__(None, None, None)
             raise
+        self._evidence = evidence
         return self
 
     async def __aexit__(self, *_exc) -> None:
         self._lock.release()
+        evidence, self._evidence = self._evidence, None
+        if evidence is not None:
+            await evidence.__aexit__(None, None, None)
 
 
 @dataclass

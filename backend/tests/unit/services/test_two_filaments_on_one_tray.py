@@ -21,6 +21,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from sqlalchemy import select
 
 from backend.app.models.archive import PrintArchive
@@ -52,6 +53,9 @@ COMPLETED = {
     **terminal_snapshot_fields(layer_num=200, total_layers=200, progress=100.0),
 }
 AMS = [{"id": 0, "tray": [{"id": n, "tray_type": "PLA", "tray_color": "FF0000FF", "state": 11} for n in range(2)]}]
+
+# C047 part 2: the accounting tail runs inside an admitted charge (services/spoolman_charge).
+pytestmark = pytest.mark.usefixtures("spoolman_charge_admitted")
 
 
 def printer_state():

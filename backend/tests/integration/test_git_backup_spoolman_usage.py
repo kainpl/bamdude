@@ -313,8 +313,12 @@ async def test_a_malformed_entry_is_counted_and_never_stops_the_restore(db_sessi
     ]
     tally = _CategoryTally()
 
-    await GitRestoreService()._restore_spoolman_usage(db_session, {"usage_history": entries}, tally, {})
-    await db_session.commit()
+    # As the SPOOLS category runs it: under the Spoolman source guard (C047 S29, S30).
+    from backend.app.services import spoolman_source
+
+    async with spoolman_source.guard():
+        await GitRestoreService()._restore_spoolman_usage(db_session, {"usage_history": entries}, tally, {})
+        await db_session.commit()
 
     assert (tally.restored, tally.failed, tally.skipped) == (2, 9, 0)
     lenient = next(r for r in await rows(db_session) if r.weight_used == 5 and r.rgba is not None)

@@ -21,6 +21,9 @@ from backend.app.models.print_usage_event import (
 from backend.app.services.spoolman import SpoolmanClientError
 from backend.app.utils.tray_split import CompletionSnapshot
 
+# C047 part 2: the accounting tail runs inside an admitted charge (services/spoolman_charge).
+pytestmark = pytest.mark.usefixtures("spoolman_charge_admitted")
+
 
 class _AsyncCtx:
     def __init__(self, db):

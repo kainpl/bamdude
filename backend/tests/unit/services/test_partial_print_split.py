@@ -34,11 +34,15 @@ from backend.app.models.print_usage_event import (
 )
 from backend.app.models.settings import Settings
 from backend.app.models.spool_usage_history import SpoolUsageHistory
+from backend.app.services import spoolman_charge
 from backend.app.services.usage_tracker import PrintSession, _active_sessions, on_print_complete
 from backend.app.utils.tray_split import CompletionSnapshot, terminal_snapshot_fields
 from backend.app.utils.usage_attribution import UNKNOWN_FEED
 from backend.tests.unit.services.test_spoolman_tray_split import _AsyncCtx, _make_db
 from backend.tests.unit.services.test_usage_tracker_runout import _make_archive, _make_printer, _make_spool
+
+# C047 part 2: the accounting tail runs inside an admitted charge (services/spoolman_charge).
+pytestmark = pytest.mark.usefixtures("spoolman_charge_admitted")
 
 #: The slicer's estimate for the slot; the stopped print used a quarter of it — 10 g.
 ESTIMATE_G = 40.0
@@ -473,6 +477,7 @@ async def run_spoolman(data, *, usage, journal_events, tray_change_log, ams_tray
         patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
     ):
         await _report_partial_usage(
+            charge=await spoolman_charge.admit("test"),
             printer_id=1,
             tracking=tracking,
             last_layer_num=data["last_layer_num"],

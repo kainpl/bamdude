@@ -54,7 +54,7 @@ from backend.app.schemas.spoolman import (
     SpoolmanFilamentPatch,
     SpoolmanSlotAssignmentEnriched,
 )
-from backend.app.services import spool_drying
+from backend.app.services import spool_drying, spoolman_binding_fence
 from backend.app.services.ams_slot_presence import tray_definitely_empty
 from backend.app.services.location_service import (
     enrich_spool_dicts_with_location_id,
@@ -155,6 +155,10 @@ async def _clear_stale_tag_links(
                 spool_id,
                 exc,
             )
+        except spoolman_binding_fence.SpoolBeingDeleted:
+            # A holder the re-link's preparation did not see and that is being deleted
+            # (C047 S27): its tag goes with it; best-effort, like the failures above.
+            logger.info("Stale tag on Spoolman spool %s left alone: the spool is being deleted", spool_id)
     return cleared
 
 
@@ -1097,16 +1101,25 @@ async def delete_spool(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ) -> dict:
-    """Permanently delete a spool from Spoolman; its local slot rows go with it."""
-    from backend.app.services import spool_single_slot  # noqa: PLC0415
+    """Permanently delete a spool from Spoolman — unless BamDude's history says it was printed with.
 
-    client = await _get_client(db)
-    await _refuse_while_feeding(db, spool_id, spool_single_slot.delete_refusal)
-    async with _translate_spoolman_errors():
-        await client.delete_spool(spool_id)
-    await _leave_slots(db, spool_id)
+    The one door is ``services/spoolman_delete`` (C047 part 2): a spool with usage
+    history, in a feeding slot or named by a running print is refused (archive it
+    instead); a confirmed delete returns its local cleanup's warning, if any.
+    """
+    from backend.app.services import spoolman_delete  # noqa: PLC0415
+
+    # The service reads in its own short sessions; this request's read transaction ends here.
+    await db.rollback()
+    try:
+        outcome = await spoolman_delete.delete_spool(spool_id)
+    except HTTPException as exc:
+        if isinstance(exc.detail, dict) and exc.detail.get("error") == "spoolman_outcome_unknown":
+            # The remote state is unknown: open lists refresh as for a delete.
+            await ws_manager.broadcast({"type": "inventory_changed"})
+        raise
     await ws_manager.broadcast({"type": "inventory_changed"})
-    return {"status": "deleted"}
+    return outcome.as_response()
 
 
 async def _refuse_while_feeding(db: AsyncSession, spool_id: int, refusal) -> None:
@@ -1232,10 +1245,18 @@ async def bulk_delete_spools(
     db: AsyncSession = Depends(get_db),
     user: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ) -> dict:
-    """Permanently delete every listed spool from Spoolman."""
-    result = await _bulk_fanout(data.spool_ids, lambda sid: delete_spool(spool_id=sid, db=db, _=user))
+    """Permanently delete every listed spool from Spoolman, one at a time through the one door.
+
+    Duplicates are dropped (the first stays); ``deleted`` counts every confirmed
+    remote delete, ``warnings`` their cleanup's warnings, and ``errors`` never
+    holds a confirmed delete (C047 §C7).
+    """
+    from backend.app.services import spoolman_delete  # noqa: PLC0415
+
+    await db.rollback()
+    result = await spoolman_delete.delete_many(data.spool_ids)
     await ws_manager.broadcast({"type": "inventory_changed"})
-    return {"deleted": result["succeeded"], "errors": result["errors"]}
+    return result
 
 
 @router.post("/spools/bulk-archive")
@@ -1389,7 +1410,10 @@ async def link_tag_to_spoolman_spool(
     tag = (data.tray_uuid or data.tag_uid).upper()
     tag_json = json.dumps(tag)
 
-    async with client.extra_lock(spool_id):
+    # One tag operation for the whole chain — native link, GET, PATCH, compensation,
+    # dropping the previous reel's tags, the last GET (C047 S27).
+    issued = spoolman_binding_fence.ticket()
+    async with client.extra_lock(spool_id), spoolman_binding_fence.operation([spool_id], issued=issued):
         # Duplicate check: scan all spools for the same tag on a different spool.
         # Sorted, because Spoolman has no unique constraint on extra.tag either:
         # the built-in route names the lowest id, and so does this one. Every row
@@ -1740,7 +1764,9 @@ async def assign_spoolman_slot(
         raise HTTPException(status_code=404, detail="Printer not found")
 
     # Verify the Spoolman spool exists before committing to local DB.
-    # This prevents ghost rows pointing at non-existent spool IDs.
+    # This prevents ghost rows pointing at non-existent spool IDs. The binding
+    # ticket is taken before this proof of the number (C047 §C3).
+    issued = spoolman_binding_fence.ticket()
     async with _translate_spoolman_errors():
         spool = await client.get_spool(body.spoolman_spool_id)
     # As the built-in route refuses: the ledger must not name a spool that is
@@ -1756,7 +1782,11 @@ async def assign_spoolman_slot(
     # and RFID reconciliation take — and the journal lock, in that order (post-rebuild
     # F-R3). Nothing below waits on the network until both are released.
     await db.commit()  # no read transaction is carried into the locks
-    async with _get_ams_assignment_lock(body.printer_id), journal_lock(body.printer_id):
+    async with (
+        _get_ams_assignment_lock(body.printer_id),
+        journal_lock(body.printer_id),
+        spoolman_binding_fence.entered([body.spoolman_spool_id], issued),
+    ):
         # What the remote wait may have changed: the printer itself.
         if await db.scalar(select(Printer.id).where(Printer.id == body.printer_id)) is None:
             raise HTTPException(status_code=404, detail="Printer not found")
@@ -2412,11 +2442,27 @@ async def save_spoolman_k_profiles(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ) -> list[dict]:
-    """Replace all K-value calibration profiles for a Spoolman spool."""
+    """Replace all K-value calibration profiles for a Spoolman spool.
+
+    A binding writer (C047 §C3): the ticket before the GET that proves the number,
+    the fence's guard before the DELETE that begins the replacement, kept through
+    the commit or the rollback. A spool being deleted is 409 ``spool_being_deleted``.
+    """
     client = await _get_client(db)
+    issued = spoolman_binding_fence.ticket()
     async with _translate_spoolman_errors():
         await client.get_spool(spool_id)
 
+    with spoolman_binding_fence.enter([spool_id], issued):
+        saved = await _replace_k_profiles(db, spool_id, profiles)
+
+    for obj in saved:
+        await db.refresh(obj)
+
+    return [_k_profile_to_dict(p) for p in saved]
+
+
+async def _replace_k_profiles(db: AsyncSession, spool_id: int, profiles: list[SpoolKProfileBase]) -> list:
     saved: list[SpoolmanKProfile] = []
     try:
         await db.execute(delete(SpoolmanKProfile).where(SpoolmanKProfile.spoolman_spool_id == spool_id))
@@ -2446,8 +2492,4 @@ async def save_spoolman_k_profiles(
         await db.rollback()
         logger.error("K-profile save for spool %d failed: %s", spool_id, exc)
         raise HTTPException(500, "Failed to save K-profiles") from exc
-
-    for obj in saved:
-        await db.refresh(obj)
-
-    return [_k_profile_to_dict(p) for p in saved]
+    return saved

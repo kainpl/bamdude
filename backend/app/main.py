@@ -4477,6 +4477,15 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                                     tray.tray_id,
                                     e,
                                 )
+                    except SpoolBeingDeleted as refused:
+                        # C047 §C3: the background sync skips a spool being deleted; the next report retries.
+                        logger.info(
+                            "[Printer %s] AMS %s tray %s: Spoolman spool %s is being deleted; skipped",
+                            printer_id,
+                            ams_id,
+                            tray.tray_id,
+                            refused.number,
+                        )
                     except Exception as e:
                         logger.error("Error syncing AMS %s tray %s: %s", ams_id, tray.tray_id, e)
 
@@ -11607,7 +11616,21 @@ async def on_print_complete(printer_id: int, data: dict) -> None:
 
     The wrapper closes registration in finally. Cleanup waits for consumers,
     independently of the token that fences actions against newer print runs.
+
+    The Spoolman accounting window (C047 S15) opens here, before the first await,
+    and closes after the last Spoolman writer: a delete of a Spoolman spool
+    refuses while it is open and admits only if none came and went meanwhile.
     """
+    from backend.app.services import spoolman_activity
+
+    spoolman_activity.enter_window()
+    try:
+        await _on_print_complete_windowed(printer_id, data)
+    finally:
+        spoolman_activity.leave_window()
+
+
+async def _on_print_complete_windowed(printer_id: int, data: dict) -> None:
     from backend.app.services.print_completion_tasks import PrintCompletionTasks
 
     scope = PrintCompletionTasks(printer_id)
@@ -13619,6 +13642,11 @@ async def _application_lifespan(app: FastAPI):
     auto_queue_return_runtime.close_admission()
     if not await auto_queue_return_runtime.quiesce_for_restore(10):
         logging.getLogger(__name__).warning("AutoQueue return shutdown work remains owned")
+    # Spoolman deletes and print charges: closed and drained before network and DB resources go (C047 S35).
+    from backend.app.services.spoolman_delete import delete_runtime as spoolman_delete_runtime
+
+    if not await spoolman_delete_runtime.quiesce_for_restore(10):
+        logging.getLogger(__name__).warning("Spoolman delete or charge shutdown work remains owned")
     from backend.app.services.print_run_binding import revoke_print_effects
     from backend.app.services.print_state_observer import print_state_observer
 
@@ -14010,6 +14038,27 @@ async def forecast_source_unavailable_handler(request, exc):
     from backend.app.i18n.api_errors import json_error
 
     return json_error(503, {"error": "spoolman_unreachable", "message": "Spoolman server is not reachable"})
+
+
+from backend.app.services.spoolman_binding_fence import SpoolBeingDeleted  # noqa: E402
+
+
+@app.exception_handler(SpoolBeingDeleted)
+async def spool_being_deleted_handler(request, exc):
+    # A binding or tag writer met a Spoolman spool being deleted (C047 §C3): nothing was
+    # written locally; after a confirmed create the answer names the new spool (S37).
+    from backend.app.i18n.api_errors import json_error
+
+    if exc.created:
+        return json_error(
+            409,
+            {
+                "error": "spool_created_not_bound",
+                "spool_id": exc.number,
+                "message": "The spool was created in Spoolman but not bound because of a concurrent delete",
+            },
+        )
+    return json_error(409, {"error": "spool_being_deleted", "message": "This spool is being deleted"})
 
 
 # Every ``HTTPException`` answers in the system language: the English sentence

@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from backend.app.services import spoolman_charge
 from backend.app.services.bambu_mqtt import BambuMQTTClient, resolve_external_spools_in_mapping
 from backend.app.services.usage_tracker import _active_sessions
 from backend.app.utils.tray_split import CompletionSnapshot, terminal_snapshot_fields
@@ -29,6 +30,9 @@ from backend.tests.unit.services.test_partial_print_split import (  # noqa: F401
     stage,
 )
 from backend.tests.unit.services.test_spoolman_tray_split import _AsyncCtx, _make_db
+
+# C047 part 2: the accounting tail runs inside an admitted charge (services/spoolman_charge).
+pytestmark = pytest.mark.usefixtures("spoolman_charge_admitted")
 
 LEFT, RIGHT = {"ams_id": 254, "slot_id": 0}, {"ams_id": 255, "slot_id": 0}
 UNMAPPED = {"ams_id": 255, "slot_id": 255}
@@ -245,6 +249,7 @@ async def _spoolman(data, slot_to_tray):
             await report_usage(printer_id=1, archive_id=144, completion=completion)
         else:
             await _report_partial_usage(
+                charge=await spoolman_charge.admit("test"),
                 printer_id=1,
                 tracking=tracking,
                 last_layer_num=data["last_layer_num"],

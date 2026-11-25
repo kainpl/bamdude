@@ -71,6 +71,29 @@ async def take_write_lock(db: AsyncSession, table: Table, row_id: int) -> None:
         return
     same = {column.name: column for column in table.c if column.primary_key or column.onupdate is not None}
     await db.execute(update(table).where(table.c.id == row_id).values(same))
+    mark_writer_reserved(db)
+
+
+_WRITER_RESERVED = "bamdude_writer_reserved_transaction"
+
+
+def mark_writer_reserved(db: AsyncSession) -> None:
+    """Record that THIS transaction holds SQLite's writer or a row lock taken to serialise.
+
+    A no-op UPDATE (``take_write_lock``, the credential anchor, the account guard)
+    leaves ``db.new`` / ``dirty`` / ``deleted`` empty, so nothing else tells a
+    later caller that the session is no longer clean (C047 S30). The mark lives
+    on the current transaction object and ends with it.
+    """
+    transaction = db.sync_session.get_transaction()
+    if transaction is not None:
+        db.sync_session.info[_WRITER_RESERVED] = transaction
+
+
+def writer_reserved(db: AsyncSession) -> bool:
+    """Whether the session's current transaction reserved a writer or a serialising row lock."""
+    transaction = db.sync_session.get_transaction()
+    return transaction is not None and db.sync_session.info.get(_WRITER_RESERVED) is transaction
 
 
 def _strip_tz_from_params(conn, cursor, statement, parameters, context, executemany):

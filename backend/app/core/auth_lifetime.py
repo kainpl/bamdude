@@ -183,6 +183,9 @@ async def _guard_accounts(db, captures, *, require_active=True) -> GuardProof:
             raise refused()
         if capture.generation is not None and user.session_generation != capture.generation:
             raise refused()
+    from backend.app.core.database import mark_writer_reserved  # noqa: PLC0415
+
+    mark_writer_reserved(db)
     return GuardProof(id(db), db.sync_session.get_transaction(), frozenset(by_identity))
 
 
