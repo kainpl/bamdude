@@ -6,6 +6,8 @@ The configuration editor preserves the quantities and descriptions of other save
 
 ### Security
 
+- **Updating BamDude now moves the libraries past their known advisories.** The update installs the requirements without upgrading a package that already meets them, so the minimum versions decide what an existing install keeps. They are now Pillow 13.0.0, PyJWT 2.15.1, cryptography 50.0.0, aiohttp 3.14.4, urllib3 2.8.0, certifi 2026.10.18, multidict 6.9.1 and pyasn1 0.6.5: the first releases with the fixes `pip-audit` lists against the versions an older install kept. A new install already took the newest releases. The Docker build's own pip moves to 26.2.
+
 - Updated i18next to 26.3.4 to address [GHSA-6jcc-5g8w-32mx](https://github.com/advisories/GHSA-6jcc-5g8w-32mx).
 
 - The part thumbnail renderer uses Node.js 24.22.3 on 64-bit platforms and 22.23.5 on 32-bit ARM. Both updates include Node.js security fixes.
