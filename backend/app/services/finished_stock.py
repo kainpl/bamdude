@@ -19,8 +19,10 @@ forwards verbatim (translated at the boundary) with its HTTP status.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from hashlib import sha256
+from json import dumps
 
-from sqlalchemy import and_, delete, func, select, tuple_, update
+from sqlalchemy import and_, delete, func, or_, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import take_write_lock
@@ -34,9 +36,12 @@ from backend.app.services import line_config, part_stock
 from backend.app.services.line_composition import (
     Composition,
     LineConfig,
+    composition,
     compositions_for_items,
     counted,
+    kit_signature,
     load_line_configs,
+    snapshot_parts,
 )
 from backend.app.services.product_gate import product_gate
 
@@ -75,6 +80,52 @@ async def _find_item(db: AsyncSession, product_id: int, key: str) -> StockItem |
     ).scalar_one_or_none()
 
 
+def variant_key(key: str) -> str:
+    return key.partition("|")[0]
+
+
+def matching_item(items: Iterable[StockItem], key: str, snapshot: list[dict] | None) -> StockItem | None:
+    if snapshot is not None:
+        signature = kit_signature(snapshot)
+        for item in items:
+            if (
+                item.variant_key == variant_key(key)
+                and item.composition_parts is not None
+                and kit_signature(item.composition_parts) == signature
+            ):
+                return item
+    return next(
+        (item for item in items if item.config_key == key and (snapshot is None or item.composition_parts is None)),
+        None,
+    )
+
+
+async def positions_for_variants(db: AsyncSession, pairs: Iterable[tuple[int, str]]) -> dict[int, list[StockItem]]:
+    wanted = set(pairs)
+    if not wanted:
+        return {}
+    variants = {(pid, variant_key(key)) for pid, key in wanted}
+    rows = await db.scalars(
+        select(StockItem)
+        .where(
+            or_(
+                tuple_(StockItem.product_id, StockItem.variant_key).in_(sorted(variants)),
+                tuple_(StockItem.product_id, StockItem.config_key).in_(sorted(wanted)),
+            )
+        )
+        .order_by(StockItem.id)
+    )
+    result: dict[int, list[StockItem]] = {}
+    for item in rows:
+        result.setdefault(item.product_id, []).append(item)
+    return result
+
+
+async def compatible_item(db: AsyncSession, product_id: int, key: str, snapshot: list[dict] | None) -> StockItem | None:
+    items = await positions_for_variants(db, [(product_id, key)])
+    return matching_item(items.get(product_id, ()), key, snapshot)
+
+
 async def item_for(
     db: AsyncSession,
     product_id: int,
@@ -83,6 +134,8 @@ async def item_for(
     *,
     create: bool,
     any_origin: bool = False,
+    captured: list[dict] | None = None,
+    captured_key: str | None = None,
 ) -> StockItem | None:
     """The position of this product configuration — found by its key, or created
     when ``create`` (spec rule 9). Only catalogue products are kept (rule 6)."""
@@ -91,31 +144,35 @@ async def item_for(
         raise FinishedStockError("Product not found", 404)
     if origin != ProductOrigin.CATALOG.value and not any_origin:
         raise FinishedStockError("Only catalogue products are kept in stock", 422)
+    if create:
+        await product_gate(db, [product_id])
     try:
-        key, new_choices, new_counts = await line_config.resolve(db, product_id, choices, counts)
+        product = (await line_config.load_products(db, [product_id]))[product_id]
+        key, new_choices, new_counts = line_config.resolve_on(product, choices, counts)
     except line_config.LineConfigError as e:
         raise FinishedStockError(str(e), e.status) from e
-    item = await _find_item(db, product_id, key)
+    if captured_key is not None:
+        key = captured_key
+    snapshot = (
+        captured
+        if captured is not None
+        else snapshot_parts(composition(product.parts, "product", set(new_choices.values()), new_counts))
+    )
+    item = await compatible_item(db, product_id, key, snapshot)
     if item is not None or not create:
         return item
-    # Two first receipts of one new configuration at the same moment would both
-    # INSERT and the second would meet UNIQUE(product_id, config_key) as a 500.
-    # The creation is serialised on the PRODUCT row instead, and the key looked up
-    # again under that lock: the second one finds the position the first created.
-    # (Not a savepoint: RELEASE of the outermost SAVEPOINT is a COMMIT on SQLite.)
-    # The product gate (WS-13 E1 BL1): a re-entry in every door that took it at its
-    # start — the issue dialog, the stock page — and a GateOrderError in one that
-    # did not, instead of a product lock taken after positions and lines.
-    await product_gate(db, [product_id])
-    item = await _find_item(db, product_id, key)
-    if item is not None:
-        return item
-    item = StockItem(product_id=product_id, config_key=key)
+    physical_key = key
+    if await _find_item(db, product_id, key) is not None:
+        digest = sha256(dumps([variant_key(key), kit_signature(snapshot)]).encode()).hexdigest()
+        physical_key = f"#kit:{digest}"
+    item = StockItem(
+        product_id=product_id, config_key=physical_key, variant_key=variant_key(key), composition_parts=snapshot
+    )
     db.add(item)
     await db.flush()
     # A position nobody else can see yet — its lock never waits nor makes anyone wait.
     ledger(db).note_created("stock_items", item.id)
-    await line_config.seed_item(db, item, new_choices, new_counts)
+    await line_config.seed_item(db, item, new_choices, new_counts, physical_key=physical_key)
     await db.flush()
     return item
 
@@ -375,7 +432,10 @@ async def _line_position_ids(db: AsyncSession, line: ProjectLine, also_keys: Ite
     keys = {line.config_key, *also_keys}
     own = set(
         await db.scalars(
-            select(StockItem.id).where(StockItem.product_id == line.product_id, StockItem.config_key.in_(keys))
+            select(StockItem.id).where(
+                StockItem.product_id == line.product_id,
+                or_(StockItem.config_key.in_(keys), StockItem.variant_key.in_({variant_key(key) for key in keys})),
+            )
         )
     )
     return held | own
@@ -406,7 +466,8 @@ async def _position_ids_for_lines(db: AsyncSession, line_ids: Iterable[int]) -> 
                 .join(
                     ProjectLine,
                     and_(
-                        ProjectLine.product_id == StockItem.product_id, ProjectLine.config_key == StockItem.config_key
+                        ProjectLine.product_id == StockItem.product_id,
+                        or_(ProjectLine.config_key == StockItem.config_key, StockItem.variant_key.is_not(None)),
                     ),
                 )
                 .where(ProjectLine.id.in_(ids))
@@ -478,7 +539,7 @@ async def reserve_for_line(db: AsyncSession, line: ProjectLine, units: int, *, a
     origin = await db.scalar(select(Product.origin).where(Product.id == line.product_id))
     if origin != ProductOrigin.CATALOG.value:
         return 0
-    found = await position_for_key(db, line.product_id, line.config_key)
+    found = await position_for_line(db, line, create=False)
     if found is None:
         return 0
     item = await lock_item(db, found.id)
@@ -542,11 +603,21 @@ async def position_for_line(db: AsyncSession, line: ProjectLine, *, create: bool
     """The position of the line's configuration. An order line's position may be of ANY
     of its products — a one-off product's printed units go through the shelf like the
     rest; only the manual doors keep stock for catalogue products (WS-09 rule 6)."""
-    found = await position_for_key(db, line.product_id, line.config_key)
+    snapshot = line.composition_revisions[-1]["parts"] if line.composition_revisions else None
+    found = await compatible_item(db, line.product_id, line.config_key, snapshot)
     if found is not None or not create:
         return found
     config = (await load_line_configs(db, [line.id])).get(line.id, LineConfig())
-    return await item_for(db, line.product_id, config.choices, config.counts, create=True, any_origin=True)
+    return await item_for(
+        db,
+        line.product_id,
+        config.choices,
+        config.counts,
+        create=True,
+        any_origin=True,
+        captured=snapshot,
+        captured_key=line.config_key,
+    )
 
 
 async def produce_for_line(db: AsyncSession, line: ProjectLine, units: int, *, actor: User | None = None) -> None:
@@ -667,7 +738,7 @@ async def take_for_line(db: AsyncSession, line: ProjectLine, units: int, *, acto
     if units <= 0 or line.mode != "product":
         return 0
     await lock_line(db, line)
-    found = await position_for_key(db, line.product_id, line.config_key)
+    found = await position_for_line(db, line, create=False)
     if found is None:
         return 0
     item = await lock_item(db, found.id)

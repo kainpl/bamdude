@@ -126,10 +126,13 @@ from backend.app.schemas.project import (
     FulfilmentIn,
     FulfilmentOut,
     FulfilmentStateOut,
+    LineCompositionRevisionOut,
     LineConfigurationImpact,
     LineConfigurationIn,
     LineConfigurationOut,
     LineIntakeOut,
+    LinePartAdd,
+    LinePartCandidates,
     LinePlanOut,
     LineProductOut,
     LinePurchasedPartOut,
@@ -196,11 +199,18 @@ from backend.app.services import (
 from backend.app.services.archive_defects import DefectsWrite, record_defects
 from backend.app.services.archive_write_scope import archive_write_scope, lock_prints
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
-from backend.app.services.configuration_views import configuration_out, groups_by_product
+from backend.app.services.configuration_views import configuration_out, groups_by_product, saved_configuration
 from backend.app.services.entity_codes import code_for, id_from_query
 from backend.app.services.filament_intake import require_source_requirements
 from backend.app.services.filament_requirements import PrintRequirementsCache
-from backend.app.services.line_composition import LineConfig, default_options, extra_parts_for_line, load_line_configs
+from backend.app.services.line_composition import (
+    LineConfig,
+    config_key,
+    default_options,
+    extra_parts_for_line,
+    is_variant_part,
+    load_line_configs,
+)
 from backend.app.services.list_paging import (
     SortSpec,
     apply_sql_sort,
@@ -300,7 +310,8 @@ async def _configurations(db: AsyncSession, ctx) -> dict[int, LineConfigurationO
     """
     groups = await groups_by_product(db, {line.product_id for line in ctx.lines})
     return {
-        line.id: configuration_out(
+        line.id: saved_configuration(line)
+        or configuration_out(
             groups.get(line.product_id, []),
             ctx.parts_by_product.get(line.product_id, []),
             ctx.config_by_line.get(line.id, LineConfig()),
@@ -354,7 +365,7 @@ def _line_purchased(ctx, line: ProjectLine) -> list[LinePurchasedPartOut]:
             name=part.name,
             per=per,
             need=per * line.quantity,
-            variant=bool(part.bound),
+            variant=is_variant_part(part),
         )
         for part, per in composition_of(ctx, line)
         if part.kind == "purchased" and per > 0
@@ -389,6 +400,11 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
         counted_parts_by_line({ctx.project.id: figs}),
     )
     variant_parts = {part.id for parts in ctx.parts_by_product.values() for part in parts if part.bound}
+    saved_variants = {
+        line.id: {row["id"]: row["variant"] for row in line.composition_revisions[-1]["parts"]}
+        for line in ctx.lines
+        if line.composition_revisions
+    }
     project = ctx.project
     customer = await db.get(Customer, project.customer_id) if project.customer_id else None
     contact = await db.get(CustomerContact, project.contact_id) if project.contact_id else None
@@ -426,7 +442,7 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
                     in_progress=p.in_progress,
                     remaining=p.remaining,
                     surplus=p.surplus,
-                    variant=p.part_id in variant_parts,
+                    variant=saved_variants.get(line.id, {}).get(abs(p.part_id), p.part_id in variant_parts),
                     queued=queued.get(line.id, {}).get(p.part_id, 0),
                     bankable=p.bankable,
                     allocated_qty=p.allocated_qty,
@@ -747,7 +763,8 @@ async def _with_product_lines(
                 line_id=line.id,
                 mode=line.mode,
                 quantity=line.quantity,
-                configuration=configuration_out(groups, parts, configs.get(line.id, LineConfig()), defaults, line.mode),
+                configuration=saved_configuration(line)
+                or configuration_out(groups, parts, configs.get(line.id, LineConfig()), defaults, line.mode),
             )
             for line in lines_by_order.get(row.id, [])
         ]
@@ -1561,18 +1578,19 @@ async def _line_positions(db: AsyncSession, lines) -> dict[int, StockPositionRef
     product_lines = [line for line in lines if line.mode != "parts"]
     if not product_lines:
         return {}
-    rows = await db.execute(
-        select(StockItem.id, StockItem.product_id, StockItem.config_key, StockItem.location).where(
-            StockItem.product_id.in_({line.product_id for line in product_lines})
-        )
+    positions = await finished_stock.positions_for_variants(
+        db, [(line.product_id, line.config_key) for line in product_lines]
     )
-    by_key = {(product_id, key): (item_id, location) for item_id, product_id, key, location in rows}
     out: dict[int, StockPositionRefOut] = {}
     for line in product_lines:
-        found = by_key.get((line.product_id, line.config_key or ""))
+        revision = line.composition_revisions[-1] if line.composition_revisions else None
+        found = finished_stock.matching_item(
+            positions.get(line.product_id, ()), line.config_key, revision["parts"] if revision else None
+        )
         if found is not None:
-            item_id, location = found
-            out[line.id] = StockPositionRefOut(id=item_id, code=code_for("stock_item", item_id), location=location)
+            out[line.id] = StockPositionRefOut(
+                id=found.id, code=code_for("stock_item", found.id), location=found.location
+            )
     return out
 
 
@@ -2404,29 +2422,44 @@ async def configure_line(
     # reader's — it takes no writer's lock (WS-13 E13 final review).
     if not data.dry_run:
         await product_gate(db, [line.product_id])
+        await order_fulfilment.lock_order(db, project_id)
         line = await _get_line(db, project_id, line_id, fresh=True)
-    # A completed order answers with its own refusal (``line_config``); an active one
-    # whose line has moved stock keeps the line's configuration (spec workshop-order-issue, rule 13).
-    status = await db.scalar(select(Project.status).where(Project.id == project_id))
-    if not data.dry_run and status != "completed" and await order_fulfilment.moved_line_ids(db, [line]):
-        raise HTTPException(status_code=409, detail=_LINE_MOVED)
-    if not data.dry_run and line.mode == "product" and status != "completed":
+        try:
+            await line_config.require_active(db, line)
+            line_config.require_revision(line, data.expected_revision)
+        except line_config.LineConfigError as e:
+            raise HTTPException(status_code=e.status, detail=str(e)) from e
+        if await order_fulfilment.moved_line_ids(db, [line]):
+            raise HTTPException(status_code=409, detail=_LINE_MOVED)
+    if not data.dry_run:
         # The positions of the old configuration AND the new one, then the line — before
         # a byte of it is written (WS-13 E1 BL0): the reservation moves between them.
         try:
-            key = await line_config.target_key(db, line, choices=data.choices, counts=data.part_counts)
+            key = await line_config.target_key(
+                db, line, choices=data.choices, counts=data.part_counts, edits=data.part_edits
+            )
             await finished_stock.lock_line(db, line, also_keys=[key])
+            line_config.require_revision(line, data.expected_revision)
         except line_config.LineConfigError as e:
             raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
         except finished_stock.FinishedStockError as e:
             raise HTTPException(status_code=e.status, detail=str(e)) from e
     old_key = line.config_key
+    old_revision = len(line.composition_revisions or [])
     finished_before = await finished_stock.held_for_line(db, line.id)
     if not data.dry_run and (finished_before or await part_stock.reserved_parts_for_line(db, line)):
         await ensure(creds, Permission.STOCK_MOVE)
     try:
         outcome = await line_config.set_configuration(
-            db, line, choices=data.choices, counts=data.part_counts, actor=current_user, dry_run=data.dry_run
+            db,
+            line,
+            choices=data.choices,
+            counts=data.part_counts,
+            actor=current_user,
+            dry_run=data.dry_run,
+            edits=data.part_edits,
+            review_version=data.review_version,
+            require_review=data.expected_revision is not None,
         )
     except line_config.LineConfigError as e:
         # A changed choice to a closed combination: the structured refusal, dry run included.
@@ -2436,7 +2469,7 @@ async def configure_line(
     if data.dry_run:
         finished_after = 0
         if finished_before:
-            position = await finished_stock.position_for_key(db, line.product_id, outcome.new_key)
+            position = await finished_stock.compatible_item(db, line.product_id, outcome.new_key, outcome.snapshot)
             free = position.on_hand - position.reserved if position is not None else 0
             if outcome.new_key == old_key:
                 free += finished_before  # the same position: the line keeps its own
@@ -2459,8 +2492,20 @@ async def configure_line(
                 )
                 for d in outcome.dropping
             ],
+            changes=[
+                DroppedPartOut(
+                    part_id=d.part_id,
+                    name=d.name,
+                    per_before=d.per_before,
+                    per_after=d.per_after,
+                    printed=d.printed,
+                    queued=d.queued,
+                )
+                for d in outcome.changes
+            ],
+            review_version=outcome.review_version,
         )
-    if line.config_key != old_key and finished_before:
+    if finished_before and (line.config_key != old_key or len(line.composition_revisions or []) != old_revision):
         # The ready units follow the line into the position of its new configuration
         # (spec workshop-add-to-order, rule 8), in this same transaction.
         before, after = await finished_stock.move_for_line(db, line, actor=current_user)
@@ -2476,6 +2521,68 @@ async def configure_line(
             },
             actor=current_user,
         )
+    return await _response(db, project_id)
+
+
+@router.get("/{project_id}/lines/{line_id}/part-candidates", response_model=LinePartCandidates)
+async def line_part_candidates(
+    project_id: int,
+    line_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.ORDERS_READ, Permission.PRODUCTS_READ),
+):
+    return await line_config.candidates_for_line(db, await _get_line(db, project_id, line_id))
+
+
+@router.get("/{project_id}/lines/{line_id}/composition-revisions", response_model=list[LineCompositionRevisionOut])
+async def line_composition_revisions(
+    project_id: int,
+    line_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.ORDERS_READ),
+):
+    line = await _get_line(db, project_id, line_id)
+    return [
+        LineCompositionRevisionOut.model_validate(
+            {**entry, "revision": index, "choices": entry["configuration"]["choices"]}
+        )
+        for index, entry in enumerate(line.composition_revisions or [], start=1)
+    ]
+
+
+@router.post("/{project_id}/lines/{line_id}/parts", response_model=ProjectResponse)
+@part_images.attach
+async def add_line_part(
+    project_id: int,
+    line_id: int,
+    data: LinePartAdd,
+    db: AsyncSession = Depends(get_db),
+    actor: User | None = RequirePermission(Permission.ORDERS_READ, Permission.ORDERS_UPDATE, Permission.PRODUCTS_READ),
+    creds: RequestCredentials = Depends(request_credentials),
+):
+    line = await _get_line(db, project_id, line_id)
+    await product_gate(db, [line.product_id])
+    await order_fulfilment.lock_order(db, project_id)
+    line = await _get_line(db, project_id, line_id, fresh=True)
+    try:
+        if line_config.accepted_part_command(line, data):
+            return await _response(db, project_id)
+        await line_config.require_active(db, line)
+        cfg = (await load_line_configs(db, [line.id]))[line.id]
+        key = config_key(line.mode, cfg.choices, {**cfg.counts, data.part_id: data.quantity})
+        await finished_stock.lock_line(db, line, also_keys=[key])
+        if await order_fulfilment.moved_line_ids(db, [line]):
+            raise HTTPException(status_code=409, detail=_LINE_MOVED)
+        finished_before = await finished_stock.held_for_line(db, line.id)
+        if finished_before or await part_stock.reserved_parts_for_line(db, line):
+            await ensure(creds, Permission.STOCK_MOVE)
+        await line_config.add_part_to_line(db, line, data, actor=actor)
+        if finished_before:
+            await finished_stock.move_for_line(db, line, actor=actor)
+    except (line_config.LineConfigError, finished_stock.FinishedStockError) as e:
+        raise HTTPException(status_code=e.status, detail=str(e)) from e
+    except part_stock.PartStockError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     return await _response(db, project_id)
 
 

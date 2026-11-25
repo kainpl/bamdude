@@ -113,7 +113,7 @@ import { BulkPrinterActionDialog } from '../components/BulkPrinterActionDialog';
 import { BulkPrinterPlacementDialog } from '../components/BulkPrinterPlacementDialog';
 import { PauseChip } from '../components/PauseChip';
 import { formatDateOnly, formatETA, formatDuration, formatTimeOnly, parseUTCDate } from '../utils/date';
-import type { Printer, PrinterCreate, PrinterStatus, AirductFan, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro, InventorySpool, SmartPlug, PrinterDiagnosticResult, HeaterSensorKind, ScheduledDryingInput, DryingScheduleInput } from '../api/client';
+import type { Printer, PrinterCreate, PrinterStatus, AirductFan, AMSUnit, DiscoveredPrinter, FirmwareBatchItem, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro, InventorySpool, SmartPlug, PrinterDiagnosticResult, HeaterSensorKind, ScheduledDryingInput, DryingScheduleInput } from '../api/client';
 import { backupCompatibilityPatch } from './printersEditPayload';
 
 // Source of truth for Spoolman ↔ AMS slot binding (upstream PR #1241).
@@ -197,6 +197,8 @@ import { OpenMonitorButton } from '../features/monitor/OpenMonitorButton';
 import { useMonitorTarget } from '../features/monitor/useMonitorTarget';
 import { useProgressiveListLength } from '../hooks/useProgressiveListLength';
 import { useMountedPrinterPriority } from '../hooks/useMountedPrinterPriority';
+import { useActiveFirmwareBatches } from '../hooks/useActiveFirmwareBatches';
+import { firmwareBatchLabel } from '../utils/firmwareBatchLabel';
 import { formatPrintName } from '../utils/printName';
 import { compareFwVersions } from '../utils/firmwareVersion';
 import { computePopoverPosition } from '../utils/popoverPosition';
@@ -1985,6 +1987,7 @@ const PrinterCard = memo(function PrinterCard({
   onCameraViewModeChange,
   onOpenEmbeddedCamera,
   checkPrinterFirmware = true,
+  firmwareBatchItem,
   useSlicerApi = false,
   dryingPresets = DRYING_PRESETS,
   isSelected = false,
@@ -2028,6 +2031,7 @@ const PrinterCard = memo(function PrinterCard({
   onCameraViewModeChange?: (mode: CameraViewMode) => void;
   onOpenEmbeddedCamera?: (printerId: number, printerName: string) => void;
   checkPrinterFirmware?: boolean;
+  firmwareBatchItem?: FirmwareBatchItem;
   // Master "Server-side slicing" toggle from Settings. When off, the Filament
   // Calibration and Calibration History kebab entries are hidden — every
   // calibration mode in this app needs the slicer pipeline (BS does the same
@@ -4052,6 +4056,19 @@ const PrinterCard = memo(function PrinterCard({
             </div>
           </div>
 
+          {firmwareBatchItem && (
+            <button
+              type="button"
+              className="mt-2 inline-flex items-center gap-1 rounded-full bg-status-warning/20 px-2 py-1 text-xs text-status-warning"
+              onClick={(event) => {
+                event.stopPropagation();
+                navigate('/firmware');
+              }}
+            >
+              <Download className="h-3 w-3 shrink-0" />
+              {t('firmware.activeUpload', { status: firmwareBatchLabel(firmwareBatchItem, t) })}
+            </button>
+          )}
           {/* Badges row - only in expanded mode */}
           {viewMode === 'expanded' && (
             <div className="flex flex-wrap items-center gap-2 mt-2">
@@ -9574,6 +9591,19 @@ export function PrintersPage() {
   const { hasPermission, loading: authLoading } = useAuth();
   const displayedPageView = shownView(pageView, (mode) =>
     mode !== 'camwall' || (!authLoading && hasPermission('camera:view')), 'cards');
+  const { data: activeFirmwareBatches } = useActiveFirmwareBatches(!authLoading && hasPermission('firmware:read'));
+  const activeFirmwareItems = useMemo(() => {
+    const byPrinter = new Map<number, FirmwareBatchItem>();
+    for (const run of activeFirmwareBatches ?? []) {
+      if (run.status !== 'running') continue;
+      for (const item of run.items) {
+        if (!byPrinter.has(item.printer_id) && ['pending', 'uploading', 'applying'].includes(item.status)) {
+          byPrinter.set(item.printer_id, item);
+        }
+      }
+    }
+    return byPrinter;
+  }, [activeFirmwareBatches]);
 
   // Bulk printer selection
   const [selectedPrinterIds, setSelectedPrinterIds] = useState<Set<number>>(new Set());
@@ -10686,6 +10716,7 @@ export function PrintersPage() {
       onCameraViewModeChange={chooseCameraViewMode}
       onOpenEmbeddedCamera={handleOpenEmbeddedCamera}
       checkPrinterFirmware={settings !== undefined && settings.check_printer_firmware !== false}
+      firmwareBatchItem={hasPermission('firmware:read') ? activeFirmwareItems.get(printer.id) : undefined}
       useSlicerApi={settings?.use_slicer_api ?? false}
       dryingPresets={effectiveDryingPresets}
       isSelected={selectedPrinterIds.has(printer.id)}
@@ -10958,6 +10989,7 @@ export function PrintersPage() {
               onCameraViewModeChange={chooseCameraViewMode}
               onOpenEmbeddedCamera={(id, name) => openEmbeddedCamera({ kind: 'printer', id, name })}
               checkPrinterFirmware={settings !== undefined && settings.check_printer_firmware !== false}
+              firmwareBatchItem={hasPermission('firmware:read') ? activeFirmwareItems.get(expandedPrinter.id) : undefined}
               useSlicerApi={settings?.use_slicer_api ?? false}
               dryingPresets={effectiveDryingPresets}
               isSelected={selectedPrinterIds.has(expandedPrinter.id)}

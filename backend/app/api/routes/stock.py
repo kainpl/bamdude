@@ -78,9 +78,9 @@ from backend.app.services.line_composition import (
     LineConfig,
     composition,
     default_options,
-    line_composition,
     load_line_configs,
     per_by_line,
+    saved_composition,
     standard_composition,
     standard_per,
 )
@@ -174,8 +174,8 @@ async def _stock_rows(
     )
     configs = await load_line_configs(db, [line.id for line in line_objs])
     compositions = {
-        line.id: line_composition(
-            parts_of.get(line.product_id, []), line.mode, configs[line.id], defaults.get(line.product_id, {})
+        line.id: saved_composition(
+            line, parts_of.get(line.product_id, []), configs[line.id], defaults.get(line.product_id, {})
         )
         for line in line_objs
     }

@@ -424,10 +424,11 @@ describe('FileManagerModal', () => {
       );
       renderModal();
       await waitFor(() => {
-        expect(screen.getByTestId('printer-files-stale')).toHaveTextContent(
+        expect(screen.getByTestId('printer-files-listing-state')).toHaveTextContent(
           'Showing the last complete listing of this folder.'
         );
       });
+      expect(screen.getByTestId('printer-files-listing-state')).toHaveClass('border-yellow-500/40');
       expect(screen.getByText(mockFiles[0].name)).toBeInTheDocument();
     });
 
@@ -438,9 +439,25 @@ describe('FileManagerModal', () => {
         )
       );
       renderModal();
-      await waitFor(() => {
-        expect(screen.getByTestId('printer-files-listing-state')).toHaveTextContent('one transfer at a time');
-      });
+      const warning = await screen.findByTestId('printer-files-listing-state');
+      expect(warning).toHaveAttribute('role', 'status');
+      expect(warning).toHaveClass('border-yellow-500/40');
+      expect(warning).toHaveTextContent('one transfer at a time');
+      expect(warning).not.toHaveTextContent('Showing the last complete listing');
+      expect(screen.queryByText('0 items')).not.toBeInTheDocument();
+      expect(screen.queryByText('No files in this directory')).not.toBeInTheDocument();
+    });
+
+    it('marks a cached empty listing as an earlier result', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/files', () =>
+          HttpResponse.json({ files: [], status: 'slow', stale: true, reason: 'in_progress' })
+        )
+      );
+      renderModal();
+      const warning = await screen.findByTestId('printer-files-listing-state');
+      expect(warning).toHaveTextContent('Showing the last complete listing of this folder.');
+      expect(screen.queryByText('No files in this directory')).not.toBeInTheDocument();
     });
 
     it.each([

@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from backend.app.schemas.slicer import PresetRef
+from backend.app.schemas.slicer import BedType, PresetRef
 
 MAX_PARTS = 100
 MAX_COPIES = 2000
@@ -28,6 +28,7 @@ class AssemblyPrinter(BaseModel):
     process_preset: PresetRef
     filament_preset: PresetRef
     nozzle: int = Field(1, ge=1, le=4)  # 1-based extruder the parts are printed with
+    bed_type: BedType | None = None
 
 
 class AssemblyLayout(BaseModel):
@@ -44,6 +45,7 @@ class AssemblyRequest(BaseModel):
     targets: list[AssemblyPrinter] = Field(min_length=1, max_length=MAX_PRINTERS)
     layout: AssemblyLayout = AssemblyLayout()
     name: str = Field(min_length=1, max_length=120)
+    slicer: Literal["orcaslicer", "bambu_studio"] | None = None  # checks plate support; packing uses no slicer
 
 
 class RelayoutRequest(AssemblyRequest):

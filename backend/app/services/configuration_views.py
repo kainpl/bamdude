@@ -80,3 +80,12 @@ def configuration_out(
             if p.id in cfg.counts
         ],
     )
+
+
+def saved_configuration(line) -> LineConfigurationOut | None:
+    if not line.composition_revisions:
+        return None
+    latest = line.composition_revisions[-1]
+    return LineConfigurationOut.model_validate(
+        {**latest["configuration"], "revision": len(line.composition_revisions), "origin": latest["origin"]}
+    )

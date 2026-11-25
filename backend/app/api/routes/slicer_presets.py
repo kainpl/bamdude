@@ -207,17 +207,13 @@ async def _load_bambu_cloud_listing(
             public_ids[slot] = {
                 str(setting_id) for entry in public if (setting_id := entry.get("setting_id") or entry.get("id"))
             }
-            # A private printer preset's parent, from the list itself: never a
-            # detail request per preset (rate-limited, see below).
-            names_by_id = (
-                {
-                    str(e.get("setting_id") or e.get("id")): e.get("name")
-                    for e in private + public
-                    if isinstance(e.get("name"), str)
-                }
-                if slot == "printer"
-                else {}
-            )
+            # Resolve Bambu's base IDs within the same slot, before display
+            # deduplication. The list gives us these links without detail calls.
+            names_by_id = {
+                str(setting_id): e["name"]
+                for e in private + public
+                if (setting_id := e.get("setting_id") or e.get("id")) and isinstance(e.get("name"), str)
+            }
             for index, entry in enumerate(private + public):
                 name = entry.get("name")
                 setting_id = entry.get("setting_id") or entry.get("id")
@@ -225,13 +221,18 @@ async def _load_bambu_cloud_listing(
                     continue
                 seen_names.add(name)
                 preset = UnifiedPreset(id=setting_id, name=name, source="cloud")
-                if slot == "printer" and index < len(private):
-                    preset.inherits = _saved_from(
-                        name,
-                        entry.get("inherits") or names_by_id.get(str(entry.get("base_id") or "")),
-                        "User",
-                    )
-                elif slot == "filament":
+                if index < len(private):
+                    base_id = str(entry.get("base_id") or "")
+                    base_name = names_by_id.get(base_id) if base_id != str(setting_id) else None
+                    preset.inherits = _saved_from(name, base_name or entry.get("inherits"), "User")
+                    if slot != "printer" and base_name:
+                        # A private preset can have the same name as its stock
+                        # base. The ID distinguishes them even after deduplication.
+                        preset.inherits = base_name
+                        preset.inherits_id = base_id
+                if slot in ("process", "filament"):
+                    preset.compatible_printers = _content_compatible_printers(entry)
+                if slot == "filament":
                     preset.filament_type = _cloud_filament_material(entry, str(setting_id))
                 slots[slot].append(preset)
 
@@ -353,8 +354,7 @@ async def _fetch_orca_cloud_presets(
                 # Matte @0.2") then reads as "can't tell", which the picker treats
                 # as usable and auto-picks for a printer it was never built for.
                 preset.compatible_printers = _content_compatible_printers(content)
-            elif slot == "printer":
-                preset.inherits = _saved_from(str(name), content.get("inherits"), content.get("from"))
+            preset.inherits = _saved_from(str(name), content.get("inherits"), content.get("from"))
             slots[slot].append(preset)
         _orca_cloud_cache[cache_key] = (now, slots)
         return slots, "ok"
@@ -382,7 +382,7 @@ async def _fetch_local_presets(db: AsyncSession) -> dict[str, list[UnifiedPreset
             # filter process / filament dropdowns by the selected printer
             # without the name-suffix heuristic (#1325).
             extra["compatible_printers"] = _parse_compatible_printers(p.compatible_printers)
-        if slot == "printer" and (p.inherits or "").strip():
+        if (p.inherits or "").strip():
             extra["inherits"] = _saved_from(p.name, p.inherits, _setting_origin(p.setting))
         slots[slot].append(
             UnifiedPreset(id=str(p.id), name=p.name, source="local", **extra),
@@ -435,7 +435,7 @@ def _orca_filament_material(content: dict, siblings: dict[str, dict]) -> str | N
 
 
 def _saved_from(name: str, inherits: object, origin: object) -> str | None:
-    """The preset a printer preset was saved from, or ``None``.
+    """The preset a custom preset was saved from, or ``None``.
 
     The slicer's own rule (BambuStudio.cpp, the system name of a loaded
     machine preset): a preset whose ``from`` is ``system`` IS its system name;
@@ -464,8 +464,8 @@ def _setting_origin(setting_json: str | None) -> str | None:
 def _content_compatible_printers(content: dict) -> list[str] | None:
     """Pull ``compatible_printers`` out of a profile content dict.
 
-    Serves both callers that have one: an Orca Cloud profile's inline
-    ``content``, and an entry of the sidecar's bundled listing.
+    Reads Bambu Cloud's list entry, Orca Cloud's inline ``content``, or an
+    entry of the sidecar's bundled listing.
 
     Orca profiles carry it as a list of printer-preset names (the same shape
     ``orca_profiles.py`` stores on import), a bare string for a single printer,
@@ -642,14 +642,6 @@ def _enrich_cloud_metadata(
     this function exists post-#1712 — without the enrich the Bambu Cloud
     tier can't score in ``pickFilamentForSlot``.
 
-    Compatibility merge (upstream #2628): the same name bridge carries
-    ``compatible_printers`` onto any process / filament entry that lacks it.
-    Bambu Cloud never ships the list, so a profile whose NAME carries no printer
-    model reads as "compatibility unknown" — which the SliceModal treats as
-    usable and auto-picks for whatever printer is selected. When the very same
-    profile is also present as a local import or an Orca Cloud profile, that copy
-    states the truth; borrowing it turns the auto-pick into a correctly-rejected
-    mismatch. Only ever fills a gap: an entry that carries its own list keeps it.
     """
     # Build a name → metadata lookup from the tiers that carry it (local,
     # orca_cloud, standard). Bambu cloud is intentionally skipped — it
@@ -671,24 +663,6 @@ def _enrich_cloud_metadata(
                 p.filament_type = t
             if p.filament_colour is None and c is not None:
                 p.filament_colour = c
-
-    # Compatibility bridge (upstream #2628). Runs over both slots that carry the
-    # list, and in both directions between the cloud tiers — whichever copy of a
-    # profile knows its printers teaches the ones that don't.
-    for slot in ("process", "filament"):
-        compat_by_name: dict[str, list[str]] = {}
-        for tier in (local, orca_cloud, cloud, standard):
-            for p in tier[slot]:
-                if p.compatible_printers and p.name not in compat_by_name:
-                    compat_by_name[p.name] = p.compatible_printers
-        if not compat_by_name:
-            continue
-        for tier in (orca_cloud, cloud):
-            for p in tier[slot]:
-                if not p.compatible_printers:
-                    borrowed = compat_by_name.get(p.name)
-                    if borrowed:
-                        p.compatible_printers = list(borrowed)
 
     return orca_cloud, cloud, local, standard
 

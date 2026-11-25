@@ -9,7 +9,7 @@ the same rules, as an order line's — and read through
 
 from datetime import datetime, timezone
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -44,6 +44,10 @@ class StockItem(Base):
     #: ``line_composition.config_key`` of the position's configuration — the
     #: same format as an order line's, so the two compare as strings.
     config_key: Mapped[str] = mapped_column(String(512), nullable=False, default="", server_default="")
+    # The operator's variant groups the shelf. The captured kit distinguishes
+    # physical units received before and after a change to the catalog.
+    variant_key: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
+    composition_parts: Mapped[list[dict] | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     on_hand: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     reserved: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     location: Mapped[str | None] = mapped_column(String(64), nullable=True)

@@ -109,6 +109,44 @@ class LineConfigurationIn(BaseModel):
     choices: dict[int, int] = Field(default_factory=dict)
     part_counts: dict[int, int] = Field(default_factory=dict)
     dry_run: bool = False
+    expected_revision: int | None = Field(default=None, ge=0)
+    part_edits: dict[int, int] | None = None
+    review_version: str | None = None
+
+
+class LinePartCandidate(BaseModel):
+    id: int
+    name: str
+    kind: str
+    compatible: bool
+    saved_qty: int
+    suggested_qty: int
+    extra_percent: float
+
+
+class LinePartCandidates(BaseModel):
+    revision: int
+    catalog_version: str
+    quantity: int
+    variant_available: bool
+    parts: list[LinePartCandidate]
+
+
+class LinePartAdd(BaseModel):
+    part_id: int = Field(gt=0)
+    quantity: int = Field(ge=1, le=9999)
+    all_parts: bool = False
+    expected_revision: int = Field(ge=0)
+    expected_quantity: int = Field(ge=1)
+    catalog_version: str
+    command_id: str = Field(min_length=1, max_length=64)
+
+
+class CapturedLinePartOut(BaseModel):
+    id: int
+    name: str
+    kind: str
+    qty: int
 
 
 class DroppedPartOut(BaseModel):
@@ -132,6 +170,8 @@ class LineConfigurationImpact(BaseModel):
     finished_before: int = 0
     finished_after: int | None = 0
     dropping: list[DroppedPartOut] = []
+    changes: list[DroppedPartOut] = []
+    review_version: str | None = None
 
 
 class LineChoiceOut(BaseModel):
@@ -140,6 +180,15 @@ class LineChoiceOut(BaseModel):
     option_id: int
     option_name: str
     is_default: bool
+
+
+class LineCompositionRevisionOut(BaseModel):
+    revision: int
+    origin: Literal["order", "migration"]
+    actor_id: int | None = None
+    captured_at: datetime | None = None
+    choices: list[LineChoiceOut]
+    parts: list[CapturedLinePartOut]
 
 
 class LineChangedPartOut(BaseModel):
@@ -156,6 +205,8 @@ class LineConfigurationOut(BaseModel):
 
     choices: list[LineChoiceOut] = []
     changed_parts: list[LineChangedPartOut] = []
+    revision: int | None = None
+    origin: Literal["order", "migration"] | None = None
 
 
 class ProjectLineUpdate(BaseModel):

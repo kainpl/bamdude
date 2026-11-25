@@ -234,7 +234,8 @@ async def test_unbinding_a_part_keeps_it_out_of_saved_lines_that_did_not_choose_
             )
         )
     ).all()
-    assert rows == [(angled.id, 0)]
+    # The captured kit excludes it without writing a new order override.
+    assert rows == []
 
 
 # ---- a merge keeps what each line wanted ----

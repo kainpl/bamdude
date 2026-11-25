@@ -22,7 +22,13 @@ from backend.app.core.websocket import ws_manager
 from backend.app.models.firmware import FirmwareBatchItem, FirmwareBatchRun
 from backend.app.models.printer import Printer
 from backend.app.services import firmware_store
-from backend.app.services.bambu_ftp import get_ftp_retry_settings, upload_file_async, with_ftp_retry
+from backend.app.services.bambu_ftp import (
+    UploadReport,
+    describe_upload_failure,
+    get_ftp_retry_settings,
+    upload_file_async,
+    with_ftp_retry,
+)
 from backend.app.services.firmware_profiles import get_firmware_profile
 from backend.app.services.printer_manager import is_printer_busy, printer_manager
 
@@ -41,6 +47,15 @@ class BatchTarget:
 
 #: Printers a bulk run is writing firmware to right now (``firmware_update.upload_in_progress``).
 _uploading: set[int] = set()
+_item_percent: dict[int, int | None] = {}
+
+
+def item_percent(item: FirmwareBatchItem) -> int | None:
+    if item.status in ("uploaded", "applied"):
+        return 100
+    if item.status == "uploading":
+        return _item_percent.get(item.id)
+    return None
 
 
 def _is_printing(printer_id: int) -> bool:
@@ -66,6 +81,23 @@ async def _ftp_upload(item, sf) -> None:
     # Asked again right before the first byte: the wait for the printer's file
     # channel can be long, and a job may have started on it meanwhile.
     may_run = may_upload(item.printer_id)
+    report = UploadReport()
+    loop = asyncio.get_running_loop()
+    last_percent = None
+
+    def set_percent(percent: int) -> None:
+        if item.id in _item_percent:
+            _item_percent[item.id] = percent
+
+    def on_progress(uploaded: int, total: int) -> None:
+        nonlocal last_percent
+        if total <= 0:
+            return
+        percent = min(99, uploaded * 100 // total)
+        if percent != last_percent:
+            last_percent = percent
+            loop.call_soon_threadsafe(set_percent, percent)
+
     _uploading.add(item.printer_id)
     try:
         with printer_manager.transfer_in_progress(item.printer_id):
@@ -79,18 +111,32 @@ async def _ftp_upload(item, sf) -> None:
                     socket_timeout=ftp_timeout,
                     printer_model=model,
                     may_run=may_run,
+                    progress_callback=on_progress,
+                    report=report,
                     max_retries=ftp_retry_count,
                     retry_delay=ftp_retry_delay,
                     operation_name=f"Bulk firmware upload to printer {item.printer_id}",
                 )
             else:
                 ok = await upload_file_async(
-                    ip, code, sf.path, remote_path, socket_timeout=ftp_timeout, printer_model=model, may_run=may_run
+                    ip,
+                    code,
+                    sf.path,
+                    remote_path,
+                    socket_timeout=ftp_timeout,
+                    printer_model=model,
+                    may_run=may_run,
+                    progress_callback=on_progress,
+                    report=report,
                 )
     finally:
         _uploading.discard(item.printer_id)
     if not ok:
-        raise RuntimeError(upload_refusal(item.printer_id) or "FTP upload returned failure")
+        if report.failure is None:
+            refusal = upload_refusal(item.printer_id)
+            if refusal:
+                raise RuntimeError(refusal)
+        raise RuntimeError(describe_upload_failure(report.failure))
 
 
 async def _broadcast(run_id: int, printer_id: int, status: str, message: str = "", percent: int = 0) -> None:
@@ -126,8 +172,9 @@ async def _process_one(run_id: int, item, sf, sem: asyncio.Semaphore) -> str:
             await _broadcast(run_id, item.printer_id, "skipped", "printing")
             return "skipped"
         try:
+            _item_percent[item.id] = None
             await _set_item(item.id, status="uploading")
-            await _broadcast(run_id, item.printer_id, "uploading", percent=10)
+            await _broadcast(run_id, item.printer_id, "uploading")
             await _ftp_upload(item, sf)
             profile = get_firmware_profile(item.model)
             if profile.remote_apply:
@@ -157,6 +204,8 @@ async def _process_one(run_id: int, item, sf, sem: asyncio.Semaphore) -> str:
             await _set_item(item.id, status="failed", error=str(exc), finished_at=_now())
             await _broadcast(run_id, item.printer_id, "failed", str(exc))
             return "failed"
+        finally:
+            _item_percent.pop(item.id, None)
 
 
 async def _run_targets(
@@ -190,10 +239,14 @@ async def _run_targets(
 
 class FirmwareBatchService:
     def __init__(self) -> None:
-        self._tasks: set[asyncio.Task] = set()
+        self._tasks: dict[int, asyncio.Task] = {}
+
+    def active_run_ids(self) -> set[int]:
+        return {run_id for run_id, task in self._tasks.items() if not task.done()}
 
     async def start_batch(self, targets: list[BatchTarget], actor_id: int | None) -> int:
         """Create the run + item rows, kick off the async run, return run_id."""
+        concurrency = await _get_concurrency()
         async with async_session() as db:
             run = FirmwareBatchRun(created_by_id=actor_id, status="running", total=len(targets))
             db.add(run)
@@ -214,10 +267,9 @@ class FirmwareBatchService:
             await db.commit()
             run_id = run.id
 
-        concurrency = await _get_concurrency()
         task = asyncio.create_task(self._run_and_finalize(run_id, targets, concurrency))
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        self._tasks[run_id] = task
+        task.add_done_callback(lambda _: self._tasks.pop(run_id, None))
         return run_id
 
     async def _run_and_finalize(self, run_id: int, targets: list[BatchTarget], concurrency: int) -> None:
@@ -238,7 +290,7 @@ class FirmwareBatchService:
             await db.commit()
 
     async def shutdown(self) -> None:
-        for t in list(self._tasks):
+        for t in list(self._tasks.values()):
             t.cancel()
 
 

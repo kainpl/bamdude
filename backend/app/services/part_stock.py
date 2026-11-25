@@ -73,8 +73,8 @@ from backend.app.services.line_composition import (
     default_options,
     extra_parts_for_line,
     has_shelf,
-    line_composition,
     load_line_configs,
+    saved_composition,
 )
 from backend.app.services.order_metrics import IN_CHUNK, index_plates, products_for_print, row_quantity
 from backend.app.services.product_composition import part_index
@@ -282,7 +282,7 @@ async def line_composition_of(db: AsyncSession, line: ProjectLine) -> Compositio
     )
     config = (await load_line_configs(db, [line.id])).get(line.id, LineConfig())
     defaults = (await default_options(db, [line.product_id])).get(line.product_id, {})
-    return line_composition(list(parts), line.mode, config, defaults)
+    return saved_composition(line, parts, config, defaults)
 
 
 def lock_part_stmt(part_id: int):

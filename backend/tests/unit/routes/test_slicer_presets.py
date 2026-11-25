@@ -489,8 +489,7 @@ class TestPrinterPresetParent:
         sp._orca_cloud_cache.clear()
 
         assert [p.inherits for p in slots["printer"]] == ["Bambu Lab H2D 0.4 nozzle", None, None, None]
-        # The parent of a filament preset is not this field's business.
-        assert slots["filament"][0].inherits is None
+        assert slots["filament"][0].inherits == "Bambu PLA Basic @BBL X1C"
 
     @pytest.mark.asyncio
     async def test_bambu_cloud_uses_only_what_the_list_already_carries(self):
@@ -510,6 +509,23 @@ class TestPrinterPresetParent:
                     "public": [
                         {"setting_id": "GM030", "name": "Bambu Lab A1 0.4 nozzle"},
                         {"setting_id": "GM031", "name": "Bambu Lab A1 0.6 nozzle", "base_id": "GM030"},
+                    ],
+                },
+                "print": {
+                    "private": [
+                        {"setting_id": "PPUS1", "name": "0.20mm P1S chornobomb", "base_id": "GP_P1S"},
+                        {"setting_id": "PPUS2", "name": "0.20mm Standard @BBL X1C", "base_id": "GP_P1S"},
+                    ],
+                    "public": [{"setting_id": "GP_P1S", "name": "0.20mm Standard @BBL X1C"}],
+                },
+                "filament": {
+                    "private": [{"setting_id": "PFUS1", "name": "My PLA", "base_id": "GF_A1M"}],
+                    "public": [
+                        {
+                            "setting_id": "GF_A1M",
+                            "name": "Bambu PLA Basic @BBL A1M",
+                            "compatible_printers": ["Bambu Lab A1 mini 0.4 nozzle"],
+                        },
                     ],
                 },
             }
@@ -535,6 +551,12 @@ class TestPrinterPresetParent:
             # A stock preset's base is file layout, not "saved from".
             "Bambu Lab A1 0.6 nozzle": None,
         }
+        assert [(p.inherits, p.inherits_id) for p in slots["process"]] == [
+            ("0.20mm Standard @BBL X1C", "GP_P1S"),
+            ("0.20mm Standard @BBL X1C", "GP_P1S"),
+        ]
+        assert slots["filament"][0].inherits_id == "GF_A1M"
+        assert slots["filament"][1].compatible_printers == ["Bambu Lab A1 mini 0.4 nozzle"]
         cloud.get_setting_detail.assert_not_called()
 
 

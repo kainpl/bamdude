@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { PresetSource, UnifiedPreset, UnifiedPresetsResponse } from '../../../api/client';
 import { buildPresetField, type SoftFilter } from '../../../components/slicing-setup/presetSets';
-import { EMPTY_COMPATIBILITY_INDEX } from '../../../utils/slicerPrinterMatch';
+import { buildCompatibilityIndex, EMPTY_COMPATIBILITY_INDEX } from '../../../utils/slicerPrinterMatch';
 import { matchesSourceFilter } from '../../../utils/presetPickerUtils';
 
 // R2 / R3 (spec slicing-setup r5): the sets of one preset field.
@@ -32,6 +32,34 @@ const fit = (mode: 'group' | 'hide' = 'group') => ({ printerName: X1C, compatInd
 const ids = (field: ReturnType<typeof buildPresetField>) => field.sections.flatMap((s) => s.entries.map((e) => e.id));
 
 describe('buildPresetField (R2)', () => {
+  it.each(['process', 'filament'] as const)('groups cloud %s profiles by their base and the selected A1 mini nozzle', (slot) => {
+    const mini = 'Bambu Lab A1 mini';
+    const machine = `${mini} 0.4 nozzle`;
+    const p1 = 'Bambu Lab P1S 0.4 nozzle';
+    const stockName = 'Stock P1S and X1C';
+    const data = listing([]);
+    data.standard[slot] = [{ ...p('standard', 'stock', p1), name: stockName }];
+    data.local[slot] = [{ ...p('local', 'namesake', machine), name: stockName }];
+    data.cloud[slot] = [
+      { ...p('cloud', 'PPUS1', null), name: '0.20mm P1S chornobomb', inherits: stockName, inherits_id: 'GP1' },
+      { ...p('cloud', 'PPUS2', machine), name: stockName },
+      { ...p('cloud', 'PPUS3', null), name: 'Custom @BBL A1m 0.6 nozzle - chornob' },
+      { ...p('cloud', 'PPUS4', null), name: 'Custom @BBL A1M - chornob' },
+    ];
+    data.orca_cloud[slot] = [
+      { ...p('orca_cloud', 'o1', null), name: '0.20mm P1S chornobomb', inherits: 'My P1S base' },
+      { ...p('orca_cloud', 'o2', p1), name: 'My P1S base' },
+      { ...p('orca_cloud', 'o3', null), name: 'My renamed A1 mini profile', inherits: 'Bambu PLA Basic @BBL A1M' },
+    ];
+    const compatIndex = buildCompatibilityIndex({}, { [mini]: machine }, data);
+    const field = buildPresetField({
+      listing: data, slot, fit: { printerName: mini, compatIndex, mode: 'group' }, filters: [], pinned: null,
+    });
+    expect(ids(field)).toEqual(expect.arrayContaining(['PPUS2', 'PPUS4', 'o3', 'namesake']));
+    expect(field.others.map((preset) => preset.id).sort()).toEqual(['PPUS1', 'PPUS3', 'o1', 'o2', 'stock']);
+    expect(data.cloud[slot].filter(field.pickKeep).map((preset) => preset.id)).toEqual(['PPUS2', 'PPUS4']);
+  });
+
   it('keeps the farm restriction when Mine has no printer profiles', () => {
     const data = listing([]);
     data.standard.printer = ['A1', 'A1 Mini', 'P1S', 'P2S', 'H2D', 'H2C'].map((name) => p('standard', name, null));

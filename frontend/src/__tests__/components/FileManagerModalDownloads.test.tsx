@@ -140,7 +140,9 @@ describe('FileManagerModal downloads', () => {
     // The printer did not answer: the last list stays, and so does the selection.
     listing = { status: 'unavailable', stale: true, files: FILES };
     fireEvent.click(screen.getByTitle('Refresh'));
-    await waitFor(() => expect(screen.getByTestId('printer-files-stale')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('printer-files-listing-state')).toHaveTextContent(
+      'Showing the last complete listing of this folder.'
+    ));
     expect(screen.getByText(/2 selected/)).toBeInTheDocument();
     expect(screen.getByText(/list not confirmed/)).toBeInTheDocument();
     // Acting on an unconfirmed list is refused; nothing is started.

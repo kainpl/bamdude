@@ -51,6 +51,38 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('usePresetAuthKey / usePresetCatalogue', () => {
+  it('uses and caches Bambu detail for missing bases and compatibility overrides', async () => {
+    const data = catalogue('thin');
+    data.cloud = {
+      printer: [],
+      process: [
+        { id: 'PPUS1', name: '0.20mm P1S chornobomb', source: 'cloud' },
+        { id: 'GP001', name: '0.20mm Standard @BBL X1C', source: 'cloud' },
+      ],
+      filament: [{ id: 'PFUS1', name: 'My 0.6 mm PETG', source: 'cloud', inherits: 'Generic PETG @BBL A1M' }],
+    };
+    vi.spyOn(api, 'getSlicerPresets').mockResolvedValue(data);
+    const detail = vi.spyOn(api, 'getCloudSettingDetail').mockResolvedValueOnce({
+      name: '0.20mm P1S chornobomb', public: false, type: 'print', base_id: 'GP001',
+      setting: { inherits: '0.20mm Standard @BBL X1C' },
+    }).mockResolvedValueOnce({
+      name: 'My 0.6 mm PETG', public: false, type: 'filament',
+      setting: { compatible_printers: '"Bambu Lab A1 mini (0.6mm)";"Bambu Lab A1 mini 0.6 nozzle"' },
+    });
+    const client = newClient();
+    render(<QueryClientProvider client={client}><Probe log={[]} /></QueryClientProvider>);
+    const key = ['slicerPresets', `g${presetContextGeneration()}`];
+    await waitFor(() => expect(client.getQueryData<UnifiedPresetsResponse>(key)?.cloud.process[0]).toMatchObject({
+      inherits: '0.20mm Standard @BBL X1C', inherits_id: 'GP001',
+    }));
+    expect(client.getQueryData<UnifiedPresetsResponse>(key)?.cloud.filament[0]).toMatchObject({
+      compatible_printers: ['Bambu Lab A1 mini (0.6mm)', 'Bambu Lab A1 mini 0.6 nozzle'],
+    });
+    await act(async () => client.invalidateQueries({ queryKey: key }));
+    expect(detail.mock.calls).toEqual([['PPUS1'], ['PFUS1']]);
+    expect(data.cloud.process[0].inherits).toBeUndefined();
+  });
+
   it('rights A → B → A give three keys', async () => {
     const keys: (string | null)[] = [];
     const client = newClient();

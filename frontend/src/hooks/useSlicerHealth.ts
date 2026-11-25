@@ -8,10 +8,11 @@ export type SlicerKind = 'orcaslicer' | 'bambu_studio';
 // is shared across SettingsPage / SliceModal / SystemInfoPage. Backend
 // caches the underlying /health probe for 30 s anyway — this just
 // stops the surfaces flickering against each other on first render.
-export function useSlicerHealth(slicer: SlicerKind, pollMs?: number) {
+export function useSlicerHealth(slicer: SlicerKind, pollMs?: number, enabled = true) {
   return useQuery({
     queryKey: ['slicerHealth', slicer],
     queryFn: () => api.getSlicerHealth(slicer),
+    enabled,
     staleTime: 30_000,
     refetchInterval: pollMs,
     retry: false,

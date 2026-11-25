@@ -1,6 +1,5 @@
 /**
- * "Assemble project" from the file manager: the selection bar's button (models only, with the upload right)
- * and "Re-layout" in a file's menu — offered for a project assembled here and for nothing else.
+ * Assembly from the selection bar and file menus, plus re-layout for already assembled projects.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, within } from '@testing-library/react';
@@ -52,6 +51,7 @@ const FILES = [
   file(3, 'old.3mf', '3mf'),
   file(4, 'jars — X1C.3mf', '3mf', { can_relayout: true, source_type: 'assembled' }),
   file(5, 'bracket.step', 'step'),
+  file(6, 'clamp.stp', 'stp'),
 ];
 const BASE = ['library:read_all', 'library:update_all'];
 const EMPTY = { printer: [], process: [], filament: [] };
@@ -76,10 +76,10 @@ describe('FileManagerPage — "Assemble project"', () => {
     server.use(
       http.get('/api/v1/library/folders', () => HttpResponse.json([])),
       http.get('/api/v1/library/files', () =>
-        HttpResponse.json({ items: FILES, meta: { total: 4, current_page: 1, per_page: 50, last_page: 1 } }),
+        HttpResponse.json({ items: FILES, meta: { total: FILES.length, current_page: 1, per_page: 50, last_page: 1 } }),
       ),
       http.get('/api/v1/library/stats', () =>
-        HttpResponse.json({ total_files: 4, total_folders: 0, total_size_bytes: 1, disk_free_bytes: 1, disk_total_bytes: 2 }),
+        HttpResponse.json({ total_files: FILES.length, total_folders: 0, total_size_bytes: 1, disk_free_bytes: 1, disk_total_bytes: 2 }),
       ),
       http.get('/api/v1/settings/', () => HttpResponse.json({ check_updates: false, check_printer_firmware: false })),
       http.get('/api/v1/slicer/presets', () =>
@@ -115,11 +115,48 @@ describe('FileManagerPage — "Assemble project"', () => {
     expect(await within(dialog).findByText('bracket.step')).toBeInTheDocument();
   });
 
+  it.each(['jar.stl', 'lid.obj', 'bracket.step', 'clamp.stp'])(
+    'assembles the unchecked %s from its card menu',
+    async (filename) => {
+      show('');
+      await screen.findByText(filename);
+      const card = within(cardOf(filename));
+      expect(card.getByRole('button', { name: 'Select file' })).toHaveAttribute('aria-pressed', 'false');
+      fireEvent.click(card.getByRole('button', { name: 'File actions' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Assemble project' }));
+      const dialog = await screen.findByRole('dialog', { name: 'Assemble project' });
+      expect(await within(dialog).findByText(filename)).toBeInTheDocument();
+      expect(card.getByRole('button', { name: 'Select file' })).toHaveAttribute('aria-pressed', 'false');
+    },
+  );
+
+  it('assembles only the row whose menu was opened even with other files selected', async () => {
+    localStorage.setItem('library-view-mode', 'list');
+    show('1,3');
+    const selectionAction = await screen.findByRole('button', { name: 'Assemble project' });
+    expect(selectionAction).toBeDisabled();
+    const row = (await screen.findByText('lid.obj')).closest('[data-file-row]') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: 'File actions' }));
+    const actions = await screen.findAllByRole('button', { name: 'Assemble project' });
+    expect(actions).toHaveLength(2);
+    const menuAction = actions.find((action) => action !== selectionAction)!;
+    expect(menuAction).toBeEnabled();
+    fireEvent.click(menuAction);
+    const dialog = within(await screen.findByRole('dialog', { name: 'Assemble project' }));
+    expect(await dialog.findByText('lid.obj')).toBeInTheDocument();
+    expect(dialog.queryByText('jar.stl')).not.toBeInTheDocument();
+    expect(dialog.queryByText('old.3mf')).not.toBeInTheDocument();
+    expect(selectionAction).toBeDisabled();
+  });
+
   it('is absent without the right to upload', async () => {
     auth.granted = new Set(BASE);
     show('1,2');
     await screen.findByText('jar.stl');
     await screen.findByRole('button', { name: /Move/ });
+    expect(screen.queryByRole('button', { name: 'Assemble project' })).not.toBeInTheDocument();
+    fireEvent.click(within(cardOf('jar.stl')).getByRole('button', { name: 'File actions' }));
+    await screen.findByRole('button', { name: /Download/ });
     expect(screen.queryByRole('button', { name: 'Assemble project' })).not.toBeInTheDocument();
   });
 
@@ -137,6 +174,7 @@ describe('FileManagerPage — "Assemble project"', () => {
     fireEvent.click(within(cardOf('old.3mf')).getByRole('button', { name: 'File actions' }));
     await screen.findByRole('button', { name: /Download/ });
     expect(screen.queryByRole('button', { name: 'Re-layout' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Assemble project' })).not.toBeInTheDocument();
     fireEvent.keyDown(document, { key: 'Escape' });
 
     fireEvent.click(within(cardOf('jars — X1C.3mf')).getByRole('button', { name: 'File actions' }));

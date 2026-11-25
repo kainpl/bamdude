@@ -140,7 +140,7 @@ function open() {
 }
 
 async function filamentPicker(): Promise<HTMLSelectElement> {
-  return waitFor(() => screen.getByLabelText('Filament profile')) as Promise<HTMLSelectElement>;
+  return waitFor(() => screen.getByLabelText('Filament profile'), { timeout: 5000 }) as Promise<HTMLSelectElement>;
 }
 const picked = async (name: string) => {
   const filament = await filamentPicker();

@@ -6,20 +6,16 @@ import { ApiError, api, firmwareApi } from '../api/client';
 import { Button } from '../components/Button';
 import { Select } from '../components/Select';
 import { useToast } from '../contexts/ToastContext';
+import { useActiveFirmwareBatches } from '../hooks/useActiveFirmwareBatches';
+import { firmwareBatchLabel } from '../utils/firmwareBatchLabel';
 import { compareFwVersions } from '../utils/firmwareVersion';
-
-interface ItemProgress {
-  status: string;
-  percent: number;
-  message: string;
-}
 
 /**
  * Bulk ("mass") firmware update page (#mass-firmware). Printers are grouped by
  * model into tabs; each tab picks one version (newer or older — rollback is a
  * first-class case) and pushes it to the selected printers in parallel. Printers
- * mid-print are skipped. Live per-printer status comes from the
- * ``firmware-batch-progress`` WebSocket CustomEvent, with a 2s poll fallback.
+ * mid-print are skipped. The backend's current run and byte progress are
+ * polled, and WebSocket events bring forward re-reads on stage changes.
  */
 export function FirmwareUpdatePage() {
   const { t } = useTranslation();
@@ -30,17 +26,27 @@ export function FirmwareUpdatePage() {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [activeModel, setActiveModel] = useState<string | null>(null);
   const [versionByModel, setVersionByModel] = useState<Record<string, string>>({});
-  const [runId, setRunId] = useState<number | null>(null);
-  const [progress, setProgress] = useState<Record<number, ItemProgress>>({});
+  const [startedRunId, setStartedRunId] = useState<number | null>(null);
   const [didPreselect, setDidPreselect] = useState(false);
 
   const { data: printers } = useQuery({ queryKey: ['printers'], queryFn: api.getPrinters });
   const { data: updates } = useQuery({ queryKey: ['firmware-updates'], queryFn: firmwareApi.checkUpdates });
   const { data: logRuns } = useQuery({
     queryKey: ['firmware-batches'],
-    queryFn: firmwareApi.listBatches,
-    enabled: view === 'log',
+    queryFn: () => firmwareApi.listBatches(),
   });
+  const { data: activeRuns } = useActiveFirmwareBatches();
+  const latestBulk = logRuns?.find((batch) => batch.source === 'bulk');
+  const runId = startedRunId ?? activeRuns?.[0]?.id ?? latestBulk?.id ?? null;
+  const { data: runDetails } = useQuery({
+    queryKey: ['firmware-batch', runId],
+    queryFn: () => firmwareApi.getBatch(runId as number),
+    enabled: runId !== null,
+    refetchInterval: (query) => !query.state.data || query.state.data.status === 'running' ? 2000 : false,
+  });
+  const run = runDetails ?? activeRuns?.find((batch) => batch.id === runId) ??
+    logRuns?.find((batch) => batch.id === runId);
+  const busy = run?.status === 'running' || (startedRunId !== null && !run);
 
   const allIds = useMemo(() => (printers ?? []).map((p) => p.id), [printers]);
 
@@ -84,40 +90,6 @@ export function FirmwareUpdatePage() {
     setDidPreselect(true);
   }, [updates, groups, upgradableIds, didPreselect]);
 
-  // Live progress via the WebSocket CustomEvent bridge.
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const d = (e as CustomEvent<{ run_id: number; printer_id: number; status: string; percent?: number; message?: string }>).detail;
-      if (runId == null || d.run_id !== runId) return;
-      setProgress((p) => ({
-        ...p,
-        [d.printer_id]: { status: d.status, percent: d.percent ?? 0, message: d.message ?? '' },
-      }));
-    };
-    window.addEventListener('firmware-batch-progress', handler);
-    return () => window.removeEventListener('firmware-batch-progress', handler);
-  }, [runId]);
-
-  // Poll fallback while a run is active.
-  const { data: run } = useQuery({
-    queryKey: ['firmware-batch', runId],
-    queryFn: () => firmwareApi.getBatch(runId as number),
-    enabled: runId != null,
-    refetchInterval: runId != null ? 2000 : false,
-  });
-  useEffect(() => {
-    if (!run) return;
-    setProgress((p) => {
-      const next = { ...p };
-      for (const it of run.items) {
-        if (!next[it.printer_id]) {
-          next[it.printer_id] = { status: it.status, percent: 0, message: it.message ?? '' };
-        }
-      }
-      return next;
-    });
-  }, [run]);
-
   const toggle = (id: number) =>
     setSelected((s) => {
       const n = new Set(s);
@@ -139,8 +111,9 @@ export function FirmwareUpdatePage() {
       return firmwareApi.startBatch(targets);
     },
     onSuccess: (res) => {
-      setRunId(res.run_id);
-      setProgress({});
+      setStartedRunId(res.run_id);
+      queryClient.invalidateQueries({ queryKey: ['firmware-active-batches'] });
+      queryClient.invalidateQueries({ queryKey: ['firmware-batches'] });
       showToast(t('firmware.batchStarted'), 'success');
     },
     onError: (error) => showToast(
@@ -174,13 +147,6 @@ export function FirmwareUpdatePage() {
     !!u.latest_version && !activeGroup.available_versions.includes(u.latest_version),
   )?.latest_version;
 
-  const statusLabel = (id: number) => {
-    const pr = progress[id];
-    if (!pr) return '';
-    if (pr.status === 'uploading' || pr.status === 'applying') return `${t(`firmware.status.${pr.status}`)} ${pr.percent}%`;
-    return t(`firmware.status.${pr.status}`, { defaultValue: pr.status });
-  };
-
   return (
     <div className="p-4">
       <div className="flex items-center justify-between gap-3 mb-4">
@@ -197,7 +163,7 @@ export function FirmwareUpdatePage() {
               variant="primary"
               size="sm"
               onClick={() => launch.mutate()}
-              disabled={launchableCount === 0 || launch.isPending || runId != null}
+              disabled={launchableCount === 0 || launch.isPending || busy}
             >
               {t('firmware.upgrade')} ({launchableCount})
             </Button>
@@ -247,11 +213,14 @@ export function FirmwareUpdatePage() {
                 <tbody>
                   {run.items.map((it) => (
                     <tr key={`${run.id}-${it.printer_id}`} className="text-bambu-gray">
-                      <td className="py-1 pr-3 text-white">{it.model}</td>
+                      <td className="py-1 pr-3 text-white">{nameOf(it.printer_id)}</td>
                       <td className="py-1 pr-3">
                         {it.from_version ?? '—'} {'→'} {it.to_version}
                       </td>
-                      <td className="py-1">{t(`firmware.status.${it.status}`, { defaultValue: it.status })}</td>
+                      <td className="py-1">
+                        {firmwareBatchLabel(it, t)}
+                        {it.error && <p className="text-status-error">{it.error}</p>}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -263,6 +232,33 @@ export function FirmwareUpdatePage() {
 
       {view === 'update' && (
       <>
+      {run && (
+        <section className="mb-4 rounded-lg border border-bambu-dark-tertiary p-3">
+          <h2 className="mb-2 font-medium text-white">{t('firmware.upgradeStatus')} · #{run.id}</h2>
+          <ul className="divide-y divide-bambu-dark-tertiary text-sm">
+            {run.items.map((item) => (
+              <li key={item.printer_id} className="py-2">
+                <div className="flex flex-wrap justify-between gap-x-3 gap-y-1">
+                  <span className="text-white">{nameOf(item.printer_id)} · {item.to_version}</span>
+                  <span className="text-bambu-gray">{firmwareBatchLabel(item, t)}</span>
+                </div>
+                {item.status === 'uploading' && (
+                  <progress
+                    className="h-2 w-full accent-bambu-green"
+                    aria-label={`${nameOf(item.printer_id)}: ${t('firmware.upgradeStatus')}`}
+                    max={100}
+                    value={item.percent ?? undefined}
+                  />
+                )}
+                {item.error && <p className="text-status-error">{item.error}</p>}
+                {item.status === 'uploaded' && item.message?.startsWith('firmware.manualApply') && (
+                  <p className="text-xs text-bambu-gray">{t(item.message)}</p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {/* Model tabs */}
       <div className="flex gap-1 border-b border-bambu-dark-tertiary mb-3 overflow-x-auto">
         {groups.map((g) => (
@@ -328,22 +324,6 @@ export function FirmwareUpdatePage() {
             )}
           </div>
 
-          {/* After upload, surface the model-specific on-screen apply instruction —
-              same idea as the single-printer flow, which shows "go to the printer
-              screen and apply" once the file has landed on the SD card. The backend
-              sends the i18n key in the item message when a manual upload completes. */}
-          {(() => {
-            const instr = activeGroup.printer_ids
-              .map((id) => progress[id]?.message)
-              .find((m) => m && m.startsWith('firmware.manualApply'));
-            if (!instr) return null;
-            return (
-              <div className="mb-3 rounded-lg border border-bambu-green/40 bg-bambu-green/10 px-3 py-2 text-sm text-white">
-                <span className="font-medium">{t('firmware.applyNext')}:</span> {t(instr)}
-              </div>
-            );
-          })()}
-
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-bambu-gray border-b border-bambu-dark-tertiary">
@@ -351,7 +331,6 @@ export function FirmwareUpdatePage() {
                 <th className="py-2">{t('firmware.printer')}</th>
                 <th className="py-2">{t('firmware.firmware')}</th>
                 <th className="py-2">{t('firmware.printStatus')}</th>
-                <th className="py-2">{t('firmware.upgradeStatus')}</th>
               </tr>
             </thead>
             <tbody>
@@ -363,7 +342,7 @@ export function FirmwareUpdatePage() {
                       <input
                         type="checkbox"
                         checked={selected.has(id) && !skipped}
-                        disabled={skipped || runId != null || activeGroup.available_versions.length === 0}
+                        disabled={skipped || busy || activeGroup.available_versions.length === 0}
                         onChange={() => toggle(id)}
                       />
                     </td>
@@ -378,7 +357,6 @@ export function FirmwareUpdatePage() {
                         <span className="text-bambu-gray">{t('firmware.idle')}</span>
                       )}
                     </td>
-                    <td className="py-2 text-bambu-gray">{statusLabel(id)}</td>
                   </tr>
                 );
               })}

@@ -168,18 +168,34 @@ export function LineConfigDialog({
   const [choices, setChoices] = useState<Record<number, number>>(initialChoices);
   const [counts, setCounts] = useState<Record<number, number>>(initialCounts);
 
-  const body = bodyOf(product, isParts, choices, counts);
-  const bodyKey = JSON.stringify(body);
-  const initialKey = JSON.stringify(bodyOf(product, isParts, initialChoices, initialCounts));
-  const dirty = product != null && bodyKey !== initialKey;
-  const debouncedKey = useDebouncedValue(bodyKey, 300);
-  const settled = debouncedKey === bodyKey;
-
+  const revision = line.configuration?.revision;
+  const saved = new Map([
+    ...line.parts.filter((p) => p.qty_per_unit > 0).map((p) => [p.part_id, p.qty_per_unit] as const),
+    ...(line.purchased ?? []).filter((p) => p.per > 0).map((p) => [p.part_id, p.per] as const),
+  ]);
+  const [confirmed, setConfirmed] = useState('');
   const defaults = defaultsOf(product);
   const groups = product?.variant_groups ?? [];
   // The combination as the server reads it — every group's choice; the line's own beside it.
   const chosen = { ...defaults, ...choices };
   const choicesChanged = choicesKey(chosen) !== choicesKey({ ...defaults, ...initialChoices });
+  const editingSaved = revision != null && !choicesChanged;
+  const body: LineConfigurationBody = editingSaved
+    ? {
+        choices: {}, part_counts: {},
+        part_edits: Object.fromEntries(Object.entries(counts).filter(([id, qty]) => {
+          const pid = Number(id);
+          return saved.has(pid) && qty !== saved.get(pid);
+        })),
+      }
+    : bodyOf(product, isParts, choices, counts);
+  const bodyKey = JSON.stringify(body);
+  const initialKey = editingSaved
+    ? JSON.stringify({ choices: {}, part_counts: {}, part_edits: {} })
+    : JSON.stringify(bodyOf(product, isParts, initialChoices, initialCounts));
+  const dirty = product != null && bodyKey !== initialKey;
+  const debouncedKey = useDebouncedValue(bodyKey, 300);
+  const settled = debouncedKey === bodyKey;
   const combination = useCombinationState(
     line.product_id,
     chosen,
@@ -201,7 +217,10 @@ export function LineConfigDialog({
   });
 
   const save = useMutation({
-    mutationFn: () => api.setLineConfiguration(orderId, line.id, body),
+    mutationFn: () => api.setLineConfiguration(orderId, line.id, {
+      ...body, expected_revision: line.configuration?.revision ?? undefined,
+      review_version: preview.data?.review_version ?? undefined,
+    }),
     onSuccess: () => {
       invalidateOrderViews(queryClient, { orderId });
       onClose();
@@ -216,13 +235,14 @@ export function LineConfigDialog({
 
   const chosenSet = new Set(Object.values(chosen));
   // «Не рахувати» is not a part a line can want (spec workshop-order-issue-followups, rule 34).
-  const parts = [...(product?.parts ?? [])].filter((p) => !p.ignored).sort(byOrder);
+  const parts = [...(product?.parts ?? [])].filter((p) => !p.ignored && (!editingSaved || saved.has(p.id))).sort(byOrder);
 
   /** A count back at what the options give is no longer a change. */
   const setCount = (part: ProductPart, qty: number) =>
     setCounts((prev) => {
       const next = { ...prev };
-      if (!isParts && qty === basePer(part, chosenSet, groups)) delete next[part.id];
+      if (editingSaved) next[part.id] = qty;
+      else if (!isParts && qty === basePer(part, chosenSet, groups)) delete next[part.id];
       else next[part.id] = qty;
       return next;
     });
@@ -253,7 +273,7 @@ export function LineConfigDialog({
       settled,
       fetching: preview.isFetching,
       status: preview.status,
-    }) && !combinationBlocks;
+    }) && !combinationBlocks && (!choicesChanged || revision == null || confirmed === bodyKey);
   const pending = save.isPending;
 
   const subtitle = isParts
@@ -421,8 +441,10 @@ export function LineConfigDialog({
                   </thead>
                   <tbody>
                     {parts.map((part) => {
-                      const base = isParts ? 0 : basePer(part, chosenSet, groups);
-                      const shown = counts[part.id] ?? base;
+                      const base = editingSaved ? (saved.get(part.id) ?? 0) : isParts ? 0 : basePer(part, chosenSet, groups);
+                      const shown = (editingSaved && initialCounts[part.id] === counts[part.id]
+                        ? undefined
+                        : counts[part.id]) ?? base;
                       const off = !isParts && shown === 0;
                       const variant = bindingLabel(groups, part.variant_option_ids);
                       return (
@@ -467,7 +489,7 @@ export function LineConfigDialog({
                           </td>
                           <td className={`${CELL} whitespace-nowrap`}>
                             <CountInput
-                              value={isParts ? (counts[part.id] ?? 0) : shown}
+                              value={shown}
                               min={0}
                               max={MAX_COUNT}
                               onCommit={(qty) => setCount(part, qty)}
@@ -522,7 +544,16 @@ export function LineConfigDialog({
           )}
 
           {dirty && (
-            <Impact preview={preview} settled={settled} closed={combinationClosed} parts={product?.parts ?? []} />
+            <>
+              <Impact preview={preview} settled={settled} closed={combinationClosed} parts={product?.parts ?? []} />
+              {revision != null && choicesChanged && settled && preview.isSuccess && (
+                <label className="mt-2 flex items-center gap-2 text-sm text-white">
+                  <input type="checkbox" checked={confirmed === bodyKey}
+                    onChange={(event) => setConfirmed(event.target.checked ? bodyKey : '')} />
+                  {t('orders.lines.confirmVariantKit')}
+                </label>
+              )}
+            </>
           )}
         </fieldset>
       ) : null}
@@ -632,6 +663,10 @@ function Impact({
   if (impact.finished_before !== impact.finished_after) {
     const text = t('orders.lineConfig.impact.ready', { before: impact.finished_before, after: impact.finished_after });
     lines.push({ key: text, text });
+  }
+  for (const change of impact.changes ?? []) {
+    const text = t('orders.lines.kitChange', { name: change.name, before: change.per_before, after: change.per_after });
+    lines.push({ key: `kit-${change.part_id}`, text });
   }
   for (const d of impact.dropping) {
     if (d.printed > 0 || d.queued > 0) {

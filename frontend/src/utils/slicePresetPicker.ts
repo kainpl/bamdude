@@ -39,6 +39,10 @@ const TIER_BONUS: Record<PresetSource, number> = {
   standard: 0.5,
 };
 
+export function presetTiersForPrinter(source: PresetSource | null | undefined): readonly PresetSource[] {
+  return source ? [source, ...SLICE_MODAL_TIER_ORDER.filter((tier) => tier !== source)] : SLICE_MODAL_TIER_ORDER;
+}
+
 export function pickDefault(by: UnifiedPresetsResponse, slot: Slot): PresetRef | null {
   for (const tier of SLICE_MODAL_TIER_ORDER) {
     const list = by[tier][slot];
@@ -67,10 +71,11 @@ export function findPresetByName(
   by: UnifiedPresetsResponse,
   slot: Slot,
   name: string | null | undefined,
+  opts?: { source?: PresetSource | null; keep?: (preset: UnifiedPreset) => boolean },
 ): PresetRef | null {
   if (!name) return null;
-  for (const tier of SLICE_MODAL_TIER_ORDER) {
-    const p = by[tier][slot].find((x) => x.name === name);
+  for (const tier of presetTiersForPrinter(opts?.source)) {
+    const p = by[tier][slot].find((x) => x.name === name && (opts?.keep?.(x) ?? true));
     if (p) return { source: p.source, id: p.id };
   }
   return null;
@@ -87,16 +92,16 @@ export function pickProcessDefault(
   printerName: string | null,
   compatIndex: PrinterCompatibilityIndex,
   preferredName?: string | null,
+  printerSource?: PresetSource | null,
 ): PresetRef | null {
-  const preferred = findPresetByName(by, 'process', preferredName);
-  if (preferred) {
-    const p = findPreset(by, preferred, 'process');
-    if (p && presetCompatibility(p, 'process', printerName, compatIndex) !== 'mismatch') {
-      return preferred;
-    }
-  }
+  const preferred = findPresetByName(by, 'process', preferredName, {
+    source: printerSource,
+    keep: (p) => presetCompatibility(p, 'process', printerName, compatIndex) !== 'mismatch',
+  });
+  if (preferred) return preferred;
+  const tiers = presetTiersForPrinter(printerSource);
   for (const wanted of ['match', 'unknown'] as const) {
-    for (const tier of SLICE_MODAL_TIER_ORDER) {
+    for (const tier of tiers) {
       const candidates = by[tier].process.filter(
         (p) => presetCompatibility(p, 'process', printerName, compatIndex) === wanted,
       );
@@ -146,23 +151,24 @@ export function pickProcessForField(
   pickKeep: (p: UnifiedPreset) => boolean,
   printerName: string | null,
   compatIndex: PrinterCompatibilityIndex,
-  opts?: { file?: { ref?: PresetRef | null; name?: string | null }; fittingOnly?: boolean },
+  opts?: { file?: { ref?: PresetRef | null; name?: string | null }; fittingOnly?: boolean; printerSource?: PresetSource | null },
 ): PresetRef | null {
   const fits = (p: UnifiedPreset | null) =>
     p !== null && presetCompatibility(p, 'process', printerName, compatIndex) !== 'mismatch';
   // The ref a record names, then the name the file carries — each only while
   // it is listed and fits the printer.
-  for (const fileRef of [opts?.file?.ref ?? null, findPresetByName(by, 'process', opts?.file?.name)]) {
-    if (fileRef && fits(findPreset(by, fileRef, 'process'))) return fileRef;
-  }
+  const fileRef = opts?.file?.ref;
+  if (fileRef && fits(findPreset(by, fileRef, 'process'))) return fileRef;
+  const named = findPresetByName(by, 'process', opts?.file?.name, { source: opts?.printerSource, keep: fits });
+  if (named) return named;
   const offered = narrowed(by, 'process', pickKeep);
-  const fromOffer = pickProcessDefault(offered, printerName, compatIndex);
+  const fromOffer = pickProcessDefault(offered, printerName, compatIndex, null, opts?.printerSource);
   if (fromOffer && fits(findPreset(offered, fromOffer, 'process'))) return fromOffer;
   if (opts?.fittingOnly) {
     const fitting = narrowed(by, 'process', (p) => fits(p));
-    return pickProcessDefault(fitting, printerName, compatIndex);
+    return pickProcessDefault(fitting, printerName, compatIndex, null, opts.printerSource);
   }
-  return pickProcessDefault(by, printerName, compatIndex);
+  return pickProcessDefault(by, printerName, compatIndex, null, opts?.printerSource);
 }
 
 /**
@@ -176,10 +182,11 @@ export function pickFamilyFilament(
   refs: FamilyPresetRefs | undefined,
   printerName: string | null,
   compatIndex: PrinterCompatibilityIndex,
+  printerSource?: PresetSource | null,
 ): PresetRef | null {
   if (!refs) return null;
   for (const wanted of ['match', 'unknown'] as const) {
-    for (const tier of SLICE_MODAL_TIER_ORDER) {
+    for (const tier of presetTiersForPrinter(printerSource)) {
       const p = by[tier].filament.find(
         (f) => presetIsOfFamily(f, refs) && presetCompatibility(f, 'filament', printerName, compatIndex) === wanted,
       );
@@ -299,6 +306,7 @@ export function pickFilamentForSlot(
   required: { type: string; color: string },
   printerName: string | null,
   compatIndex: PrinterCompatibilityIndex,
+  printerSource?: PresetSource | null,
 ): PresetRef | null {
   // Score every filament preset against the plate slot's required (type,
   // colour) and pick the highest. Mirrors the AMS slot-mapping match in the
@@ -346,21 +354,23 @@ export function pickFilamentForSlot(
         if (presetColor === reqColor) score += 5;
         else if (colorsAreSimilar(p.filament_colour ?? '', required.color)) score += 2;
       }
-      score += TIER_BONUS[tier];
+      const fit = presetCompatibility(p, 'filament', printerName, compatIndex);
+      // A source preference breaks ties without outranking material or color.
+      score += p.source === printerSource && fit === 'match' ? 2 : TIER_BONUS[tier];
       const ref = { source: p.source, id: p.id };
       if (statesDifferentMaterial(p, reqType)) {
         // Still split by printer (upstream 11013d59c, #3234): with no preset of
         // the plate's material at all, a pick for another printer is refused
         // by the slicer outright, so it must not beat one the selected printer
         // can take.
-        if (presetCompatibility(p, 'filament', printerName, compatIndex) === 'mismatch') {
+        if (fit === 'mismatch') {
           if (bestWrongTypeMismatch == null || score > bestWrongTypeMismatch.score) {
             bestWrongTypeMismatch = { ref, score };
           }
         } else if (bestWrongType == null || score > bestWrongType.score) {
           bestWrongType = { ref, score };
         }
-      } else if (presetCompatibility(p, 'filament', printerName, compatIndex) === 'mismatch') {
+      } else if (fit === 'mismatch') {
         if (bestMismatch == null || score > bestMismatch.score) {
           bestMismatch = { ref, score };
         }
@@ -395,12 +405,13 @@ export function pickOfferedFilamentForSlot(
   required: { type: string; color: string },
   printerName: string | null,
   compatIndex: PrinterCompatibilityIndex,
+  printerSource?: PresetSource | null,
 ): PresetRef | null {
   const offered = { ...by };
   for (const tier of SLICE_MODAL_TIER_ORDER) {
     offered[tier] = { ...by[tier], filament: by[tier].filament.filter(keep) };
   }
-  const ref = pickFilamentForSlot(offered, required, printerName, compatIndex);
+  const ref = pickFilamentForSlot(offered, required, printerName, compatIndex, printerSource);
   const preset = findPreset(offered, ref, 'filament');
   if (!ref || !preset) return null;
   if (statesDifferentMaterial(preset, required.type)) return null;

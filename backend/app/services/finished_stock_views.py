@@ -33,8 +33,8 @@ from backend.app.services.line_composition import (
     LineConfig,
     counted,
     default_options,
-    line_composition,
     load_item_configs,
+    stock_composition,
 )
 from backend.app.services.product_files import effective_cover
 
@@ -90,9 +90,9 @@ class _Context:
         )
 
     def composition(self, item: StockItem):
-        return line_composition(
+        return stock_composition(
+            item,
             self.parts.get(item.product_id, []),
-            "product",
             self.configs.get(item.id, LineConfig()),
             self.defaults.get(item.product_id, {}),
         )

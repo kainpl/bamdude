@@ -32,6 +32,7 @@ import {
 } from './CalibrationSlicingSection';
 import { EMPTY_CALIBRATION_CHOICE, choiceDecidedNow } from './calibrationChoice';
 import { usePresetCatalogue } from '../slicing-setup/usePresetCatalogue';
+import { useSlicerChoice } from '../slicing-setup/useSlicerChoice';
 import { useAuth } from '../../contexts/AuthContext';
 import { tempDefaultsForFilament } from '../../utils/calibrationTemp';
 import { Select } from '../Select';
@@ -132,7 +133,9 @@ export function CalibrationPresetPage({
   // The same catalogue the section reads: Start is judged on the answer this
   // render shows, not only on the section's last report (review I-2).
   const { hasPermission } = useAuth();
-  const catalogue = usePresetCatalogue({ enabled: hasPermission('library:upload') });
+  const canPickPresets = needsPresetPicker && hasPermission('library:upload');
+  const slicer = useSlicerChoice(`bamdude:slicer-pick:calibration:${printerId}`, { enabled: canPickPresets });
+  const catalogue = usePresetCatalogue({ enabled: canPickPresets, slicer: slicer.forPresets });
   const printerRef = slicing.printer;
   const processRef = slicing.process;
   const filamentRef = slicing.filament;
@@ -632,6 +635,8 @@ export function CalibrationPresetPage({
             needsPresetPicker={needsPresetPicker}
             nozzle={nozzleDia}
             slot={calibrationSlot}
+            catalogue={catalogue}
+            slicer={slicer}
             value={slicing}
             onChange={setSlicing}
             disabled={isStarting}

@@ -24,6 +24,7 @@ export function liveKits(line: ProjectLine): number {
  */
 export function configBlockedReason(order: Pick<Order, 'status'>, line: ProjectLine, t: TFunction): string | null {
   if (order.status === 'completed') return t('orders.lineConfig.completed');
+  if (order.status === 'cancelled') return t('orders.lines.reopenToConfigure');
   if (stockMoved(line)) return t('orders.lines.moved');
   return null;
 }

@@ -12,6 +12,7 @@ interface SlicerChoiceProps {
   value: SlicerKind | null;
   onChange: (next: SlicerKind) => void;
   disabled?: boolean;
+  catalogueOnly?: boolean;
 }
 
 const OPTIONS: { kind: SlicerKind; label: string }[] = [
@@ -19,13 +20,28 @@ const OPTIONS: { kind: SlicerKind; label: string }[] = [
   { kind: 'bambu_studio', label: 'BambuStudio' },
 ];
 
-export function SlicerChoice({ value, onChange, disabled }: SlicerChoiceProps) {
+export function SlicerChoice({ value, onChange, disabled, catalogueOnly }: SlicerChoiceProps) {
   const { t } = useTranslation();
   return (
     <fieldset>
-      <legend className="text-xs text-bambu-gray mb-2">{t('slice.sidecarPicker', 'Slice with')}</legend>
+      <legend className="text-xs text-bambu-gray mb-2">
+        {catalogueOnly ? t('slicingSetup.presetSlicer') : t('slice.sidecarPicker', 'Slice with')}
+      </legend>
       <div className="grid grid-cols-2 gap-3">
-        {OPTIONS.map((opt) => (
+        {OPTIONS.map((opt) => catalogueOnly ? (
+          <button
+            key={opt.kind}
+            type="button"
+            disabled={disabled}
+            aria-pressed={value === opt.kind}
+            onClick={() => onChange(opt.kind)}
+            className={`rounded-lg border px-3 py-2 text-left text-sm transition-colors disabled:opacity-50 ${value === opt.kind
+              ? 'border-bambu-green bg-bambu-green/10 text-white'
+              : 'border-bambu-dark-tertiary bg-bambu-dark text-bambu-gray hover:text-white'}`}
+          >
+            {opt.label}
+          </button>
+        ) : (
           <SlicerCard
             key={opt.kind}
             kind={opt.kind}
@@ -36,7 +52,7 @@ export function SlicerChoice({ value, onChange, disabled }: SlicerChoiceProps) {
           />
         ))}
       </div>
-      <SlicerOutdatedNote kind={value} />
+      {!catalogueOnly && <SlicerOutdatedNote kind={value} />}
     </fieldset>
   );
 }

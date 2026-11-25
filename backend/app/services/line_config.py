@@ -25,6 +25,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from hashlib import sha256
+from json import dumps
 
 from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,7 +41,9 @@ from backend.app.models.product_variant import ProductVariantGroup
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
+from backend.app.schemas.project import LinePartAdd, LinePartCandidate, LinePartCandidates
 from backend.app.services import order_journal, part_stock
+from backend.app.services.configuration_views import configuration_out
 from backend.app.services.line_composition import (
     Composition,
     LineConfig,
@@ -47,14 +52,19 @@ from backend.app.services.line_composition import (
     counted,
     default_options,
     in_kit,
-    line_composition,
     load_item_configs,
     load_line_configs,
+    saved_composition,
     snapshot_extra_percentages,
+    snapshot_parts,
     standard_per,
 )
 
 MAX_COUNT = 9999
+_CLOSED = {
+    "completed": "A completed order's lines cannot be reconfigured",
+    "cancelled": "A cancelled order's lines cannot be reconfigured",
+}
 
 
 class LineConfigError(ValueError):
@@ -84,6 +94,9 @@ class ConfigOutcome:
     dropping: list[DroppedPart] = field(default_factory=list)
     #: The configuration key the line has (or, on a dry run, would have) after the change.
     new_key: str = ""
+    changes: list[DroppedPart] = field(default_factory=list)
+    snapshot: list[dict] | None = None
+    review_version: str | None = None
 
 
 async def _product(db: AsyncSession, product_id: int) -> Product:
@@ -208,12 +221,16 @@ async def _apply_item_configs(db: AsyncSession, product_id: int, new: Mapping[in
     }
     keys = {item_id: item.config_key for item_id, item in items.items()}
     for item_id, cfg in new.items():
-        keys[item_id] = config_key("product", cfg.choices, cfg.counts)
+        if items[item_id].composition_parts is None:
+            keys[item_id] = config_key("product", cfg.choices, cfg.counts)
     if len(set(keys.values())) != len(keys):
         raise LineConfigError(_SAME_POSITION, 409)
     for item_id, cfg in new.items():
         await _write_rows(db, StockItemChoice, StockItemPartCount, "item_id", item_id, cfg.choices, cfg.counts)
-        items[item_id].config_key = f"#rekey:{item_id}"
+        if items[item_id].composition_parts is None:
+            items[item_id].config_key = f"#rekey:{item_id}"
+        else:
+            items[item_id].variant_key = config_key("product", cfg.choices, {})
     await db.flush()
     for item_id in new:
         items[item_id].config_key = keys[item_id]
@@ -226,6 +243,15 @@ async def _item_configs(db: AsyncSession, product_id: int) -> dict[int, LineConf
     return await load_item_configs(db, ids) if ids else {}
 
 
+async def _live_item_configs(db: AsyncSession, product_id: int) -> dict[int, LineConfig]:
+    ids = (
+        await db.scalars(
+            select(StockItem.id).where(StockItem.product_id == product_id, StockItem.composition_parts.is_(None))
+        )
+    ).all()
+    return await load_item_configs(db, ids)
+
+
 async def resolve(
     db: AsyncSession, product_id: int, choices: Mapping[int, int], counts: Mapping[int, int] | None = None
 ) -> tuple[str, dict[int, int], dict[int, int]]:
@@ -235,13 +261,18 @@ async def resolve(
 
 
 async def seed_item(
-    db: AsyncSession, item: StockItem, choices: Mapping[int, int], counts: Mapping[int, int] | None = None
+    db: AsyncSession,
+    item: StockItem,
+    choices: Mapping[int, int],
+    counts: Mapping[int, int] | None = None,
+    *,
+    physical_key: str | None = None,
 ) -> None:
     """A new stock position's configuration rows (spec workshop-finished-goods, rule 9)."""
     product = await _product(db, item.product_id)
     new_choices, new_counts = _validate(product, "product", choices, counts or {})
     await _write_rows(db, StockItemChoice, StockItemPartCount, "item_id", item.id, new_choices, new_counts)
-    item.config_key = config_key("product", new_choices, new_counts)
+    item.config_key = config_key("product", new_choices, new_counts) if physical_key is None else physical_key
 
 
 async def forget_items(db: AsyncSession, item_ids: Sequence[int]) -> None:
@@ -348,18 +379,207 @@ async def seed_line(
 
         await combination_gate.ensure_available(db, product, new_choices, sliced_memo=sliced_memo)
     await _write(db, line, new_choices, new_counts)
+    append_revision(
+        line,
+        product,
+        new_choices,
+        new_counts,
+        composition(product.parts, line.mode, set(new_choices.values()), new_counts),
+    )
 
     line.extra_percentages = snapshot_extra_percentages(product.parts) if line.mode == "product" else {}
 
 
+def append_revision(
+    line: ProjectLine,
+    product: Product,
+    choices: Mapping[int, int],
+    counts: Mapping[int, int],
+    comp: Composition,
+    *,
+    actor: User | None = None,
+    preserve_choices: bool = False,
+    command: dict | None = None,
+) -> None:
+    previous = line.composition_revisions or []
+    configuration = configuration_out(
+        product.variant_groups, product.parts, LineConfig(dict(choices), dict(counts)), {}, line.mode
+    ).model_dump(exclude={"revision", "origin"})
+    parts = snapshot_parts(comp)
+    if previous:
+        if preserve_choices:
+            configuration["choices"] = previous[-1]["configuration"]["choices"]
+        old_parts = {part["identity"]: part for part in previous[-1]["parts"]}
+        parts = [{**old_parts.get(part["identity"], part), "qty": part["qty"]} for part in parts]
+    if command is not None:
+        next(part for part in parts if part["id"] == command["part_id"])["manual"] = True
+    line.composition_revisions = [
+        *previous,
+        {
+            "parts": parts,
+            "configuration": configuration,
+            "origin": previous[0]["origin"] if previous else "order",
+            "actor_id": actor.id if actor is not None else None,
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "command": command,
+        },
+    ]
+
+
+async def require_active(db: AsyncSession, line: ProjectLine) -> None:
+    status = await db.scalar(select(Project.status).where(Project.id == line.project_id))
+    if status != "active":
+        raise LineConfigError(_CLOSED.get(status, "This order is closed"), 409)
+
+
+_STALE = "The order line or catalog changed. Review the current values and confirm again"
+
+
+def require_revision(line: ProjectLine, supplied: int | None) -> None:
+    revision = len(line.composition_revisions or [])
+    if revision != supplied and (supplied is not None or revision > 1):
+        raise LineConfigError(_STALE, 409)
+
+
+def part_candidates(line: ProjectLine, product: Product, config: LineConfig) -> LinePartCandidates:
+    saved = {
+        part.composition_identity: qty
+        for part, qty in saved_composition(line, product.parts, config, _defaults(product))
+    }
+    selected = (
+        {c["group_id"]: c["option_id"] for c in line.composition_revisions[-1]["configuration"]["choices"]}
+        if line.composition_revisions
+        else config.choices
+    )
+    current = {group.id: {option.id for option in group.options} for group in product.variant_groups}
+    variant_available = (
+        line.mode == "product"
+        and selected.keys() == current.keys()
+        and all(option in current[group] for group, option in selected.items())
+    )
+    ordered = sorted((p for p in product.parts if not p.ignored), key=lambda p: (p.sort_order or 0, p.id))
+    candidates = [
+        LinePartCandidate(
+            id=part.id,
+            name=part.name,
+            kind=part.kind,
+            compatible=variant_available and in_kit(part.bound, set(selected.values())),
+            saved_qty=saved.get(part.composition_identity, 0),
+            suggested_qty=max(1, min(MAX_COUNT, standard_per(part))) if line.mode == "product" else 1,
+            extra_percent=(part.extra_percent or 0) if line.mode == "product" and part.kind == "printed" else 0,
+        )
+        for part in ordered
+    ]
+    version = sha256(
+        dumps(
+            [
+                current.keys() == selected.keys(),
+                variant_available,
+                [
+                    [p.composition_identity, sorted((gid, sorted(o)) for gid, o in p.bound.items()), c.model_dump()]
+                    for p, c in zip(ordered, candidates, strict=True)
+                ],
+            ],
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    return LinePartCandidates(
+        revision=len(line.composition_revisions or []),
+        catalog_version=version,
+        quantity=line.quantity,
+        variant_available=variant_available,
+        parts=candidates,
+    )
+
+
+async def candidates_for_line(db: AsyncSession, line: ProjectLine) -> LinePartCandidates:
+    product = await _product(db, line.product_id)
+    config = (await load_line_configs(db, [line.id]))[line.id]
+    return part_candidates(line, product, config)
+
+
+def accepted_part_command(line: ProjectLine, data: LinePartAdd) -> bool:
+    command = data.model_dump()
+    for revision in line.composition_revisions or []:
+        previous = revision.get("command")
+        if previous and previous["command_id"] == data.command_id:
+            if previous != command:
+                raise LineConfigError(_STALE, 409)
+            return True
+    return False
+
+
+async def add_part_to_line(db: AsyncSession, line: ProjectLine, data: LinePartAdd, *, actor: User | None) -> None:
+    """Append one accepted addition. The route owns the order/stock/line locks."""
+    await require_active(db, line)
+    require_revision(line, data.expected_revision)
+    product = await _product(db, line.product_id)
+    config = (await load_line_configs(db, [line.id]))[line.id]
+    candidates = part_candidates(line, product, config)
+    if candidates.catalog_version != data.catalog_version or (
+        line.mode == "product" and line.quantity != data.expected_quantity
+    ):
+        raise LineConfigError(_STALE, 409)
+    candidate = next((part for part in candidates.parts if part.id == data.part_id), None)
+    if candidate is None or candidate.saved_qty or not (data.all_parts or candidate.compatible):
+        raise LineConfigError("This part cannot be added to the order line", 409)
+    from backend.app.services.order_recount import ensure_attribution_can_change
+
+    await ensure_attribution_can_change(db, line.project_id, [line.product_id], configuration=True)
+    part = next(part for part in product.parts if part.id == data.part_id)
+    before = await part_stock.reserved_units_for_line(db, line)
+    holds = await part_stock.reserved_parts_for_line(db, line)
+    old_comp = saved_composition(line, product.parts, config, _defaults(product))
+    comp = [*old_comp, (part, data.quantity)]
+    counts = {**config.counts, part.id: data.quantity}
+    await _write(db, line, config.choices, counts)
+    append_revision(
+        line, product, config.choices, counts, comp, actor=actor, preserve_choices=True, command=data.model_dump()
+    )
+    if line.mode == "product":
+        extras = dict(line.extra_percentages)
+        extras.pop(str(part.id), None)
+        if candidate.extra_percent:
+            extras[str(part.id)] = candidate.extra_percent
+        line.extra_percentages = extras
+    await db.flush()
+    after = 0
+    if holds:
+        after = await part_stock.reserve_for_line(db, line, before, comp=comp, created_by=actor.id if actor else None)
+    await order_journal.record(
+        db,
+        line.project_id,
+        "line_configured",
+        {
+            "line_id": line.id,
+            "product": product.name,
+            "from": _describe(product, config),
+            "to": _describe(product, LineConfig(config.choices, counts)),
+            "reserved": [before, after],
+            "added_part": {"name": part.name, "quantity": data.quantity, "all_parts": data.all_parts},
+        },
+        actor=actor,
+    )
+
+
 async def target_key(
-    db: AsyncSession, line: ProjectLine, *, choices: Mapping[int, int], counts: Mapping[int, int]
+    db: AsyncSession,
+    line: ProjectLine,
+    *,
+    choices: Mapping[int, int],
+    counts: Mapping[int, int],
+    edits: Mapping[int, int] | None = None,
 ) -> str:
     """The key ``set_configuration`` would give ``line`` — read only, so the door can
     lock the new configuration's position with the old one's, before the line (WS-13
     E1 BL0). Refuses exactly as ``set_configuration`` would."""
     product = await _product(db, line.product_id)
     current = (await load_line_configs(db, [line.id])).get(line.id, LineConfig())
+    if edits is not None:
+        counts = {**current.counts, **edits}
+    elif choices and line.composition_revisions:
+        manual = {row["id"]: row["qty"] for row in line.composition_revisions[-1]["parts"] if row.get("manual")}
+        counts = {**manual, **counts}
     new_choices, new_counts = _validate(product, line.mode, {**current.choices, **choices}, counts)
     return config_key(line.mode, new_choices, new_counts)
 
@@ -372,6 +592,9 @@ async def set_configuration(
     counts: Mapping[int, int],
     actor: User | None,
     dry_run: bool = False,
+    edits: Mapping[int, int] | None = None,
+    review_version: str | None = None,
+    require_review: bool = False,
 ) -> ConfigOutcome:
     """Change a line's configuration (spec rules 11, 13–14).
 
@@ -386,14 +609,14 @@ async def set_configuration(
     reads — so a line saved without a row for a group that took a standard later is
     not checked on a change of its counts.
     """
-    status = await db.scalar(select(Project.status).where(Project.id == line.project_id))
-    if status == "completed":
-        # Its kits shipped (Ruling 25): the ledger still holds them as taken, and
-        # moving the reservation would put shipped parts back on the shelf.
-        # Reopen the order to change what it was.
-        raise LineConfigError("A completed order's lines cannot be reconfigured", 409)
+    await require_active(db, line)
     product = await _product(db, line.product_id)
     current = (await load_line_configs(db, [line.id])).get(line.id, LineConfig())
+    if edits is not None:
+        counts = {**current.counts, **edits}
+    elif choices and line.composition_revisions:
+        manual = {row["id"]: row["qty"] for row in line.composition_revisions[-1]["parts"] if row.get("manual")}
+        counts = {**manual, **counts}
     new_choices, new_counts = _validate(product, line.mode, {**current.choices, **choices}, counts)
     read_choices = {**_defaults(product), **current.choices}
     if line.mode == "product" and new_choices != read_choices:
@@ -402,12 +625,44 @@ async def set_configuration(
         await combination_gate.ensure_available(db, product, new_choices)
     reserved_before = await part_stock.reserved_units_for_line(db, line)
     reserved_parts = await part_stock.reserved_parts_for_line(db, line)
-    if new_choices == current.choices and new_counts == current.counts:
+    if new_choices == current.choices and new_counts == current.counts and not edits:
         # Nothing changes: no rows, no reservation move, no journal entry.
         return ConfigOutcome(reserved_before, reserved_before, [], line.config_key)
     parts = list(product.parts)
-    old_comp = line_composition(parts, line.mode, current, _defaults(product))
+    old_comp = saved_composition(line, parts, current, _defaults(product))
     new_comp = composition(parts, line.mode, set(new_choices.values()), new_counts)
+    if line.composition_revisions and new_choices == read_choices:
+        # With the same choices, a count edit is a delta to the saved kit.
+        # The unchanged defaults must not reload the rest of the catalog.
+        saved = {part.id: (part, per) for part, per in old_comp}
+        proposed = {part.id: (part, per) for part, per in new_comp}
+        changed_ids = (
+            edits.keys()
+            if edits is not None
+            else (
+                pid
+                for pid in current.counts.keys() | new_counts.keys()
+                if current.counts.get(pid) != new_counts.get(pid)
+            )
+        )
+        for pid in changed_ids:
+            if pid in proposed:
+                saved[pid] = proposed[pid]
+            else:
+                saved.pop(pid, None)
+        new_comp = list(saved.values())
+    before_by_id = {part.id: per for part, per in old_comp}
+    after_by_id = {part.id: per for part, per in new_comp}
+    if new_choices == read_choices and before_by_id == after_by_id and line.composition_revisions:
+        return ConfigOutcome(reserved_before, reserved_before, [], line.config_key)
+    target_snapshot = snapshot_parts(new_comp)
+    signature = sha256(
+        dumps(
+            [line.quantity, len(line.composition_revisions or []), new_choices, target_snapshot], sort_keys=True
+        ).encode()
+    ).hexdigest()
+    if not dry_run and require_review and new_choices != read_choices and signature != review_version:
+        raise LineConfigError(_STALE, 409)
     if dry_run:
         dropping = await _dropping(db, line, product, old_comp, new_comp)
         after = 0
@@ -417,18 +672,35 @@ async def set_configuration(
             for part_id, held in reserved_parts.items():
                 shelf[part_id] = shelf.get(part_id, 0) + held
             after = min(reserved_before, line.quantity, part_stock.kits_of(shelf, new_comp))
-        return ConfigOutcome(reserved_before, after, dropping, config_key(line.mode, new_choices, new_counts))
+        names = {part.id: part.name for part, _ in [*new_comp, *old_comp]}
+        changes = [
+            DroppedPart(pid, names[pid], before_by_id.get(pid, 0), after_by_id.get(pid, 0), 0, 0)
+            for pid in sorted(before_by_id.keys() | after_by_id.keys())
+            if before_by_id.get(pid, 0) != after_by_id.get(pid, 0)
+        ]
+        return ConfigOutcome(
+            reserved_before,
+            after,
+            dropping,
+            config_key(line.mode, new_choices, new_counts),
+            changes,
+            target_snapshot,
+            signature,
+        )
     from backend.app.services.order_recount import ensure_attribution_can_change
 
     await ensure_attribution_can_change(db, line.project_id, [line.product_id], configuration=True)
     await _write(db, line, new_choices, new_counts)
+    append_revision(
+        line, product, new_choices, new_counts, new_comp, actor=actor, preserve_choices=new_choices == read_choices
+    )
     await db.flush()
     after = 0
     if reserved_parts:
         after = await part_stock.reserve_for_line(
             db, line, reserved_before, comp=new_comp, created_by=actor.id if actor else None
         )
-    if new_choices == read_choices and new_counts == current.counts:
+    if new_choices == read_choices and new_counts == current.counts and before_by_id == after_by_id:
         # A line saved without a row for a group got its rows; the kit it reads is the
         # same, so the order's journal has nothing to say.
         return ConfigOutcome(reserved_before, after, [], line.config_key)
@@ -467,7 +739,7 @@ async def freeze_binding(db: AsyncSession, part: ProductPart, new_bound: Mapping
         return 0
     defaults = (await default_options(db, [part.product_id])).get(part.product_id, {})
     frozen_items: dict[int, LineConfig] = {}
-    for item_id, cfg in (await _item_configs(db, part.product_id)).items():
+    for item_id, cfg in (await _live_item_configs(db, part.product_id)).items():
         if part.id in cfg.counts:
             continue
         chosen = set({**defaults, **cfg.choices}.values())
@@ -478,7 +750,11 @@ async def freeze_binding(db: AsyncSession, part: ProductPart, new_bound: Mapping
     line_ids = (
         (
             await db.execute(
-                select(ProjectLine.id).where(ProjectLine.product_id == part.product_id, ProjectLine.mode == "product")
+                select(ProjectLine.id).where(
+                    ProjectLine.product_id == part.product_id,
+                    ProjectLine.mode == "product",
+                    ProjectLine.composition_revisions.is_(None),
+                )
             )
         )
         .scalars()
@@ -662,6 +938,21 @@ async def copy_configuration(db: AsyncSession, source: ProjectLine, target: Proj
     target.mode = source.mode
     target.extra_percentages = dict(source.extra_percentages or {})
     await _write(db, target, cfg.choices, cfg.counts)
+    if source.composition_revisions:
+        saved = source.composition_revisions[-1]
+        target.composition_revisions = [
+            {
+                **saved,
+                "origin": "order",
+                "actor_id": None,
+                "command": None,
+                "captured_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ]
+    else:
+        product = await _product(db, target.product_id)
+        comp = saved_composition(source, product.parts, cfg, _defaults(product))
+        append_revision(target, product, cfg.choices, cfg.counts, comp)
 
 
 async def ensure_no_extra_snapshot(db: AsyncSession, product_id: int, part_ids: Sequence[int]) -> None:

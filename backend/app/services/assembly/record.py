@@ -34,6 +34,7 @@ class PrinterInput:
     filament: dict
     nozzle: int
     model: str  # display only
+    bed_type: str | None = None  # absent in older records
 
 
 @dataclass(frozen=True)
@@ -118,12 +119,16 @@ def load(data: bytes) -> AssemblyRecord:
 
     if not _whole(printer_raw.get("nozzle"), 1) or not isinstance(printer_raw.get("model"), str):
         raise _fail("the printer's nozzle or model is wrong")
+    bed_type = printer_raw.get("bed_type")
+    if bed_type is not None and not isinstance(bed_type, str):
+        raise _fail("the printer's bed type is not text")
     printer = PrinterInput(
         _ref(printer_raw.get("printer")),
         _ref(printer_raw.get("process")),
         _ref(printer_raw.get("filament")),
         printer_raw["nozzle"],
         printer_raw["model"],
+        bed_type,
     )
 
     spacing = layout_raw.get("spacing")

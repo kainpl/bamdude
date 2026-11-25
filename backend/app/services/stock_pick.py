@@ -30,7 +30,13 @@ from backend.app.models.product import Product, ProductOrigin
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import finished_stock, line_config, part_stock
 from backend.app.services.entity_codes import code_for
-from backend.app.services.line_composition import Composition, composition, compositions_for_lines, counted
+from backend.app.services.line_composition import (
+    Composition,
+    composition,
+    compositions_for_lines,
+    counted,
+    snapshot_parts,
+)
 
 
 class StockPickError(Exception):
@@ -48,6 +54,7 @@ class PickRequest:
     counts: Mapping[int, int]
     quantity: int
     line_id: int | None = None
+    saved_kit: Composition | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,12 +139,17 @@ async def suggest(db: AsyncSession, requests: Sequence[PickRequest]) -> list[Sug
     catalogue = [
         (product.id, key) for _r, product, key, _c, _n in resolved if product.origin == ProductOrigin.CATALOG.value
     ]
-    positions = await finished_stock.free_by_keys(db, catalogue)
+    positions = await finished_stock.positions_for_variants(db, catalogue)
     balances = await part_stock.balances_for_products(db, sorted(products))
     backs = await _lines_back(db, sorted({r.line_id for r in requests if r.line_id is not None}), products)
     out: list[Suggestion] = []
     for request, product, key, choices, counts in resolved:
-        item = positions.get((product.id, key))
+        kit = (
+            request.saved_kit
+            if request.saved_kit is not None
+            else composition(list(product.parts), "product", set(choices.values()), counts)
+        )
+        item = finished_stock.matching_item(positions.get(product.id, ()), key, snapshot_parts(kit))
         finished_free = item.on_hand - item.reserved if item is not None else 0
         shelf = balances.get(product.id, {})
         back = backs.get(request.line_id) if request.line_id is not None else None
@@ -148,8 +160,6 @@ async def suggest(db: AsyncSession, requests: Sequence[PickRequest]) -> list[Sug
                 shelf = dict(shelf)
                 for part, per in back.kit:
                     shelf[part.id] = shelf.get(part.id, 0) + back.kits * per
-        defaults = {g.id: g.default_option_id for g in product.variant_groups if g.default_option_id is not None}
-        kit = composition(list(product.parts), "product", set({**defaults, **choices}.values()), counts)
         kits_free = part_stock.kits_of(shelf, kit)
         from_finished = min(request.quantity, finished_free)
         from_kits = min(request.quantity - from_finished, kits_free)

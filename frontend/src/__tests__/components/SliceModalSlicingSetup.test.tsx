@@ -134,6 +134,37 @@ beforeEach(() => {
 afterEach(() => localStorage.clear());
 
 describe('Slice dialog on the slicing-setup family (§4.4)', () => {
+  it('every picker follows the slicer and hides the other cloud', async () => {
+    const tier = (source: string, tag: string) => ({
+      printer: [std(H2D04, { id: `${tag}1`, source })],
+      process: [std(H2D_PROCESS, { id: `${tag}2`, source }), std('0.28mm Draft @BBL H2D', { id: `${tag}4`, source })],
+      filament: [std(BASIC, { id: `${tag}3`, source, filament_type: 'PLA' })],
+    }) as unknown as typeof none;
+    presets = { ...listing(), cloud: tier('cloud', 'stock'), orca_cloud: tier('orca_cloud', 'orca') };
+    localStorage.setItem('bamdude:presets:source-filter', 'all');
+    serve({ health: { orca: true, bambu: true } });
+    server.use(http.get('*/api/v1/settings/ui-preferences', () => HttpResponse.json({ preferred_slicer: 'bambu_studio' })));
+    open();
+    const printer = await valueOf('Printer profile', 'cloud:stock1');
+    const process = await field('Process profile');
+    const filament = await field('Filament profile');
+    const values = (select: HTMLSelectElement) => Array.from(select.options, (option) => option.value);
+    expect(values(printer)).toContain('cloud:stock1');
+    expect(values(process)).toContain('cloud:stock2');
+    expect(values(filament)).toContain('cloud:stock3');
+    expect([printer, process, filament].flatMap(values).join(' ')).not.toContain('orca_cloud:');
+    fireEvent.change(process, { target: { value: 'cloud:stock4' } });
+    expect(process).toHaveValue('cloud:stock4');
+    fireEvent.click(screen.getByRole('button', { name: /OrcaSlicer/ }));
+    await valueOf('Printer profile', 'orca_cloud:orca1');
+    expect(values(process)).toContain('orca_cloud:orca2');
+    expect(values(filament)).toContain('orca_cloud:orca3');
+    expect([printer, process, filament].flatMap(values).some((value) => value.startsWith('cloud:'))).toBe(false);
+    expect(sliceButton()).toBeDisabled();
+    expect(screen.getByText(/selected profile is from the other slicer/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /BambuStudio/ }));
+    await valueOf('Process profile', 'cloud:stock4');
+  });
   it('§4.4.1 the source filter appears; the first time it is Mine', async () => {
     serve();
     open();

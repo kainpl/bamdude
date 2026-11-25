@@ -23,6 +23,9 @@ import { useToast } from '../contexts/ToastContext';
 import { Select } from './Select';
 import { PresetSelect } from './slicing-setup/PresetSelect';
 import { buildPresetField } from './slicing-setup/presetSets';
+import { SlicerChoice } from './slicing-setup/SlicerChoice';
+import { useSlicerChoice } from './slicing-setup/useSlicerChoice';
+import { findPreset } from '../utils/slicePresetPicker';
 import { usePresetCatalogue } from './slicing-setup/usePresetCatalogue';
 
 interface CreateFilamentFamilyModalProps {
@@ -81,7 +84,9 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
   });
   // The shared catalogue (spec slicing-setup §7.4), read only while "From an
   // existing preset" is the open choice.
-  const presets = usePresetCatalogue({ enabled: open && sourceMode === 'preset' }).data;
+  const useExistingPreset = open && sourceMode === 'preset';
+  const slicer = useSlicerChoice(null, { catalogueOnly: true, enabled: useExistingPreset });
+  const presets = usePresetCatalogue({ enabled: useExistingPreset, slicer: slicer.forPresets }).data;
 
   const allPrinterNames = useMemo(() => options?.printer_names || [], [options]);
 
@@ -106,7 +111,7 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
     return q ? allPrinterNames.filter((n) => n.toLowerCase().includes(q)) : allPrinterNames;
   }, [allPrinterNames, printerQuery]);
 
-  // "From an existing preset": local + both clouds. The standard tier is
+  // "From an existing preset": local + the selected slicer's cloud. The standard tier is
   // deliberately out of the bound — "from type" IS the bundled-generic path.
   // No printer context and no source segment (spec slicing-setup §7.4).
   const presetField = useMemo(
@@ -136,15 +141,18 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
   // The granted scope is baked into the pairing — a read-only pairing cannot
   // push, whatever the defaults say now.
   const orcaWritable = orcaConnected && (orcaStatus?.scope || '').includes('sync:write');
+  const sourceAvailable = sourceMode === 'type' || (presets != null && findPreset(presets, sourceRef, 'filament') !== null);
   const canSubmit =
     vendor.trim() !== '' &&
     serial.trim() !== '' &&
     !vendorError &&
+    sourceAvailable &&
     (variant !== 'bambu' || cloudConnected) &&
     (variant !== 'orca' || orcaWritable);
 
   const createMutation = useMutation({
     mutationFn: () => {
+      if (!sourceAvailable) throw new Error(t('slice.allPresetsRequired'));
       const source = sourceRef?.source ?? null;
       const sourceId = sourceRef?.id ?? null;
       return api.createFilamentFamily({
@@ -257,14 +265,16 @@ export function CreateFilamentFamilyModal({ open, onClose, onCreated, variant = 
               {t('authoring.sourceModePreset')}
             </label>
           </div>
-          {sourceMode === 'preset' && presetField && (
-            <div className="mt-2">
-              <PresetSelect
+          {sourceMode === 'preset' && (
+            <div className="mt-2 space-y-2">
+              <SlicerChoice value={slicer.forPresets} onChange={slicer.choose} catalogueOnly />
+              {presetField && <PresetSelect
                 label={t('slicingSetup.fromPreset')}
                 field={presetField}
                 value={sourceRef}
+                slicer={slicer.forPresets}
                 onChange={setSourceRef}
-              />
+              />}
             </div>
           )}
         </div>

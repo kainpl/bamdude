@@ -99,6 +99,7 @@ async def load_supply(db: AsyncSession, ctx: OrderContext) -> Supply:
                 counts=configs[line.id].counts if line.id in configs else {},
                 # The capacity fields are independent of requested quantity.
                 quantity=1,
+                saved_kit=composition_of(ctx, line),
             )
             for line in lines
         ],

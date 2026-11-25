@@ -312,11 +312,8 @@ const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'date-desc', label: 'Date (newest)' },
 ];
 
-/** Which listing message applies: a failed request is ``unavailable``, an empty complete one ``empty``. */
-function listingState(isError: boolean, status: PrinterListingStatus | undefined): string {
-  if (isError) return 'unavailable';
-  if (!status || status === 'complete') return 'empty';
-  return status;
+function listingWarningState(isError: boolean, status: PrinterListingStatus | undefined) {
+  return isError || !status || status === 'complete' ? 'unavailable' : status;
 }
 
 export function FileManagerModal({ printerId, printerName, onClose }: FileManagerModalProps) {
@@ -512,8 +509,9 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
 
   // Only a complete, current listing says what is on the printer. A slow or failed one —
   // or the last good list shown in its place — proves nothing about a file being gone.
-  const listingAuthoritative =
-    !isError && data !== undefined && !data.stale && (data.status === undefined || data.status === 'complete');
+  const listingComplete = data !== undefined && (data.status === undefined || data.status === 'complete');
+  const listingAuthoritative = !isError && listingComplete && !data.stale;
+  const showingLastListing = data?.stale === true || (isError && listingComplete);
   useEffect(() => {
     if (!listingAuthoritative || !data) return;
     const present = new Set(data.files.filter((file) => !file.is_directory).map((file) => file.path));
@@ -883,26 +881,23 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
               <div className="flex items-center justify-center py-12">
                 <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
               </div>
-            ) : !data?.files?.length ? (
-              <div className="text-center py-12 text-bambu-gray" data-testid="printer-files-listing-state">
-                {/* A failed listing is not an empty folder (G10 A): the status
-                    says which, and an unknown one from an older server reads
-                    as complete. */}
-                {t(`printerFiles.listing.${listingState(isError, data?.status)}`)}
-                {data?.status === 'slow' && (
-                  <div className="mt-2 text-xs">{t('printerFiles.listing.channelBusy')}</div>
-                )}
-              </div>
             ) : (
               <div className="space-y-1">
-                {data.stale && (
+                {!listingAuthoritative && (
                   <div
                     className="mb-2 rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-200"
-                    data-testid="printer-files-stale"
+                    role="status"
+                    data-testid="printer-files-listing-state"
                   >
-                    {t(`printerFiles.listing.${listingState(isError, data.status)}`)}{' '}
-                    {t('printerFiles.listing.stale')}
+                    {t(`printerFiles.listing.${listingWarningState(isError, data?.status)}`)}
+                    {showingLastListing && <> {t('printerFiles.listing.stale')}</>}
+                    {!showingLastListing && !isError && data?.status === 'slow' && (
+                      <p className="mt-2">{t('printerFiles.listing.channelBusy')}</p>
+                    )}
                   </div>
+                )}
+                {listingAuthoritative && !data.files.length && (
+                  <div className="text-center py-12 text-bambu-gray">{t('printerFiles.listing.empty')}</div>
                 )}
                 {/* Filter and sort: directories first, then files with selected sort */}
                 {visibleFiles.map((file) => {
@@ -986,14 +981,16 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
         {/* Action bar */}
         <div className="flex items-center justify-between p-4 border-t border-bambu-dark-tertiary bg-bambu-dark/50 flex-shrink-0">
           <div className="flex items-center gap-4">
-            <div className="text-sm text-bambu-gray">
-              {selectedFiles.size > 0
-                ? `${selectedFiles.size} selected${selectionStale ? ` · ${t('printerFiles.selectionUnconfirmed')}` : ''}`
-                : searchQuery
-                  ? `${data?.files?.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase())).length || 0} of ${data?.files?.length || 0} items`
-                  : `${data?.files?.length || 0} items`
-              }
-            </div>
+            {(selectedFiles.size > 0 || listingAuthoritative || showingLastListing) && (
+              <div className="text-sm text-bambu-gray">
+                {selectedFiles.size > 0
+                  ? `${selectedFiles.size} selected${selectionStale ? ` · ${t('printerFiles.selectionUnconfirmed')}` : ''}`
+                  : searchQuery
+                    ? `${visibleFiles.length} of ${data?.files.length ?? 0} items`
+                    : `${data?.files.length ?? 0} items`
+                }
+              </div>
+            )}
             {/* Select All / Deselect All */}
             {data?.files?.some(f => !f.is_directory) && (
               <div className="flex items-center gap-2">

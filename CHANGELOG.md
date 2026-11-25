@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+Order lines now keep the parts and quantities recorded when they were added. In an active order, **Add part to line…** adds one catalog part with a quantity you confirm. Existing lines show when their kit was captured during the upgrade. Finished stock keeps different physical kits of the same variant in separate balances.
+
 ### Security
 
 - The part thumbnail renderer uses Node.js 24.22.3 on 64-bit platforms and 22.23.5 on 32-bit ARM. Both updates include Node.js security fixes.
@@ -178,6 +180,12 @@
 
 ### Changed
 
+- **Preset lists follow the selected slicer.** Slice and filament calibration use the cloud for the slicer shown in their controls. Assemble project and filament family creation from an existing preset have a slicer switch that starts from the preferred slicer. Local profiles remain available alongside the selected cloud.
+
+- **Assemble project** is available directly from an STL, OBJ, STEP or STP file's menu in the library. Open it to assemble that file without using the selection checkbox.
+
+- **Choose a bed plate and save settings in Assemble project.** Each printer row can save its presets and bed plate to the same list used by the Slice dialog. The selected bed plate travels with that row's 3MF and is picked again in Re-layout and Slice.
+
 - **The cloud preset editor offers material types for your preferred slicer.**
   Bambu Studio and OrcaSlicer have their own choices. An imported type stays
   selected even if the other slicer's list omits it.
@@ -332,6 +340,10 @@
 
 - **Bambu Studio keeps process overrides when reopening a sliced 3MF.** Exports based on a built-in or stock Bambu Cloud process record the settings changed in BamDude, including when a private preset shares the stock name.
 
+- **The printer file browser puts slow and failed listings in a warning banner.** An earlier listing can stay visible below it. The empty-folder message appears only after a complete listing confirms it.
+
+- **Batch firmware uploads show real progress for each printer.** The Firmware page shows waiting printers, FTP progress and the confirmed result, including transfer failures. Reopening the page restores the current batch. Printer cards show active uploads.
+
 - **Both slicer images support running under an unprivileged UID.** The
   image builds make extracted AppImage files readable and executable where
   needed. Set a writable data mount and home when overriding the runtime user.
@@ -352,6 +364,9 @@
 - **Printer command logs show selected tray and tool fields.** Summaries
   keep action parameters, verdict codes and sequence IDs. Print dispatch entries
   can show a plate number and tray positions while omitting the original path.
+
+- Renamed process and filament presets now follow their base profiles when filtering by printer and nozzle in the Slice dialog, Assemble project and filament calibration. A custom label after a printer tag no longer changes how the tag is matched.
+  When Bambu Cloud omits compatibility from its list, the preset picker reads the private preset's details. Automatic process and filament picks prefer suitable profiles from the selected printer's source.
 
 - **Partial reports keep AMS and external spool state.** The A2L printer
   card shows the regular AMS and AMS Lite together and keeps their other

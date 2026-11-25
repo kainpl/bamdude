@@ -40,6 +40,8 @@ class ProjectLine(Base):
     # ``config_key`` is written only by services/line_config.py.
     mode: Mapped[str] = mapped_column(String(8), nullable=False, default="product", server_default="product")
     config_key: Mapped[str] = mapped_column(String(512), nullable=False, default="", server_default="")
+    # Each entry is a complete, immutable revision. The last is the current kit.
+    composition_revisions: Mapped[list[dict] | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     # Snapshot on creation: editing catalog percentages never rewrites an existing order.
     extra_percentages: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default="{}")
     # Signed corrections to attributed printed output, not a replacement total.
