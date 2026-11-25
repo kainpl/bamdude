@@ -8,13 +8,16 @@ a number handed out twice.
 The rule:
 
 1. no bound — the sequence is left alone (``setval(0)`` is never needed);
-2. the value the sequence would hand out next is already above the bound —
-   left alone (an explicit id 0 or ``seq = 0`` lands here: a plain SERIAL
-   starts at 1);
-3. the bound is below the sequence's maximum — ``setval(seq, bound, true)``,
-   the next INSERT gets ``bound + 1``;
-4. the bound reaches the maximum — no larger number exists: refused, naming
-   the table.
+2. exhaustion first: when the sequence has no next number left in
+   ``[seqmin, seqmax]`` (it already handed out ``seqmax``), or no number
+   strictly above the bound exists (the bound reaches ``seqmax``) — refused,
+   naming the table. Asked BEFORE the no-op below: an exhausted sequence's
+   computed "next" lies past ``seqmax`` and would otherwise read as already
+   safe while the next INSERT fails (C047 acceptance A01);
+3. the value the sequence hands out next is already above the bound — left
+   alone (an explicit id 0 or ``seq = 0`` lands here: a plain SERIAL starts
+   at 1);
+4. otherwise ``setval(seq, bound, true)``: the next INSERT gets ``bound + 1``.
 
 "Next" is ``last_value + 1`` once the sequence has been called, ``last_value``
 before — true only for an increment of 1, which is therefore required.
@@ -75,10 +78,14 @@ def target(state: SequenceState, bound: int | None, table: str) -> int | None:
     """The value to ``setval`` to, or None to leave the sequence as it is (the module's rule)."""
     if state.increment != 1:
         raise SequenceError(f"{table}: the id sequence has increment {state.increment}; only 1 is supported")
-    if bound is None or bound < state.next_value:
+    if bound is None:
         return None
-    if bound >= state.maximum:
-        raise SequenceError(f"{table}: the id sequence is exhausted (bound {bound}, maximum {state.maximum})")
+    if state.next_value > state.maximum or bound >= state.maximum:
+        raise SequenceError(
+            f"{table}: the id sequence is exhausted (bound {bound}, next {state.next_value}, maximum {state.maximum})"
+        )
+    if bound < state.next_value:
+        return None
     return bound
 
 

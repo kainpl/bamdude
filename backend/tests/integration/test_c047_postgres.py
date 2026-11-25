@@ -147,6 +147,31 @@ async def test_m261_stops_on_a_sequence_it_cannot_raise_safely(test_engine, alte
             await m261.upgrade(conn)
 
 
+async def test_m261_refuses_a_sequence_that_already_handed_out_its_maximum(test_engine, monkeypatch):
+    """Acceptance A01: ``is_called``, ``last_value = seqmax``, bound ``= seqmax`` — the start stops, no marker."""
+    real_discover = migrations._discover_migrations  # later migrations must not run in this start
+    monkeypatch.setattr(migrations, "_discover_migrations", lambda: [m for m in real_discover() if m["version"] <= 261])
+    monkeypatch.setattr(settings, "debug", False)
+    await migrations._ensure_migrations_table(test_engine)
+    async with test_engine.begin() as conn:
+        await conn.execute(text("DELETE FROM _migrations"))
+        for mig in migrations._discover_migrations():
+            if mig["version"] < 261:
+                await conn.execute(
+                    text("INSERT INTO _migrations (version, name) VALUES (:v, :n)"),
+                    {"v": mig["version"], "n": mig["name"]},
+                )
+        await _fill(conn, "label_jobs", spool_id=30)
+        await conn.execute(text("ALTER SEQUENCE spool_id_seq MAXVALUE 30"))
+        await conn.execute(text("SELECT setval('spool_id_seq', 30, true)"))
+    with pytest.raises(SequenceError, match="spool: the id sequence is exhausted"):
+        await migrations._run_pending(test_engine, None)
+    async with test_engine.begin() as conn:
+        marker = (await conn.execute(text("SELECT count(*) FROM _migrations WHERE version = 261"))).scalar()
+        state = await pg_sequences.sequence_state(conn, "spool")
+    assert marker == 0 and (state.last_value, state.is_called) == (30, True)
+
+
 async def test_m261_holds_inserts_off_and_a_rollback_never_lowers_the_sequence(test_engine):
     await _migrations_at(test_engine, 260)
     async with test_engine.begin() as conn:
