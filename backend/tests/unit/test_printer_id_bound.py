@@ -198,8 +198,11 @@ def test_the_obico_list(raw, expected):
 # --- one SQLite database with every carrier --------------------------------------------------
 
 
-def _db(level: int = 261, *, skip: set[str] = frozenset(), historical: bool = False) -> sqlite3.Connection:
-    """Every registry table, typeless columns: on SQLite a value's own class decides, not the declared type."""
+def _db(
+    level: int = 261, *, skip: set[str] = frozenset(), historical: bool = False, settings_value: str = "TEXT"
+) -> sqlite3.Connection:
+    """Every registry table, typeless columns: on SQLite a value's own class decides, not the declared type.
+    ``settings`` is the exception: its schema is checked, so it has the baseline's own types."""
     conn = sqlite3.connect(":memory:")
     conn.execute("CREATE TABLE _migrations (id INTEGER PRIMARY KEY, version INTEGER NOT NULL UNIQUE, name TEXT)")
     conn.executemany("INSERT INTO _migrations (version, name) VALUES (?, 'x')", [(v,) for v in range(level + 1)])
@@ -212,6 +215,9 @@ def _db(level: int = 261, *, skip: set[str] = frozenset(), historical: bool = Fa
             tables[carrier.table].add("key")
     for table, columns in tables.items():
         if table in skip:
+            continue
+        if table == "settings":
+            conn.execute(f"CREATE TABLE settings (id INTEGER PRIMARY KEY, key VARCHAR(100), value {settings_value})")
             continue
         conn.execute(f'CREATE TABLE "{table}" ({", ".join(f'"{c}"' for c in sorted(columns))})')
     conn.execute("INSERT INTO printers (id) VALUES (3)")
@@ -318,8 +324,77 @@ def test_a_missing_guaranteed_column_stops():
 
 
 def test_create_all_only_carriers_may_be_missing_at_any_level():
-    conn = _db(level=261, skip={"ams_labels", "print_state_recovery_actions", "firmware_batch_items", "settings"})
+    conn = _db(level=261, skip={"ams_labels", "print_state_recovery_actions", "firmware_batch_items"})
     assert _bound(conn) == 3
+
+
+# --- settings: the row is optional, the table's schema is checked (acceptance PID-A01) ----------
+
+
+def test_a_valid_settings_table_without_the_rows_holds_no_number():
+    assert _bound(_db()) == 3
+
+
+@pytest.mark.parametrize("declared", ["TEXT", "VARCHAR(500)", "CLOB", "NVARCHAR(50)"])
+def test_a_text_settings_value_is_read(declared):
+    conn = _db(settings_value=declared)
+    conn.execute("INSERT INTO settings (key, value) VALUES ('virtual_printer_target_printer_id', 41)")
+    assert conn.execute("SELECT typeof(value) FROM settings").fetchone()[0] == "text"  # TEXT affinity
+    assert _bound(conn) == 41
+
+
+@pytest.mark.parametrize("declared", ["INTEGER", "", "BLOB", "NUMERIC", "REAL", "INT_TEXT"])
+def test_a_settings_value_that_is_not_text_stops(declared):
+    conn = _db(settings_value=declared)
+    conn.execute("INSERT INTO settings (key, value) VALUES ('virtual_printer_target_printer_id', 41)")
+    with pytest.raises(PrinterIdBoundError, match="settings.value: unexpected type"):
+        _bound(conn)
+
+
+@pytest.mark.parametrize("missing", ["key", "value"])
+def test_a_settings_table_without_its_columns_stops_at_any_level(missing):
+    for level in (0, 261):
+        conn = _db(level=level, skip={"settings"})
+        kept = "value TEXT" if missing == "key" else "key VARCHAR(100)"
+        conn.execute(f"CREATE TABLE settings (id INTEGER PRIMARY KEY, {kept})")
+        with pytest.raises(PrinterIdBoundError, match=f"settings.{missing}: column is missing"):
+            _bound(conn)
+
+
+def test_a_missing_settings_table_stops_once_the_baseline_is_applied():
+    with pytest.raises(PrinterIdBoundError, match="settings.value: table is missing"):
+        _bound(_db(level=261, skip={"settings"}))
+    assert _bound(_db(level=0, skip={"settings"})) == 3
+
+
+def test_an_integer_setting_handed_back_as_a_number_still_counts():
+    assert setting_int_id(41) == 41 and setting_int_id(True) is None
+
+
+# --- levels the acceptance review pinned (PID-A02) ---------------------------------------------
+
+
+@pytest.mark.parametrize("table", ["spoolman_slot_assignments", "spoolman_k_profile"])
+def test_the_spoolman_carriers_are_owed_from_m053(table):
+    with pytest.raises(PrinterIdBoundError, match=f"{table}.printer_id"):
+        _bound(_db(level=53, skip={table}))
+    assert _bound(_db(level=52, skip={table})) == 3
+
+
+def test_pipeline_jobs_is_owed_only_between_m102_and_m112():
+    def at(versions: set[int], *, present: bool):
+        conn = _db(level=0, historical=True, skip=set() if present else {"pipeline_jobs"})
+        conn.execute("DELETE FROM _migrations")
+        conn.executemany("INSERT INTO _migrations (version) VALUES (?)", [(v,) for v in sorted(versions)])
+        return conn
+
+    assert _bound(at(set(range(102)), present=False)) == 3  # before it appears
+    with pytest.raises(PrinterIdBoundError, match="pipeline_jobs.assigned_printer_id"):
+        _bound(at(set(range(112)), present=False))  # in its window
+    assert _bound(at(set(range(262)), present=False)) == 3  # after m112 removed it
+    late = at(set(range(262)), present=True)  # a column an old file still has keeps counting
+    late.execute("INSERT INTO pipeline_jobs (assigned_printer_id) VALUES (70)")
+    assert _bound(late) == 70
 
 
 def test_a_historical_column_counts_while_an_old_file_still_has_it_and_its_absence_is_no_error():

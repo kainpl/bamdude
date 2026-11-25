@@ -18,7 +18,13 @@ says (``create_all`` can bring one before its migration). ``guaranteed`` is the
 migration whose application proves the carrier exists — asked of the applied set,
 never of ``MAX(version)``; ``None`` means only ``create_all`` makes it, so its
 absence is never an error. ``removed`` names the migration that took a historical
-carrier away; until then an old file still has it and it counts.
+carrier away: once it is applied the absence is history again, while a column an
+old file still has keeps counting.
+
+``settings`` is the baseline's table (m001). The row of one key is optional — an
+absent row holds no number — but the table itself is checked: a present table
+without its ``key`` and ``value`` columns, or with a ``value`` that is not text,
+stops the caller with the reason named (acceptance PID-A01).
 
 Values: what a reader would take as a printer number. SQLite keeps whatever was
 written, so a value's own class decides (``typeof``), not the declared type. On
@@ -68,7 +74,7 @@ def _int(table: str, column: str, guaranteed: int | None = None, removed: int | 
 
 
 def _setting(key: str, kind: str) -> Carrier:
-    return Carrier("settings", "value", kind, None, key=key)
+    return Carrier("settings", "value", kind, 1, key=key)
 
 
 CARRIERS: tuple[Carrier, ...] = (
@@ -107,8 +113,8 @@ CARRIERS: tuple[Carrier, ...] = (
     _int("spool_assignment", "printer_id"),
     _int("spool_k_profile", "printer_id"),
     _int("spool_usage_history", "printer_id"),
-    _int("spoolman_k_profile", "printer_id"),
-    _int("spoolman_slot_assignments", "printer_id"),
+    _int("spoolman_k_profile", "printer_id", 53),
+    _int("spoolman_slot_assignments", "printer_id", 53),
     _int("spoolman_usage_history", "printer_id", 228),
     _int("virtual_printers", "target_printer_id"),
     # Printer and queue numbers kept without a foreign key.
@@ -134,7 +140,7 @@ CARRIERS: tuple[Carrier, ...] = (
     _int("filament_calibration", "calibrated_on_printer_id", removed=63),
     _int("kprofile_notes", "printer_id", removed=65),
     _int("slicer_pipelines", "target_printer_id", removed=112),
-    _int("pipeline_jobs", "assigned_printer_id", removed=112),
+    _int("pipeline_jobs", "assigned_printer_id", 102, removed=112),  # owed only while m112 is not applied
 )
 
 
@@ -265,11 +271,14 @@ def setting_int_id(raw) -> int | None:
     """``int(value)``, as the settings readers take it; ``""`` and ``"None"`` are no printer."""
     if isinstance(raw, (bytes, bytearray)):
         raw = raw.decode("utf-8", "replace")
-    if not isinstance(raw, str):
-        return None
-    try:
-        value = int(raw)
-    except ValueError:
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        value = raw  # a driver may hand a numeric text back as a number; int(value) reads it the same
+    elif isinstance(raw, str):
+        try:
+            value = int(raw)
+        except ValueError:
+            return None
+    else:
         return None
     return value if in_domain(value) else None
 
@@ -303,10 +312,29 @@ def text_ids(kind: str, raw) -> list[int]:
 
 
 def _missing(carrier: Carrier, applied: set[int], what: str) -> None:
-    if carrier.guaranteed is not None and carrier.guaranteed in applied:
+    """Stop when the applied set proves the carrier exists: its migration is applied and the one
+    that removed it (a historical carrier) is not."""
+    owed = carrier.guaranteed is not None and carrier.guaranteed in applied
+    if owed and (carrier.removed is None or carrier.removed not in applied):
         raise PrinterIdBoundError(
             f"{carrier.table}.{carrier.column}: {what}, although migration {carrier.guaranteed} creates it"
         )
+
+
+def _settings_schema(carrier: Carrier, types: dict[str, str], text_type) -> None:
+    """A present ``settings`` table must have ``key`` and a text ``value``, whatever the level."""
+    for column in ("key", "value"):
+        if column not in types:
+            raise PrinterIdBoundError(f"settings.{column}: column is missing, so {carrier.key!r} cannot be read")
+    if not text_type(types["value"]):
+        raise PrinterIdBoundError(
+            f"settings.value: unexpected type {types['value']!r}; a setting is stored as text ({carrier.key!r})"
+        )
+
+
+def _sqlite_text_affinity(declared: str | None) -> bool:
+    declared = (declared or "").upper()
+    return "INT" not in declared and any(token in declared for token in ("CHAR", "CLOB", "TEXT"))
 
 
 def _rows(conn, sql: str, params=()) -> list[tuple]:
@@ -366,11 +394,13 @@ def sqlite_bound(conn, applied: set[int]) -> int | None:
     """
     best: int | None = None
     for carrier in CARRIERS:
-        columns = {row[1] for row in _rows(conn, f"PRAGMA table_xinfo({_quote(carrier.table)})")}
+        columns = {row[1]: row[2] for row in _rows(conn, f"PRAGMA table_xinfo({_quote(carrier.table)})")}
         if not columns:
             _missing(carrier, applied, "table is missing")
             continue
-        if carrier.column not in columns or (carrier.key is not None and "key" not in columns):
+        if carrier.key is not None:
+            _settings_schema(carrier, columns, _sqlite_text_affinity)
+        if carrier.column not in columns:
             _missing(carrier, applied, "column is missing")
             continue
         if carrier.kind == "int":
@@ -410,6 +440,7 @@ def require_next_number(*highest: int | None) -> None:
 
 _PG_INT_TYPES = {"smallint", "integer", "bigint"}
 _PG_TEXT_TYPES = {"json", "jsonb", "text", "character varying", "character"}
+_PG_SETTING_TYPES = {"text", "character varying", "character"}
 
 
 async def postgres_bound(conn, applied: set[int]) -> int | None:
@@ -429,7 +460,9 @@ async def postgres_bound(conn, applied: set[int]) -> int | None:
         if not types:
             _missing(carrier, applied, "table is missing")
             continue
-        if carrier.column not in types or (carrier.key is not None and "key" not in types):
+        if carrier.key is not None:
+            _settings_schema(carrier, types, _PG_SETTING_TYPES.__contains__)
+        if carrier.column not in types:
             _missing(carrier, applied, "column is missing")
             continue
         wanted = _PG_INT_TYPES if carrier.kind == "int" else _PG_TEXT_TYPES

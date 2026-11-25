@@ -38,7 +38,14 @@ async def test_a_hard_deleted_printers_number_name_and_memory_go_to_nobody(async
     from backend.app.services import firmware_update
 
     probe = AsyncMock(return_value={"success": True, "state": "IDLE", "model": "X1C"})
-    with patch("backend.app.api.routes.printers.printer_manager.test_connection", new=probe):
+    # No real MQTT client: an active printer created over HTTP is connected right away, and a paho thread
+    # left running would outlive this test (acceptance PID-A04).
+    connected: list[int] = []
+    connect = AsyncMock(side_effect=lambda printer, *_a, **_k: connected.append(printer.id) or True)
+    with (
+        patch("backend.app.api.routes.printers.printer_manager.test_connection", new=probe),
+        patch("backend.app.api.routes.printers.printer_manager.connect_printer", new=connect),
+    ):
         first = (await async_client.post("/api/v1/printers/", json=_body("00M09A000000101"))).json()["id"]
         old = (await async_client.post("/api/v1/printers/", json=_body("00M09A000000102"))).json()["id"]
         named = await async_client.put(f"/api/v1/printers/{old}/ams-labels/0", json={"label": "Left rack"})
@@ -54,6 +61,7 @@ async def test_a_hard_deleted_printers_number_name_and_memory_go_to_nobody(async
                 labels = await async_client.get(f"/api/v1/printers/{new}/ams-labels")
             assert labels.status_code == 200 and labels.json() == {}
             assert new not in firmware_update._upload_states
+            assert connected == [first, old, new]
         finally:
             firmware_update._upload_states.pop(old, None)
 

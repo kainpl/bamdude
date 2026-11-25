@@ -276,10 +276,10 @@ async def test_a_commit_without_its_marker_reruns_as_counter_only(legacy_engine,
 # --- no printer number left in the domain: stopped before COMMIT, with the real marker ---------
 
 
-async def _assert_refused_unchanged(engine, foreign_keys: int) -> None:
+async def _assert_refused_unchanged(engine, foreign_keys: int, match: str = "exhausted") -> None:
     await _set_foreign_keys(engine, foreign_keys)
     before = await _state(engine)
-    with pytest.raises(Exception, match="exhausted"):
+    with pytest.raises(Exception, match=match):
         await _run(engine)
     after = await _state(engine)
     assert after["marker"] == 0 and after["staging"] == 0
@@ -317,6 +317,19 @@ async def test_an_empty_autoincrement_table_at_the_top_is_refused(tmp_path, monk
         await _assert_refused_unchanged(engine, 0)
     finally:
         await engine.dispose()
+
+
+@pytest.mark.parametrize("foreign_keys", [0, 1])
+async def test_a_settings_table_of_another_shape_is_refused_before_commit(legacy_engine, foreign_keys):
+    """Acceptance PID-A01: a ``settings.value`` that is not text stops the rebuild, nothing changed."""
+    async with legacy_engine.begin() as conn:
+        await conn.exec_driver_sql("DROP TABLE settings")
+        await conn.exec_driver_sql(
+            "CREATE TABLE settings (id INTEGER PRIMARY KEY, key VARCHAR(100) NOT NULL UNIQUE, value INTEGER,"
+            " created_at DATETIME, updated_at DATETIME)"
+        )
+        await conn.exec_driver_sql("INSERT INTO settings (key, value) VALUES ('virtual_printer_target_printer_id', 41)")
+    await _assert_refused_unchanged(legacy_engine, foreign_keys, match="settings.value: unexpected type")
 
 
 async def test_one_number_left_still_passes(legacy_engine):

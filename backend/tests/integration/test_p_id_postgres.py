@@ -21,7 +21,7 @@ from backend.app.core import db_portable, pg_sequences
 from backend.app.core.config import settings
 from backend.app.core.database import Base
 from backend.app.core.pg_sequences import SequenceError
-from backend.app.core.printer_id_bound import MAX_PRINTER_ID
+from backend.app.core.printer_id_bound import MAX_PRINTER_ID, PrinterIdBoundError
 from backend.app.migrations import m262_printer_id_never_reissued as m262
 from backend.tests.integration.test_embedded_postgres_live import live_settings  # noqa: F401
 from backend.tests.integration.test_g01_a_postgres import test_engine  # noqa: F401
@@ -260,6 +260,17 @@ async def test_the_json_carriers_count_on_postgres_json(test_engine):
         )
     await _upgrade(test_engine)
     assert await _next_printer_id(test_engine) == 36
+
+
+async def test_a_settings_value_that_is_not_text_stops_on_postgres(test_engine):
+    """Acceptance PID-A01: the ``settings`` schema is checked on both dialects."""
+    await _migrations_at(test_engine, 261)
+    async with test_engine.begin() as conn:
+        await conn.execute(text("ALTER TABLE settings ALTER COLUMN value TYPE integer USING 0"))
+    with pytest.raises(PrinterIdBoundError, match="settings.value: unexpected type 'integer'"):
+        await _upgrade(test_engine)
+    state = await _sequence(test_engine)
+    assert (state.last_value, state.is_called) == (1, False)
 
 
 # --- T4: SQLite → PostgreSQL import ------------------------------------------------------------
