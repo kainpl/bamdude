@@ -110,10 +110,12 @@ async def usage_metrics(db, emit, now):
         .where(SpoolUsageHistory.created_at >= now - timedelta(days=30), SpoolUsageHistory.created_at <= now)
         .group_by(SpoolUsageHistory.printer_id, kind)
     )
-    # Empty windows are explicitly zero, also after the last usage ages out.
-    printer_ids = list((await db.scalars(select(Printer.id))).all()) + [None]
     totals = {(row[0], row[1]): row[2:] for row in rows}
-    for printer_id in printer_ids:
+    # Keep zeroes for known printers and retain ledger IDs that SQLite did not
+    # clear when a printer was deleted.
+    printer_ids = set((await db.scalars(select(Printer.id))).all())
+    printer_ids.update(printer_id for printer_id, _ in totals if printer_id is not None)
+    for printer_id in [*sorted(printer_ids), None]:
         for category in ("print", "service_adjustment"):
             values = totals.get((printer_id, category), (0, 0, 0))
             for window, value in zip(windows, values, strict=True):

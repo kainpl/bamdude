@@ -9,7 +9,7 @@ The same authenticated `/api/v1/metrics` endpoint also exports the following **g
 | `bamdude_inventory_remaining_grams`, `bamdude_inventory_low_stock_spools` | Same estimates and threshold rules as Inventory; remaining is clamped per active spool. |
 | `bamdude_inventory_overdrawn_spools` | Active records whose lifetime use exceeds label weight; investigate, do not assume physically empty. |
 | `bamdude_assigned_spool_balance_grams`, `bamdude_assigned_spool_archived` | Per `printer_id`, `ams_id`, `tray_id`; signed remaining estimate and archived-assignment warning. |
-| `bamdude_accounted_filament_window_grams{printer_id,kind,window}` | Booked signed grams during rolling `24h`, `7d`, `30d`, by **ledger settlement time**. `kind=print` includes failed attempts and legacy print outcomes; `service_adjustment` keeps runout/AMS corrections separate. Missing printer attribution is `unassigned`. Active slicer estimates are excluded. |
+| `bamdude_accounted_filament_window_grams{printer_id,kind,window}` | Booked signed grams during rolling `24h`, `7d`, `30d`, by **ledger settlement time**. `kind=print` includes failed attempts and legacy print outcomes. `service_adjustment` covers runout and AMS corrections. The ledger's printer ID can outlive a deleted printer. Rows without an ID use `unassigned`. Active slicer estimates are excluded. |
 | `bamdude_pending_jobs{tier}` | `auto` awaiting distribution and `printer` awaiting dispatch; promoted AutoQueue rows are counted only in the printer tier. |
 | `bamdude_printer_maintenance`, `bamdude_printer_queue_paused`, `bamdude_printer_auto_distribute_eligible`, `bamdude_printer_awaiting_plate_clear` | Independent stored gates, keyed by `printer_id`, including printers in Maintenance Mode. Not physical proof. Missing queue headers omit queue flags. |
 | `bamdude_printer_telemetry_timestamp_known`, `bamdude_printer_telemetry_age_seconds` | Whether a last locally received MQTT timestamp is known and its age. Unknown age is omitted. A recent message does not prove every individual field is fresh. |
@@ -24,6 +24,8 @@ The same authenticated `/api/v1/metrics` endpoint also exports the following **g
 | `bamdude_production_snapshot_timestamp_seconds` | UTC collection time. Multiple SQL reads are not an immutable production snapshot. |
 
 Order detail covers **active orders only**, with no customer names, filenames or archive IDs in labels. Before hydration the reader checks aggregate limits: 50 orders, 1,000 lines, 10,000 live archives and 100,000 archive-part rows. If exceeded, `order_details_available=0` and **all order detail is omitted**, not reported as zero or silently truncated. Global stock/queue metrics remain available. IDs are current database IDs, not identities portable across restores. Open `/projects/{order_id}` for names and details.
+
+Part detail adds one quality-known series and six quantity series per line–part pair. The order and line limits do not cap the number of parts on each line. If you do not need per-part charts, drop `bamdude_order_part_.*` with `metric_relabel_configs` to reduce stored series. This filtering happens after the scrape.
 
 All new values are accounting snapshots, and spool balances remain estimates. Corrections, deletion, aging windows and resets can decrease them. **Do not apply `rate()` or `increase()`**. Historical series begin only when Prometheus actually scrapes the endpoint; enabling it alone does not configure a scrape job. Rolling totals use existing retained ledger rows and do not reconstruct missing past usage.
 

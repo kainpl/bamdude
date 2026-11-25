@@ -13,6 +13,7 @@ from backend.app.api.routes.metrics import format_labels
 from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.print_queue import PrintQueueItem
+from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.settings import Settings
@@ -86,6 +87,37 @@ async def test_stock_and_rolling_usage_match_existing_accounting(db_session, pri
         get("accounted_filament_window_grams", printer_id=str(printer.id), kind="service_adjustment", window="24h") == 5
     )
     assert get("accounted_filament_window_grams", printer_id="unassigned", kind="print", window="24h") == 0
+
+
+async def test_rolling_usage_keeps_deleted_sqlite_printer_history(db_session, printer_factory):
+    printer = await printer_factory()
+    printer_id = printer.id
+    spool = Spool(material="PETG", label_weight=3000, weight_used=58)
+    db_session.add(spool)
+    await db_session.flush()
+    now = datetime(2026, 11, 25, 12)
+    for days, grams, status in ((0, 10, "completed"), (2, 20, "failed"), (8, 30, "completed"), (0, -2, "ams_sync")):
+        db_session.add(
+            SpoolUsageHistory(
+                spool_id=spool.id,
+                printer_id=printer_id,
+                weight_used=grams,
+                status=status,
+                created_at=now - timedelta(days=days),
+            )
+        )
+    await db_session.commit()
+    # SQLite keeps the stored printer ID when FK actions are disabled.
+    await db_session.execute(delete(Printer).where(Printer.id == printer_id))
+    await db_session.commit()
+
+    emit, get, _ = capture()
+    await production_metrics.usage_metrics(db_session, emit, now)
+    metric = "accounted_filament_window_grams"
+    for window, expected in (("24h", 10), ("7d", 30), ("30d", 60)):
+        assert get(metric, printer_id=str(printer_id), kind="print", window=window) == expected
+        assert get(metric, printer_id=str(printer_id), kind="service_adjustment", window=window) == -2
+        assert get(metric, printer_id="unassigned", kind="print", window=window) == 0
 
 
 async def test_orders_preserve_qc_recounts_ui_units_and_do_not_write(db_session, committing_client, shop):
