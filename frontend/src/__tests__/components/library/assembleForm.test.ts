@@ -47,7 +47,8 @@ describe('assembleForm', () => {
     ]);
     expect(form.targets).toHaveLength(1);
     expect(form.targets[0]).toMatchObject({ printer: null, process: null, filament: null, nozzle: 1 });
-    expect(form).toMatchObject({ spacing: '2', rotationStep: 90, centre: true, splitPlates: false });
+    expect(form).toMatchObject({ spacing: '2', rotationStep: 90, centre: true, splitPlates: false, longSearch: false });
+    expect(toRequest(ready()).layout).toMatchObject({ rotation_step: 90 });
   });
 
   it('refuses what the server would refuse, by field', () => {

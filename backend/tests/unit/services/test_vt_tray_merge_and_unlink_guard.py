@@ -26,7 +26,7 @@ from __future__ import annotations
 import pytest
 
 from backend.app.main import slot_reported_no_filament
-from backend.app.services.bambu_mqtt import _merge_vt_tray
+from backend.app.services.bambu_mqtt import BambuMQTTClient, _merge_vt_tray
 
 
 def _full() -> list[dict]:
@@ -41,6 +41,16 @@ def _full() -> list[dict]:
             "remain": 80,
         }
     ]
+
+
+@pytest.mark.parametrize(("model", "expected_id"), [("P1S", 254), ("X2D", 255)])
+def test_one_external_entry_keeps_the_right_id_only_on_dual_nozzle_printers(model, expected_id):
+    mqtt = BambuMQTTClient("127.0.0.1", "SYNTHETIC", "00000000", model=model)
+    mqtt.state.connected = True
+    report = {"print": {"command": "push_status", "vir_slot": [{"id": "255", "tray_type": "ABS"}]}}
+    mqtt._process_message(report)
+    assert int(mqtt.state.raw_data["vt_tray"][0]["id"]) == expected_id
+    assert report["print"]["vir_slot"][0]["id"] == "255"
 
 
 class TestAbsentFieldsSurvive:

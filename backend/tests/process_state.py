@@ -48,6 +48,7 @@ PRINTER_KEYED_REGISTRIES = (
     ("backend.app.main", "_expected_print_registered_at"),
     ("backend.app.main", "_expected_prints"),
     ("backend.app.main", "_first_layer_notified"),
+    ("backend.app.main", "_hms_notification_storage"),
     ("backend.app.main", "_running_print_adoptions"),
     ("backend.app.main", "_hms_forget_when_gone"),
     ("backend.app.main", "_hms_print_state"),

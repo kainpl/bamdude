@@ -360,6 +360,11 @@ function progressLine(t: ReturnType<typeof useTranslation>['t'], progress: Assem
   if (progress.stage === 'packing') {
     if (!progress.printer_count) return t('fileManager.assemble.progress.starting');
     const where = { printer: (progress.printer_index ?? 0) + 1, printers: progress.printer_count };
+    if (progress.search_best_plates) {
+      return t('fileManager.assemble.searchProgress', {
+        ...where, copies: progress.search_best_copies ?? 0, plates: progress.search_best_plates,
+      });
+    }
     // a filled plate has no number to reach: the packer's own ceiling is not a total to show
     return progress.fill_part != null
       ? t('fileManager.assemble.progress.filling', { ...where, placed: progress.placed ?? 0 })
@@ -706,6 +711,15 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
   }, [job.data, finished, queryClient]);
 
   const stop = useMutation({ mutationFn: () => api.cancelSliceJob(jobId as number) });
+  const finishSearch = useMutation({ mutationFn: () => api.finishAssemblySearch(jobId as number) });
+  const resetFinishSearch = finishSearch.reset;
+  useEffect(() => { resetFinishSearch(); }, [jobId, resetFinishSearch]);
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (jobId === null || finished !== null) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [jobId, finished]);
 
   const phase: 'form' | 'running' | 'summary' = finished ? 'summary' : jobId !== null ? 'running' : 'form';
   const close = () => {
@@ -799,6 +813,19 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
         <p className="text-sm text-white" role="status">
           {progressLine(t, job.data?.progress ?? null)}
         </p>
+        {job.data?.progress?.search_best_plates ? (
+          <p className="text-xs text-bambu-gray">
+            {t('fileManager.assemble.searchElapsed', {
+              seconds: Math.max(0, Math.floor((now - Date.parse(job.data.started_at ?? job.data.created_at)) / 1000)),
+            })}
+          </p>
+        ) : null}
+        {(finishSearch.isSuccess || job.data?.finish_requested) && (
+          <p className="text-sm text-bambu-green">{t('fileManager.assemble.finishingSearch')}</p>
+        )}
+        {finishSearch.error instanceof ApiError && (
+          <p className="text-sm text-amber-400" role="alert">{finishSearch.error.message}</p>
+        )}
         {job.isError ? (
           <p className="text-sm text-red-300" role="alert">
             {t('fileManager.assemble.pollFailed')}
@@ -818,6 +845,12 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
         <Button variant="secondary" onClick={close}>
           {t('common.close')}
         </Button>
+        {job.data?.progress?.search_best_plates && job.data.progress.stage === 'packing' ? (
+          <Button variant="primary" onClick={() => finishSearch.mutate()}
+            disabled={finishSearch.isPending || finishSearch.isSuccess || job.data.finish_requested}>
+            {t('fileManager.assemble.finishSearch')}
+          </Button>
+        ) : null}
         <Button
           variant="danger"
           onClick={() => stop.mutate()}
@@ -955,6 +988,15 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }:
               label={t('fileManager.assemble.splitPlates')}
             />
           </div>
+        </section>
+
+        <section className="rounded-lg border border-bambu-green/40 bg-bambu-green/5 p-3 space-y-2">
+          <label className="flex items-center gap-2 text-sm text-white font-medium">
+            <input type="checkbox" checked={form.longSearch ?? false}
+              onChange={(event) => update((current) => ({ ...current, longSearch: event.target.checked }))} />
+            {t('fileManager.assemble.longSearch')}
+          </label>
+          <p className="text-xs text-bambu-gray">{t('fileManager.assemble.longSearchHelp')}</p>
         </section>
 
         <section className="space-y-2">

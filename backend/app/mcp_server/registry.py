@@ -11,7 +11,7 @@ from backend.app.mcp_server.limits import (
     CONCURRENT_CALLS_PER_KEY,
     CONCURRENT_CALLS_PER_PROCESS,
 )
-from backend.app.mcp_server.tools import Tool, diagnostics
+from backend.app.mcp_server.tools import Tool, diagnostics, orders
 from backend.app.services.farm_diagnostics.access import DiagnosticError
 from backend.app.services.farm_diagnostics.contracts import ReadResult
 from backend.app.services.queue_sources import current_epoch
@@ -38,11 +38,11 @@ TOOLS = (
     Tool("bamdude_get_capabilities", "Read the available BamDude modules, contracts and limits.", EmptyInput),
     Tool("bamdude_get_usage_guide", "Read BamDude's read-only diagnostic and connection guidance.", GuideInput),
 )
-REGISTERED_MODULES = ["base", "diagnostics"]
+REGISTERED_MODULES = ["base", "diagnostics", "orders"]
 
 
 def tool_names() -> frozenset[str]:
-    return frozenset(tool.name for tool in (*TOOLS, *diagnostics.TOOLS))
+    return frozenset(tool.name for tool in (*TOOLS, *diagnostics.TOOLS, *orders.TOOLS))
 
 
 def create_server():
@@ -65,7 +65,7 @@ def create_server():
                 output_schema=(DiagnosticResult if tool in TOOLS else ReadResult).model_json_schema(),
                 annotations=types.ToolAnnotations(read_only_hint=True, destructive_hint=False),
             )
-            for tool in (*TOOLS, *diagnostics.visible(granted))
+            for tool in (*TOOLS, *diagnostics.visible(granted), *orders.visible(granted))
         ]
 
     async def list_tools(ctx, params):
@@ -103,7 +103,7 @@ def create_server():
                 ],
             )
 
-        tool = next((item for item in (*TOOLS, *diagnostics.TOOLS) if item.name == params.name), None)
+        tool = next((item for item in (*TOOLS, *diagnostics.TOOLS, *orders.TOOLS) if item.name == params.name), None)
         if tool is None:
             return error("not_found")
         try:
@@ -114,7 +114,8 @@ def create_server():
             return error("state_changed")
         if tool not in TOOLS:
             try:
-                result = await diagnostics.read(
+                reader = orders if tool in orders.TOOLS else diagnostics
+                result = await reader.read(
                     tool.name, granted, arguments, request_id, owner=scope["bamdude_mcp_runtime"]
                 )
             except DiagnosticError as exc:
@@ -137,11 +138,18 @@ def create_server():
                 "bamdude_version": app_version,
                 "diagnostic_contract": 1,
                 "skill_contract": 1,
+                "orders_contract": 1,
                 "enabled_modules": REGISTERED_MODULES,
-                "tool_names": [item.name for item in (*TOOLS, *diagnostics.visible(granted))],
+                "tool_names": [item.name for item in (*TOOLS, *diagnostics.visible(granted), *orders.visible(granted))],
                 "auth": "api_key",
                 "transport": "streamable_http",
                 "timezone": "UTC",
+                "order_limits": {
+                    "archives_per_order": 10000,
+                    "archive_part_rows_per_order": 100000,
+                    "lines_per_order": 2000,
+                    "parts_per_line": 100,
+                },
                 "limits": {
                     "page_default": 50,
                     "page_max": 100,

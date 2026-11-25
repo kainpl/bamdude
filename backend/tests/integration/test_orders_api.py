@@ -3888,16 +3888,17 @@ async def test_a_line_names_its_products_sku_origin_and_cover(committing_client,
 
 
 @pytest.mark.asyncio
-async def test_a_line_whose_product_is_gone_reads_as_nothing_known(committing_client, db_session, catalog):
-    """H01: a line pointing at no product (SQLite keeps the dangling id) answers the
-    defaults — no SKU, catalog, no cover — rather than failing the order."""
+async def test_a_line_whose_product_is_gone_keeps_its_saved_parts(committing_client, db_session, catalog):
+    """Missing product metadata falls back to defaults while the line keeps its saved parts."""
     pid, line_id = await _order_with_line(committing_client, catalog["product"].id, 1)
     (await db_session.get(ProjectLine, line_id)).product_id = 987654
     await db_session.commit()
 
     [line] = (await _detail(committing_client, pid))["lines"]
     assert (line["product_sku"], line["product_origin"], line["product_has_cover"]) == (None, "catalog", False)
-    assert line["purchased"] == []
+    [screw] = line["purchased"]
+    assert (screw["name"], screw["per"], screw["need"]) == ("M3", 4, 4)
+    assert screw["part_id"] < 0
 
 
 async def _mount_group(db, product_id):

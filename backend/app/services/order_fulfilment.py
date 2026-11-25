@@ -358,17 +358,24 @@ async def load_context(db: AsyncSession, project: Project) -> OrderContext:
 
 
 async def state(
-    db: AsyncSession, project: Project, *, to_stock: bool | None = None, ctx: OrderContext | None = None
+    db: AsyncSession,
+    project: Project,
+    *,
+    to_stock: bool | None = None,
+    ctx: OrderContext | None = None,
+    figures: dict[int, LineFigures] | None = None,
 ) -> OrderState:
     """What each line can assemble, receive and issue now — the order's context and the
     parts lines' counters read once each, whatever the order's size. ``to_stock`` overrides
     "has no customer" for a request that changes the customer as it completes (rule 35).
 
     ``ctx`` — a context the caller already read with ``load_context``, computed over as is;
-    ``apply`` passes none and reads its own under its locks, as it always did."""
+    ``figures`` may reuse attribution from that same context. Writers pass neither
+    and continue reading and attributing under their own locks."""
     if ctx is None:
         ctx = await load_context(db, project)
-    figures, _other = attribute(ctx)
+    if figures is None:
+        figures, _other = attribute(ctx)
     counters = await part_stock.line_part_stock(
         db, [line.id for line in ctx.lines if line.mode == "parts" or line.extra_percentages]
     )

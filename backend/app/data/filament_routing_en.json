@@ -35,6 +35,7 @@
   "color_unavailable": "The required color cannot be verified.",
   "color_mismatch": "The required color is not loaded.",
   "material_mismatch": "No compatible filament source is available.",
+  "feed_policy_mismatch": "This slot is excluded by the selected filament source setting.",
   "variant_mismatch": "The filament variant does not match.",
   "feed_topology_mismatch": "The available feeds cannot switch all required channels.",
   "fts_external_unsupported": "External filament cannot be used while Filament Track Switch is connected.",

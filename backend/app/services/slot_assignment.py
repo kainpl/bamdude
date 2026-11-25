@@ -33,7 +33,12 @@ from backend.app.services.filament_identity import (
     resolve_tray,
 )
 from backend.app.utils import filament_catalog as catalog
-from backend.app.utils.filament_types import SUPPORT_SLOT_TYPES, filament_types_compatible, support_slot_type
+from backend.app.utils.filament_types import (
+    SUPPORT_SLOT_TYPES,
+    filament_types_compatible,
+    routing_filament_type,
+    support_slot_type,
+)
 from backend.app.utils.printer_models import PRINTER_MODEL_MAP
 
 logger = logging.getLogger(__name__)
@@ -107,7 +112,7 @@ def _stand_in(material: str) -> tuple[catalog.CatalogFamily | None, str]:
     return catalog.generic_family_for_material(material), material.strip()
 
 
-def _preset_is_of_material(preset_type: str | None, material: str | None) -> bool:
+def _preset_is_of_material(preset_type: str | None, material: str | None, family_id: str) -> bool:
     """Would the preset tell the slot the type the spool's material gives it?
 
     The spool's side is what :func:`_stand_in` would write for that material —
@@ -118,9 +123,9 @@ def _preset_is_of_material(preset_type: str | None, material: str | None) -> boo
     if not (material or "").strip() or not (preset_type or "").strip():
         return True
     _, spool_type = _stand_in(material)
-    return filament_types_compatible(preset_type, spool_type) or (
-        preset_type in SUPPORT_SLOT_TYPES and filament_types_compatible(preset_type.removesuffix("-S"), spool_type)
-    )
+    return filament_types_compatible(
+        routing_filament_type(preset_type, family_id), routing_filament_type(spool_type, family_id)
+    ) or (preset_type in SUPPORT_SLOT_TYPES and filament_types_compatible(preset_type.removesuffix("-S"), spool_type))
 
 
 def _pick_preset(family_id: str, candidates: list[str]) -> catalog.CatalogPreset | None:
@@ -252,6 +257,7 @@ async def build_slot_assignment(
         if candidate.family and _preset_is_of_material(
             support_slot_type(candidate.filament_type, candidate.family.filament_id),
             material_override,
+            candidate.family.filament_id,
         ):
             resolved, from_stored_preset = candidate, True
         elif candidate.family:

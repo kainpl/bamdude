@@ -5,7 +5,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { useEffect } from 'react';
 import { act, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import i18n from '../../../i18n';
 import { render } from '../../utils';
 import { api, ApiError } from '../../../api/client';
@@ -51,6 +53,14 @@ const product = {
     },
   ],
 } as unknown as Product;
+
+function purchasedPart(identity: string, name: string, quantity = 1): Product['parts'][number] {
+  return {
+    id: 31, composition_identity: identity, kind: 'purchased', name, name_key: name.toLowerCase(),
+    qty_per_unit: quantity, variant_option_ids: [], aliases: [], auto: false, unit_price: null,
+    sourcing_url: null, remarks: null, sort_order: 4, ignored: false, stock_balance: 0,
+  };
+}
 
 const line = {
   id: 21,
@@ -141,6 +151,160 @@ describe('LineConfigDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
     await waitFor(() => expect(save).toHaveBeenCalledWith(9, 21, { choices: { 3: 12 }, part_counts: {} }));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it('requires confirmation again when a refresh changes the proposed kit for the same draft', async () => {
+    const first = {
+      reserved_before: 0, reserved_after: 0, finished_before: 0, finished_after: 0, dropping: [],
+      review_version: 'first-proposal',
+      changes: [{ part_id: 31, name: 'First seal', per_before: 0, per_after: 1, printed: 0, queued: 0 }],
+    };
+    const preview = vi.spyOn(api, 'previewLineConfiguration').mockResolvedValue(first);
+    const save = vi.spyOn(api, 'setLineConfiguration').mockResolvedValue({ id: 9, lines: [] } as unknown as Order);
+    const snapshot = { ...line, configuration: { ...line.configuration!, revision: 1 } };
+    const onClient = vi.fn<(client: QueryClient) => void>();
+    function CaptureQueryClient({ onReady }: { onReady: (client: QueryClient) => void }) {
+      const client = useQueryClient();
+      useEffect(() => onReady(client), [client, onReady]);
+      return null;
+    }
+    render(<>
+      <CaptureQueryClient onReady={onClient} />
+      <LineConfigDialog orderId={9} orderCode="OR-0009" line={snapshot} onClose={() => {}} />
+    </>);
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Хвіст' })).getByRole('radio', { name: 'кутовий' }));
+    const confirm = await screen.findByRole('checkbox', { name: 'Apply the proposed parts for this variant' });
+    const saveButton = screen.getByRole('button', { name: 'Save configuration' });
+    fireEvent.click(confirm);
+    expect(saveButton).toBeEnabled();
+
+    preview.mockResolvedValue({
+      ...first,
+      review_version: 'second-proposal',
+      changes: [...first.changes, { part_id: 32, name: 'Second seal', per_before: 0, per_after: 3, printed: 0, queued: 0 }],
+    });
+    const [client] = onClient.mock.calls[0];
+    await act(async () => { await client.invalidateQueries({ queryKey: ['line-config-preview', 9, 21] }); });
+    await screen.findByText(/Second seal/);
+    expect(confirm).not.toBeChecked();
+    expect(saveButton).toBeDisabled();
+    expect(save).not.toHaveBeenCalled();
+
+    fireEvent.click(confirm);
+    fireEvent.click(saveButton);
+    await waitFor(() => expect(save).toHaveBeenCalledWith(9, 21, {
+      choices: { 3: 12 }, part_counts: {}, expected_revision: 1, review_version: 'second-proposal',
+    }));
+  });
+
+  it('refreshes a refused write and requires confirmation of the replacement preview', async () => {
+    const first = {
+      reserved_before: 0, reserved_after: 0, finished_before: 0, finished_after: 0, dropping: [],
+      review_version: 'old-kit',
+    };
+    const preview = vi.spyOn(api, 'previewLineConfiguration').mockResolvedValue(first);
+    const save = vi.spyOn(api, 'setLineConfiguration')
+      .mockRejectedValueOnce(new ApiError('Review again', 409, 'line_configuration_stale'))
+      .mockResolvedValue({ id: 9, lines: [] } as unknown as Order);
+    const snapshot = { ...line, configuration: { ...line.configuration!, revision: 1 } };
+    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={snapshot} onClose={() => {}} />);
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Хвіст' })).getByRole('radio', { name: 'кутовий' }));
+    const confirmLabel = { name: 'Apply the proposed parts for this variant' };
+    fireEvent.click(await screen.findByRole('checkbox', confirmLabel));
+
+    preview.mockResolvedValue({
+      ...first, review_version: 'new-kit',
+      changes: [{ part_id: 31, name: 'Late gasket', per_before: 0, per_after: 1, printed: 0, queued: 0 }],
+    });
+    const saveButton = screen.getByRole('button', { name: 'Save configuration' });
+    fireEvent.click(saveButton);
+    await screen.findByText(/Late gasket/);
+    expect(api.getProduct).toHaveBeenCalledTimes(2);
+    const confirmation = await screen.findByRole('checkbox', confirmLabel);
+    expect(confirmation).not.toBeChecked();
+    expect(saveButton).toBeDisabled();
+    expect(save).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(confirmation);
+    fireEvent.click(saveButton);
+    await waitFor(() => expect(save).toHaveBeenLastCalledWith(9, 21, {
+      choices: { 3: 12 }, part_counts: {}, expected_revision: 1, review_version: 'new-kit',
+    }));
+  });
+
+  it('refreshes a removed catalog identity without carrying its typed quantity to the replacement', async () => {
+    const ring = purchasedPart('original', 'Ring');
+    const getProduct = vi.spyOn(api, 'getProduct').mockResolvedValue({ ...product, parts: [...product.parts, ring] });
+    const preview = vi.spyOn(api, 'previewLineConfiguration').mockResolvedValue({
+      reserved_before: 0, reserved_after: 0, finished_before: 0, finished_after: 0,
+      dropping: [], review_version: 'first',
+    });
+    const snapshot = { ...line, configuration: { ...line.configuration!, revision: 1 } };
+    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={snapshot} onClose={() => {}} />);
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Хвіст' })).getByRole('radio', { name: 'кутовий' }));
+    const field = await screen.findByRole('spinbutton', { name: 'Ring — per unit' });
+    await screen.findByRole('checkbox', { name: 'Apply the proposed parts for this variant' });
+
+    getProduct.mockResolvedValue({ ...product, parts: [...product.parts, { ...ring, composition_identity: 'replacement' }] });
+    preview.mockRejectedValueOnce(new ApiError('Review again', 409, 'line_configuration_stale'));
+    fireEvent.change(field, { target: { value: '4' } });
+    await waitFor(() => expect(preview).toHaveBeenCalledWith(9, 21, {
+      choices: { 3: 12 }, part_counts: {}, expected_revision: 1, catalog_part_edits: { original: 4 },
+    }));
+    await screen.findByText(/Order and catalog refreshed/);
+    expect(screen.getByRole('spinbutton', { name: 'Ring — per unit' })).toHaveValue(1);
+    expect(screen.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+    await waitFor(() => expect(preview).toHaveBeenCalledTimes(3));
+    expect(preview).toHaveBeenLastCalledWith(9, 21, { choices: { 3: 12 }, part_counts: {}, expected_revision: 1 });
+  });
+
+  it('sends the explicit standard quantity of a manually added row when changing variants', async () => {
+    vi.spyOn(api, 'getProduct').mockResolvedValue({
+      ...product,
+      parts: [...product.parts, purchasedPart('seal', 'Seal')],
+    });
+    const preview = vi.spyOn(api, 'previewLineConfiguration').mockResolvedValue({
+      reserved_before: 0, reserved_after: 0, finished_before: 0, finished_after: 0,
+      dropping: [], review_version: 'proposal',
+    });
+    const snapshot = { ...line, configuration: {
+      ...line.configuration!, revision: 2,
+      changed_parts: [{ part_id: 31, name: 'Seal', qty: 2, standard_qty: 1 }],
+      count_identities: { 31: 'seal' },
+      saved_parts: [{ part_id: 31, identity: 'seal', name: 'Seal', kind: 'purchased' as const, qty: 2, in_catalog: true, manual: true }],
+    } };
+    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={snapshot} onClose={() => {}} />);
+    const original = await screen.findByRole('spinbutton', { name: 'Seal — per unit' });
+    expect(original).toHaveValue(2);
+    expect(within(original.closest('tr')!).getByText('standard 1')).toBeInTheDocument();
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Хвіст' })).getByRole('radio', { name: 'кутовий' }));
+    const count = await screen.findByRole('spinbutton', { name: 'Seal — per unit' });
+    expect(count).toHaveValue(2);
+    fireEvent.change(count, { target: { value: '1' } });
+    await waitFor(() => expect(preview).toHaveBeenLastCalledWith(9, 21, {
+      choices: { 3: 12 }, part_counts: {}, expected_revision: 2, saved_part_edits: { seal: 1 },
+    }));
+  });
+
+  it('ignores a saved zero override when a fresher catalog reuses the part ID', async () => {
+    vi.spyOn(api, 'getProduct').mockResolvedValue({
+      ...product,
+      parts: [...product.parts, purchasedPart('switch', 'Switch', 3)],
+    });
+    const preview = vi.spyOn(api, 'previewLineConfiguration').mockResolvedValue({
+      reserved_before: 0, reserved_after: 0, finished_before: 0, finished_after: 0,
+      dropping: [], review_version: 'proposal',
+    });
+    const snapshot = { ...line, configuration: {
+      ...line.configuration!, revision: 2,
+      changed_parts: [{ part_id: 31, name: 'Removed seal', qty: 0, standard_qty: 1 }],
+      count_identities: { 31: 'seal' },
+      saved_parts: [],
+    } };
+    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={snapshot} onClose={() => {}} />);
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Хвіст' })).getByRole('radio', { name: 'кутовий' }));
+    expect(await screen.findByRole('spinbutton', { name: 'Switch — per unit' })).toHaveValue(3);
+    await waitFor(() => expect(preview).toHaveBeenLastCalledWith(9, 21, { choices: { 3: 12 }, part_counts: {}, expected_revision: 2 }));
   });
 
   it('shows the ready units a change would move to the new position', async () => {

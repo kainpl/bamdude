@@ -112,13 +112,30 @@ async def test_mixed_receipts_in_batches_remain_complete_and_do_not_receive_twic
 
 
 async def test_purchased_parts_gate_mixed_completeness(committing_client, db_session, shop):
-    await take_loose_a(committing_client, db_session, shop)
-    await archive(db_session, shop, status="completed", quantities=(0, 10))
     screw = ProductPart(
         product_id=shop["a"].product_id, kind="purchased", name="Part C", name_key="purchased:part c", qty_per_unit=2
     )
     db_session.add(screw)
     await db_session.commit()
+    url = f"/api/v1/projects/{shop['order']}/lines/{shop['line']}"
+    preview = await committing_client.get(url + "/part-candidates")
+    assert preview.status_code == 200, preview.text
+    candidates = preview.json()
+    added = await committing_client.post(
+        url + "/parts",
+        json={
+            "part_id": screw.id,
+            "part_identity": screw.composition_identity,
+            "quantity": 2,
+            "expected_revision": candidates["revision"],
+            "expected_quantity": candidates["quantity"],
+            "catalog_version": candidates["catalog_version"],
+            "command_id": "purchased-part-required",
+        },
+    )
+    assert added.status_code == 200, added.text
+    await take_loose_a(committing_client, db_session, shop)
+    await archive(db_session, shop, status="completed", quantities=(0, 10))
     response = await committing_client.get(f"/api/v1/projects/{shop['order']}")
     assert response.json()["figures"]["covered_units"] == 10
     assert response.json()["figures"]["complete"] == 0

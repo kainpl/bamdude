@@ -28,6 +28,8 @@ from backend.tests.auth_helpers import bind_test_key
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 JPEG = b"\xff\xd8oq2-frame\xff\xd9"
 CHUNK = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + JPEG + b"\r\n"
+# The documented delivery deadline runs from the committed authority change.
+REVOCATION_SECONDS = 5
 logger = logging.getLogger(__name__)
 
 
@@ -237,7 +239,9 @@ async def change_authority(db, key, owner, group, printer, change):
     elif change == "epoch":
         await db.execute(update(Settings).where(Settings.key == STORAGE_EPOCH_KEY).values(value=str(uuid.uuid4())))
     await db.commit()
+    committed_at = time.monotonic()
     await db.close()
+    return committed_at
 
 
 @pytest.mark.parametrize("header", ["key", "bearer"])
@@ -252,12 +256,11 @@ async def test_http_delivery_stops_on_current_authority_change(
     raw, key, owner, group = await principal(db_session)
     runtime(monkeypatch, stalled)
     async with streaming(async_client._transport.app, printer.id, raw, header) as (task, bodies):
-        changed = time.monotonic()
-        await change_authority(db_session, key, owner, group, printer, change)
-        response = await asyncio.wait_for(asyncio.shield(task), 2)
+        committed_at = await change_authority(db_session, key, owner, group, printer, change)
+        deadline = committed_at + REVOCATION_SECONDS
+        response = await asyncio.wait_for(asyncio.shield(task), REVOCATION_SECONDS)
         assert response.status_code == 200
-        assert time.monotonic() - changed < 2
-        assert all(at - changed < 2 for at, _ in bodies)
+        assert all(at < deadline for at, _ in bodies)
         if stalled:
             assert len(bodies) == 1
 
@@ -275,10 +278,10 @@ async def test_real_default_bound_without_shortened_recheck(
     raw, key, owner, group = await principal(db_session)
     runtime(monkeypatch, stalled)
     async with streaming(async_client._transport.app, printer.id, raw, header) as (task, bodies):
-        changed = time.monotonic()
-        await change_authority(db_session, key, owner, group, printer, "disable")
-        await asyncio.wait_for(asyncio.shield(task), 5)
-        assert all(at - changed < 5 for at, _ in bodies)
+        committed_at = await change_authority(db_session, key, owner, group, printer, "disable")
+        deadline = committed_at + REVOCATION_SECONDS
+        await asyncio.wait_for(asyncio.shield(task), REVOCATION_SECONDS)
+        assert all(at < deadline for at, _ in bodies)
 
 
 async def test_revoke_one_viewer_preserves_shared_upstream(async_client, db_session, printer_factory, monkeypatch):

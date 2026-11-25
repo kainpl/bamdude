@@ -97,6 +97,42 @@ async def test_a_negative_answer_fails_the_attempt_with_its_class_and_halts_the_
     mqtt._client.publish.assert_called_once()
 
 
+async def test_no_ack_on_a_swap_dispatch_keeps_the_execution_owned(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions
+):
+    import backend.app.services.background_dispatch as bd
+    from backend.app.services import swap_compatibility
+    from backend.tests.integration.test_dispatch_attempt_outcome import queued
+    from backend.tests.integration.test_dispatch_without_original import a_library_source
+    from backend.tests.integration.test_filament_routing_dispatch import setup_source
+
+    _, printer, queue, mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    printer.swap_mode_enabled = True
+    source = await a_library_source(db_session, tmp_path, name="lamp.gcode.3mf")
+    swap_compatibility.declare_ingest(source, False, origin="classifier")
+    await db_session.commit()
+    item = await queued(db_session, queue, source, "library")
+    item.execute_swap_macros = True
+    item.swap_macro_events = '["swap_mode_change_table"]'
+    item_id, queue_id = item.id, queue.id
+    await db_session.commit()
+    service = dispatch_mocks(monkeypatch, async_sessionmaker(test_engine, expire_on_commit=False))
+    scheduler, spawned = scheduler_with_captured_dispatch(monkeypatch)
+    monkeypatch.setattr(service, "_await_print_response", AsyncMock(return_value=bd.RESPONSE_NO_ACKNOWLEDGEMENT))
+
+    await one_tick(scheduler, spawned)
+    row = await reread(db_session, PrintQueueItem, item_id)
+    archive = await db_session.get(PrintArchive, row.archive_id)
+    assert row.status == archive.status == "printing"
+    assert archive.completed_at is None and archive.dispatch_phase == "sent"
+    assert archive.extra_data["swap_macro_events_pending"] == ["swap_mode_change_table"]
+    queue = await db_session.get(PrinterQueue, queue_id)
+    assert queue.status == "printing" and queue.current_item_id == item_id
+    assert bd.attempt_unobserved(archive.id)
+    await one_tick(scheduler, spawned)
+    mqtt._client.publish.assert_called_once()
+
+
 # --------------------------------------------------------------------------- #
 # D05 — one veto for every automatic pending: a swap start that ran
 # --------------------------------------------------------------------------- #
@@ -705,6 +741,7 @@ async def test_dispatch_color_changes_follow_a_proven_start(db_session, monkeypa
     db_session.add(archive)
     await db_session.commit()
     job = SimpleNamespace(
+        options={},
         execution_archive_id=archive.id,
         dispatch_boot_id="color-test",
         printer_id=1,
@@ -812,6 +849,7 @@ async def test_color_evidence_is_checked_under_the_mqtt_publish_lock(db_session,
     monkeypatch.setattr(farm_startup_guard, "require", lambda: None)
     service = BackgroundDispatchService()
     job = SimpleNamespace(
+        options={},
         execution_archive_id=archive.id,
         dispatch_boot_id="mqtt-color-test",
         printer_id=1,

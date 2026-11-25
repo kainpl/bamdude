@@ -1,4 +1,4 @@
-import type { AutoQueueItem, FilamentRoutingSnapshot, FeedPolicy, CalibrationMode, PrintQueueItem, Printer, TrackSwitchPlan } from '../../api/client';
+import type { AutoQueueItem, FilamentRoutingSnapshot, FeedPolicy, CalibrationMode, PrintQueueItem, Printer, PrinterRoutingChannel, TrackSwitchPlan } from '../../api/client';
 import type { AutoCalibrationCaps } from '../../utils/printerCapabilities';
 
 /**
@@ -524,6 +524,8 @@ export interface FilamentMappingProps {
   /** Authoritative backend assignment; null means no complete assignment. */
   resolvedMapping?: number[] | null;
   routingReason?: string;
+  routingChannels?: PrinterRoutingChannel[];
+  routingDualNozzle?: boolean;
   printerId: number;
   /** Pre-fetched filament requirements data */
   filamentReqs: FilamentReqsData | undefined;

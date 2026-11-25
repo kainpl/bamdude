@@ -18,19 +18,23 @@ lines are read together, a fixed handful of statements for any number of them.
 
 from __future__ import annotations
 
-from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models.finished_stock import StockItemMovement
 from backend.app.models.product import Product, ProductOrigin
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import finished_stock, line_config, part_stock
 from backend.app.services.entity_codes import code_for
-from backend.app.services.line_composition import Composition, composition, compositions_for_lines, counted
+from backend.app.services.line_composition import (
+    Composition,
+    composition,
+    compositions_for_lines,
+    counted,
+    snapshot_parts,
+)
 
 
 class StockPickError(Exception):
@@ -48,6 +52,8 @@ class PickRequest:
     counts: Mapping[int, int]
     quantity: int
     line_id: int | None = None
+    saved_kit: Composition | None = None
+    saved_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +68,7 @@ class Suggestion:
     to_print: int
     position_id: int | None
     position_code: str | None
+    free_by_position: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +82,7 @@ class _LineBack:
     issued: int
     kits: int
     kit: Composition
+    config_key: str
 
 
 async def _lines_back(
@@ -86,21 +94,13 @@ async def _lines_back(
     if not line_ids:
         return {}
     lines = (await db.execute(select(ProjectLine).where(ProjectLine.id.in_(line_ids)))).scalars().all()
-    held: dict[int, dict[int, int]] = defaultdict(dict)
-    rows = await db.execute(
-        select(StockItemMovement.project_line_id, StockItemMovement.item_id, func.sum(StockItemMovement.delta_reserved))
-        .where(StockItemMovement.project_line_id.in_(line_ids))
-        .group_by(StockItemMovement.project_line_id, StockItemMovement.item_id)
-    )
-    for line_id, item_id, units in rows.all():
-        if units:
-            held[line_id][item_id] = int(units)
+    held = await finished_stock.held_by_lines_items(db, line_ids)
     parts_by_product = {pid: list(product.parts) for pid, product in products.items()}
-    kits_of_line = {
-        line_id: counted(comp) for line_id, comp in (await compositions_for_lines(db, lines, parts_by_product)).items()
-    }
+    kits_of_line = await compositions_for_lines(db, lines, parts_by_product)
     kits = await part_stock.reserved_units_by_line(
-        db, [line.id for line in lines], {lid: {part.id: per for part, per in kit} for lid, kit in kits_of_line.items()}
+        db,
+        [line.id for line in lines],
+        {lid: {part.id: per for part, per in counted(kit)} for lid, kit in kits_of_line.items()},
     )
     return {
         line.id: _LineBack(
@@ -109,6 +109,7 @@ async def _lines_back(
             issued=max(0, (line.from_finished or 0) - sum(held.get(line.id, {}).values())),
             kits=kits.get(line.id, 0),
             kit=kits_of_line.get(line.id, []),
+            config_key=line.config_key,
         )
         for line in lines
     }
@@ -117,6 +118,7 @@ async def _lines_back(
 async def suggest(db: AsyncSession, requests: Sequence[PickRequest]) -> list[Suggestion]:
     """The proposal for each request, in the order asked."""
     products = await line_config.load_products(db, {r.product_id for r in requests})
+    backs = await _lines_back(db, sorted({r.line_id for r in requests if r.line_id is not None}), products)
     resolved = []
     for request in requests:
         product = products.get(request.product_id)
@@ -124,32 +126,39 @@ async def suggest(db: AsyncSession, requests: Sequence[PickRequest]) -> list[Sug
             raise StockPickError("Product not found", 404)
         if request.quantity < 1:
             raise StockPickError("Quantity must be at least 1", 422)
-        try:
-            key, choices, counts = line_config.resolve_on(product, request.choices, request.counts)
-        except line_config.LineConfigError as e:
-            raise StockPickError(str(e), e.status) from e
-        resolved.append((request, product, key, choices, counts))
-    catalogue = [
-        (product.id, key) for _r, product, key, _c, _n in resolved if product.origin == ProductOrigin.CATALOG.value
-    ]
-    positions = await finished_stock.free_by_keys(db, catalogue)
-    balances = await part_stock.balances_for_products(db, sorted(products))
-    backs = await _lines_back(db, sorted({r.line_id for r in requests if r.line_id is not None}), products)
-    out: list[Suggestion] = []
-    for request, product, key, choices, counts in resolved:
-        item = positions.get((product.id, key))
-        finished_free = item.on_hand - item.reserved if item is not None else 0
-        shelf = balances.get(product.id, {})
         back = backs.get(request.line_id) if request.line_id is not None else None
-        if back is not None and back.product_id == product.id:
-            # What the line holds in THIS position, plus what it already issued, is its own.
-            finished_free += (back.held_by_item.get(item.id, 0) if item is not None else 0) + back.issued
+        if request.line_id is not None and (back is None or back.product_id != product.id):
+            raise StockPickError("Line not found", 404)
+        if back is not None:
+            key, kit = back.config_key, back.kit
+        elif request.saved_kit is not None and request.saved_key is not None:
+            key, kit = request.saved_key, request.saved_kit
+        else:
+            try:
+                key, choices, counts = line_config.resolve_on(product, request.choices, request.counts)
+            except line_config.LineConfigError as e:
+                raise StockPickError(str(e), e.status) from e
+            kit = composition(list(product.parts), "product", set(choices.values()), counts)
+        resolved.append((request, product, key, kit, back))
+    catalogue = [
+        (product.id, key) for _, product, key, _, _ in resolved if product.origin == ProductOrigin.CATALOG.value
+    ]
+    positions = await finished_stock.positions_for_variants(db, catalogue)
+    balances = await part_stock.balances_for_products(db, sorted(products))
+    out: list[Suggestion] = []
+    for request, product, key, kit, back in resolved:
+        matches = finished_stock.matching_items(positions.get(product.id, ()), key, snapshot_parts(kit))
+        held = back.held_by_item if back is not None else {}
+        free_by_position = {item.id: item.on_hand - item.reserved + held.get(item.id, 0) for item in matches}
+        item = finished_stock.preferred_item(matches, held)
+        finished_free = sum(free_by_position.values())
+        shelf = balances.get(product.id, {})
+        if back is not None:
+            finished_free += back.issued
             if back.kits:
                 shelf = dict(shelf)
-                for part, per in back.kit:
+                for part, per in counted(back.kit):
                     shelf[part.id] = shelf.get(part.id, 0) + back.kits * per
-        defaults = {g.id: g.default_option_id for g in product.variant_groups if g.default_option_id is not None}
-        kit = composition(list(product.parts), "product", set({**defaults, **choices}.values()), counts)
         kits_free = part_stock.kits_of(shelf, kit)
         from_finished = min(request.quantity, finished_free)
         from_kits = min(request.quantity - from_finished, kits_free)
@@ -163,6 +172,7 @@ async def suggest(db: AsyncSession, requests: Sequence[PickRequest]) -> list[Sug
                 to_print=request.quantity - from_finished - from_kits,
                 position_id=item.id if item is not None else None,
                 position_code=code_for("stock_item", item.id) if item is not None else None,
+                free_by_position=free_by_position,
             )
         )
     return out

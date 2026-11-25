@@ -163,6 +163,27 @@ describe('Addressed recovery confirmation', () => {
     }));
     expect(api.applyPrintState).not.toHaveBeenCalled();
   });
+  it('offers settlement for a detached swap and links to its context after apply', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getPrintStateIssues).mockResolvedValue({
+      issues: [{ ...issue, kind: 'archive', target_id: 19, archive_id: 19, actions: ['settle_swap_by_operator'] }],
+      next_cursor: null, truncated: false, checked_at: '',
+    });
+    vi.mocked(api.previewPrintState).mockResolvedValue({
+      ...preview, action: 'settle_swap_by_operator',
+      after: { ...preview.after, settlement: { stage: 'settled_by_operator', archive_id: 19, pending_only: true } },
+    });
+    panel();
+    await user.click(await screen.findByRole('button', { name: 'Record manual plate swap' }));
+    await user.click(screen.getByRole('checkbox', { name: /I confirm that this printer is idle/ }));
+    await user.click(screen.getByRole('checkbox', { name: /I manually removed the print/ }));
+    await user.click(screen.getByRole('button', { name: 'Preview change' }));
+    expect(await screen.findByText(/no recorded claim/)).toBeInTheDocument();
+    await user.click(screen.getByRole('checkbox', { name: /I reviewed/ }));
+    await user.click(screen.getByRole('button', { name: 'Apply this change' }));
+    expect(await screen.findByRole('link', { name: 'Open the finished print context' }))
+      .toHaveAttribute('href', '/system?printer_id=7&kind=runtime&target_id=19#print-state');
+  });
   it('shows the entire reviewed group and requires a second confirmation to cancel it', async () => {
     const user = userEvent.setup();
     vi.mocked(api.previewPrintState).mockResolvedValue({ ...preview, action: 'cancel_terminal_claims',

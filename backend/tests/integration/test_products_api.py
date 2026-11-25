@@ -1136,7 +1136,14 @@ async def test_renaming_a_purchased_part_refreshes_its_key(committing_client, db
 
     procurement = (await committing_client.get(f"/api/v1/projects/{order['id']}")).json()["procurement"]
     entry = next(p for p in procurement if p["part_id"] == screw["id"])
-    assert (entry["name"], entry["acquired"], entry["need"]) == ("M5  screw", 9, 16)
+    assert (entry["name"], entry["acquired"], entry["need"]) == ("M3 screw", 9, 16)
+
+    new_order = await committing_client.post(
+        "/api/v1/projects/", json={"name": "More screws", "lines": [{"product_id": pid, "quantity": 2}]}
+    )
+    assert new_order.status_code == 200, new_order.text
+    new_entry = next(p for p in new_order.json()["procurement"] if p["part_id"] == screw["id"])
+    assert (new_entry["name"], new_entry["acquired"], new_entry["need"]) == ("M5  screw", 0, 16)
 
     rows = (
         (await db_session.execute(select(ProjectProcurement).where(ProjectProcurement.product_part_id == screw["id"])))

@@ -15,7 +15,7 @@ import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
 import { FilamentMapping } from '../../components/PrintModal/FilamentMapping';
-import type { PrinterStatus } from '../../api/client';
+import type { PrinterRoutingChannel, PrinterStatus } from '../../api/client';
 
 const mockFilamentReqs = {
   filaments: [
@@ -54,6 +54,47 @@ const slotEntry = (name: RegExp) => screen.getByRole('option', { name, hidden: t
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+});
+
+it('uses the checked Ext-R material when raw telemetry says ABS, and shows a refusal for the selected slot', async () => {
+  server.use(
+    http.get('/api/v1/printers/:id/status', () => HttpResponse.json(createStatus({
+      ams: [],
+      vt_tray: [{ id: 255, tray_type: 'ABS', tray_info_idx: 'GFS06', tray_color: 'FFFFFFFF' } as PrinterStatus['vt_tray'][number]],
+    }))),
+    http.get('/api/v1/printers/:id/spool-assignments', () => HttpResponse.json([])),
+  );
+  const filamentReqs = {
+    filaments: [{ slot_id: 2, type: 'ABS-S', color: '#FFFFFF', used_grams: 1, used_meters: 0, nozzle_id: 0 }],
+  };
+  const channel: PrinterRoutingChannel = {
+    slot_id: 2, material: 'ABS-S', profile: 'GFS06', selected_source_id: 255,
+    status: 'compatible', reason: null, omitted_sources: 0,
+    sources: [{
+      source_id: 255, kind: 'external', material: 'ABS-S', reported_material: 'ABS', profile: 'GFS06',
+      status: 'compatible', reason: null, color_matches: true,
+    }],
+  };
+  const mapping = (result: PrinterRoutingChannel) => (
+    <FilamentMapping printerId={1} filamentReqs={filamentReqs} manualMappings={{ 2: 255 }}
+      onManualMappingChange={() => {}} currencySymbol="$" defaultCostPerKg={0}
+      routingChannels={[result]} routingDualNozzle defaultExpanded />
+  );
+  const { rerender } = render(mapping(channel));
+  expect(await screen.findByTestId('routing-channel-detail')).toHaveTextContent('Ext-R · ABS-S (GFS06) · printer reports ABS');
+  await waitFor(() => {
+    expect(screen.getByRole('button', { name: /slot for/i })).toHaveClass('text-bambu-green');
+  });
+
+  const reason = { code: 'variant_mismatch', message: 'The required filament profile is not loaded.' };
+  rerender(mapping({
+    ...channel, status: 'incompatible', reason,
+    sources: [{ ...channel.sources[0], profile: 'OTHER', status: 'incompatible', reason }],
+  }));
+  expect(await screen.findByTestId('routing-channel-detail')).toHaveTextContent(
+    'ABS-S (GFS06) required · Ext-R · ABS-S (OTHER) · printer reports ABS · The required filament profile is not loaded.',
+  );
+  expect(screen.getByRole('button', { name: /slot for/i })).toHaveClass('text-orange-700');
 });
 
 describe('FilamentMapping — FTS routing', () => {

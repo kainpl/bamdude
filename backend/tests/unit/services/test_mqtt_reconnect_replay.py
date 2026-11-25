@@ -8,7 +8,6 @@ on fails here instead of bringing the replay back.
 """
 
 import json
-import struct
 import time
 from unittest.mock import MagicMock, patch
 
@@ -51,6 +50,7 @@ def _reconnect(client: mqtt.Client) -> list[str]:
 
     sock = MagicMock()
     sock.send.side_effect = len
+    sock.recv.side_effect = [bytes([mqtt.CONNACK]), b"\x02", b"\x00\x00"]
     if not client._host:
         client.connect_async("192.0.2.1", 8883)
     with (
@@ -59,8 +59,7 @@ def _reconnect(client: mqtt.Client) -> list[str]:
         patch.object(client, "_send_publish", side_effect=send_publish),
     ):
         assert client.reconnect() == mqtt.MQTTErrorCode.MQTT_ERR_SUCCESS
-        client._in_packet = {"remaining_length": 2, "packet": struct.pack("!BB", 0, 0)}
-        client._handle_connack()
+        assert client._packet_read() == mqtt.MQTTErrorCode.MQTT_ERR_SUCCESS
     return sent
 
 

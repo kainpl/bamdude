@@ -203,6 +203,7 @@ async def tray_types_written_for(
     tray_id: int,
     *,
     preset_owner_identity: str | None = None,
+    for_routing: bool = False,
 ) -> set[str]:
     """Every ``tray_type`` the assign path can have put in this slot for ``spool``, upper-cased.
 
@@ -222,9 +223,13 @@ async def tray_types_written_for(
         )
     except ValueError:
         return written
-    from backend.app.utils.filament_types import SUPPORT_SLOT_TYPES
+    from backend.app.utils.filament_types import SUPPORT_SLOT_TYPES, routing_filament_type
 
     wire_type = (plan.tray_type or material).upper()
+    if for_routing:
+        routing_type = routing_filament_type(wire_type, plan.tray_info_idx)
+        if routing_type != wire_type:
+            return {routing_type}
     if wire_type in SUPPORT_SLOT_TYPES:
         return {wire_type}
     written.add(wire_type)

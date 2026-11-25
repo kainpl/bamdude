@@ -346,7 +346,23 @@ def _dead_ancestors(generation: Path, attempt: Path) -> None:
         _dead(attempt / f"{name}.pid")
 
 
-def test_an_unrecorded_launch_under_a_dead_parent_is_found_by_its_token_and_ended(tmp_path):
+def scan_test_launch(monkeypatch, pid):
+    # The POSIX tests start one interpreter. Scan its actual command line and
+    # identity without letting unrelated processes on the runner affect the
+    # proof. Windows still scans for both its venv launcher and interpreter.
+    if os.name == "nt":
+        return
+    import psutil
+
+    process_iter = psutil.process_iter
+
+    def scan(attrs=None):
+        return (process for process in process_iter(attrs) if process.pid == pid)
+
+    monkeypatch.setattr(psutil, "process_iter", scan)
+
+
+def test_an_unrecorded_launch_under_a_dead_parent_is_found_by_its_token_and_ended(tmp_path, monkeypatch):
     """Consilium r2, R2.1: a dead parent proves the input was withheld, not that the child exited. The child
     is found by the token its launch carries -- no new one can be born once the parent is dead -- and ended."""
     from backend.app.services.part_render_tree import generation_gone
@@ -354,6 +370,7 @@ def test_an_unrecorded_launch_under_a_dead_parent_is_found_by_its_token_and_ende
     generation, attempt = _generation(tmp_path)
     _dead_ancestors(generation, attempt)
     unrecorded = _launched_by_a_dead_parent(attempt, "node")
+    scan_test_launch(monkeypatch, unrecorded.pid)
     try:
         assert generation_gone(generation)
         assert unrecorded.wait(timeout=5) is not None  # ended by the proof, not waited out
@@ -374,7 +391,7 @@ def test_an_unrecorded_launch_without_a_readable_token_is_not_over(tmp_path):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="SIGSTOP holds Node before it reads EOF (POSIX)")
-def test_a_stopped_real_node_launched_without_a_record_is_ended_by_the_proof(tmp_path):
+def test_a_stopped_real_node_launched_without_a_record_is_ended_by_the_proof(tmp_path, monkeypatch):
     """Consilium r2, R2.1 with the pinned Node and the production command: stopped before it could read EOF,
     its parent dead -- the proof ends it instead of trusting the EOF."""
     import signal
@@ -412,6 +429,7 @@ def test_a_stopped_real_node_launched_without_a_record_is_ended_by_the_proof(tmp
     )
     node_pid = int(parent.stdout.readline())
     parent.wait(timeout=10)
+    scan_test_launch(monkeypatch, node_pid)
     try:
         # SIGSTOP takes effect when the kernel next schedules Node: under load its status still reads "running" a
         # moment after the parent sent it (Backend Tests, -n 4, 2026-10-11). The precondition waits for the stop.
@@ -549,7 +567,7 @@ def _holders(token: str) -> list:
     ]
 
 
-def test_a_fork_caught_before_it_executed_its_child_is_ended_by_its_parents_token(tmp_path):
+def test_a_fork_caught_before_it_executed_its_child_is_ended_by_its_parents_token(tmp_path, monkeypatch):
     """Consilium r2, R2.1: until it executes, a child runs its PARENT's command line, so the child's own token
     cannot find it -- a parent killed while that exec stalls leaves exactly this. Proving the parent over ends
     every holder of the parent's token; here also the interpreter behind a Windows venv launcher."""
@@ -564,6 +582,7 @@ def test_a_fork_caught_before_it_executed_its_child_is_ended_by_its_parents_toke
     _dead(attempt / "child.pid")
     launch(attempt, "node")  # its spawn began: node.launch and no record
     fork = subprocess.Popen([*SLEEP, launch_arg(token)], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    scan_test_launch(monkeypatch, fork.pid)
     try:
         assert generation_gone(generation)
         assert fork.wait(timeout=5) is not None
@@ -738,12 +757,13 @@ def _end(pid: int) -> None:
         pass
 
 
-def test_an_unrecorded_launch_in_the_production_shape_is_found_and_ended(tmp_path):
+def test_an_unrecorded_launch_in_the_production_shape_is_found_and_ended(tmp_path, monkeypatch):
     """The parent ordering every launch follows, on every platform: the orphan is ended by its token."""
     from backend.app.services.part_render_tree import generation_gone
 
     generation, attempt = _generation(tmp_path)
     orphan, token = _orphan_under_a_recorded_parent(generation, attempt)
+    scan_test_launch(monkeypatch, orphan)
     try:
         assert generation_gone(generation)
         assert _holders(token) == []
@@ -760,6 +780,7 @@ def test_an_unrecorded_holder_whose_command_line_cannot_be_read_keeps_the_run_un
 
     generation, attempt = _generation(tmp_path)
     orphan, token = _orphan_under_a_recorded_parent(generation, attempt)
+    scan_test_launch(monkeypatch, orphan)
     original = psutil.Process.cmdline
 
     @__import__("functools").wraps(original)
@@ -786,6 +807,7 @@ def test_a_token_holder_whose_user_cannot_be_read_keeps_the_run_unproven_and_is_
 
     generation, attempt = _generation(tmp_path)
     orphan, token = _orphan_under_a_recorded_parent(generation, attempt)
+    scan_test_launch(monkeypatch, orphan)
     attribute = "username" if os.name == "nt" else "uids"
     original = getattr(psutil.Process, attribute)
 

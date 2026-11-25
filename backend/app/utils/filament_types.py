@@ -85,3 +85,10 @@ def support_slot_type(material: str | None, family_id: str | None, *, fingerprin
     if not family and previous in SUPPORT_SLOT_TYPES and base == previous.removesuffix("-S"):
         return previous
     return material or ""
+
+
+def routing_filament_type(material: str | None, family_id: str | None) -> str:
+    """Material for physical feed checks. GFS06 still configures the printer as ABS."""
+    if (family_id or "").strip().upper() == "GFS06" and (material or "").strip().upper() in {"ABS", "ABS-S"}:
+        return "ABS-S"
+    return support_slot_type(material, family_id)

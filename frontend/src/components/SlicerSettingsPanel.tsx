@@ -6,19 +6,17 @@
  * `src/data/slicer/`), so the pages, groups and ordering match what users see
  * in the desktop slicer rather than a hand-picked subset.
  *
- * Option labels and tooltips are deliberately English-only for now: they are
- * 348 strings lifted verbatim from `PrintConfig.cpp`, and hand-translating them
- * into all 13 locales is not viable. The panel's own chrome — mode switch,
- * search, buttons, empty states — goes through i18n as usual. OrcaSlicer ships
- * its own translation catalogs for these strings, which is the obvious source
- * if they are ever picked up.
+ * Ukrainian option text comes from OrcaSlicer's pinned gettext catalog,
+ * with reviewed supplements for this schema version (see data/slicer/README.md).
+ * Text is translated only for display: schema keys, enum values and overrides
+ * remain in the slicer's own form. The optional catalog never gates the form.
  *
  * Values are held sparsely: only options the user actually changed are tracked
  * and sent, so a slice with an untouched panel is byte-identical to one from
  * before this panel existed.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Search, RotateCcw, Loader2, ChevronDown } from 'lucide-react';
 
@@ -131,8 +129,10 @@ export default function SlicerSettingsPanel({
   presetValuesResolved = true,
   presetValuesReason,
 }: Props) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [data, setData] = useState<SlicerData | null>(null);
+  const [uk, setUk] = useState<Record<string, string>>({});
+  const language = i18n.resolvedLanguage ?? i18n.language;
   const [mode, setMode] = useState<OptionMode>('simple');
   const [page, setPage] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -157,6 +157,22 @@ export default function SlicerSettingsPanel({
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (language?.split('-')[0] !== 'uk') return;
+    let cancelled = false;
+    import('../data/slicer/process-uk.json').then((catalog) => {
+      if (!cancelled) setUk(catalog.default ?? catalog);
+    }).catch(() => {
+      // A display-only translation cannot prevent editing or discard values.
+      if (!cancelled) setUk({});
+    });
+    return () => { cancelled = true; };
+  }, [language]);
+
+  const localize = useCallback((source: string) =>
+    language?.split('-')[0] === 'uk' ? (uk[source] ?? source) : source,
+  [uk, language]);
 
   // What this slice will actually run with, in the precedence the rows display:
   // the picked preset underneath, the designer's value for each key that is
@@ -231,7 +247,9 @@ export default function SlicerSettingsPanel({
       const opt = data.schema[key];
       // Group and page are matched too, so "speed" lists the Speed page's
       // options rather than only the handful with "speed" in their label.
-      const haystack = [key, opt?.label ?? '', opt?.tooltip ?? '', group, page];
+      const haystack = [key, opt?.label ?? '', opt?.tooltip ?? '', group, page,
+        localize(opt?.label ?? ''), localize(opt?.tooltip ?? ''), localize(group), localize(page),
+        ...(opt?.enum_labels ?? []), ...(opt?.enum_labels ?? []).map(localize)];
       return haystack.some((h) => flatten(h).includes(needle));
     };
 
@@ -246,7 +264,7 @@ export default function SlicerSettingsPanel({
           .filter((g) => g.options.length > 0),
       }))
       .filter((p) => p.groups.length > 0);
-  }, [data, mode, query]);
+  }, [data, mode, query, localize]);
 
   const activePage = useMemo(() => {
     if (visiblePages.length === 0) return null;
@@ -350,7 +368,7 @@ export default function SlicerSettingsPanel({
                 activePage?.page === p.page ? 'bg-bambu-dark-tertiary text-white' : 'text-bambu-gray hover:text-white'
               }`}
             >
-              {p.page}
+              {localize(p.page)}
             </button>
           ))}
         </div>
@@ -366,13 +384,14 @@ export default function SlicerSettingsPanel({
         <div className="flex flex-col gap-4 max-h-[22rem] lg:max-h-[58vh] overflow-y-auto pr-1">
           {shownPages.map((p) => (
             <div key={p.page} className="flex flex-col gap-3">
-              {query.trim() && <p className="text-[0.7rem] uppercase tracking-wide text-bambu-gray/70">{p.page}</p>}
+              {query.trim() && <p className="text-[0.7rem] uppercase tracking-wide text-bambu-gray/70">{localize(p.page)}</p>}
               {p.groups.map((g) => (
                 <fieldset key={`${p.page}:${g.group}`} className="flex flex-col gap-1.5">
-                  <legend className="mb-1 text-xs font-medium text-white">{g.group}</legend>
+                  <legend className="mb-1 text-xs font-medium text-white">{localize(g.group)}</legend>
                   {g.options.map((key) => (
                     <OptionRow
                       key={key}
+                      localize={localize}
                       optionKey={key}
                       option={data.schema[key]}
                       value={values[key]}
@@ -432,6 +451,7 @@ export default function SlicerSettingsPanel({
 }
 
 interface RowProps {
+  localize: (source: string) => string;
   optionKey: string;
   option: ProcessOption;
   value: SettingValue | undefined;
@@ -459,6 +479,7 @@ interface RowProps {
 }
 
 function OptionRow({
+  localize,
   optionKey,
   option,
   value,
@@ -486,7 +507,7 @@ function OptionRow({
         : baselineForDisplay(option, presetValue);
 
   return (
-    <div className="flex items-center gap-2 group" title={option.tooltip}>
+    <div className="flex items-center gap-2 group" title={option.tooltip ? localize(option.tooltip) : undefined}>
       {/* Label takes the slack; the control group is a fixed width anchored to
           the right edge. Fixed widths on the control *and* the unit are what
           keep that column straight — sizing either to content makes each row's
@@ -497,8 +518,8 @@ function OptionRow({
       >
         {/* Own title: a fixed column truncates more than the old flex-1 label
             did, and the row's title carries the tooltip, not the name. */}
-        <span className="truncate" title={option.label || optionKey}>
-          {option.label || optionKey}
+        <span className="truncate" title={localize(option.label || optionKey)}>
+          {localize(option.label || optionKey)}
         </span>
         {modified && <span className="shrink-0 text-bambu-green" aria-hidden="true">•</span>}
         {source && (
@@ -543,10 +564,10 @@ function OptionRow({
               disabled={formDisabled}
               onChange={(e) => onToggleSource(optionKey, e.target.checked)}
               aria-label={t('slicerSettings.useFromFile', "Use the source file's value for {{option}}", {
-                option: option.label || optionKey,
+                option: localize(option.label || optionKey),
               })}
               title={t('slicerSettings.useFromFile', "Use the source file's value for {{option}}", {
-                option: option.label || optionKey,
+                option: localize(option.label || optionKey),
               })}
               className="accent-bambu-green w-3 h-3 cursor-pointer disabled:opacity-40"
             />
@@ -556,6 +577,7 @@ function OptionRow({
           <OptionControl
             id={`slicer-opt-${optionKey}`}
             option={option}
+            localize={localize}
             current={current}
             onChange={onChange}
             disabled={disabled}
@@ -566,7 +588,7 @@ function OptionRow({
             for the longest unit in the schema ("mm/s² or %") — a narrower cap
             truncated those to "mm o...". Rendered even when empty so rows
             without a unit keep the revert button aligned. */}
-        <span className="w-16 shrink-0 whitespace-nowrap text-[0.65rem] text-bambu-gray/60">{unit ?? ''}</span>
+        <span className="w-16 shrink-0 whitespace-nowrap text-[0.65rem] text-bambu-gray/60">{unit ? localize(unit) : ''}</span>
         <button
           type="button"
           onClick={() => onChange(undefined)}
@@ -594,6 +616,7 @@ function formatSourceValue(value: unknown): string {
 }
 
 interface ControlProps {
+  localize: (source: string) => string;
   id: string;
   option: ProcessOption;
   current: string;
@@ -602,7 +625,7 @@ interface ControlProps {
   filamentChoices?: FilamentChoice[];
 }
 
-function OptionControl({ id, option, current, onChange, disabled, filamentChoices }: ControlProps) {
+function OptionControl({ id, option, current, onChange, disabled, filamentChoices, localize }: ControlProps) {
   const { t } = useTranslation();
   // Theme tokens rather than raw black/white: bambu-dark and
   // bambu-dark-tertiary are CSS variables that follow the active theme, and
@@ -667,7 +690,7 @@ function OptionControl({ id, option, current, onChange, disabled, filamentChoice
         >
           {option.enum_values.map((v, i) => (
             <option key={v} value={v}>
-              {option.enum_labels?.[i] ?? v}
+              {localize(option.enum_labels?.[i] ?? v)}
             </option>
           ))}
         </select>

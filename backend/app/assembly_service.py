@@ -54,7 +54,20 @@ _WATCH_SECONDS = 0.5
 _DONE_LIMIT = 256
 _HEX = re.compile(r"[0-9a-f]{32}\Z")
 _KEYS = {"version", "generation", "epoch", "attempt_id", "operation", "root", "budget_ns"}
-_PROGRESS_KEYS = ("printer_index", "printer_count", "run", "runs", "placed", "total", "fill_part")
+_PROGRESS_KEYS = (
+    "printer_index",
+    "printer_count",
+    "run",
+    "runs",
+    "placed",
+    "total",
+    "fill_part",
+    "search_best_copies",
+    "search_best_plates",
+    "search_elapsed_ms",
+    "search_attempt",
+    "search_engine",
+)
 PACK_MODULE = "backend.app.assembly_child"
 STEP_MODULE = "backend.app.services.step_thumbnail"
 STEP_PARTS = 100  # the request's own bound on files

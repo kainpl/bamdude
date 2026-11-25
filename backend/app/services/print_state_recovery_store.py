@@ -347,6 +347,8 @@ def unknown_inbound_refs() -> bool:
 async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, int]], *, locked=False):
     """One page, fixed query count; never load terminal archive history."""
     from backend.app.services.background_dispatch import attempt_unobserved
+    from backend.app.services.print_run_binding import current_print_run
+    from backend.app.services.printer_manager import printer_manager
 
     if not printer_ids:
         return {}, {}, {}
@@ -373,6 +375,11 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
     group_ids = set((await db.scalars(select(ranked.c.id).where(ranked.c.n <= 101))).all())
     target_ids = [key for _, kind, key in targets if kind == "item"]
     needed = group_ids | set(target_ids) | {q.current_item_id for q in queues if q.current_item_id}
+    bound_claims = {}
+    for pid, kind, key in targets:
+        if kind == "archive" and (run := current_print_run(printer_manager, pid)) and run.archive_id == key:
+            bound_claims[(pid, key)] = run.queue_item_id
+    needed.update(item_id for item_id in bound_claims.values() if item_id is not None)
     item_stmt = select(PrintQueueItem).where(PrintQueueItem.id.in_(needed)).execution_options(populate_existing=True)
     if locked:
         # Rows are locked only under the lanes held (L1); a named row in another queue -- a header pointing
@@ -437,16 +444,17 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
     ):
         for value in (await db.scalars(select(col).where(col.in_(needed)))).all():
             refs[value].add(reason)
-    printing_ids = [a.id for a in archives.values() if a.status == "printing"]
+    receipt_ids = {a.id for a in archives.values() if a.status == "printing"}
+    receipt_ids.update(key for _, kind, key in targets if kind == "archive")
     completed_execution_ids = (
         set(
             (
                 await db.scalars(
-                    select(PrintCompletionReceipt.archive_id).where(PrintCompletionReceipt.archive_id.in_(printing_ids))
+                    select(PrintCompletionReceipt.archive_id).where(PrintCompletionReceipt.archive_id.in_(receipt_ids))
                 )
             ).all()
         )
-        if printing_ids
+        if receipt_ids
         else set()
     )
     active_users = dict(
@@ -575,6 +583,14 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
                 queue_sources.current_epoch(),
             )
             live = {**live, "stable_inactive": _seen_for(_observations, stamp) >= 10}
+        bound = (repair_runtime or {}).get("current")
+        bound_key = (pid, key)
+        claim_missing = (
+            bound is not None
+            and bound_key in bound_claims
+            and bound.get("queue_item_id") == bound_claims[bound_key]
+            and bound_claims[bound_key] not in items
+        )
         result[(pid, kind, key)] = RecoveryFacts(
             pid,
             project(q, _QUEUE_FIELDS),
@@ -599,6 +615,7 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
             repair_runtime=repair_runtime,
             target_kind=kind,
             has_completion_receipt=archive is not None and archive.id in completed_execution_ids,
+            runtime_claim_missing=claim_missing,
             gate=gates.get(pid),
         )
     return result, qs, (items, archives)
@@ -833,6 +850,9 @@ async def list_issues_page(
     db, scope, *, printer_id=None, cursor=None, target=None, page_size=100, ceilings=None, capture=None
 ):
     """One page of the farm's print-state rows, and the printers it covered (the observer's cycle needs them)."""
+    from backend.app.services.print_run_binding import current_print_run, has_runtime_context
+    from backend.app.services.printer_manager import printer_manager
+
     after = decode_cursor(cursor) if cursor else None
     stmt = select(Printer.id, Printer.name).order_by(Printer.id)
     if scope is not None:
@@ -930,7 +950,20 @@ async def list_issues_page(
             ),
         )
     )
-    candidates = union_all(headers, items, archives, owed_archives, paused_by_repair, requeued_gate_owners).subquery()
+    # An older detached swap can only be settled while the exact run is still
+    # bound in memory. Look up those bounded archive ids, never archive history.
+    runs = {pid: run for pid in pids if (run := current_print_run(printer_manager, pid)) is not None}
+    held_archives = select(PrintArchive.printer_id, literal("archive"), PrintArchive.id).where(
+        PrintArchive.id.in_([run.archive_id for run in runs.values()]),
+        PrintArchive.printer_id.in_(pids),
+        PrintArchive.status == "completed",
+        PrintArchive.completed_at < PrintArchive.started_at,
+        PrintArchive.extra_data["bamdude_terminal_effects"]["swap_change_table"]["stage"].as_string().is_(None),
+        PrintArchive.deleted_at.is_(None),
+    )
+    candidates = union_all(
+        headers, items, archives, owed_archives, held_archives, paused_by_repair, requeued_gate_owners
+    ).subquery()
     query = select(candidates).order_by(candidates.c.pid, candidates.c.kind, candidates.c.target)
     if target is not None:
         query = query.where(candidates.c.kind == target[0], candidates.c.target == target[1])
@@ -955,13 +988,10 @@ async def list_issues_page(
     sql_rows = [tuple(row) for row in (await db.execute(query.limit(page_size + 1))).all()]
     # In-process contexts are candidates too (spec r3 R2): one row per printer of this page, ordered
     # with the database rows by the same key, so the cursor walks both exactly once.
-    from backend.app.services.print_run_binding import current_print_run, has_runtime_context
-    from backend.app.services.printer_manager import printer_manager
-
     held = []
     for pid in pids:
         if has_runtime_context(printer_manager, pid):
-            run = current_print_run(printer_manager, pid)
+            run = runs.get(pid)
             row = (pid, "runtime", run.archive_id if run is not None else 0)
             if after is None or row > tuple(after):
                 held.append(row)
@@ -1338,7 +1368,13 @@ async def _apply_rows(session_factory, payload, actor, actor_label, recheck):
             if "settlement" in plan:
                 from backend.app.services.swap_terminal import settle_by_operator
 
-                settle_by_operator(archive, action_identity=nonce, actor=actor, at=ended_at)
+                settle_by_operator(
+                    archive,
+                    action_identity=nonce,
+                    actor=actor,
+                    at=ended_at,
+                    pending_only=plan["settlement"].get("pending_only", False),
+                )
                 queues[key[0]].is_paused = True
             if plan["archive"].get("close"):
                 # Close the addressed job and archive without running any completion effects.
@@ -1356,10 +1392,12 @@ async def _apply_rows(session_factory, payload, actor, actor_label, recheck):
                 q.current_item_id = None
                 q.status = plan["queue"]["status"]
                 q.last_activity_at = ended_at
-                if close_print:
+                if plan["queue"].get("is_paused"):
                     q.is_paused = True
+                if "extra_data" in plan["archive"]:
                     extra = plan["archive"]["extra_data"]
-                    extra["operator_interrupted_print"]["action_id"] = nonce
+                    record = "operator_interrupted_print" if close_print else "operator_interrupted_dispatch"
+                    extra[record]["action_id"] = nonce
                     archive.extra_data = extra
             elif plan["archive"]:
                 archive.completed_at = plan["archive"]["completed_at"]
@@ -1474,7 +1512,9 @@ async def _apply_rows(session_factory, payload, actor, actor_label, recheck):
                     latest_runtime = repair_runtime_snapshot(key[0], archive_id)
                     if previews.digest(latest_runtime) != previews.digest(f.repair_runtime):
                         raise ValueError("recovery_changed")
-                if close_print and (not latest["idle"] or latest["observation_unproven"]):
+                if (close_print or plan.get("settlement", {}).get("pending_only")) and (
+                    not latest["idle"] or latest["observation_unproven"]
+                ):
                     raise ValueError("recovery_changed")
                 await db.commit()
                 if close_print:

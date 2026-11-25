@@ -59,6 +59,7 @@ class SliceJob:
     # in the SliceJobState response so the persistent toast can render
     # "Generating G-code (75%)" instead of just elapsed time.
     progress: dict[str, Any] | None = None
+    finish_requested: bool = False
 
 
 # Retention: keep finished jobs around for 30 minutes so the polling client

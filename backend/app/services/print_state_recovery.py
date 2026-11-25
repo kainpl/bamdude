@@ -83,6 +83,7 @@ class RecoveryFacts:
     repair_runtime: dict | None = None
     target_kind: str | None = None
     has_completion_receipt: bool = False
+    runtime_claim_missing: bool = False
     #: The printer's plate gate as the database holds it (``armed``, ``archive_id``, ``token``),
     #: read beside the rows so a preview names the gate it was made for.
     gate: dict | None = None
@@ -426,6 +427,25 @@ def _interrupted_dispatch(f: RecoveryFacts) -> dict | None:
     # A pending swap-macro list is only what was asked; the start's own fact is in the detail.
     if effects_pending(a, intents=False) or f.live.get("effects"):
         reasons.append("effects_pending")
+    extra = a.get("extra_data")
+    if isinstance(extra, dict) and "swap_macro_events_pending" in extra:
+        from backend.app.services.swap_terminal import CHANGE_TABLE_EVENT
+
+        pending = extra["swap_macro_events_pending"]
+        telemetry = (f.repair_runtime or {}).get("telemetry") or {}
+        if not isinstance(pending, list):
+            reasons.append("effects_unreadable")
+        elif (
+            given_up
+            and CHANGE_TABLE_EVENT in pending
+            and (
+                not f.live.get("stable_inactive")
+                or f.live.get("observation_unproven")
+                or telemetry.get("fresh") is not True
+                or telemetry.get("state") != "IDLE"
+            )
+        ):
+            reasons.append("live_unknown")
     if not q.get("recovery_identity") or not i.get("recovery_identity") or not a.get("recovery_identity"):
         reasons.append("identity_missing")
     if (
@@ -665,11 +685,26 @@ def _classify_single(f: RecoveryFacts) -> dict | None:
     return {"code": code, "actions": actions, "blocked_reasons": sorted(set(reasons))}
 
 
+def _legacy_pending_swap(f: RecoveryFacts) -> bool:
+    from backend.app.services import swap_terminal
+
+    a = f.archive
+    if f.target_kind != "archive" or not a or a.get("status") != "completed" or a.get("dispatch_phase") != "accepted":
+        return False
+    start, end = utc(a.get("started_at")), utc(a.get("completed_at"))
+    # The saved watchdog end predates the observed start. This is an inconsistent
+    # terminal record, so only an operator can attest that the plate is ready.
+    return bool(start and end and end < start and swap_terminal.pending_change_table_without_claim(a.get("extra_data")))
+
+
 def _addressed(f: RecoveryFacts):
     from backend.app.services import swap_terminal
 
     a, q = f.archive, f.queue
-    settlement = f.target_kind == "archive" and a and swap_terminal.claim_stage(a.get("extra_data")) == "owed"
+    pending_only = _legacy_pending_swap(f)
+    settlement = pending_only or (
+        f.target_kind == "archive" and a and swap_terminal.claim_stage(a.get("extra_data")) == swap_terminal.CLAIM_OWED
+    )
     if not a or (not settlement and not f.members):
         return None
     if not settlement and a.get("status") not in OUTCOMES:
@@ -730,9 +765,27 @@ def _addressed(f: RecoveryFacts):
     if current and (
         current.get("archive_id") != a["id"]
         or current.get("archive_identity") != a.get("recovery_identity")
-        or current.get("queue_item_id") not in ({None} | {m["id"] for m in members})
+        or (not pending_only and current.get("queue_item_id") not in ({None} | {m["id"] for m in members}))
     ):
         reasons.add("ambiguous_owner")
+    if pending_only:
+        if (
+            not current
+            or not f.runtime_claim_missing
+            or members
+            or f.archive_users
+            or f.active_item_ids
+            or (q and (q.get("current_item_id") is not None or q.get("status") == "printing"))
+        ):
+            reasons.add("ambiguous_owner")
+        telemetry = runtime.get("telemetry") or {}
+        if not telemetry.get("fresh") or telemetry.get("state") != "IDLE" or live.get("observation_unproven"):
+            reasons.add("live_unknown")
+        if f.has_completion_receipt:
+            reasons.add("effects_pending")
+        if current:
+            reasons.update(_runtime_ownership_reasons(runtime, current))
+        reasons.update(runtime_effect_debt(extra, a.get("recovery_identity"), intents=False))
     for key in ("macro_selection", "swap_config"):
         if key in runtime:
             reasons.update(_registration_reasons(runtime[key]))
@@ -743,7 +796,7 @@ def _addressed(f: RecoveryFacts):
         or admission.get("archive_id") != a["id"]
     ):
         reasons.add("admission_unproven")
-    if settlement:
+    if settlement and not pending_only:
         pending = extra.get("swap_macro_events_pending") if isinstance(extra, dict) else None
         effect = (
             (extra.get("bamdude_terminal_effects") or {}).get("swap_change_table") if isinstance(extra, dict) else None
@@ -756,6 +809,7 @@ def _addressed(f: RecoveryFacts):
             or pending.count("swap_mode_change_table") != 1
         ):
             reasons.add("effects_unreadable")
+    if settlement:
         action, code = "settle_swap_by_operator", "swap_settlement_required"
     else:
         reasons.update(runtime_effect_debt(extra, a.get("recovery_identity")))
@@ -918,6 +972,8 @@ def plan_action(
                 "archive_id": a["id"],
                 "archive_identity": a["recovery_identity"],
             }
+            if _legacy_pending_swap(f):
+                plan["settlement"]["pending_only"] = True
         return plan
     if action == RUNTIME_ACTION:
         # Rows are not touched: the queue is paused (the flag alone, never its status) and the run's context
@@ -973,6 +1029,11 @@ def plan_action(
         plan["archive"] = {"close": True, "status": "failed", "failure_reason": code, "error_message": detail}
         plan["item"] = {"close": True, "status": "failed", "error_code": code, "error_message": detail}
         plan["queue"] = {"current_item_id": None, "status": "error"}
+        extra = dict(a.get("extra_data") or {})
+        pending = extra.pop("swap_macro_events_pending", None)
+        if pending:
+            plan["archive"]["extra_data"] = {**extra, "operator_interrupted_dispatch": {"swap_macros_not_run": pending}}
+            plan["queue"]["is_paused"] = True
         return plan
     if action == "fill_estimated_end_and_align":
         if confirmed_completed is not True:

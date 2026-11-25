@@ -567,10 +567,14 @@ class TestDelivery:
         await _until(async_client, f"{printer_files.base}/{job['job_id']}")
         return job, await _grant_url(async_client, printer_files, job["job_id"])
 
-    async def test_a_large_download_is_never_held_in_memory(self, async_client, printer_files):
+    async def test_a_large_download_is_never_held_in_memory(self, async_client, printer_files, monkeypatch):
         from backend.app.main import app
+        from backend.app.services import live_authority
         from backend.tests.integration.test_g01_d_media_pipeline import _scope
 
+        # Allocation tracing slows the real admission DB checks on loaded CI
+        # runners. Keep admission in the measured path and allow it to finish.
+        monkeypatch.setattr(live_authority, "CHECK_SECONDS", 10.0)
         size = 96 * 1024 * 1024
         job, url = await self._ready(async_client, printer_files, size)
         scope = _scope(url, async_client)

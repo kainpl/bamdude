@@ -60,6 +60,136 @@ async def a01(db_session, test_engine, printer_factory, archive_factory, telemet
 
 
 @pytest.fixture
+async def legacy_swap(
+    db_session, test_engine, printer_factory, archive_factory, telemetry, runtime, clock, monkeypatch
+):
+    from backend.app import main
+
+    factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(main, "async_session", factory)
+    printer = await printer_factory()
+    queue = PrinterQueue(printer_id=printer.id, status="idle")
+    db_session.add(queue)
+    await db_session.flush()
+    start = datetime.now(timezone.utc) - timedelta(hours=1)
+    archive = await archive_factory(
+        printer.id,
+        queue_id=queue.id,
+        status="completed",
+        dispatch_phase="accepted",
+        started_at=start,
+        completed_at=start - timedelta(minutes=42),
+        extra_data={"swap_macro_events_pending": ["swap_mode_change_table"], "swap_start_effect": "fired"},
+    )
+    old = PrintQueueItem(queue_id=queue.id, archive_id=archive.id, status="failed")
+    pending = PrintQueueItem(queue_id=queue.id, status="pending")
+    db_session.add_all([old, pending])
+    await db_session.flush()
+    run = bind_print_run(
+        printer_manager,
+        printer_id=printer.id,
+        archive_id=archive.id,
+        archive_identity=archive.recovery_identity,
+        queue_item_id=old.id,
+        origin="dispatch",
+    )
+    main.register_macro_selection(printer.id, {"selected_macro_ids": []})
+    await db_session.delete(old)
+    await db_session.commit()
+    telemetry.state = "IDLE"
+    return SimpleNamespace(
+        printer_id=printer.id,
+        queue_id=queue.id,
+        archive_id=archive.id,
+        pending_id=pending.id,
+        run=run,
+        factory=factory,
+    )
+
+
+async def test_pending_swap_settlement_then_runtime_release(db_session, async_client, legacy_swap, clock, released):
+    from backend.app.services.swap_terminal import operator_settlement
+
+    a = legacy_swap
+    archive = await db_session.get(PrintArchive, a.archive_id)
+    outcome = (archive.status, archive.started_at, archive.completed_at)
+    endpoint = f"/api/v1/system/printers/{a.printer_id}/print-state"
+    issues = f"/api/v1/system/print-state-issues?printer_id={a.printer_id}"
+    request = {
+        "kind": "archive",
+        "target_id": a.archive_id,
+        "action": "settle_swap_by_operator",
+        "confirmed_idle": True,
+        "confirmed_manual_swap": True,
+    }
+    await async_client.get(issues)
+    clock.advance(11)
+    page = (await async_client.get(issues)).json()
+    issue = next(row for row in page["issues"] if row["kind"] == "archive")
+    assert issue["archive_id"] == a.archive_id and issue["actions"] == ["settle_swap_by_operator"], page
+    assert (
+        await async_client.post(endpoint + "/preview", json={**request, "confirmed_manual_swap": False})
+    ).status_code == 409
+
+    response = await async_client.post(endpoint + "/preview", json=request)
+    assert response.status_code == 200, response.text
+    plan = response.json()
+    assert plan["after"]["settlement"]["pending_only"] is True
+    body = {"preview_token": plan["preview_token"], "confirmed": True}
+    applied = await async_client.post(endpoint + "/apply", json=body)
+    assert applied.status_code == 200, applied.text
+    assert (await async_client.post(endpoint + "/apply", json=body)).json() == applied.json()
+    assert current_print_run(printer_manager, a.printer_id) is a.run
+    db_session.expire_all()
+    archive = await db_session.get(PrintArchive, a.archive_id)
+    assert operator_settlement(archive.extra_data, archive.recovery_identity)["previous_effect"] is None
+    assert not archive.extra_data["swap_macro_events_pending"]
+    assert (archive.status, archive.started_at, archive.completed_at) == outcome
+    assert (await db_session.get(PrinterQueue, a.queue_id)).is_paused is True
+
+    _response, token = await preview(db_session, a)
+    assert (await apply(a, token))["outcome"] == "applied"
+    assert released == [True]
+    assert current_print_run(printer_manager, a.printer_id) is None
+    assert (await db_session.get(PrintQueueItem, a.pending_id)).status == "pending"
+
+
+@pytest.mark.parametrize("change", ["new_claim", "old_id_reused", "new_context", "valid_times", "attempted"])
+async def test_pending_swap_preview_cannot_outlive_its_proof(db_session, legacy_swap, clock, change):
+    a = legacy_swap
+    await store.list_issues(db_session, None)
+    clock.advance(11)
+    plan = await store.make_preview(
+        db_session,
+        a.printer_id,
+        "archive",
+        a.archive_id,
+        "settle_swap_by_operator",
+        "user:1",
+        confirmed_idle=True,
+        confirmed_manual_swap=True,
+    )
+    archive = await db_session.get(PrintArchive, a.archive_id)
+    if change == "new_claim":
+        db_session.add(PrintQueueItem(queue_id=a.queue_id, archive_id=a.archive_id, status="printing"))
+    elif change == "old_id_reused":
+        db_session.add(PrintQueueItem(id=a.run.queue_item_id, queue_id=a.queue_id, status="pending"))
+    elif change == "new_context":
+        bind_print_run(printer_manager, printer_id=a.printer_id, archive_id=a.archive_id + 100)
+    elif change == "valid_times":
+        archive.completed_at = archive.started_at + timedelta(minutes=1)
+    else:
+        archive.extra_data = {
+            **archive.extra_data,
+            "bamdude_terminal_effects": {"swap_change_table": {"stage": "attempted"}},
+        }
+    await db_session.commit()
+    with pytest.raises(ValueError, match="recovery_changed"):
+        await apply(a, tokens.verify(plan["preview_token"]))
+    assert (await db_session.get(PrinterQueue, a.queue_id)).is_paused is False
+
+
+@pytest.fixture
 def released(monkeypatch):
     """Every compare-and-clear the protocol attempts, and its answer."""
     calls = []

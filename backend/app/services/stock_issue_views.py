@@ -17,7 +17,7 @@ from backend.app.schemas.listing import (
     StockIssueRow,
     StockIssueSummaryLine,
 )
-from backend.app.schemas.project import LineConfigurationOut
+from backend.app.schemas.project import LineConfigurationSummaryOut
 from backend.app.services.entity_codes import code_for
 
 #: How many lines a list row names before «+N».
@@ -74,7 +74,7 @@ async def issue_rows(db: AsyncSession, issues: Sequence[StockIssue]) -> list[Sto
                 product_name=line.product_name,
                 part_name=line.part_name,
                 quantity=line.quantity,
-                configuration=None if line.part_name else LineConfigurationOut(**(line.configuration or {})),
+                configuration=None if line.part_name else LineConfigurationSummaryOut(**(line.configuration or {})),
             )
         )
     return [_row(issue, counts.get(issue.id, 0), summary[issue.id]) for issue in issues]
@@ -101,7 +101,7 @@ async def note_out(db: AsyncSession, issue: StockIssue) -> DispatchNoteOut:
                 product_id=line.product_id,
                 product_name=line.product_name,
                 sku=line.sku,
-                configuration=LineConfigurationOut(**(line.configuration or {})),
+                configuration=LineConfigurationSummaryOut(**(line.configuration or {})),
                 part_name=line.part_name,
                 quantity=line.quantity,
             )

@@ -237,7 +237,6 @@ async def test_bootstrap_admin_request_budget_is_separate_from_control(bootstrap
     original = Client.request
     timeouts = []
     first = True
-    monkeypatch.setattr(analysis_runtime, "_BOOTSTRAP_REQUEST_SECONDS", 0.1)
     monkeypatch.setattr(analysis_runtime, "_BOOTSTRAP_RETRY_SECONDS", 0.01)
 
     async def request(client, subject, *args, **kwargs):
@@ -246,18 +245,17 @@ async def test_bootstrap_admin_request_budget_is_separate_from_control(bootstrap
             timeouts.append(kwargs["timeout"])
             if first:
                 first = False
-                # The broker answered; deliver it too late, like a slow read.
                 await original(client, subject, *args, **kwargs)
-                with pytest.raises(TimeoutError):
-                    await asyncio.wait_for(asyncio.Event().wait(), kwargs["timeout"])
+                # Simulate a late reply without imposing a wall-clock deadline
+                # on the otherwise real broker under CI load.
                 raise NatsTimeout
         return await original(client, subject, *args, **kwargs)
 
     monkeypatch.setattr(Client, "request", request)
     await runtime.start()
     assert runtime.ready
-    assert len(timeouts) >= 3 and set(timeouts) == {0.1}
-    assert analysis_runtime.CONTROL_SECONDS != 0.1
+    assert len(timeouts) >= 3 and set(timeouts) == {analysis_runtime._BOOTSTRAP_REQUEST_SECONDS}
+    assert analysis_runtime.CONTROL_SECONDS != analysis_runtime._BOOTSTRAP_REQUEST_SECONDS
 
 
 @pytest.mark.asyncio

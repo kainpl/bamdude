@@ -161,7 +161,7 @@ async def test_oidc_choice_survives_factor_and_email_resend(
 ):
     start, user = oidc_flow
     factor = UserTOTP(user_id=user.id, is_enabled=True)
-    factor.secret = "JBSWY3DPEHPK3PXP"
+    factor.secret = pyotp.random_base32()
     factor.backup_code_hashes = [mfa.pwd_context.hash("FBACKUP1")]
     db_session.add(factor)
     if method == "email":
@@ -215,7 +215,7 @@ async def test_legacy_oidc_null_defaults_false(legacy_state, oidc_flow, async_cl
 async def test_local_mfa_keeps_existing_client_preference(checked, async_client, db_session):
     user = await db_session.scalar(select(User).where(User.username == "test_admin"))
     factor = UserTOTP(user_id=user.id, is_enabled=True)
-    factor.secret = "JBSWY3DPEHPK3PXP"
+    factor.secret = pyotp.random_base32()
     db_session.add(factor)
     await db_session.commit()
     login = await async_client.post(

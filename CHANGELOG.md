@@ -1,6 +1,12 @@
 ## [Unreleased]
 
+Order lines keep the parts and quantities recorded when the line was added. During the upgrade, existing lines capture the parts they show at that time. In an active order, use **Add part to line…** to choose from the saved variant or all parts of the product, then review the quantity and any effect on stock reservations. Adding a purchased part keeps individually reserved printed parts. If the order or reservation changes during review, confirm the refreshed preview before saving.
+
+The configuration editor preserves the quantities and descriptions of other saved parts. You can edit saved parts that have left the catalog, and you review the changes before switching variants or removing an archived part. Finished stock tracks different physical kits of the same variant separately, so an order can reserve only a matching kit.
+
 ### Security
+
+- Updated i18next to 26.3.4 to address [GHSA-6jcc-5g8w-32mx](https://github.com/advisories/GHSA-6jcc-5g8w-32mx).
 
 - The part thumbnail renderer uses Node.js 24.22.3 on 64-bit platforms and 22.23.5 on 32-bit ARM. Both updates include Node.js security fixes.
 
@@ -77,6 +83,16 @@
 - **Slicer sidecars can publish their ports on one host address.** Set
   `SIDECAR_BIND` in the sidecar stack's `.env` to choose the address for both
   OrcaSlicer and BambuStudio. Existing port numbers and defaults still work.
+
+- **Slicer parameters follow the Ukrainian interface language.** Process-setting tabs, groups, labels, tooltips, choices and units use OrcaSlicer’s Ukrainian catalog, with reviewed translations for descriptions specific to the vendored schema. Search accepts Ukrainian text and original English keys; changing language keeps edits and sends the same slicer keys and values. The optional catalog loads independently and falls back to English on failure without blocking the panel. Reviewed corrections distinguish lattice angles and translate tooltips containing literal function names.
+
+- **Assembly can spend longer looking for a denser layout.** A visible optional five-minute search tries bitmap restarts and Sparrow, keeps the best validated layout, and can finish early with that result. Fresh quick assemblies keep 90° rotations; finer or arbitrary in-plane rotations are explicit choices; saved projects retain their previous rotation setting. Parts are never mirrored or scaled by this search.
+
+  PlateNest 0.2.0 preserves one-shot cancellation during raster recovery and restarts. Finish and time limits keep the best validated result.
+
+- MCP order reads keep known QC counts for independent lines when another archive lacks part rows; genuinely pooled gaps remain uncertain. A progress request shares its single attribution with Workshop fulfilment. Printer-scoped running queries no longer report missing pending work, and queue links select the requested printer.
+
+- **Read order production progress through BamDude MCP.** The read-only orders module finds orders by name or code, reports their existing line/part coverage and stock receipts, distinguishes checked good output from unchecked print output and recount corrections, and lists linked running claims and pending work without counting auto-queue handoffs twice. Existing Workshop readers and permission ceilings remain authoritative; these calls do not reserve stock, accept QC, rebuild plans or change queues.
 
 - **Edit a project assembly and try again.** After a completed or failed assembly, return to the same inputs and change settings for another attempt. The operator starts the new job explicitly and chooses whether to move previous outputs to the trash.
 
@@ -358,6 +374,10 @@
   slots when a report updates one slot. External spool configuration on A1
   and A1 mini confirms the preset from the external slot's status report.
   A report for one H2D external holder keeps the other visible.
+
+- **Bambu Support filaments on X2D.** Print routing recognizes Support for ABS (GFS06) when the printer reports ABS, while keeping ordinary ABS distinct. The mapping dialog shows the checked material and profile for the selected slot, including Ext-R, and explains refusals from the server's routing check.
+
+- A SWAP job keeps its queue claim when its start goes unacknowledged, so late telemetry can still resolve that execution. Info and the print-state API can settle an old detached SWAP instruction after the operator verifies the plate, then release the finished context.
 
 - **Printer presets prioritize the farm model and nozzle.** If the selected source has no matching profile, the picker offers matching profiles from other sources and explains why. The current selection stays available. The farm-model filter matches configured models exactly. Filament lists keep the loaded-filament filter whenever a matching profile is available after relaxing the source filter.
 

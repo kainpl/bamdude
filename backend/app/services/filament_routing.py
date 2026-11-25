@@ -11,11 +11,11 @@ from backend.app.utils.filament_types import (
     SUPPORT_SLOT_TYPES,
     canonical_filament_type,
     filament_types_compatible,
-    support_slot_type,
+    routing_filament_type,
 )
 from backend.app.utils.model_compatibility import model_compatibility
 from backend.app.utils.printer_configs import requires_left_tpu_firmware_check
-from backend.app.utils.printer_models import normalize_model_name
+from backend.app.utils.printer_models import is_dual_nozzle_model, normalize_model_name
 
 if TYPE_CHECKING:
     from backend.app.services.filament_requirements import PrintRequirements
@@ -130,13 +130,21 @@ def describe_source(material: str | None, variant: str | None) -> str:
     return f"{material or '?'} ({variant})" if variant else (material or "?")
 
 
-def _refusal_params(sid: int, target_type: str, variant: str | None, sources) -> dict:
+def _refusal_params(sid: int, target_type: str, variant: str | None, snapshot: PrinterFeedSnapshot) -> dict:
     # The profile the rule READ — the declared one when an advertisement is
     # applied — or the sentence contradicts the verdict it explains.
-    listed = [describe_source(s.material, s.rule_variant) for s in sources]
-    loaded = ", ".join(listed[:_LISTED_SOURCES])
-    if len(listed) > _LISTED_SOURCES:
-        loaded = f"{loaded}, +{len(listed) - _LISTED_SOURCES}"
+    dual = is_dual_nozzle_model(snapshot.model)
+    sources = sorted(snapshot.sources, key=lambda source: source.kind != "external")
+    listed = []
+    for source in sources[:_LISTED_SOURCES]:
+        description = describe_source(source.material, source.rule_variant)
+        if source.kind == "external":
+            label = "Ext-R" if source.id == 255 else "Ext-L" if dual else "Ext"
+            description = f"{label}: {description}"
+        listed.append(description)
+    loaded = ", ".join(listed)
+    if len(sources) > _LISTED_SOURCES:
+        loaded = f"{loaded}, +{len(sources) - _LISTED_SOURCES}"
     return {"slot": sid, "wanted": describe_source(target_type, variant), "loaded": loaded}
 
 
@@ -172,10 +180,10 @@ def effective_slots(requirements: "PrintRequirements", policy: RoutingPolicy) ->
         slot["type"] = (
             enriched_type
             if enriched_type in SUPPORT_SLOT_TYPES
-            else support_slot_type(slot["type"], slot.get("tray_info_idx"))
+            else routing_filament_type(slot["type"], slot.get("tray_info_idx"))
         )
         if override.get("type"):
-            override_type = support_slot_type(override["type"], override.get("tray_info_idx"))
+            override_type = routing_filament_type(override["type"], override.get("tray_info_idx"))
             if not filament_types_compatible(override_type, slot["type"]):
                 slot["tray_info_idx"] = override.get("tray_info_idx")
             slot["type"] = override_type
@@ -281,7 +289,8 @@ def _pin_holds(pin: dict, slot: dict, source: FeedSource, policy: RoutingPolicy)
     """
     if pin.get("nozzles") is not None and tuple(pin["nozzles"]) != source.nozzles:
         return False
-    if not filament_types_compatible(pin.get("type") or slot["type"], source.material):
+    pinned_type = routing_filament_type(pin.get("type") or slot["type"], pin.get("tray_info_idx"))
+    if not filament_types_compatible(pinned_type, source.material):
         return False
     if source.id != pin.get("source_id"):
         return True
@@ -317,6 +326,7 @@ def source_fits(
     allowed: frozenset[int] | None,
     pin: dict | None,
     left_tpu_check: bool,
+    explain: bool = False,
 ) -> tuple[bool, str | None, bool]:
     """Whether one feed source can serve one channel — the ONE copy of the rule.
 
@@ -351,11 +361,11 @@ def source_fits(
         reason = "fts_external_unsupported" if snapshot.fts else "fts_state_unavailable"
         return False, reason, snapshot.fts_pending_confirmation
     if policy.feed_policy == "ams_only" and source.kind != "ams":
-        return False, None, False
+        return False, "feed_policy_mismatch" if explain else None, False
     if policy.feed_policy == "external_only" and source.kind != "external":
-        return False, None, False
+        return False, "feed_policy_mismatch" if explain else None, False
     if not filament_types_compatible(source.material, slot["type"]):
-        return False, None, False
+        return False, "material_mismatch" if explain else None, False
     variant = slot.get("tray_info_idx")
     if variant and source.rule_variant and variant != source.rule_variant and not policy.allow_base_material_match:
         return False, "variant_mismatch", False
@@ -489,7 +499,7 @@ def resolve_filament_routing(
                 "unknown" if unknown else "incompatible",
                 reason,
                 slots=(sid,),
-                params=_refusal_params(sid, target_type, slot.get("tray_info_idx"), snapshot.sources),
+                params=_refusal_params(sid, target_type, slot.get("tray_info_idx"), snapshot),
             )
         options[sid] = candidates
     # Most constrained first. Search complete assignments; a flexible channel
