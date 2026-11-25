@@ -11,9 +11,11 @@ class Spool(Base):
     """Spool inventory item for tracking filament spools and their properties."""
 
     __tablename__ = "spool"
+    # A number is never handed out again, also after the newest spool is deleted (C047, m261).
+    __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    # The same numeric id can name a different row after deletion on SQLite.
+    # QR v2 names the row itself: a label made before m261 can still carry a number reused before it.
     label_identity: Mapped[str | None] = mapped_column(
         String(36), default=lambda: str(uuid4()), unique=True, index=True
     )

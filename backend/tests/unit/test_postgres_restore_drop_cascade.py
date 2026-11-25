@@ -61,7 +61,12 @@ def _capture_sql_engine() -> tuple[MagicMock, list[str]]:
     async def _execute(stmt, *args, **kwargs):
         # SQLAlchemy text() objects render via str()
         captured.append(str(stmt))
-        return MagicMock()
+        result = MagicMock()
+        if "pg_get_serial_sequence" in str(stmt):
+            # No sequence: the raise rule (core/pg_sequences.py) reads real catalogue rows,
+            # which a mock cannot give; this module is about the DROP phase.
+            result.scalar.return_value = None
+        return result
 
     async def _run_sync(fn, *args, **kwargs):
         captured.append(getattr(fn, "__qualname__", repr(fn)))
