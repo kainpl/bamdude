@@ -10,13 +10,13 @@ Usage:
 import argparse
 import sys
 
-import requests
+import httpx
 
 
 def fetch_spoolman_spools(spoolman_url: str) -> list[dict]:
     """Fetch all spools from Spoolman API."""
     url = f"{spoolman_url.rstrip('/')}/api/v1/spool"
-    resp = requests.get(url, timeout=30)
+    resp = httpx.get(url, timeout=30, follow_redirects=True)
     resp.raise_for_status()
     return resp.json()
 
@@ -101,7 +101,7 @@ def create_bamdude_spool(bamdude_url: str, spool_data: dict, api_key: str | None
     headers = {}
     if api_key:
         headers["X-API-Key"] = api_key
-    resp = requests.post(url, json=spool_data, headers=headers, timeout=30)
+    resp = httpx.post(url, json=spool_data, headers=headers, timeout=30, follow_redirects=True)
     resp.raise_for_status()
     return resp.json()
 
@@ -118,7 +118,7 @@ def main():
     print(f"Fetching spools from {args.spoolman_url}...")
     try:
         sm_spools = fetch_spoolman_spools(args.spoolman_url)
-    except requests.RequestException as e:
+    except httpx.HTTPError as e:
         print(f"Error fetching from Spoolman: {e}", file=sys.stderr)
         sys.exit(1)
 
@@ -154,7 +154,7 @@ def main():
             result = create_bamdude_spool(args.bamdude_url, payload, args.api_key)
             print(f"  Imported {label} -> BamDude spool #{result['id']}")
             created += 1
-        except requests.RequestException as e:
+        except httpx.HTTPError as e:
             print(f"  FAILED {label}: {e}", file=sys.stderr)
             failed += 1
 

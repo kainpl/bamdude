@@ -344,6 +344,8 @@ The configuration editor preserves the quantities and descriptions of other save
 
 ### Removed
 
+- **The unused web-push dependency.** `pywebpush` was installed with BamDude, but nothing ever sent a push message, and the service worker's push and notification-click handlers that waited for one are gone too. `scripts/import_spoolman.py` and `scripts/update_hms_actions.py` now use `httpx`, which BamDude already ships: the `requests` they used was only ever there because `pywebpush` brought it in.
+
 - **Every print is archived.** A leftover per-printer "auto-archive" flag with no control in the interface could still, if switched off through the API, stop a printer's prints from being archived and their filament and energy from being recorded. The flag is no longer read and the API no longer accepts it.
 
 - **Settings: two controls that did nothing are gone.** *Default printer* and *Save thumbnails* were saved and never read.

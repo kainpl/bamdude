@@ -58,9 +58,6 @@ defusedxml>=0.7.0  # Safe XML parsing (prevents XXE attacks)
 # Excel Export
 openpyxl>=3.1.0
 
-# Notifications
-pywebpush>=2.0.0
-
 # Utilities
 python-multipart>=0.0.31  # CVE-2026-53538/53539/53540 (supersedes CVE-2026-42561 floor on 0.0.27)
 aiofiles>=23.0.0
@@ -162,11 +159,10 @@ urllib3>=2.7.0
 # identical fastapi cap + this floor).
 starlette>=1.3.1
 
-# Transitive of pywebpush (unpinned `aiohttp` requirement): aiohttp 3.13.5 has
-# CVE-2026-34993 and CVE-2026-47265, both fixed in 3.14.0. Floor-pin here so
-# the resolver stops installing the vulnerable build. Our direct use in
-# services/external_camera.py (ClientSession / ClientTimeout / ClientError /
-# iter_chunked) is unchanged in 3.14.x.
+# A direct dependency (the camera HTTP clients, external cameras, Cloud Link),
+# also required by aiogram and zigpy. aiohttp 3.13.5 has CVE-2026-34993 and
+# CVE-2026-47265, both fixed in 3.14.0, so the floor keeps the resolver off the
+# vulnerable build.
 aiohttp>=3.14.0
 
 # Plate Detection (optional - enables build plate empty detection)
