@@ -54,7 +54,7 @@ from backend.app.schemas.spoolman import (
     SpoolmanFilamentPatch,
     SpoolmanSlotAssignmentEnriched,
 )
-from backend.app.services import spool_drying, spoolman_activity, spoolman_binding_fence
+from backend.app.services import spool_drying, spoolman_binding_fence, spoolman_source_changes
 from backend.app.services.ams_slot_presence import tray_definitely_empty
 from backend.app.services.location_service import (
     enrich_spool_dicts_with_location_id,
@@ -185,14 +185,25 @@ async def _clear_stale_slot_fallback_tag_links(
     )
 
 
-async def _get_client(db: AsyncSession) -> SpoolmanClient:
-    """Return a validated Spoolman client (URL checked, health-checked) or raise an HTTP error."""
+async def _get_client(db: AsyncSession, *, source=None) -> SpoolmanClient:
+    """Return a validated Spoolman client (URL checked, health-checked) or raise an HTTP error.
+
+    ``source`` — a door's settled snapshot (``spoolman_source_changes.settled_snapshot``):
+    the client is then built on the snapshot's mode and address, never on a later read
+    (C047 acceptance A06).
+    """
+    if source is not None:
+        return await _client_for(source.enabled, source.url)
     result = await db.execute(select(Settings))
     settings: dict[str, str] = {s.key: s.value for s in result.scalars().all()}
 
     enabled = settings.get("spoolman_enabled", "false").lower() == "true"
     url = settings.get("spoolman_url", "").strip()
+    return await _client_for(enabled, url)
 
+
+async def _client_for(enabled: bool, url: str) -> SpoolmanClient:
+    """The validated client for the given mode and address — a door's source snapshot (C047 A06)."""
     if not enabled:
         raise HTTPException(status_code=400, detail="Spoolman integration is not enabled")
     if not url:
@@ -1755,9 +1766,18 @@ async def assign_spoolman_slot(
 
     Raises 404 if the printer does not exist or the spool is not found in Spoolman.
     Spoolman's own ``spool.location`` field is NOT touched — it is user-managed.
+
+    The remote proof belongs to ONE source (C047 acceptance A06): the mode, the address
+    and the generation are read as one committed state before it, the client is built
+    on that address, and after the proof — inside the first-evidence admission, before
+    the lane — the source must still be that one, or a retryable 409.
     """
 
-    client = await _get_client(db)
+    try:
+        source = await spoolman_source_changes.settled_snapshot()
+    except spoolman_source_changes.SourceUnsettled:
+        raise spoolman_source_changes.source_changed() from None
+    client = await _get_client(db, source=source)
     result = await db.execute(select(Printer).where(Printer.id == body.printer_id))
     printer = result.scalar_one_or_none()
     if not printer:
@@ -1785,7 +1805,8 @@ async def assign_spoolman_slot(
     # Spoolman database never keeps it taken (C047 acceptance A05).
     await db.commit()  # no read transaction is carried into the locks
     async with (
-        spoolman_activity.first_evidence("spoolman_slot_assignment"),
+        # Admitted, then the proof checked against the snapshot — before the lane.
+        spoolman_source_changes.admitted_for(source, "spoolman_slot_assignment"),
         _get_ams_assignment_lock(body.printer_id),
         journal_lock(body.printer_id),
         spoolman_binding_fence.entered([body.spoolman_spool_id], issued),
@@ -1858,6 +1879,7 @@ async def assign_spoolman_slot(
                     ams_id=body.ams_id,
                     tray_id=body.tray_id,
                     new_spoolman_spool_id=body.spoolman_spool_id,
+                    spoolman_proved_under=source.base_generation,
                 )
         except Exception:
             logger.exception("ensure_tail_recorded failed for printer %s", body.printer_id)

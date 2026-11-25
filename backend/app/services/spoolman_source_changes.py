@@ -28,6 +28,8 @@ network (the Home Assistant price) and take it again before its next anchor.
 from __future__ import annotations
 
 import contextlib
+import json
+from dataclasses import dataclass, field
 
 from fastapi import HTTPException
 from sqlalchemy import exists, func, select
@@ -37,13 +39,108 @@ from backend.app.services import spoolman_source
 
 SOURCE_KEYS = frozenset({"spoolman_enabled", "spoolman_url"})
 
+SOURCE_CHANGED = "spoolman_source_changed"
+
 SPOOLMAN_SOURCE_MESSAGES = {
     spoolman_source.CHARGE_WINDOW: "A print is being charged to Spoolman right now. Try again in a moment",
     spoolman_source.PRINT_ACCOUNTING: (
         "While a print is accounted in Spoolman, the Spoolman address or database cannot be changed. "
         "Try again after the print finishes"
     ),
+    SOURCE_CHANGED: "Spoolman settings or its history are changing right now. Try again",
 }
+
+
+# --- a consistent snapshot of the source (S0) ---------------------------------------
+
+
+@dataclass(frozen=True)
+class SourceSnapshot:
+    """The three rows as one committed state, with the generations they belong to."""
+
+    generation: int
+    base_generation: int
+    enabled: bool
+    url: str
+    record: dict = field(default_factory=dict)
+
+
+class SourceUnsettled(Exception):
+    """A change of the source ran while the snapshot was read; the caller retries."""
+
+
+async def read_source_rows() -> tuple[dict, dict]:
+    """``spoolman_enabled`` / ``spoolman_url`` / the history-source record, read in one session."""
+    from backend.app.core import database  # noqa: PLC0415
+    from backend.app.models.settings import Settings  # noqa: PLC0415
+    from backend.app.services.spoolman_usage_history import SOURCE_SETTING  # noqa: PLC0415
+
+    keys = ("spoolman_enabled", "spoolman_url", SOURCE_SETTING)
+    async with database.async_session() as db:
+        rows = dict((await db.execute(select(Settings.key, Settings.value).where(Settings.key.in_(keys)))).all())
+    try:
+        record = json.loads(rows.get(SOURCE_SETTING) or "")
+    except (TypeError, ValueError):
+        record = {}
+    if not isinstance(record, dict) or not isinstance(record.get("token"), str) or not record.get("token"):
+        record = {}
+    return rows, record
+
+
+async def settled_snapshot() -> SourceSnapshot:
+    """S0: the rows read while no change of the source runs (spec §C1, S21, S28; acceptance A06).
+
+    A change holds the source guard from its first read to its commit and raises the
+    generation on the way, so a free guard before and after the read with the same
+    generation proves the rows are one committed state of that generation. Otherwise
+    :class:`SourceUnsettled` — never a mix of an old row and a new generation.
+    """
+    if not spoolman_source.guard_free():
+        raise SourceUnsettled
+    generation = spoolman_source.generation()
+    base_generation = spoolman_source.base_generation()
+    rows, record = await read_source_rows()
+    if spoolman_source.generation() != generation or not spoolman_source.guard_free():
+        raise SourceUnsettled
+    return SourceSnapshot(
+        generation=generation,
+        base_generation=base_generation,
+        enabled=(rows.get("spoolman_enabled") or "").strip().lower() == "true",
+        url=(rows.get("spoolman_url") or "").strip(),
+        record=record,
+    )
+
+
+def source_changed() -> HTTPException:
+    """409 ``spoolman_source_changed``: the source moved under a door's proof — try again."""
+    return HTTPException(
+        status_code=409, detail={"error": SOURCE_CHANGED, "message": SPOOLMAN_SOURCE_MESSAGES[SOURCE_CHANGED]}
+    )
+
+
+def require_unchanged(snapshot: SourceSnapshot) -> None:
+    """After a door's remote proof and its admission: the source is still the snapshot's, or 409.
+
+    Called right after ``spoolman_activity.first_evidence`` is entered: from there no
+    change of the database can start, so a generation still equal to S0's means the
+    proof belongs to the database the door now writes for.
+    """
+    if spoolman_source.generation() != snapshot.generation:
+        raise source_changed()
+
+
+@contextlib.asynccontextmanager
+async def admitted_for(snapshot: SourceSnapshot, kind: str):
+    """A first-evidence admission for a proof taken under ``snapshot`` (acceptance A06).
+
+    The first context of a door's ``async with``: the admission is waited for before
+    any lane, and the proof's source is checked right after it — before the lane too.
+    """
+    from backend.app.services import spoolman_activity  # noqa: PLC0415
+
+    async with spoolman_activity.first_evidence(kind):
+        require_unchanged(snapshot)
+        yield
 
 
 def refusal(error: spoolman_source.SourceRefused) -> HTTPException:

@@ -6,7 +6,7 @@ import re
 import secrets
 import time
 from collections.abc import Callable, Coroutine, Sequence
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -3434,10 +3434,36 @@ async def _recheck_held_unlinks(printer_id: int) -> None:
         await on_ams_change(printer_id, current)
 
 
+async def _spoolman_mode_on() -> bool:
+    """The Spoolman mode now, from a session of its own (no transaction carried on).
+
+    Unreadable counts as the built-in inventory: the caller then takes the admission —
+    the side that can only wait, never the side that writes unguarded.
+    """
+    from backend.app.api.routes.settings import get_setting
+
+    try:
+        async with async_session() as db:
+            return (await get_setting(db, "spoolman_enabled") or "").strip().lower() == "true"
+    except Exception:  # noqa: BLE001 - see the docstring
+        logging.getLogger(__name__).debug("Spoolman mode unreadable before the AMS pass", exc_info=True)
+        return False
+
+
 async def on_ams_change(printer_id: int, ams_data: list):
     # Unlink/replay and insertion assignment must share the same lock. Otherwise
     # a delayed empty-slot callback could delete the freshly assigned refill.
-    async with _get_ams_assignment_lock(printer_id):
+    #
+    # The built-in inventory's RFID pass may journal a slot's reel — a first Spoolman fact when
+    # a Spoolman binding is still on file — so in that mode the admission is waited for before
+    # the lane (C047 acceptance A07); the pass reads the mode again under it. In Spoolman mode
+    # the pass does no RFID assignment and takes no admission: an AMS update is no reason to
+    # hold back a Spoolman delete. Whatever reaches the journal either way is guarded there
+    # (``print_usage_journal._spoolman_fact``).
+    from backend.app.services import spoolman_activity
+
+    admission = nullcontext() if await _spoolman_mode_on() else spoolman_activity.first_evidence("ams_change_rfid")
+    async with admission, _get_ams_assignment_lock(printer_id):
         state = printer_manager.get_status(printer_id)
         current = getattr(state, "raw_data", {}).get("ams") if state else None
         await _on_ams_change(printer_id, current if isinstance(current, list) else ams_data)

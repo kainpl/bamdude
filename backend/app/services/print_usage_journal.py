@@ -519,8 +519,34 @@ def open_tail_episode(events: list, tray: int | None = None) -> TailEpisode | No
     return last
 
 
+def _spoolman_fact(db: AsyncSession, printer_id: int, spoolman_spool_id: int | None) -> int | None:
+    """The Spoolman number a new journal row may carry (C047 acceptance A07).
+
+    Every row the journal creates goes through here — whatever door reached it, with
+    or without the journal lock. A Spoolman number is a print's first Spoolman fact, so
+    it is written only with the right to one (``spoolman_activity.admit_for_transaction``:
+    the writer's admission, or one bound to this transaction, never a wait). While a
+    change of the Spoolman database is in flight the row keeps its built-in spool and
+    its Spoolman spool is unknown — a frozen ``None`` no writer fills from a later binding.
+    """
+    if spoolman_spool_id is None:
+        return None
+    from backend.app.services import spoolman_activity
+
+    if spoolman_activity.admit_for_transaction(db, "usage_journal_write"):
+        return spoolman_spool_id
+    logger.warning(
+        "[UsageJournal] Printer %d: Spoolman spool %s not journaled while the Spoolman database changes; "
+        "recorded as unknown",
+        printer_id,
+        spoolman_spool_id,
+    )
+    return None
+
+
 async def _append(db: AsyncSession, **fields) -> PrintUsageEvent:
     """One journal row, flushed into the caller's transaction (the caller commits)."""
+    fields["spoolman_spool_id"] = _spoolman_fact(db, fields["printer_id"], fields.get("spoolman_spool_id"))
     row = PrintUsageEvent(
         **fields, slot_occupied=_slot_occupied_now(fields["printer_id"], fields.get("global_tray_id"))
     )
@@ -746,9 +772,14 @@ async def ensure_tail_recorded(
     tray_id: int,
     new_spool_id: int | None = None,
     new_spoolman_spool_id: int | None = None,
+    spoolman_proved_under: int | None = None,
 ) -> bool:
     """Before an assignment rewrites a slot's binding: if that slot's reel is feeding its
     tail right now, make sure the tail_start exists, frozen with the reel going out.
+
+    ``spoolman_proved_under`` — the base generation under which the writer proved
+    ``new_spoolman_spool_id`` (its source snapshot, before its remote read); the held
+    change is stamped with the older of that and the base now (acceptance A06).
 
     The tail is observed on the MQTT thread and journaled by a queued callback; an
     assignment that commits in between would hand the new reel to the tail. So whoever
@@ -771,8 +802,11 @@ async def ensure_tail_recorded(
         from backend.app.services import spoolman_source
 
         # Which Spoolman database the numbers read here belong to: the seed writes them much
-        # later, and only under the same base (C047 acceptance A01).
+        # later, and only under the same base (C047 acceptance A01). A number the writer proved
+        # earlier carries the base of its proof (A06).
         stamp = spoolman_source.base_generation()
+        if new_spoolman_spool_id is not None and spoolman_proved_under is not None:
+            stamp = min(stamp, spoolman_proved_under)
         outgoing = await freeze_spool_ids(db, printer_id, tray)
         incoming = None
         if new_spool_id is not None or new_spoolman_spool_id is not None:
@@ -895,7 +929,7 @@ async def record_event(
             kind=kind,
             global_tray_id=global_tray_id,
             spool_id=spool_id,
-            spoolman_spool_id=spoolman_spool_id,
+            spoolman_spool_id=_spoolman_fact(db, printer_id, spoolman_spool_id),
             slot_occupied=_slot_occupied_now(printer_id, global_tray_id),
         )
     )
@@ -1211,7 +1245,7 @@ async def record_runout(
             kind=kind,
             global_tray_id=global_tray_id,
             spool_id=spool_id,
-            spoolman_spool_id=spoolman_spool_id,
+            spoolman_spool_id=_spoolman_fact(db, printer_id, spoolman_spool_id),
             slot_occupied=occupied,
         )
     )

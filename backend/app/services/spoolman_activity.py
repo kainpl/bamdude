@@ -143,6 +143,51 @@ def evidence_held() -> bool:
     return task is not None and _evidence_task.get() is task
 
 
+_TX_ADMISSION = "c047_spoolman_admission"
+_TX_LISTENER = "c047_spoolman_admission_listener"
+
+
+def admit_for_transaction(db, kind: str) -> bool:
+    """The right to write a Spoolman fact into ``db``'s transaction, asked WITHOUT waiting.
+
+    The shared journal writer (acceptance A07) runs inside a caller's transaction,
+    possibly holding SQLite's writer, so it never waits there. True: the task already
+    holds a first-evidence record, or — no base change in flight — a record is
+    published now and ends with the session's outermost transaction (commit,
+    rollback, close), so a base change refuses until the fact is committed or gone.
+    False: a base change is in flight; the caller writes the fact without its
+    Spoolman number (unknown) instead of a number the change may be leaving.
+    """
+    from sqlalchemy import event  # noqa: PLC0415
+
+    from backend.app.services import spoolman_source  # noqa: PLC0415
+
+    if evidence_held():
+        return True
+    if spoolman_source.base_change_in_flight():
+        return False
+    sync = getattr(db, "sync_session", db)
+    info = getattr(sync, "info", None)
+    if not isinstance(info, dict):
+        return True  # not a real session (a test double): nothing to bind
+    if info.get(_TX_ADMISSION) is not None:
+        return True
+    if not info.get(_TX_LISTENER):
+        event.listen(sync, "after_transaction_end", _end_transaction_admission)
+        info[_TX_LISTENER] = True
+    _activity._enter(kind)
+    info[_TX_ADMISSION] = kind
+    return True
+
+
+def _end_transaction_admission(session, transaction) -> None:
+    if transaction.parent is not None:
+        return  # a savepoint: the fact lives until the outermost transaction ends
+    kind = session.info.pop(_TX_ADMISSION, None)
+    if kind is not None:
+        _activity._leave(kind)
+
+
 @contextlib.asynccontextmanager
 async def first_evidence(kind: str):
     """A writer of a print's first Spoolman evidence (S41, S44).

@@ -826,6 +826,110 @@ class TestTheAdmissionBeforeTheLane:
         claim.assert_awaited_once()
 
 
+# --- every journal row asks for the right to a Spoolman fact (acceptance A07) ----------
+
+
+async def _journal(db, archive, *, commit=True):
+    from backend.app.models.print_usage_event import EVENT_SPOOL_LOADED
+    from backend.app.services import print_usage_journal as journal
+
+    await journal.record_event(
+        db,
+        printer_id=archive.printer_id,
+        archive_id=archive.id,
+        layer_num=3,
+        event=EVENT_SPOOL_LOADED,
+        global_tray_id=0,
+        spool_id=5,
+        spoolman_spool_id=17,
+        commit=commit,
+    )
+
+
+class TestTheJournalAsksForTheRight:
+    async def test_a_number_written_while_the_base_changes_is_unknown(self, db_session, printer_factory):
+        archive = await _printing(db_session, await printer_factory())
+        async with spoolman_source.guard():
+            with spoolman_source.base_change():
+                await _journal(db_session, archive)
+        assert not spoolman_activity.records_open()
+        assert await _events(db_session) == [(5, None)], "the built-in spool stays, the Spoolman one is unknown"
+
+    async def test_an_unadmitted_writer_holds_a_record_until_its_commit(self, db_session, printer_factory):
+        archive = await _printing(db_session, await printer_factory())
+        await _journal(db_session, archive, commit=False)
+        assert spoolman_activity.records_open(), "bound to the transaction, never a wait"
+        async with spoolman_source.guard():
+            with pytest.raises(spoolman_source.SourceRefused) as refused:
+                spoolman_source.begin_base_change()
+        assert refused.value.reason == spoolman_source.PRINT_ACCOUNTING
+        await db_session.commit()
+        assert not spoolman_activity.records_open()
+        assert await _events(db_session) == [(5, 17)]
+
+    async def test_a_rolled_back_fact_releases_its_record(self, db_session, printer_factory):
+        archive = await _printing(db_session, await printer_factory())
+        await _journal(db_session, archive, commit=False)
+        assert spoolman_activity.records_open()
+        await db_session.rollback()
+        assert not spoolman_activity.records_open()
+
+    async def test_an_admitted_writer_publishes_no_second_record(self, db_session, printer_factory):
+        archive = await _printing(db_session, await printer_factory())
+        async with spoolman_activity.first_evidence("writer"):
+            await _journal(db_session, archive, commit=False)
+            assert dict(spoolman_activity._activity.open) == {"writer": 1}
+            await db_session.commit()
+        assert await _events(db_session) == [(5, 17)]
+
+
+class TestTheAmsPassAdmission:
+    async def _pass(self, monkeypatch, printer):
+        from backend.app import main
+        from backend.app.core import database
+
+        inner = AsyncMock()
+        monkeypatch.setattr(main, "async_session", database.async_session)
+        monkeypatch.setattr(main, "_on_ams_change", inner)
+        monkeypatch.setattr("backend.app.services.spool_single_slot.release_elsewhere", AsyncMock())
+        monkeypatch.setattr(main.printer_manager, "get_status", lambda *_: None)
+        return main, inner
+
+    async def test_the_built_in_pass_waits_for_its_admission_before_the_lane(
+        self, db_session, printer_factory, monkeypatch
+    ):
+        """A07: the built-in RFID pass may journal a Spoolman number — admitted before its lane."""
+        await _spoolman(db_session, enabled=False)
+        printer = await printer_factory()
+        main, inner = await self._pass(monkeypatch, printer)
+        lane = main._get_ams_assignment_lock(printer.id)
+        async with spoolman_source.guard():
+            spoolman_source.begin_base_change()
+            try:
+                waiting = asyncio.create_task(main.on_ams_change(printer.id, []))
+                await asyncio.sleep(0.05)
+                assert not waiting.done() and not lane.locked()
+                inner.assert_not_awaited()
+            finally:
+                spoolman_source.end_base_change()
+        await asyncio.wait_for(waiting, 2)
+        inner.assert_awaited_once()
+
+    async def test_the_spoolman_mode_pass_takes_no_admission(self, db_session, printer_factory, monkeypatch):
+        """An AMS update in Spoolman mode never holds a record a Spoolman delete would meet."""
+        await _spoolman(db_session, enabled=True)
+        printer = await printer_factory()
+        main, inner = await self._pass(monkeypatch, printer)
+        async with spoolman_source.guard():
+            spoolman_source.begin_base_change()
+            try:
+                await asyncio.wait_for(main.on_ams_change(printer.id, []), 2)
+            finally:
+                spoolman_source.end_base_change()
+        inner.assert_awaited_once()
+        assert spoolman_activity.revision() == 0
+
+
 # --- writers meet the fence (S27, S32, S37) -----------------------------------------
 
 

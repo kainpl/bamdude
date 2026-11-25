@@ -443,3 +443,121 @@ async def test_the_zip_restore_refuses_while_a_spoolman_charge_runs(async_client
         release.set()
         await asyncio.wait_for(task, 5)
     assert spoolman_source.charges_open() == 0
+
+
+# --- A06: a manual assignment's remote proof belongs to one source ----------------------------
+
+
+@pytest.mark.parametrize("change", ["mode_off_then_new_address", "new_address", "rotate", "mode_off"])
+async def test_a_manual_assignment_refuses_a_proof_its_source_outlived(
+    async_client, db_session, printer_factory, monkeypatch, change
+):
+    """The GET proved the number on A; a change of the source while it ran refuses the assignment, retryably."""
+    from backend.app.api.routes import spoolman_inventory as route
+    from backend.app.api.routes.settings import update_spoolman_settings
+    from backend.app.api.routes.spoolman_usage import rotate_spoolman_usage_source
+    from backend.app.core import database
+    from backend.app.models.archive import PrintArchive
+    from backend.app.services import print_usage_journal as journal
+
+    printer = await printer_factory()
+    await _seed_source(db_session)
+    if change == "mode_off_then_new_address":
+        # Spoolman off and nothing else proves accounting: the base may change under the GET.
+        db_session.add(
+            PrintArchive(
+                printer_id=printer.id, status="printing", filename="a.3mf", print_name="a", file_path="", file_size=0
+            )
+        )
+        await db_session.commit()
+    got, deliver = asyncio.Event(), asyncio.Event()
+    held_facts = []
+
+    class LocalA:
+        base_url = A
+        health_check = AsyncMock(return_value=True)
+        get_spools = AsyncMock(return_value=[])
+
+        async def get_spool(self, spool_id):
+            got.set()
+            await deliver.wait()
+            return {"id": spool_id, "filament": {}, "extra": {}, "archived": False}
+
+    class HeldJournal:
+        def journal_held(self):
+            return True
+
+        def note_held_binding_change(self, generation, tray, outgoing, incoming, *, stamp):
+            held_facts.append((tray, incoming, stamp))
+            return True
+
+    monkeypatch.setattr(route, "get_spoolman_client", AsyncMock(return_value=LocalA()))
+    monkeypatch.setattr(route, "_health_check_cache", {})
+    monkeypatch.setattr(journal, "_observed_print", lambda _: (HeldJournal(), 1, None))
+    monkeypatch.setattr(
+        "backend.app.services.location_service.maybe_sync_spoolman_locations", AsyncMock(return_value=0)
+    )
+    assign = asyncio.create_task(
+        async_client.post(
+            "/api/v1/spoolman/inventory/slot-assignments",
+            json={"printer_id": printer.id, "ams_id": 0, "tray_id": 0, "spoolman_spool_id": 17},
+        )
+    )
+    try:
+        await asyncio.wait_for(got.wait(), 5)
+        if change in ("mode_off_then_new_address", "mode_off"):
+            async with database.async_session() as other:
+                await update_spoolman_settings({"spoolman_enabled": "false"}, db=other, _=None)
+        if change in ("mode_off_then_new_address", "new_address"):
+            async with database.async_session() as other:
+                await update_spoolman_settings({"spoolman_url": B}, db=other, _=None)
+        if change == "rotate":
+            async with database.async_session() as other:
+                await rotate_spoolman_usage_source(db=other, _=None)
+    finally:
+        deliver.set()
+        response = await asyncio.wait_for(assign, 10)
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["error"] == "spoolman_source_changed"
+    assert (await db_session.execute(select(SpoolmanSlotAssignment))).scalars().all() == []
+    assert held_facts == [], "no journal fact for a number proved on the source that is gone"
+
+
+async def test_a_manual_assignment_under_an_unchanged_source_stamps_its_proof(
+    async_client, db_session, printer_factory, monkeypatch
+):
+    from backend.app.api.routes import spoolman_inventory as route
+    from backend.app.services import print_usage_journal as journal, spoolman_source
+
+    printer = await printer_factory()
+    await _seed_source(db_session)
+    held_facts = []
+
+    class LocalA:
+        base_url = A
+        health_check = AsyncMock(return_value=True)
+        get_spools = AsyncMock(return_value=[])
+
+        async def get_spool(self, spool_id):
+            return {"id": spool_id, "filament": {}, "extra": {}, "archived": False}
+
+    class HeldJournal:
+        def journal_held(self):
+            return True
+
+        def note_held_binding_change(self, generation, tray, outgoing, incoming, *, stamp):
+            held_facts.append((tray, incoming, stamp))
+            return True
+
+    monkeypatch.setattr(route, "get_spoolman_client", AsyncMock(return_value=LocalA()))
+    monkeypatch.setattr(route, "_health_check_cache", {})
+    monkeypatch.setattr(journal, "_observed_print", lambda _: (HeldJournal(), 1, None))
+    monkeypatch.setattr(
+        "backend.app.services.location_service.maybe_sync_spoolman_locations", AsyncMock(return_value=0)
+    )
+    response = await async_client.post(
+        "/api/v1/spoolman/inventory/slot-assignments",
+        json={"printer_id": printer.id, "ams_id": 0, "tray_id": 0, "spoolman_spool_id": 17},
+    )
+    assert response.status_code == 200, response.text
+    assert held_facts == [(0, (None, 17), spoolman_source.base_generation())]

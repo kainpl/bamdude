@@ -431,3 +431,149 @@ async def test_a_rolled_back_change_releases_the_waiting_writer(pg, monkeypatch)
     # The base generation moved with the passed predicate; the rolled-back change leaves the stamp
     # erring towards "unknown", never towards a number of another base.
     assert await _events(factory) == [(5, None)]
+
+
+# --- A07: the RFID doors and the shared journal writer ------------------------------------------
+
+
+async def _rfid_rig(factory, monkeypatch):
+    """A printing print, Spoolman off, a Spoolman binding still on file, a tail feeding from the slot."""
+    from types import SimpleNamespace
+
+    from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+    from backend.app.services import print_usage_journal as journal
+    from backend.app.services.printer_manager import printer_manager
+
+    printer = await _printer(factory)
+    archive_id = await _printing(factory, printer)
+    async with factory() as db:
+        db.add(SpoolmanSlotAssignment(printer_id=printer.id, ams_id=0, tray_id=0, spoolman_spool_id=17))
+        await db.commit()
+    tray = {"id": 0, "tray_type": "PLA", "tag_uid": "12345678ABCDEF00", "tray_color": "FFFFFFFF"}
+    status = SimpleNamespace(raw_data={"ams": [{"id": 0, "tray": [tray]}]})
+    tail = SimpleNamespace(journal_held=lambda: False, open_tail=lambda: (0, 10))
+    monkeypatch.setattr(journal, "_observed_print", lambda _: (tail, 1, None))
+    monkeypatch.setattr(printer_manager, "get_status", lambda *_: status)
+    monkeypatch.setattr(printer_manager, "get_client", lambda *_: None)
+    monkeypatch.setattr(printer_manager, "ensure_fresh_connection", AsyncMock())
+    monkeypatch.setattr("backend.app.core.websocket.ws_manager.broadcast", AsyncMock())
+
+    async def from_slot():
+        from backend.app.api.routes.inventory import CreateSpoolFromSlotRequest, create_spool_from_slot
+
+        async with factory() as db:
+            return await create_spool_from_slot(
+                CreateSpoolFromSlotRequest(printer_id=printer.id, ams_id=0, tray_id=0), db=db, _=None
+            )
+
+    return printer, archive_id, from_slot
+
+
+async def _tail_numbers(factory, archive_id):
+    from backend.app.models.print_usage_event import EVENT_TAIL_START, PrintUsageEvent
+
+    async with factory() as db:
+        return (
+            await db.scalars(
+                select(PrintUsageEvent.spoolman_spool_id).where(
+                    PrintUsageEvent.archive_id == archive_id, PrintUsageEvent.event == EVENT_TAIL_START
+                )
+            )
+        ).all()
+
+
+async def test_the_rfid_from_slot_waits_for_its_admission_with_the_lane_free(pg, monkeypatch):
+    from backend.app import main
+    from backend.app.services import spoolman_activity, spoolman_source
+
+    factory, engine = pg
+    printer, archive_id, from_slot = await _rfid_rig(factory, monkeypatch)
+    async with _paused_durable_select(engine) as (wait_inside, release):
+        change = asyncio.create_task(_change(factory))
+        await wait_inside()
+        assert spoolman_source.base_change_in_flight()
+        work = asyncio.create_task(from_slot())
+        await asyncio.sleep(0.1)
+        assert not work.done() and not spoolman_activity.records_open()
+        assert not main._get_ams_assignment_lock(printer.id).locked(), "the lane stays free while it waits"
+        assert await _tail_numbers(factory, archive_id) == [], "nothing written inside the old snapshot"
+        await release()
+        await asyncio.wait_for(asyncio.gather(change, work), 15)
+    assert await _url(factory) == B
+    # The tail is written after the change committed. Which Spoolman number a binding left over
+    # from the old database names is the separate task on leftover bindings (not C047).
+    assert len(await _tail_numbers(factory, archive_id)) == 1
+
+
+async def test_an_rfid_writer_inside_its_transaction_refuses_the_change(pg, monkeypatch):
+    from backend.app.services import spool_tag_matcher
+
+    factory, _ = pg
+    _printer_row, archive_id, from_slot = await _rfid_rig(factory, monkeypatch)
+    inside, resume = asyncio.Event(), asyncio.Event()
+    original = spool_tag_matcher.auto_assign_spool
+
+    async def hold(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        inside.set()
+        await resume.wait()
+        return result
+
+    monkeypatch.setattr(spool_tag_matcher, "auto_assign_spool", hold)
+    work = asyncio.create_task(from_slot())
+    try:
+        await asyncio.wait_for(inside.wait(), 10)
+        with pytest.raises(HTTPException) as refused:
+            await asyncio.wait_for(_change(factory), 5)
+        assert (refused.value.status_code, refused.value.detail["reason"]) == (409, "print_accounting")
+    finally:
+        resume.set()
+        await asyncio.wait_for(work, 15)
+    assert await _url(factory) == A
+    assert await _tail_numbers(factory, archive_id) == [17]
+
+
+async def test_the_shared_writer_never_waits_and_writes_unknown_inside_a_base_change(pg, monkeypatch):
+    """A07: a journal write with no admission, while the change's SELECT runs: no wait, no old number."""
+    from backend.app.services import print_usage_journal as journal, spoolman_activity
+
+    factory, engine = pg
+    printer, archive_id, _from_slot = await _rfid_rig(factory, monkeypatch)
+    async with _paused_durable_select(engine) as (wait_inside, release):
+        change = asyncio.create_task(_change(factory))
+        await wait_inside()
+        async with factory() as db:
+            await asyncio.wait_for(
+                journal.ensure_tail_recorded(db, printer_id=printer.id, ams_id=0, tray_id=0, new_spool_id=99), 2
+            )
+            await db.commit()
+        assert not spoolman_activity.records_open()
+        await release()
+        await asyncio.wait_for(change, 10)
+    assert await _url(factory) == B
+    assert await _tail_numbers(factory, archive_id) == [None]
+
+
+async def test_the_built_in_ams_pass_waits_for_its_admission_with_the_lane_free(pg, monkeypatch):
+    from backend.app import main
+    from backend.app.services import spoolman_activity
+
+    factory, engine = pg
+    printer = await _printer(factory)
+    await _printing(factory, printer)
+    inner = AsyncMock()
+    monkeypatch.setattr(main, "_on_ams_change", inner)
+    monkeypatch.setattr("backend.app.services.spool_single_slot.release_elsewhere", AsyncMock())
+    monkeypatch.setattr(main.printer_manager, "get_status", lambda *_: None)
+    async with _paused_durable_select(engine) as (wait_inside, release):
+        change = asyncio.create_task(_change(factory))
+        await wait_inside()
+        work = asyncio.create_task(main.on_ams_change(printer.id, []))
+        await asyncio.sleep(0.1)
+        assert not work.done() and not spoolman_activity.records_open()
+        assert not main._get_ams_assignment_lock(printer.id).locked()
+        inner.assert_not_awaited()
+        await release()
+        await asyncio.wait_for(asyncio.gather(change, work), 15)
+    inner.assert_awaited_once()
+    assert await _url(factory) == B

@@ -29,7 +29,6 @@ request never stops it, and a full restore waits for it (or refuses).
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -38,7 +37,7 @@ from fastapi import HTTPException
 from sqlalchemy import delete, select
 
 from backend.app.core import database
-from backend.app.services import spoolman_activity, spoolman_binding_fence, spoolman_source
+from backend.app.services import spoolman_activity, spoolman_binding_fence, spoolman_source, spoolman_source_changes
 
 logger = logging.getLogger(__name__)
 
@@ -161,22 +160,6 @@ class _Source:
     token: str | None
 
 
-async def _read_source_snapshot() -> tuple[dict, dict]:
-    from backend.app.models.settings import Settings  # noqa: PLC0415
-    from backend.app.services.spoolman_usage_history import SOURCE_SETTING  # noqa: PLC0415
-
-    keys = ("spoolman_enabled", "spoolman_url", SOURCE_SETTING)
-    async with database.async_session() as db:
-        rows = dict((await db.execute(select(Settings.key, Settings.value).where(Settings.key.in_(keys)))).all())
-    try:
-        data = json.loads(rows.get(SOURCE_SETTING) or "")
-    except (TypeError, ValueError):
-        data = {}
-    if not isinstance(data, dict) or not isinstance(data.get("token"), str) or not data.get("token"):
-        data = {}
-    return rows, data
-
-
 def _pure_token(data: dict, url: str) -> str | None:
     """The token S0 names without any further read (spec §C1): the record's, else the known one."""
     from backend.app.services.spoolman_usage_history import _known  # noqa: PLC0415
@@ -193,14 +176,11 @@ async def _take_source() -> _Source:
     from backend.app.api.routes._spoolman_helpers import assert_safe_spoolman_url  # noqa: PLC0415
     from backend.app.services.spoolman_usage_history import normalize_url  # noqa: PLC0415
 
-    if not spoolman_source.guard_free():
-        raise _source_changed()
-    g0 = spoolman_source.generation()
-    rows, data = await _read_source_snapshot()
-    if spoolman_source.generation() != g0 or not spoolman_source.guard_free():
-        raise _source_changed()
-    enabled = (rows.get("spoolman_enabled") or "").strip().lower() == "true"
-    url = (rows.get("spoolman_url") or "").strip()
+    try:
+        snapshot = await spoolman_source_changes.settled_snapshot()
+    except spoolman_source_changes.SourceUnsettled:
+        raise _source_changed() from None
+    g0, enabled, url, data = snapshot.generation, snapshot.enabled, snapshot.url, snapshot.record
     if not enabled:
         raise HTTPException(status_code=400, detail="Spoolman integration is not enabled")
     if not url:
