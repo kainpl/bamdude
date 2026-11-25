@@ -41,6 +41,8 @@ ACTIONABLE_REASONS = frozenset(
         "material_mismatch",
         "variant_mismatch",
         "feed_topology_mismatch",
+        # The job's own filament-source setting (AMS only / external only) excludes the slot: only changing it helps.
+        "feed_policy_mismatch",
         "fts_external_unsupported",
         "tpu_left_firmware_unsupported",
         "distinct_sources_required",
