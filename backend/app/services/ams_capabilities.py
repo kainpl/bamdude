@@ -127,9 +127,10 @@ def _insertion_update(state: PrinterState, printer_model: str | None) -> bool:
     1. The printer never reported the setting. BS holds it as
        ``std::optional<bool>`` and hides on an empty one; ``None`` here says the
        same thing, which is why that field is nullable.
-    2. The AMS is *selected* to run the Lite personality — no RFID, so nothing
-       to read on insertion. Checked only when the machine offers a firmware
-       switch at all (BS's ``SupportSwitchFirmware()`` = a non-empty list).
+    2. The AMS is *selected* to run the Lite personality. BS hides the setting
+       there without saying why; it is not evidence that an AMS Lite has no RFID
+       reader. Checked only when the machine offers a firmware switch at all
+       (BS's ``SupportSwitchFirmware()`` = a non-empty list).
     3. Otherwise, a model whose config says ``use_ams_type: "f1"`` — the A1
        family's own AMS type, which has no insertion read either.
 

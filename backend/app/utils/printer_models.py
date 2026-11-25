@@ -151,26 +151,22 @@ NO_EXTERNAL_STORAGE_MODELS = frozenset(
 )
 
 
-# Models with an ethernet port.
-# X1, P1P, A1, A1 Mini do NOT have ethernet.
+# Models with an ethernet port. Bambu's printer descriptions carry no such flag,
+# so this is the hardware as the manufacturer documents it: the X1/X1C and P1S
+# quick-start guides and the P2S specification list Wi-Fi only (they sat here by
+# mistake until 2026-11-25), the X1E specification lists Ethernet. X1, P1P, A1
+# and A1 Mini have none either.
 ETHERNET_MODELS = frozenset(
     [
         # Display names (uppercase, no spaces)
-        "X1C",
         "X1E",
-        "P1S",
-        "P2S",
         "X2D",
         "H2D",
         "H2DPRO",
         "H2C",
         "H2S",
-        # Internal codes (hyphen-stripped). X1C=BLP001, X1E=C13, P1S=C12 have
-        # ethernet; plain X1 (BLP002) and P1P (C11) do NOT — their codes stay out.
-        "BLP001",  # X1C
+        # Internal codes (hyphen-stripped)
         "C13",  # X1E
-        "C12",  # P1S
-        "N7",  # P2S
         "N6",  # X2D
         "O1D",  # H2D
         "O1E",  # H2D Pro

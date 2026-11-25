@@ -358,6 +358,8 @@ The configuration editor preserves the quantities and descriptions of other save
 
 ### Fixed
 
+- **The X1 Carbon, P1S and P2S no longer show a wired connection.** They have no Ethernet port, as the manufacturer's own guides say, but BamDude counted them among the wired printers, so a Wi-Fi signal of exactly -90 dBm (the value a wired printer reports with Wi-Fi off) showed an Ethernet badge in place of the signal strength.
+
 - **The exhaust fan is named as the printer and Bambu Studio name it.** On the H2D, H2D Pro, H2C, H2S, P2S and X2D the printer card and the air-duct dialog called it the chamber fan. Bambu Studio calls that fan "Exhaust" unless the printer's own description renames it, which only the X1 family and the P1S do. The X2D's heating-mode fans (Left and Right Heating Fan) appeared in English in both languages; they are translated now.
 
 - **A deleted spool's number is never handed out again.** On SQLite, deleting the newest spool gave its number to the next one, so a printed numeric label, a slot record or a label job still naming it pointed at a different spool. The upgrade gives the spool table a counter that starts above every number the database still remembers, including numbers that only the history, labels or slots of deleted spools carry. The counter now also survives moving between SQLite and PostgreSQL and the portable backup. A used spool is still archived, not deleted.
