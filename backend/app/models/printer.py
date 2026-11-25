@@ -20,10 +20,14 @@ from backend.app.models.printer_tag import PrinterTag  # noqa: F401
 
 class Printer(Base):
     __tablename__ = "printers"
+    # A deleted printer's number is never handed out again (P-ID, m262): on SQLite
+    # the table is AUTOINCREMENT; on PostgreSQL the sequence only ever moves up.
+    __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    # Immutable, opaque, new on every creation (OrcaBamDude spec r2 §8.1, m216). The numeric id is reused on
-    # SQLite after a delete and the serial number is treated as sensitive, so a connector names THIS record by it.
+    # Immutable, opaque, new on every creation (OrcaBamDude spec r2 §8.1, m216). The numeric id was reused on
+    # SQLite after a delete before m262, a restored older copy can hand it out again, and the serial number is
+    # treated as sensitive, so a connector names THIS record by it.
     connector_identity: Mapped[str] = mapped_column(
         String(36), nullable=False, unique=True, index=True, default=lambda: str(uuid.uuid4())
     )
