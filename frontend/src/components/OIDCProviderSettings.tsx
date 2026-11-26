@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Edit2, Trash2, Globe, Check, X, RefreshCw, ExternalLink, Lock } from 'lucide-react';
+import { Plus, Edit2, Trash2, Globe, Check, X, RefreshCw, ExternalLink, Lock, AlertTriangle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
 import type { OIDCProvider, OIDCProviderCreate } from '../api/client';
@@ -10,6 +10,7 @@ import { Toggle } from './Toggle';
 import { ConfirmModal } from './ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
 import { Select } from './Select';
+import { rowsToMapping, toRows, type MappingRow } from './oidcGroupMapping';
 
 const EMPTY_FORM: OIDCProviderCreate = {
   name: '',
@@ -25,7 +26,13 @@ const EMPTY_FORM: OIDCProviderCreate = {
   icon_url: undefined,
   default_group_id: null,
   is_autologin: false,
+  group_claim: 'groups',
+  group_mapping: {},
 };
+
+// The name the backend seeds for the administrators' group (models/user.py ADMIN_GROUP_NAME).
+const ADMIN_GROUP_NAME = 'Administrators';
+
 
 // Common email-claim choices: PocketID/Authentik/Keycloak/Authelia/Google
 // all use the standard 'email' claim. Azure Entra ID never sends
@@ -41,6 +48,7 @@ function ProviderForm({
   onCancel,
   isPending,
   secretConfigured = false,
+  mappingDamaged = false,
 }: {
   initial: OIDCProviderCreate;
   isEdit?: boolean;
@@ -48,11 +56,16 @@ function ProviderForm({
   onCancel: () => void;
   isPending: boolean;
   secretConfigured?: boolean;
+  /** N07 §F: the stored mapping is damaged; a save keeps it until the operator chooses to replace it. */
+  mappingDamaged?: boolean;
 }) {
   const { t } = useTranslation();
   const [form, setForm] = useState<OIDCProviderCreate>(initial);
   const [secretChanged, setSecretChanged] = useState(false);
   const [secretCleared, setSecretCleared] = useState(false);
+  const [rows, setRows] = useState<MappingRow[]>(() => toRows(initial.group_mapping));
+  const [replacingDamaged, setReplacingDamaged] = useState(false);
+  const [removedManaged, setRemovedManaged] = useState(false);
   const set = (key: keyof OIDCProviderCreate, value: unknown) =>
     setForm((prev) => ({ ...prev, [key]: value }));
 
@@ -68,8 +81,25 @@ function ProviderForm({
     'w-full px-4 py-3 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:outline-none focus:ring-2 focus:ring-bambu-green/50 focus:border-bambu-green transition-colors text-sm';
   const labelCls = 'block text-sm font-medium text-white mb-1';
 
+  const existingGroupIds = groupsList ? new Set(groupsList.map((g) => g.id)) : null;
+  const adminGroupId = groupsList?.find((g) => g.name === ADMIN_GROUP_NAME)?.id;
+  const editingMapping = !mappingDamaged || replacingDamaged;
+  const mappingToSend = rowsToMapping(rows, existingGroupIds);
+  const clearsMapping =
+    editingMapping && Object.keys(mappingToSend).length === 0 && (replacingDamaged || toRows(initial.group_mapping).length > 0);
+  const updateRow = (index: number, change: Partial<MappingRow>) =>
+    setRows((prev) => prev.map((row, i) => (i === index ? { ...row, ...change } : row)));
+  const removeRow = (index: number) => {
+    setRows((prev) => prev.filter((_, i) => i !== index));
+    setRemovedManaged(true);
+  };
+
   const handleSave = () => {
     const payload = { ...form };
+    // N07 §F: a damaged mapping is never overwritten by an ordinary save — only by the
+    // explicit replacement, which sends the whole new mapping.
+    if (editingMapping) payload.group_mapping = mappingToSend;
+    else delete (payload as Partial<OIDCProviderCreate>).group_mapping;
     if (isEdit && !secretChanged) {
       delete (payload as Partial<OIDCProviderCreate>).client_secret;
     }
@@ -157,6 +187,96 @@ function ProviderForm({
           </Select>
           <p className="text-bambu-gray text-xs mt-1">{t('settings.oidc.form.defaultGroupHelp')}</p>
         </div>
+        <div>
+          <label className={labelCls}>{t('settings.oidc.form.groupClaim')}</label>
+          <input
+            className={inputCls}
+            value={form.group_claim ?? 'groups'}
+            onChange={(e) => set('group_claim', e.target.value || 'groups')}
+            placeholder="groups"
+            data-testid="oidc-group-claim"
+          />
+          <p className="text-bambu-gray text-xs mt-1">{t('settings.oidc.form.groupClaimHelp')}</p>
+        </div>
+      </div>
+
+      {/* N07: IdP group → BamDude group. The mapped groups follow the IdP at every OIDC sign-in. */}
+      <div className="space-y-2" data-testid="oidc-group-mapping">
+        <p className={labelCls}>{t('settings.oidc.form.groupMapping')}</p>
+        <p className="text-bambu-gray text-xs">{t('settings.oidc.form.groupMappingHelp')}</p>
+        {mappingDamaged && !replacingDamaged ? (
+          <div className="flex flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
+            <p className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-300">
+              <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+              {t('settings.oidc.form.mappingDamaged')}
+            </p>
+            <div>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setRows([]);
+                  setReplacingDamaged(true);
+                }}
+                data-testid="oidc-mapping-replace"
+              >
+                {t('settings.oidc.form.mappingReplace')}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {rows.map((row, index) => {
+              const deleted = row.groupId !== '' && existingGroupIds !== null && !existingGroupIds.has(row.groupId);
+              return (
+                <div key={index} className="flex flex-col sm:flex-row gap-2 sm:items-center">
+                  <input
+                    className={inputCls}
+                    value={row.idp}
+                    onChange={(e) => updateRow(index, { idp: e.target.value })}
+                    placeholder={t('settings.oidc.form.mappingIdpGroup')}
+                    aria-label={t('settings.oidc.form.mappingIdpGroup')}
+                  />
+                  <Select
+                    size="lg"
+                    tone="raised"
+                    className="w-full"
+                    value={deleted ? '' : row.groupId}
+                    onChange={(e) => updateRow(index, { groupId: e.target.value ? Number(e.target.value) : '' })}
+                    aria-label={t('settings.oidc.form.mappingGroup')}
+                  >
+                    <option value="">{deleted ? t('settings.oidc.form.mappingGroupDeleted') : t('settings.oidc.form.mappingGroup')}</option>
+                    {groupsList?.map((g) => (
+                      <option key={g.id} value={g.id}>{g.name}</option>
+                    ))}
+                  </Select>
+                  <Button variant="secondary" size="sm" onClick={() => removeRow(index)} aria-label={t('settings.oidc.form.mappingRemove')}>
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                </div>
+              );
+            })}
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setRows((prev) => [...prev, { idp: '', groupId: '' }])}
+              className="inline-flex items-center gap-2"
+              data-testid="oidc-mapping-add"
+            >
+              <Plus className="w-4 h-4" />
+              {t('settings.oidc.form.mappingAdd')}
+            </Button>
+            {removedManaged && <p className="text-bambu-gray text-xs">{t('settings.oidc.form.mappingRemovedHint')}</p>}
+            {adminGroupId !== undefined && Object.values(mappingToSend).includes(adminGroupId) && (
+              <p className="text-xs text-amber-700 dark:text-amber-300">{t('settings.oidc.form.mappingAdminHint')}</p>
+            )}
+            {clearsMapping && (
+              <p className="text-xs text-amber-700 dark:text-amber-300" data-testid="oidc-mapping-clear-warning">
+                {t('settings.oidc.form.mappingClearWarning')}
+              </p>
+            )}
+          </>
+        )}
       </div>
 
       {/* Toggles laid out as a 2-column grid so the new "Require email_verified"
@@ -406,6 +526,7 @@ export function OIDCProviderSettings() {
                 <ProviderForm
                   isEdit={true}
                   secretConfigured={provider.client_secret_configured ?? true}
+                  mappingDamaged={provider.group_mapping_invalid ?? false}
                   initial={{
                     name: provider.name,
                     issuer_url: provider.issuer_url,
@@ -420,6 +541,8 @@ export function OIDCProviderSettings() {
                     icon_url: provider.icon_url ?? undefined,
                     default_group_id: provider.default_group_id ?? null,
                     is_autologin: provider.is_autologin,
+                    group_claim: provider.group_claim ?? 'groups',
+                    group_mapping: provider.group_mapping ?? {},
                   }}
                   onSave={(data) => updateMutation.mutate({ id: provider.id, data })}
                   onCancel={() => setEditingId(null)}
@@ -460,6 +583,23 @@ export function OIDCProviderSettings() {
                   <dt className="text-bambu-gray">{t('settings.oidc.form.requireEmailVerified')}</dt>
                   <dd className={provider.require_email_verified ? 'text-green-400' : 'text-bambu-gray'}>
                     {provider.require_email_verified ? t('common.yes') : t('common.no')}
+                  </dd>
+                </div>
+                <div className="col-span-2 sm:col-span-3">
+                  <dt className="text-bambu-gray">{t('settings.oidc.form.groupMapping')}</dt>
+                  <dd className="text-white" data-testid={`oidc-mapping-summary-${provider.id}`}>
+                    {provider.group_mapping_invalid ? (
+                      <span className="text-amber-700 dark:text-amber-300">{t('settings.oidc.form.mappingDamagedShort')}</span>
+                    ) : Object.keys(provider.group_mapping ?? {}).length === 0 ? (
+                      <span className="text-bambu-gray">{t('settings.oidc.form.mappingNone')}</span>
+                    ) : (
+                      <span className="font-mono text-xs">
+                        {provider.group_claim}:{' '}
+                        {Object.entries(provider.group_mapping ?? {})
+                          .map(([idp, groupId]) => `${idp} → ${groupId}`)
+                          .join(', ')}
+                      </span>
+                    )}
                   </dd>
                 </div>
               </dl>

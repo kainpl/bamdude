@@ -10098,6 +10098,12 @@ export interface OIDCProvider {
   // read-only here and the API answers 409 to any write — the environment is
   // not visible to the browser, so the server has to say so.
   is_env_managed?: boolean;
+  /** N07: the ID-token claim with the IdP groups (default "groups"). */
+  group_claim?: string;
+  /** N07: IdP group → BamDude group id; null when the stored mapping is damaged. */
+  group_mapping?: Record<string, number> | null;
+  /** N07: the stored mapping is damaged — OIDC sign-in is refused until it is replaced. */
+  group_mapping_invalid?: boolean;
 }
 
 export interface OIDCProviderCreate {
@@ -10115,6 +10121,9 @@ export interface OIDCProviderCreate {
   icon_url?: string | null;
   default_group_id?: number | null;
   is_autologin?: boolean;  // #1589
+  group_claim?: string;
+  /** Omitted: the stored mapping stays as it is (a damaged one included); {} turns sync off. */
+  group_mapping?: Record<string, number>;
 }
 
 export interface OIDCLink {
