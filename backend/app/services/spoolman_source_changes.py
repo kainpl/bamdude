@@ -13,12 +13,17 @@ Git's settings category) owns it through :class:`SourceChange`:
      generation and is never refused);
    - any effective change while an accounting window or a charge is open →
      :class:`~spoolman_source.SourceRefused` ``charge_window``;
+   - a change of the **mode** — the mode-change flag is set, so no new
+     slot-ledger writer starts, and the change waits for those in flight
+     (``spoolman_activity.slot_write``; ``slot_writes`` when they do not finish
+     in time); then it clears the ledger of the mode it leaves, in the door's
+     transaction — every door that moves the mode, not one route (acceptance A08);
    - a change of the **database** (a new non-empty address, ``rotate``) —
      the base-change flag is set in one synchronous step with the check of the
      open activity records, and only then a FRESH read of the durable
      predicate runs (S44); a protected print → ``print_accounting``;
    - the generation goes up (S18);
-3. its own writes and commit; the flag goes after the commit or the rollback,
+3. its own writes and commit; the flags go after the commit or the rollback,
    still under the guard (``release``).
 
 ``release`` / ``acquire`` let a door leave the guard while it reads the
@@ -27,15 +32,19 @@ network (the Home Assistant price) and take it again before its next anchor.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
+import logging
 from dataclasses import dataclass, field
 
 from fastapi import HTTPException
-from sqlalchemy import exists, func, select
+from sqlalchemy import delete, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.services import spoolman_source
+
+logger = logging.getLogger(__name__)
 
 SOURCE_KEYS = frozenset({"spoolman_enabled", "spoolman_url"})
 
@@ -47,8 +56,14 @@ SPOOLMAN_SOURCE_MESSAGES = {
         "While a print is accounted in Spoolman, the Spoolman address or database cannot be changed. "
         "Try again after the print finishes"
     ),
+    spoolman_source.SLOT_WRITES: "Spools are being assigned to slots right now. Try again in a moment",
     SOURCE_CHANGED: "Spoolman settings or its history are changing right now. Try again",
 }
+
+# How long a change of the mode waits for the slot-ledger writers in flight (acceptance A08):
+# their lanes and a commit, never a print — past it the change is refused, to be retried.
+SLOT_WRITES_WAIT_SECONDS = 10.0
+_SLOT_WRITES_POLL_SECONDS = 0.02
 
 
 # --- a consistent snapshot of the source (S0) ---------------------------------------
@@ -121,9 +136,10 @@ def source_changed() -> HTTPException:
 def require_unchanged(snapshot: SourceSnapshot) -> None:
     """After a door's remote proof and its admission: the source is still the snapshot's, or 409.
 
-    Called right after ``spoolman_activity.first_evidence`` is entered: from there no
-    change of the database can start, so a generation still equal to S0's means the
-    proof belongs to the database the door now writes for.
+    Called right after ``spoolman_activity.first_evidence`` and ``slot_write`` are
+    entered: from there no change of the database can start and a change of the mode
+    waits for the door, so a generation still equal to S0's means the proof belongs to
+    the source the door writes for until its commit.
     """
     if spoolman_source.generation() != snapshot.generation:
         raise source_changed()
@@ -131,14 +147,15 @@ def require_unchanged(snapshot: SourceSnapshot) -> None:
 
 @contextlib.asynccontextmanager
 async def admitted_for(snapshot: SourceSnapshot, kind: str):
-    """A first-evidence admission for a proof taken under ``snapshot`` (acceptance A06).
+    """A slot-ledger door's admission for a proof taken under ``snapshot`` (acceptance A06, A08).
 
-    The first context of a door's ``async with``: the admission is waited for before
-    any lane, and the proof's source is checked right after it — before the lane too.
+    The first context of a door's ``async with``: the first-evidence admission, then the
+    slot-ledger write, both waited for before any lane, and the proof's source checked
+    right after them — before the lane too, and valid until the door's commit.
     """
     from backend.app.services import spoolman_activity  # noqa: PLC0415
 
-    async with spoolman_activity.first_evidence(kind):
+    async with spoolman_activity.first_evidence(kind), spoolman_activity.slot_write(kind):
         require_unchanged(snapshot)
         yield
 
@@ -161,6 +178,20 @@ def refusal_message(error: spoolman_source.SourceRefused) -> str:
 
 def names_source(keys) -> bool:
     return bool(SOURCE_KEYS & set(keys))
+
+
+async def mode_on(db: AsyncSession) -> bool:
+    """Whether Spoolman is the inventory now — the row as committed, read as a column.
+
+    A slot-ledger door asks it again under its record (acceptance A08). A column read,
+    not an ORM object: a session hands back an object it still holds with the value it
+    loaded (``expire_on_commit=False``). No door keeps that object today, so
+    ``get_setting`` would read fresh too — the column read does not depend on it.
+    """
+    from backend.app.models.settings import Settings  # noqa: PLC0415
+
+    value = await db.scalar(select(Settings.value).where(Settings.key == "spoolman_enabled"))
+    return _enabled(value)
 
 
 def _normalized(url: str | None) -> str:
@@ -204,6 +235,7 @@ class SourceChange:
     def __init__(self) -> None:
         self._stack: contextlib.AsyncExitStack | None = None
         self._base = False
+        self._mode = False
         self.changed = False
 
     @property
@@ -221,6 +253,9 @@ class SourceChange:
         if self._base:
             spoolman_source.end_base_change()
             self._base = False
+        if self._mode:
+            spoolman_source.end_mode_change()
+            self._mode = False
         stack, self._stack = self._stack, None
         if stack is not None:
             await stack.aclose()
@@ -254,6 +289,9 @@ class SourceChange:
             return False
         try:
             spoolman_source.refuse_during_charge()
+            if mode_changes:
+                # Before a base change's credential anchor: the writers waited for need the writer.
+                await self._wait_for_slot_writers(db)
             if base:
                 # The flag is set only while this transaction holds SQLite's writer (the credential
                 # anchor, idempotent here): a first-evidence writer waiting for the flag can then
@@ -266,10 +304,69 @@ class SourceChange:
                 if await protected_print_exists(db):
                     raise spoolman_source.SourceRefused(spoolman_source.PRINT_ACCOUNTING)
                 spoolman_source.bump_base_generation()
+            if mode_changes:
+                await clear_left_ledger(db, spoolman=_enabled(enabled))
+                # A print may have finished while this change waited: checked again, and the
+                # generation raised in the same synchronous step.
+                spoolman_source.refuse_during_charge()
         except spoolman_source.SourceRefused as exc:
             raise refusal(exc) from exc
         spoolman_source.bump_generation()
         return True
+
+    async def _wait_for_slot_writers(self, db: AsyncSession) -> None:
+        """The mode-change flag, then the slot-ledger writers already in flight finish (A08).
+
+        New writers wait for the flag before their lanes. A door that already holds
+        SQLite's writer or a serialising row lock cannot wait for writers that may need
+        it: with one in flight it is refused at once. A print that finishes meanwhile
+        refuses the change as at its start.
+        """
+        from backend.app.core.database import writer_reserved  # noqa: PLC0415
+        from backend.app.services import spoolman_activity  # noqa: PLC0415
+
+        spoolman_source.begin_mode_change()
+        self._mode = True
+        if not spoolman_activity.slot_writes_open():
+            return
+        if writer_reserved(db):
+            raise spoolman_source.SourceRefused(spoolman_source.SLOT_WRITES)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + SLOT_WRITES_WAIT_SECONDS
+        while spoolman_activity.slot_writes_open():
+            if loop.time() >= deadline:
+                raise spoolman_source.SourceRefused(spoolman_source.SLOT_WRITES)
+            await asyncio.sleep(_SLOT_WRITES_POLL_SECONDS)
+            spoolman_source.refuse_during_charge()
+
+
+async def clear_left_ledger(db: AsyncSession, *, spoolman: bool) -> int:
+    """Empty the slot ledger of the mode being left, in the change's transaction (acceptance A08).
+
+    The ledgers hold the active mode only — no reader gates on the mode — so every door
+    that moves it clears the other one: ``spool_assignments`` on the switch to
+    Spoolman, ``spoolman_slot_assignments`` on the switch back (#1473). Only a
+    :class:`SourceChange` calls it, after the slot-ledger writers in flight finished.
+    """
+    from backend.app.models.spool_assignment import SpoolAssignment  # noqa: PLC0415
+    from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment  # noqa: PLC0415
+    from backend.app.services import ams_advertised_overlay as overlay  # noqa: PLC0415
+
+    # Two literal statements, one per ledger: the content-delete census names each site.
+    if spoolman:
+        result = await db.execute(delete(SpoolAssignment))
+    else:
+        result = await db.execute(delete(SpoolmanSlotAssignment))
+    # Every overlay entry was born of an assignment row; with the registry gone, so is every
+    # spool the masks stood for. Forgotten BEFORE the commit, like every ``remember`` on the
+    # assignment routes: a store that forgot too early is inert (the rebuild refills it from
+    # the registries), one that still claims a spool whose row is gone is not.
+    overlay.forget_all()
+    if spoolman:
+        logger.info("Cleared %d spool assignments on switch to Spoolman mode", result.rowcount)
+    else:
+        logger.info("Cleared %d Spoolman slot assignments on switch to internal mode", result.rowcount)
+    return int(result.rowcount or 0)
 
 
 @contextlib.asynccontextmanager

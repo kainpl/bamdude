@@ -929,6 +929,160 @@ class TestTheAmsPassAdmission:
         inner.assert_awaited_once()
         assert spoolman_activity.revision() == 0
 
+    async def test_a_pass_begun_in_spoolman_mode_leaves_the_built_in_work_to_the_next(
+        self, db_session, printer_factory, monkeypatch
+    ):
+        """A08: no slot-ledger write held — the built-in block waits for a pass that holds one."""
+        await _spoolman(db_session, enabled=True)
+        printer = await printer_factory()
+        main, inner = await self._pass(monkeypatch, printer)
+        await asyncio.wait_for(main.on_ams_change(printer.id, []), 2)
+        assert inner.await_args.kwargs == {"built_in_owned": False}
+
+
+# --- a change of the mode waits for the slot-ledger writers (acceptance A08) ----------
+
+
+class TestTheModeChangeWaitsForSlotWriters:
+    async def _switch_off(self, db):
+        async with spoolman_source_changes.owning(db) as change:
+            assert await change.decide(db, enabled="false")
+            (await db.execute(select(Settings).where(Settings.key == "spoolman_enabled"))).scalar_one().value = "false"
+            await db.commit()
+
+    async def _slot_row(self, db, printer_id, spool_id=17):
+        db.add(SpoolmanSlotAssignment(printer_id=printer_id, ams_id=0, tray_id=0, spoolman_spool_id=spool_id))
+        await db.commit()
+
+    async def _rows(self):
+        from backend.app.core import database
+
+        async with database.async_session() as observer:
+            return (await observer.scalars(select(SpoolmanSlotAssignment.spoolman_spool_id))).all()
+
+    def _holding(self, kind="door"):
+        """A slot-ledger writer in flight, released by the returned event."""
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def writer():
+            async with spoolman_activity.slot_write(kind):
+                entered.set()
+                await release.wait()
+
+        return asyncio.create_task(writer()), entered, release
+
+    async def test_a_slot_write_is_no_record_a_delete_or_a_base_change_meets(self):
+        async with spoolman_activity.slot_write("door"):
+            assert spoolman_activity.slot_writes_open()
+            assert not spoolman_activity.records_open()
+            assert spoolman_activity.revision() == 0
+        assert not spoolman_activity.slot_writes_open()
+
+    async def test_a_nested_slot_write_in_the_same_task_reuses_the_record(self):
+        async with spoolman_activity.slot_write("door"), spoolman_activity.slot_write("helper"):
+            assert dict(spoolman_activity._activity.slot_writes) == {"door": 1}
+        assert not spoolman_activity.slot_writes_open()
+
+    async def test_the_switch_empties_the_ledger_it_leaves(self, db_session, printer_factory):
+        await _spoolman(db_session)
+        printer = await printer_factory()
+        await self._slot_row(db_session, printer.id)
+        before = spoolman_source.generation()
+        await self._switch_off(db_session)
+        assert await self._rows() == []
+        assert spoolman_source.generation() == before + 1
+        assert not spoolman_source.mode_change_in_flight()
+
+    async def test_the_switch_waits_for_a_writer_in_flight_and_holds_back_a_new_one(self, db_session, printer_factory):
+        from backend.app.core import database
+
+        await _spoolman(db_session)
+        printer = await printer_factory()
+        writer, entered, release = self._holding()
+        await asyncio.wait_for(entered.wait(), 2)
+        switch = asyncio.create_task(self._switch_off(db_session))
+        await asyncio.sleep(0.1)
+        assert not switch.done() and spoolman_source.mode_change_in_flight()
+        late, late_entered, late_release = self._holding("late")
+        await asyncio.sleep(0.05)
+        assert not late_entered.is_set(), "a new writer waits for the change"
+        # The writer in flight finishes its row; the change then empties the ledger with it.
+        async with database.async_session() as db:
+            await self._slot_row(db, printer.id)
+        release.set()
+        await asyncio.wait_for(switch, 3)
+        assert await self._rows() == []
+        await asyncio.wait_for(late_entered.wait(), 2)
+        late_release.set()
+        await asyncio.wait_for(asyncio.gather(writer, late), 2)
+
+    async def test_a_writer_that_does_not_finish_refuses_the_switch(self, db_session, monkeypatch):
+        await _spoolman(db_session)
+        monkeypatch.setattr(spoolman_source_changes, "SLOT_WRITES_WAIT_SECONDS", 0.1)
+        writer, entered, release = self._holding()
+        await asyncio.wait_for(entered.wait(), 2)
+        try:
+            with pytest.raises(HTTPException) as refused:
+                await self._switch_off(db_session)
+            assert refused.value.status_code == 409
+            assert refused.value.detail["error"] == "spoolman_print_in_progress"
+            assert refused.value.detail["reason"] == "slot_writes"
+            assert not spoolman_source.mode_change_in_flight()
+        finally:
+            release.set()
+            await asyncio.wait_for(writer, 2)
+        mode = await db_session.scalar(select(Settings.value).where(Settings.key == "spoolman_enabled"))
+        assert mode == "true"
+
+    async def test_a_door_holding_the_writer_is_refused_at_once(self, db_session):
+        """It cannot wait for writers that need the writer it holds (the general save, Git)."""
+        from backend.app.core.database import mark_writer_reserved
+
+        await _spoolman(db_session)
+        writer, entered, release = self._holding()
+        await asyncio.wait_for(entered.wait(), 2)
+        loop = asyncio.get_running_loop()
+        try:
+            with pytest.raises(HTTPException) as refused:
+                async with spoolman_source_changes.owning(db_session) as change:
+                    await db_session.execute(select(Settings.id))
+                    mark_writer_reserved(db_session)
+                    started = loop.time()
+                    await change.decide(db_session, enabled="false")
+            assert refused.value.detail["reason"] == "slot_writes"
+            assert loop.time() - started < 1
+        finally:
+            release.set()
+            await asyncio.wait_for(writer, 2)
+
+    async def test_a_print_that_finishes_while_the_switch_waits_refuses_it(self, db_session):
+        await _spoolman(db_session)
+        writer, entered, release = self._holding()
+        await asyncio.wait_for(entered.wait(), 2)
+        switch = asyncio.create_task(self._switch_off(db_session))
+        await asyncio.sleep(0.05)
+        spoolman_activity.enter_window()
+        try:
+            with pytest.raises(HTTPException) as refused:
+                await asyncio.wait_for(switch, 2)
+            assert refused.value.detail["reason"] == "charge_window"
+        finally:
+            spoolman_activity.leave_window()
+            release.set()
+            await asyncio.wait_for(writer, 2)
+
+    async def test_a_base_change_alone_waits_for_no_slot_writer(self, db_session):
+        await _spoolman(db_session)
+        writer, entered, release = self._holding()
+        await asyncio.wait_for(entered.wait(), 2)
+        try:
+            async with spoolman_source_changes.owning(db_session) as change:
+                assert await asyncio.wait_for(change.decide(db_session, url="http://b.test:7912"), 1)
+                await db_session.rollback()
+        finally:
+            release.set()
+            await asyncio.wait_for(writer, 2)
+
 
 # --- writers meet the fence (S27, S32, S37) -----------------------------------------
 

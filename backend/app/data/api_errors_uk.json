@@ -1462,6 +1462,7 @@
   "Spoolman deletes are paused while a restore runs": "Поки триває відновлення, видалення у Spoolman призупинено",
   "Spoolman did not confirm the delete; check the spool in Spoolman": "Spoolman не підтвердив видалення; перевірте котушку у Spoolman",
   "Spoolman settings or its history are changing right now. Try again": "Налаштування Spoolman або його історію саме змінюють. Спробуйте ще раз",
+  "Spools are being assigned to slots right now. Try again in a moment": "Саме зараз котушки призначають у слоти. Спробуйте за мить",
   "The spool changed while it was being checked. Try again": "Котушка змінилася під час перевірки. Спробуйте ще раз",
   "The spool was created in Spoolman but not bound because of a concurrent delete": "Котушку створено у Spoolman, але не прив’язано через конкурентне видалення",
   "This spool is being deleted": "Цю котушку саме видаляють",

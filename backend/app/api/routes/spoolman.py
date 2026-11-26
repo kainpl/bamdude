@@ -22,7 +22,7 @@ from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.models.user import User
 from backend.app.schemas.spoolman import SlotAmsId, SlotTrayId
-from backend.app.services import spoolman_binding_fence
+from backend.app.services import spoolman_activity, spoolman_binding_fence, spoolman_source_changes
 from backend.app.services.ams_slot_presence import spool_present, tray_definitely_empty
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.spoolman import (
@@ -255,27 +255,37 @@ async def _write_and_announce_sync(
 
     ``read`` is keyed ``(printer_id, ams_id, tray_id)``; ``None`` = unreadable.
     One printer at a time, each under its own assignment lock. Returns errors.
+
+    The whole write is one write of the Spoolman slot ledger (C047 acceptance A08): the
+    mode is asked again under its record, which a switch to the built-in inventory waits
+    for before it empties this ledger. Switched off since the sync began: nothing is saved.
     """
     errors: list[str] = []
-    for printer_id in dict.fromkeys([c[0] for c in changes] + [e[0] for e in empties]):
-        try:
-            moved = await write_sync_results(
-                db,
-                printer_id=printer_id,
-                read=None if read is None else {(a, t): s for (p, a, t), s in read.items() if p == printer_id},
-                changes=[(a, t, s) for p, a, t, s in changes if p == printer_id],
-                empties=[(a, t) for p, a, t in empties if p == printer_id],
-                issued=issued,
-            )
-        except spoolman_binding_fence.SpoolBeingDeleted as refused:
-            errors.append(_being_deleted_text(refused, f"printer {printer_id}"))
-            continue
-        except Exception as e:
-            logger.error("Error persisting Spoolman slot assignments for printer %s: %s", printer_id, e)
-            errors.append(f"Failed to persist slot assignments: {type(e).__name__}")
-            continue
-        for ams_id, tray_id in moved:
-            await _announce_slot(printer_id, ams_id, tray_id)
+    printers = list(dict.fromkeys([c[0] for c in changes] + [e[0] for e in empties]))
+    if not printers:
+        return errors
+    async with spoolman_activity.slot_write("spoolman_sync"):
+        if not await spoolman_source_changes.mode_on(db):
+            return ["Spoolman was turned off during the sync: slot assignments were not saved"]
+        for printer_id in printers:
+            try:
+                moved = await write_sync_results(
+                    db,
+                    printer_id=printer_id,
+                    read=None if read is None else {(a, t): s for (p, a, t), s in read.items() if p == printer_id},
+                    changes=[(a, t, s) for p, a, t, s in changes if p == printer_id],
+                    empties=[(a, t) for p, a, t in empties if p == printer_id],
+                    issued=issued,
+                )
+            except spoolman_binding_fence.SpoolBeingDeleted as refused:
+                errors.append(_being_deleted_text(refused, f"printer {printer_id}"))
+                continue
+            except Exception as e:
+                logger.error("Error persisting Spoolman slot assignments for printer %s: %s", printer_id, e)
+                errors.append(f"Failed to persist slot assignments: {type(e).__name__}")
+                continue
+            for ams_id, tray_id in moved:
+                await _announce_slot(printer_id, ams_id, tray_id)
     return errors
 
 
@@ -1001,49 +1011,57 @@ async def link_spool(
         # Upsert slot assignment locally when printer context was supplied
         if printer_context:
             p_id, a_id, t_id = printer_context
-            # A binding writer (C047 §C3): the fence's guard around the slot's DML and commit.
-            with spoolman_binding_fence.enter([spool_id], issued):
-                try:
-                    await db.execute(
-                        text(
-                            "INSERT INTO spoolman_slot_assignments"
-                            " (printer_id, ams_id, tray_id, spoolman_spool_id)"
-                            " VALUES (:printer_id, :ams_id, :tray_id, :spool_id)"
-                            " ON CONFLICT(printer_id, ams_id, tray_id)"
-                            " DO UPDATE SET spoolman_spool_id = excluded.spoolman_spool_id"
-                        ),
-                        {"printer_id": p_id, "ams_id": a_id, "tray_id": t_id, "spool_id": spool_id},
-                    )
-                    # Its other ledger rows go with the same commit (rows only). A slot
-                    # that began feeding a print since the check above keeps its row.
-                    _vacated = (
-                        await spool_single_slot.release_other_spoolman_slots(
-                            db, spoolman_spool_id=spool_id, keep=printer_context, refuse=False
-                        )
-                    ).vacated
-                    await db.commit()
-                except Exception as e:
-                    await db.rollback()
-                    # The native tag goes back (the previous reel's are still there —
-                    # they are dropped only below); extra.tag stays, as the message
-                    # says, and the retry it asks for links the reel again.
+            # A write of the Spoolman slot ledger (C047 acceptance A08): the mode is asked again
+            # under its record, which a switch to the built-in inventory waits for before it
+            # empties this ledger. Switched off since the check above: nothing is saved, the
+            # native tag goes back as below.
+            async with spoolman_activity.slot_write("spoolman_link"):
+                if not await spoolman_source_changes.mode_on(db):
                     await client.take_back_native_tags(spool_id, added_native)
-                    logger.error(
-                        "Linked spool %s in Spoolman but failed to persist local slot assignment "
-                        "(printer=%s ams=%s tray=%s): %s",
-                        spool_id,
-                        p_id,
-                        a_id,
-                        t_id,
-                        e,
-                    )
-                    raise HTTPException(
-                        status_code=500,
-                        detail=(
-                            "Spool linked in Spoolman but the local slot assignment could not be saved. "
-                            "Please re-open the link dialog to retry."
-                        ),
-                    ) from e
+                    raise spoolman_source_changes.source_changed()
+                # A binding writer (C047 §C3): the fence's guard around the slot's DML and commit.
+                with spoolman_binding_fence.enter([spool_id], issued):
+                    try:
+                        await db.execute(
+                            text(
+                                "INSERT INTO spoolman_slot_assignments"
+                                " (printer_id, ams_id, tray_id, spoolman_spool_id)"
+                                " VALUES (:printer_id, :ams_id, :tray_id, :spool_id)"
+                                " ON CONFLICT(printer_id, ams_id, tray_id)"
+                                " DO UPDATE SET spoolman_spool_id = excluded.spoolman_spool_id"
+                            ),
+                            {"printer_id": p_id, "ams_id": a_id, "tray_id": t_id, "spool_id": spool_id},
+                        )
+                        # Its other ledger rows go with the same commit (rows only). A slot
+                        # that began feeding a print since the check above keeps its row.
+                        _vacated = (
+                            await spool_single_slot.release_other_spoolman_slots(
+                                db, spoolman_spool_id=spool_id, keep=printer_context, refuse=False
+                            )
+                        ).vacated
+                        await db.commit()
+                    except Exception as e:
+                        await db.rollback()
+                        # The native tag goes back (the previous reel's are still there —
+                        # they are dropped only below); extra.tag stays, as the message
+                        # says, and the retry it asks for links the reel again.
+                        await client.take_back_native_tags(spool_id, added_native)
+                        logger.error(
+                            "Linked spool %s in Spoolman but failed to persist local slot assignment "
+                            "(printer=%s ams=%s tray=%s): %s",
+                            spool_id,
+                            p_id,
+                            a_id,
+                            t_id,
+                            e,
+                        )
+                        raise HTTPException(
+                            status_code=500,
+                            detail=(
+                                "Spool linked in Spoolman but the local slot assignment could not be saved. "
+                                "Please re-open the link dialog to retry."
+                            ),
+                        ) from e
 
         # The spool is THIS reel now: the reel it was linked to before no longer
         # resolves to it. A 16-character value names no physical tag here (nothing
@@ -1483,32 +1501,38 @@ async def _create_spool_from_slot(req: CreateSpoolFromSlotRequest, db: AsyncSess
     # binding rolled back leaves the user thinking the spool was added,
     # then watching the modal re-fire on the next MQTT push.
     if sync_result.get("id"):
-        # A binding writer (C047 §C3); the number is already owned by this operation.
-        with spoolman_binding_fence.enter([sync_result["id"]], spoolman_binding_fence.ticket()):
-            try:
-                await db.execute(
-                    text(
-                        "INSERT INTO spoolman_slot_assignments"
-                        " (printer_id, ams_id, tray_id, spoolman_spool_id)"
-                        " VALUES (:printer_id, :ams_id, :tray_id, :spool_id)"
-                        " ON CONFLICT(printer_id, ams_id, tray_id)"
-                        " DO UPDATE SET spoolman_spool_id = excluded.spoolman_spool_id"
-                    ),
-                    {
-                        "printer_id": req.printer_id,
-                        "ams_id": req.ams_id,
-                        "tray_id": req.tray_id,
-                        "spool_id": sync_result["id"],
-                    },
-                )
-                await db.commit()
-            except Exception as exc:
-                await db.rollback()
-                logger.exception("Failed to persist Spoolman slot assignment")
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Spool created in Spoolman but slot assignment failed: {exc}",
-                ) from exc
+        # A write of the Spoolman slot ledger (C047 acceptance A08): the mode asked again under
+        # its record, which a switch to the built-in inventory waits for. Switched off since the
+        # check above: the spool stays in Spoolman, no slot row is saved.
+        async with spoolman_activity.slot_write("spoolman_from_slot"):
+            if not await spoolman_source_changes.mode_on(db):
+                raise spoolman_source_changes.source_changed()
+            # A binding writer (C047 §C3); the number is already owned by this operation.
+            with spoolman_binding_fence.enter([sync_result["id"]], spoolman_binding_fence.ticket()):
+                try:
+                    await db.execute(
+                        text(
+                            "INSERT INTO spoolman_slot_assignments"
+                            " (printer_id, ams_id, tray_id, spoolman_spool_id)"
+                            " VALUES (:printer_id, :ams_id, :tray_id, :spool_id)"
+                            " ON CONFLICT(printer_id, ams_id, tray_id)"
+                            " DO UPDATE SET spoolman_spool_id = excluded.spoolman_spool_id"
+                        ),
+                        {
+                            "printer_id": req.printer_id,
+                            "ams_id": req.ams_id,
+                            "tray_id": req.tray_id,
+                            "spool_id": sync_result["id"],
+                        },
+                    )
+                    await db.commit()
+                except Exception as exc:
+                    await db.rollback()
+                    logger.exception("Failed to persist Spoolman slot assignment")
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Spool created in Spoolman but slot assignment failed: {exc}",
+                    ) from exc
 
     # The caller's own tab refreshes itself; every other one needs to be told.
     await ws_manager.broadcast({"type": "inventory_changed"})

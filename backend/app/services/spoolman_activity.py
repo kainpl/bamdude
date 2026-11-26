@@ -22,6 +22,13 @@ Three kinds of record:
   no base change is in flight (``spoolman_source.base_change_in_flight``), and
   a base change refuses while one is open (S41, S44).
 
+Apart from them, a **slot-ledger write** (acceptance A08): a door that writes a
+row of ``spool_assignments`` or ``spoolman_slot_assignments`` holds one from
+before its mode check to its commit. A change of the mode waits for those in
+flight before it clears the ledger of the mode it leaves, and new ones wait for
+the change. They raise no revision and no delete or base change sees them — a
+slot row's Spoolman number is the binding fence's business.
+
 Process memory only; one application process (spec §C6).
 """
 
@@ -44,12 +51,18 @@ WINDOW = "accounting_window"
 _evidence_task: contextvars.ContextVar[asyncio.Task | None] = contextvars.ContextVar(
     "spoolman_first_evidence_task", default=None
 )
+# The same for a slot-ledger write: a door's helper that writes the row inside the door's own
+# record takes no second one.
+_slot_task: contextvars.ContextVar[asyncio.Task | None] = contextvars.ContextVar(
+    "spoolman_slot_write_task", default=None
+)
 
 
 class _Activity:
     def __init__(self) -> None:
         self.revision = 0
         self.open: Counter[str] = Counter()
+        self.slot_writes: Counter[str] = Counter()
 
     def _enter(self, kind: str) -> None:
         self.revision += 1
@@ -220,6 +233,45 @@ async def first_evidence(kind: str):
         _activity._leave(kind)
 
 
+def slot_writes_open() -> bool:
+    """A slot-ledger write is in flight (see :func:`slot_write`)."""
+    return any(count > 0 for count in _activity.slot_writes.values())
+
+
+@contextlib.asynccontextmanager
+async def slot_write(kind: str):
+    """A writer of a slot ledger, from before its mode check to its commit (acceptance A08).
+
+    Waits — before the lanes it takes and with no write of its session pending — until
+    no change of the mode is in flight, then in ONE synchronous step checks that again
+    and publishes its record. The door checks the mode INSIDE: from then on a change
+    of the mode waits for this record to end before it clears the ledger of the mode
+    it leaves, so a row written here is never left behind in the other mode's table.
+
+    Nested in the same task, it reuses the open record.
+    """
+    from backend.app.services import spoolman_source  # noqa: PLC0415
+
+    task = asyncio.current_task()
+    if task is not None and _slot_task.get() is task:
+        yield
+        return
+    while True:
+        await spoolman_source.wait_no_mode_change()
+        if not spoolman_source.mode_change_in_flight():
+            _activity.slot_writes[kind] += 1
+            break
+    token = _slot_task.set(task)
+    try:
+        yield
+    finally:
+        _slot_task.reset(token)
+        _activity.slot_writes[kind] -= 1
+        if _activity.slot_writes[kind] <= 0:
+            del _activity.slot_writes[kind]
+
+
 def reset_for_tests() -> None:
     _activity.revision = 0
     _activity.open.clear()
+    _activity.slot_writes.clear()

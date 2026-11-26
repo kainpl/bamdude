@@ -561,3 +561,310 @@ async def test_a_manual_assignment_under_an_unchanged_source_stamps_its_proof(
     )
     assert response.status_code == 200, response.text
     assert held_facts == [(0, (None, 17), spoolman_source.base_generation())]
+
+
+# --- A08: a change of the mode waits for the slot-ledger writers past their check -------------
+
+
+def _assignment_doubles(monkeypatch):
+    """The Spoolman manual assignment's remote and journal as local fakes; returns its held facts."""
+    from backend.app.api.routes import spoolman_inventory as route
+    from backend.app.services import print_usage_journal as journal
+
+    held_facts = []
+
+    class LocalA:
+        base_url = A
+        health_check = AsyncMock(return_value=True)
+        get_spools = AsyncMock(return_value=[])
+        get_spool = AsyncMock(return_value={"id": 17, "filament": {}, "extra": {}, "archived": False})
+
+    class HeldJournal:
+        def journal_held(self):
+            return True
+
+        def note_held_binding_change(self, generation, tray, outgoing, incoming, *, stamp):
+            held_facts.append((tray, incoming))
+            return True
+
+    monkeypatch.setattr(route, "get_spoolman_client", AsyncMock(return_value=LocalA()))
+    monkeypatch.setattr(route, "_health_check_cache", {})
+    monkeypatch.setattr(route.printer_manager, "get_client", lambda *_: None)
+    monkeypatch.setattr(journal, "_observed_print", lambda _: (HeldJournal(), 1, None))
+    monkeypatch.setattr(
+        "backend.app.services.location_service.maybe_sync_spoolman_locations", AsyncMock(return_value=0)
+    )
+    return held_facts
+
+
+async def _switch(enabled: str):
+    from backend.app.api.routes.settings import update_spoolman_settings
+    from backend.app.core import database
+
+    async with database.async_session() as other:
+        return await update_spoolman_settings({"spoolman_enabled": enabled}, db=other, _=None)
+
+
+async def _observe(model, column):
+    from backend.app.core import database
+
+    async with database.async_session() as observer:
+        mode = await observer.scalar(select(Settings.value).where(Settings.key == "spoolman_enabled"))
+        return mode, (await observer.scalars(select(column))).all()
+
+
+async def _until(predicate, timeout=8):
+    async def poll():
+        while not predicate():
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(poll(), timeout)
+
+
+async def test_a_switch_off_waits_for_a_manual_assignment_past_its_source_check(
+    async_client, db_session, printer_factory, monkeypatch
+):
+    """Codex's A06/A07 probe: the switch came between the A06 check and the lane and the row came back."""
+    from backend.app import main
+    from backend.app.services import spoolman_source, spoolman_source_changes
+
+    printer = await printer_factory()
+    await _seed_source(db_session)
+    held_facts = _assignment_doubles(monkeypatch)
+    proved = asyncio.Event()
+    prior = spoolman_source_changes.require_unchanged
+
+    def observed(snapshot):
+        prior(snapshot)
+        proved.set()
+
+    monkeypatch.setattr(spoolman_source_changes, "require_unchanged", observed)
+    async with main._get_ams_assignment_lock(printer.id):
+        assign = asyncio.create_task(
+            async_client.post(
+                "/api/v1/spoolman/inventory/slot-assignments",
+                json={"printer_id": printer.id, "ams_id": 0, "tray_id": 0, "spoolman_spool_id": 17},
+            )
+        )
+        await asyncio.wait_for(proved.wait(), 8)
+        switch = asyncio.create_task(_switch("false"))
+        await asyncio.sleep(0.2)
+        assert spoolman_source.mode_change_in_flight()
+        assert not switch.done() and not assign.done(), "the switch waits for the assignment past its check"
+    response = await asyncio.wait_for(assign, 10)
+    assert response.status_code == 200, response.text
+    await asyncio.wait_for(switch, 10)
+    assert await _observe(SpoolmanSlotAssignment, SpoolmanSlotAssignment.spoolman_spool_id) == ("false", [])
+    assert held_facts == [(0, (None, 17))], "the fact was taken while Spoolman was the inventory"
+
+
+def _built_in_spool():
+    from backend.app.models.spool import Spool
+
+    return Spool(material="PLA", subtype="Basic", brand="Generic", rgba="FF0000FF", label_weight=1000, weight_used=0)
+
+
+async def test_a_switch_to_spoolman_waits_for_a_built_in_assignment_past_its_check(
+    async_client, db_session, printer_factory, monkeypatch
+):
+    from unittest.mock import MagicMock, patch
+
+    from backend.app import main
+    from backend.app.models.spool_assignment import SpoolAssignment
+    from backend.app.services import spoolman_activity
+
+    printer = await printer_factory()
+    db_session.add_all([Settings(key="spoolman_enabled", value="false"), Settings(key="spoolman_url", value=A)])
+    spool = _built_in_spool()
+    db_session.add(spool)
+    await db_session.commit()
+    monkeypatch.setattr(
+        "backend.app.services.location_service.maybe_sync_spoolman_locations", AsyncMock(return_value=0)
+    )
+    with patch("backend.app.services.printer_manager.printer_manager") as pm:
+        pm.get_client.return_value = MagicMock()
+        pm.get_status.return_value = None
+        pm.ensure_fresh_connection = AsyncMock()
+        async with main._get_ams_assignment_lock(printer.id):
+            assign = asyncio.create_task(
+                async_client.post(
+                    "/api/v1/inventory/assignments",
+                    json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 0, "tray_id": 1},
+                )
+            )
+            await _until(spoolman_activity.slot_writes_open)
+            switch = asyncio.create_task(_switch("true"))
+            await asyncio.sleep(0.2)
+            assert not switch.done() and not assign.done()
+        response = await asyncio.wait_for(assign, 10)
+        await asyncio.wait_for(switch, 10)
+    assert response.status_code == 200, response.text
+    assert await _observe(SpoolAssignment, SpoolAssignment.spool_id) == ("true", [])
+
+
+async def test_a_writer_that_arrives_during_the_switch_asks_the_mode_again(
+    async_client, db_session, printer_factory, monkeypatch
+):
+    from unittest.mock import MagicMock, patch
+
+    from backend.app import main
+    from backend.app.models.spool_assignment import SpoolAssignment
+    from backend.app.services import spoolman_activity, spoolman_source
+
+    printer = await printer_factory()
+    db_session.add_all([Settings(key="spoolman_enabled", value="false"), Settings(key="spoolman_url", value=A)])
+    spool = _built_in_spool()
+    db_session.add(spool)
+    await db_session.commit()
+    monkeypatch.setattr(
+        "backend.app.services.location_service.maybe_sync_spoolman_locations", AsyncMock(return_value=0)
+    )
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def in_flight():
+        async with spoolman_activity.slot_write("ams_change_rfid"):
+            entered.set()
+            await release.wait()
+
+    holder = asyncio.create_task(in_flight())
+    await asyncio.wait_for(entered.wait(), 2)
+    with patch("backend.app.services.printer_manager.printer_manager") as pm:
+        pm.get_client.return_value = MagicMock()
+        pm.get_status.return_value = None
+        pm.ensure_fresh_connection = AsyncMock()
+        switch = asyncio.create_task(_switch("true"))
+        await _until(spoolman_source.mode_change_in_flight)
+        assign = asyncio.create_task(
+            async_client.post(
+                "/api/v1/inventory/assignments",
+                json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 0, "tray_id": 1},
+            )
+        )
+        await asyncio.sleep(0.2)
+        assert not assign.done()
+        assert not main._get_ams_assignment_lock(printer.id).locked(), "it waits before the lane"
+        release.set()
+        await asyncio.wait_for(asyncio.gather(holder, switch), 10)
+        response = await asyncio.wait_for(assign, 10)
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["error"] == "spoolman_mode"
+    assert await _observe(SpoolAssignment, SpoolAssignment.spool_id) == ("true", [])
+
+
+@pytest.mark.parametrize("on", [True, False], ids=["to-spoolman", "to-built-in"])
+async def test_the_general_settings_save_empties_the_ledger_it_leaves(async_client, db_session, printer_factory, on):
+    """Only the Spoolman settings route cleared it; the general save and Git left the old mode's rows."""
+    from backend.app.models.spool_assignment import SpoolAssignment
+
+    printer = await printer_factory()
+    db_session.add_all(
+        [Settings(key="spoolman_enabled", value="false" if on else "true"), Settings(key="spoolman_url", value=A)]
+    )
+    spool = _built_in_spool()
+    db_session.add(spool)
+    await db_session.commit()
+    if on:
+        db_session.add(SpoolAssignment(spool_id=spool.id, printer_id=printer.id, ams_id=0, tray_id=1))
+        model, column = SpoolAssignment, SpoolAssignment.spool_id
+    else:
+        db_session.add(SpoolmanSlotAssignment(printer_id=printer.id, ams_id=0, tray_id=1, spoolman_spool_id=17))
+        model, column = SpoolmanSlotAssignment, SpoolmanSlotAssignment.spoolman_spool_id
+    await db_session.commit()
+
+    response = await async_client.put("/api/v1/settings/", json={"spoolman_enabled": on})
+
+    assert response.status_code == 200, response.text
+    assert await _observe(model, column) == ("true" if on else "false", [])
+
+
+def _switching_off_once():
+    """A remote call during which Spoolman is switched off — the door's check is already behind it."""
+    done = []
+
+    async def switch_off():
+        if not done:
+            done.append(True)
+            await _switch("false")
+
+    return switch_off
+
+
+async def test_a_link_switched_off_meanwhile_saves_no_slot_row(async_client, db_session, printer_factory, monkeypatch):
+    from backend.tests.integration.test_spoolman_link_announces import TAG as LINK_TAG, _client, _post
+
+    printer = await printer_factory()
+    await _seed_source(db_session)
+    monkeypatch.setattr(
+        "backend.app.services.location_service.maybe_sync_spoolman_locations", AsyncMock(return_value=0)
+    )
+    client = _client()
+    switch_off = _switching_off_once()
+
+    async def merge(*_args, **_kwargs):
+        await switch_off()
+
+    client.merge_spool_extra = AsyncMock(side_effect=merge)
+    response, _broadcast = await _post(
+        async_client,
+        "/api/v1/spoolman/spools/11/link",
+        client,
+        {"spool_tag": LINK_TAG, "printer_id": printer.id, "ams_id": 0, "tray_id": 1},
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["error"] == "spoolman_source_changed"
+    client.take_back_native_tags.assert_awaited_once()
+    assert await _observe(SpoolmanSlotAssignment, SpoolmanSlotAssignment.spoolman_spool_id) == ("false", [])
+
+
+async def test_a_from_slot_switched_off_meanwhile_saves_no_slot_row(
+    async_client, db_session, printer_factory, monkeypatch
+):
+    from backend.app.api.routes import spoolman as routes
+
+    printer = await printer_factory()
+    await _seed_source(db_session)
+    monkeypatch.setattr(
+        "backend.app.services.location_service.maybe_sync_spoolman_locations", AsyncMock(return_value=0)
+    )
+    client, _native, _posted, _deliver = _creating_client(monkeypatch, {0: _tray(0, TAG)})
+    switch_off = _switching_off_once()
+
+    async def created(*_args, **_kwargs):
+        await switch_off()
+        return {"id": 17}
+
+    monkeypatch.setattr(client, "sync_ams_tray", created)
+    monkeypatch.setattr(routes, "get_spoolman_client", AsyncMock(return_value=client))
+    monkeypatch.setattr(routes.printer_manager, "get_status", lambda *_: _printer_state([0]))
+    response = await async_client.post(
+        "/api/v1/spoolman/spools/from-slot", json={"printer_id": printer.id, "ams_id": 0, "tray_id": 0}
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["error"] == "spoolman_source_changed"
+    assert await _observe(SpoolmanSlotAssignment, SpoolmanSlotAssignment.spoolman_spool_id) == ("false", [])
+
+
+async def test_a_sync_switched_off_meanwhile_saves_no_slot_row(async_client, db_session, printer_factory, monkeypatch):
+    from backend.app.api.routes import spoolman as routes
+    from backend.app.services.spoolman import ArchivedTagIndex
+
+    printer = await printer_factory()
+    await _seed_source(db_session)
+    monkeypatch.setattr(
+        "backend.app.services.location_service.maybe_sync_spoolman_locations", AsyncMock(return_value=0)
+    )
+    client, _native, _posted, _deliver = _creating_client(monkeypatch, {0: _tray(0, TAG)})
+    switch_off = _switching_off_once()
+
+    async def found(*_args, **_kwargs):
+        await switch_off()
+        return {"id": 18}
+
+    monkeypatch.setattr(client, "sync_ams_tray", found)
+    monkeypatch.setattr(ArchivedTagIndex, "holds_archived_reel", AsyncMock(return_value=False))
+    monkeypatch.setattr(routes, "get_spoolman_client", AsyncMock(return_value=client))
+    monkeypatch.setattr(routes.printer_manager, "get_status", lambda *_: _printer_state([0]))
+    response = await async_client.post(f"/api/v1/spoolman/sync/{printer.id}")
+    assert response.status_code == 200, response.text
+    assert "Spoolman was turned off during the sync: slot assignments were not saved" in response.json()["errors"]
+    assert await _observe(SpoolmanSlotAssignment, SpoolmanSlotAssignment.spoolman_spool_id) == ("false", [])

@@ -842,22 +842,6 @@
     },
     {
       "site": [
-        "api/routes/settings.py::_write_spoolman_settings",
-        "sqlalchemy.delete",
-        "backend.app.models.spool_assignment.SpoolAssignment"
-      ],
-      "owner_policy": "Outside C parent purge: api/routes/settings.py::update_spoolman_settings retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
-    },
-    {
-      "site": [
-        "api/routes/settings.py::_write_spoolman_settings",
-        "sqlalchemy.delete",
-        "backend.app.models.spoolman_slot_assignment.SpoolmanSlotAssignment"
-      ],
-      "owner_policy": "Outside C parent purge: api/routes/settings.py::update_spoolman_settings retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
-    },
-    {
-      "site": [
         "api/routes/settings.py::clear_stray_builtin_assignments",
         "sqlalchemy.delete",
         "backend.app.models.spool_assignment.SpoolAssignment"
@@ -2127,6 +2111,22 @@
         "backend.app.models.spoolman_k_profile.SpoolmanKProfile"
       ],
       "owner_policy": "Outside C parent purge: services/spoolman_delete.py::_clean_up (C047 part 2) removes the K links of a Spoolman spool whose remote DELETE was confirmed, in one transaction with its slot rows, under the Spoolman source guard and only for the same source generation; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/spoolman_source_changes.py::clear_left_ledger",
+        "sqlalchemy.delete",
+        "backend.app.models.spool_assignment.SpoolAssignment"
+      ],
+      "owner_policy": "Outside C parent purge: services/spoolman_source_changes.py::clear_left_ledger (C047 acceptance A08, moved from api/routes/settings.py::_write_spoolman_settings) empties the built-in slot ledger on a switch to Spoolman, in the transaction of the door that moves the mode, under the Spoolman source guard, after the slot-ledger writers in flight finished; owned by SourceChange.decide for every such door; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/spoolman_source_changes.py::clear_left_ledger",
+        "sqlalchemy.delete",
+        "backend.app.models.spoolman_slot_assignment.SpoolmanSlotAssignment"
+      ],
+      "owner_policy": "Outside C parent purge: services/spoolman_source_changes.py::clear_left_ledger (C047 acceptance A08, moved from api/routes/settings.py::_write_spoolman_settings) empties the Spoolman slot ledger on a switch to the built-in inventory, in the transaction of the door that moves the mode, under the Spoolman source guard, after the slot-ledger writers in flight finished; owned by SourceChange.decide for every such door; any new or changed locator requires adjudication"
     },
     {
       "site": [

@@ -17,6 +17,11 @@ Spec ``60-specs/c047-spool-id-never-reissued-spec.md`` (vault), §C1 and §C5.
   record is open, BEFORE its fresh SQL read of the durable predicate, and
   cleared after its commit or rollback (S41, S44). First-evidence writers wait
   for it (``spoolman_activity.first_evidence``).
+- **Mode change in flight** — set by a change of the mode (``spoolman_enabled``)
+  before it waits for the slot-ledger writers already in flight, and cleared
+  after its commit or rollback (acceptance A08). Slot-ledger writers wait for it
+  (``spoolman_activity.slot_write``); nothing else does — a mode change leaves
+  the Spoolman database where it was.
 - **Base generation** — raised by every base change that passed its predicate
   (a later rollback leaves it raised: a stamp then only errs towards "unknown").
   A Spoolman number read under one base and written later — a restart replay
@@ -44,6 +49,7 @@ logger = logging.getLogger(__name__)
 # Reasons of 409 ``spoolman_print_in_progress`` (spec §C1, S43).
 CHARGE_WINDOW = "charge_window"
 PRINT_ACCOUNTING = "print_accounting"
+SLOT_WRITES = "slot_writes"  # a mode change while slot-ledger writers did not finish (acceptance A08)
 
 
 class SourceRefused(Exception):
@@ -72,6 +78,8 @@ class _SourceRuntime:
         self._holder: asyncio.Task | None = None
         self._base_in_flight = False
         self._base_clear: asyncio.Event | None = None
+        self._mode_in_flight = False
+        self._mode_clear: asyncio.Event | None = None
         self._charges: set[ChargeOwnership] = set()
 
     def _bind(self) -> None:
@@ -83,6 +91,9 @@ class _SourceRuntime:
             self._base_in_flight = False
             self._base_clear = asyncio.Event()
             self._base_clear.set()
+            self._mode_in_flight = False
+            self._mode_clear = asyncio.Event()
+            self._mode_clear.set()
             self._charges = set()
 
 
@@ -211,6 +222,34 @@ def base_change_in_flight() -> bool:
 async def wait_no_base_change() -> None:
     _rt._bind()
     await _rt._base_clear.wait()
+
+
+def begin_mode_change() -> None:
+    """A change of the mode (acceptance A08): from here no new slot-ledger writer starts.
+
+    Synchronous, under the guard; the change then waits for the writers already in
+    flight before it clears the ledger of the mode it leaves.
+    """
+    require_held()
+    _rt._mode_in_flight = True
+    _rt._mode_clear.clear()
+
+
+def end_mode_change() -> None:
+    """Cleared after the change's commit or proven rollback, still under the guard."""
+    _rt._bind()
+    _rt._mode_in_flight = False
+    _rt._mode_clear.set()
+
+
+def mode_change_in_flight() -> bool:
+    _rt._bind()
+    return _rt._mode_in_flight
+
+
+async def wait_no_mode_change() -> None:
+    _rt._bind()
+    await _rt._mode_clear.wait()
 
 
 # --- charge ownership (S33, S35, S40) ------------------------------------------

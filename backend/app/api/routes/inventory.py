@@ -2958,11 +2958,13 @@ async def _refuse_in_spoolman_mode(db: AsyncSession) -> None:
     whenever Spoolman was enabled but unreachable — was never cleared and
     reached the card, the Inventory page, the print dialog, the journal's
     restart seed and the missing-assignment warning (upstream 62fad59fd, #3430).
-    Decided by the setting, not by whether Spoolman answers.
+    Decided by the setting, not by whether Spoolman answers — read as committed, so the
+    second ask under a door's slot-ledger write sees a switch made since its first
+    (C047 acceptance A08).
     """
-    from backend.app.api.routes.settings import get_setting  # noqa: PLC0415
+    from backend.app.services import spoolman_source_changes  # noqa: PLC0415
 
-    if (await get_setting(db, "spoolman_enabled") or "").lower() == "true":
+    if await spoolman_source_changes.mode_on(db):
         raise HTTPException(
             status_code=409,
             detail={
@@ -3007,9 +3009,13 @@ async def assign_spool(
 
     # A manual answer must not race insertion/RFID reconciliation on this slot. The journal
     # write inside is a first Spoolman fact: its admission is waited for BEFORE the lanes, so a
-    # change of the Spoolman database never keeps them taken (C047 acceptance A05).
+    # change of the Spoolman database never keeps them taken (C047 acceptance A05). The row is a
+    # write of the built-in ledger: the mode is asked again under its record, which a switch to
+    # Spoolman waits for before it empties that ledger (A08).
     async with AsyncExitStack() as locks:
         await locks.enter_async_context(spoolman_activity.first_evidence("spool_assignment"))
+        await locks.enter_async_context(spoolman_activity.slot_write("spool_assignment"))
+        await _refuse_in_spoolman_mode(db)
         for printer_id in lock_ids:
             await locks.enter_async_context(_get_ams_assignment_lock(printer_id))
         response, vacated = await _assign_spool(data, db, preset_owner, locked=set(lock_ids))
@@ -4691,11 +4697,12 @@ async def create_spool_from_slot(
     # carrying one tag, the first of them out of its slot. Nothing was written yet, so nothing is held
     # while this waits. The assignment may journal the slot's reel — a first Spoolman fact when a
     # Spoolman binding is still on file — so its admission comes first, before the lane, and the
-    # mode read above is asked again under it (C047 acceptance A07).
+    # mode read above is asked again under it (C047 acceptance A07) and under the slot-ledger
+    # write a switch of the mode waits for before it empties this ledger (A08).
     from backend.app.services import spoolman_activity
 
     await db.commit()  # no read transaction is carried into the wait
-    async with spoolman_activity.first_evidence("rfid_from_slot"):
+    async with spoolman_activity.first_evidence("rfid_from_slot"), spoolman_activity.slot_write("rfid_from_slot"):
         await _refuse_in_spoolman_mode(db)
         async with _get_ams_assignment_lock(req.printer_id):
             spool = await get_spool_by_tag(db, tray.get("tag_uid", ""), tray.get("tray_uuid", ""))

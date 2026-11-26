@@ -3916,6 +3916,7 @@ export default {
     nativeTagsFailedBeingDeleted: 'Котушка #{{spool}}: її саме видаляють.',
     spoolmanSourceRefused: {
       charge_window: 'Друк саме списується у Spoolman. Спробуйте за мить.',
+      slot_writes: 'Саме зараз котушки призначають у слоти. Спробуйте за мить.',
       print_accounting: 'Поки друк веде облік у Spoolman, адресу чи базу Spoolman змінити не можна. Спробуйте після завершення друку.',
     },
     nativeTagsFailedRefused: 'Котушка #{{spool}}: Spoolman відхилив мітку {{tag}}.',

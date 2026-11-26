@@ -577,3 +577,41 @@ async def test_the_built_in_ams_pass_waits_for_its_admission_with_the_lane_free(
         await asyncio.wait_for(asyncio.gather(change, work), 15)
     inner.assert_awaited_once()
     assert await _url(factory) == B
+
+
+async def test_a_switch_to_spoolman_waits_for_the_rfid_from_slot_past_its_check(pg, monkeypatch):
+    """A08 on PostgreSQL: the switch's DELETE would not see a row not committed yet — it waits for it."""
+    from backend.app.api.routes.settings import update_spoolman_settings
+    from backend.app.models.spool_assignment import SpoolAssignment
+    from backend.app.services import spool_tag_matcher, spoolman_source
+
+    factory, _ = pg
+    _printer_row, _archive_id, from_slot = await _rfid_rig(factory, monkeypatch)
+    inside, resume = asyncio.Event(), asyncio.Event()
+    original = spool_tag_matcher.auto_assign_spool
+
+    async def hold(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        inside.set()
+        await resume.wait()
+        return result
+
+    monkeypatch.setattr(spool_tag_matcher, "auto_assign_spool", hold)
+
+    async def switch_on():
+        async with factory() as db:
+            return await update_spoolman_settings({"spoolman_enabled": "true"}, db=db, _=None)
+
+    work = asyncio.create_task(from_slot())
+    try:
+        await asyncio.wait_for(inside.wait(), 10)
+        switch = asyncio.create_task(switch_on())
+        await asyncio.sleep(0.2)
+        assert spoolman_source.mode_change_in_flight()
+        assert not switch.done(), "the switch waits for the row past its mode check"
+    finally:
+        resume.set()
+    await asyncio.wait_for(asyncio.gather(work, switch), 15)
+    async with factory() as db:
+        assert await db.scalar(text("SELECT value FROM settings WHERE key='spoolman_enabled'")) == "true"
+        assert (await db.scalars(select(SpoolAssignment.id))).all() == [], "the switch emptied it after the commit"

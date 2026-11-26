@@ -52,6 +52,14 @@ describe('Spoolman delete and source refusals', () => {
     expect(spoolmanSourceRefusalText(new Error('boom'), t)).toBeNull();
   });
 
+  it('a mode switch while spools are assigned to slots has its own text (A08)', async () => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
+      answer(409, { detail: { error: 'spoolman_print_in_progress', reason: 'slot_writes', message: 'x' } }),
+    );
+    const e = await refusalOf(api.updateSpoolmanSettings({ spoolman_enabled: 'false' }));
+    expect(spoolmanSourceRefusalText(e, t)).toBe('settings.spoolmanSourceRefused.slot_writes');
+  });
+
   it('a spool in use names its reasons', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
       answer(409, {

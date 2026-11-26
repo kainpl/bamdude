@@ -6,7 +6,7 @@ import re
 import secrets
 import time
 from collections.abc import Callable, Coroutine, Sequence
-from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -2444,9 +2444,11 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState, *, stock_res
 
             # The journal lock before the session, as the stock insertion takes it: the external
             # claim below holds SQLite's writer and must not wait for it (post-rebuild review). Its
-            # Spoolman admission comes before the lane (C047 acceptance A05).
+            # Spoolman admission comes before the lane (C047 acceptance A05), and so does its
+            # slot-ledger write: the claim reads the mode under it (A08).
             async with (
                 spoolman_activity.first_evidence("external_resume"),
+                spoolman_activity.slot_write("external_resume"),
                 _get_ams_assignment_lock(printer_id),
                 journal_lock(printer_id),
                 async_session() as db,
@@ -3303,9 +3305,11 @@ async def on_stock_spool_inserted(printer_id: int, event: dict):
 
     # The journal lock BEFORE the session: the claim takes SQLite's writer at once and must
     # never wait for an in-process lock while it holds it (post-rebuild review). The Spoolman
-    # admission of its journal facts comes before the lane (C047 acceptance A05).
+    # admission of its journal facts comes before the lane (C047 acceptance A05), and so does
+    # its slot-ledger write: the claim reads the mode under it (A08).
     async with (
         spoolman_activity.first_evidence("stock_insertion"),
+        spoolman_activity.slot_write("stock_insertion"),
         _get_ams_assignment_lock(printer_id),
         journal_lock(printer_id),
     ):
@@ -3460,13 +3464,22 @@ async def on_ams_change(printer_id: int, ams_data: list):
     # the pass does no RFID assignment and takes no admission: an AMS update is no reason to
     # hold back a Spoolman delete. Whatever reaches the journal either way is guarded there
     # (``print_usage_journal._spoolman_fact``).
+    #
+    # The built-in pass also writes the built-in slot ledger, so it holds a slot-ledger write
+    # too, which a switch to Spoolman waits for before it empties that ledger (A08). A pass that
+    # began in Spoolman mode holds neither and leaves the built-in work to the next pass, even
+    # when the mode it reads under the lane is the built-in one by then.
     from backend.app.services import spoolman_activity
 
-    admission = nullcontext() if await _spoolman_mode_on() else spoolman_activity.first_evidence("ams_change_rfid")
-    async with admission, _get_ams_assignment_lock(printer_id):
+    built_in = not await _spoolman_mode_on()
+    async with AsyncExitStack() as admission:
+        if built_in:
+            await admission.enter_async_context(spoolman_activity.first_evidence("ams_change_rfid"))
+            await admission.enter_async_context(spoolman_activity.slot_write("ams_change_rfid"))
+        await admission.enter_async_context(_get_ams_assignment_lock(printer_id))
         state = printer_manager.get_status(printer_id)
         current = getattr(state, "raw_data", {}).get("ams") if state else None
-        await _on_ams_change(printer_id, current if isinstance(current, list) else ams_data)
+        await _on_ams_change(printer_id, current if isinstance(current, list) else ams_data, built_in_owned=built_in)
     # A spool sits in one slot: what the pass above put into a slot of this
     # printer may still have rows on OTHER printers. Those are deleted under
     # their own printers' locks, one at a time, with this one released.
@@ -3475,8 +3488,12 @@ async def on_ams_change(printer_id: int, ams_data: list):
     await spool_single_slot.release_elsewhere(printer_id)
 
 
-async def _on_ams_change(printer_id: int, ams_data: list):
-    """Handle AMS data changes - sync to Spoolman if enabled and auto mode."""
+async def _on_ams_change(printer_id: int, ams_data: list, *, built_in_owned: bool = True):
+    """Handle AMS data changes - sync to Spoolman if enabled and auto mode.
+
+    ``built_in_owned`` — the caller holds the built-in pass's slot-ledger write (C047
+    acceptance A08); without it the built-in inventory's work waits for the next pass.
+    """
     logger = logging.getLogger(__name__)
 
     # The advertised-profile overlay is memory only (spec
@@ -4047,7 +4064,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
             _spoolman_on = await get_setting(db, "spoolman_enabled")
             _auto_add_raw = await get_setting(db, "auto_add_unknown_rfid")
             _auto_add_unknown = _auto_add_raw is None or _auto_add_raw.lower() == "true"
-            if not _spoolman_on or _spoolman_on.lower() != "true":
+            if built_in_owned and (not _spoolman_on or _spoolman_on.lower() != "true"):
                 # Rows that were double before "a spool sits in one slot" was a
                 # rule are settled as printers report in (owner decision Р36):
                 # the slot that reports the tag keeps the spool, else the newest

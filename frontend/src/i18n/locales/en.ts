@@ -3876,6 +3876,7 @@ export default {
     nativeTagsFailedBeingDeleted: 'Spool #{{spool}}: it is being deleted.',
     spoolmanSourceRefused: {
       charge_window: 'A print is being charged to Spoolman right now. Try again in a moment.',
+      slot_writes: 'Spools are being assigned to slots right now. Try again in a moment.',
       print_accounting: 'While a print is accounted in Spoolman, the Spoolman address or database cannot be changed. Try again after the print finishes.',
     },
     nativeTagsFailedRefused: 'Spool #{{spool}}: Spoolman refused tag {{tag}}.',

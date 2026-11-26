@@ -1206,37 +1206,9 @@ async def update_spoolman_settings(
 async def _write_spoolman_settings(db: AsyncSession, settings: dict) -> None:
     """The Spoolman settings route's writes, in its transaction (the caller commits)."""
     if "spoolman_enabled" in settings:
-        old_val = await get_setting(db, "spoolman_enabled") or "false"
-        new_val = settings["spoolman_enabled"]
-        await set_setting(db, "spoolman_enabled", new_val)
-
-        # Switching to Spoolman: clear built-in inventory slot assignments
-        if old_val.lower() != "true" and new_val.lower() == "true":
-            from backend.app.models.spool_assignment import SpoolAssignment
-            from backend.app.services import ams_advertised_overlay as overlay
-
-            result = await db.execute(delete(SpoolAssignment))
-            # Every overlay entry was born of an assignment row; with the whole
-            # registry gone, so is every spool the masks stood for. Cleared
-            # BEFORE this handler's commit, like every ``remember`` on the
-            # assignment routes: an in-memory store that forgot too early is
-            # inert (the rebuild refills it from the registries), while one that
-            # still claims a spool whose row is gone would answer routing with
-            # an inventory item nobody can see.
-            overlay.forget_all()
-            logger.info("Cleared %d spool assignments on switch to Spoolman mode", result.rowcount)
-        # Switching back to internal mode: clear Spoolman slot assignments — the
-        # symmetric counterpart of the clear above. Without this, stale
-        # spoolman_slot_assignments rows linger and would wrongly count as
-        # "assigned" in any mode-agnostic check (e.g. the missing-spool-
-        # assignment notification, which unions both tables — #1473).
-        elif old_val.lower() == "true" and new_val.lower() != "true":
-            from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
-            from backend.app.services import ams_advertised_overlay as overlay
-
-            result = await db.execute(delete(SpoolmanSlotAssignment))
-            overlay.forget_all()  # same reasoning as the switch above
-            logger.info("Cleared %d Spoolman slot assignments on switch to internal mode", result.rowcount)
+        # A switch of the mode empties the ledger it leaves inside ``SourceChange.decide``,
+        # for every door that moves the mode (C047 acceptance A08).
+        await set_setting(db, "spoolman_enabled", settings["spoolman_enabled"])
     if "spoolman_url" in settings:
         await set_setting(db, "spoolman_url", settings["spoolman_url"])
     if "spoolman_sync_mode" in settings:
