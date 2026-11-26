@@ -37,7 +37,10 @@ def _scan(tree):
                 and _is_provider(inner.args[0])
             ):
                 with_values.add(id(inner))
-                found.append((node.lineno, {kw.arg for kw in node.keywords}))
+                columns = {kw.arg for kw in node.keywords}
+                if node.args:  # a positional dict or list: its columns are unknown to the scan (N07-A12)
+                    columns.add(None)
+                found.append((node.lineno, columns))
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.Call)
@@ -76,6 +79,7 @@ def test_the_scan_reads_every_set_based_form():
         "table form": "update(OIDCProvider.__table__).values(is_enabled=False)",
         "executemany": "session.execute(update(OIDCProvider), [{'id': 1, 'is_enabled': False}])",
         "mapping values": "update(OIDCProvider).values(**changes)",
+        "positional dict": "update(OIDCProvider).values({'is_enabled': False})",
         "chained where": "update(OIDCProvider).where(OIDCProvider.id == 1).values(client_id='x')",
     }
     for name, source in caught.items():
