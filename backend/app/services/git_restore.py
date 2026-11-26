@@ -1479,6 +1479,11 @@ class GitRestoreService:
             # The Spoolman mode is part of the source (C047 §C1): the same order as SPOOLS, and
             # the actor's proof inside the category's own transaction until its commit (S30).
             async with spoolman_source_changes.owning(db) as source_change:
+                # Before the actor's anchor: a change of the mode waits there for the slot-ledger
+                # writers, which a door holding SQLite's writer could only refuse (C047 A12).
+                await source_change.wait_before_anchor(
+                    db, enabled=await self._restored_mode(db, payload.get(SETTINGS_PATH), overwrite)
+                )
                 await self._guard_restore_actor(db, authority, required_permissions)
                 await self._restore_settings(
                     db,
@@ -2329,6 +2334,27 @@ class GitRestoreService:
                 count=outcome.unlinked,
             )
 
+    @staticmethod
+    async def _restored_mode(db: AsyncSession, payload, overwrite: bool) -> str | None:
+        """The Spoolman mode the settings category will write, read before its anchor (C047 A12).
+
+        The value and the condition ``_restore_settings`` hands to ``decide``: the backup's
+        canonical ``spoolman_enabled``, written when overwriting or when the row is missing.
+        None — the category leaves the mode alone, or its plan refuses the value.
+        """
+        values = payload.get("settings") if isinstance(payload, dict) else None
+        if not isinstance(values, dict) or "spoolman_enabled" not in values:
+            return None
+        try:
+            mode = _restore_setting_value("spoolman_enabled", values["spoolman_enabled"])
+        except (ValidationError, ValueError, TypeError, KeyError):
+            return None
+        if not overwrite:
+            existing = await db.scalar(select(Settings.id).where(Settings.key == "spoolman_enabled"))
+            if existing is not None:
+                return None
+        return mode
+
     async def _restore_settings(
         self,
         db: AsyncSession,
@@ -2358,6 +2384,7 @@ class GitRestoreService:
             ).scalar_one_or_none()
             if overwrite or existing_mode is None:
                 # Git never moves the address (a frozen destination); the mode is a first-tier change.
+                # ``_restored_mode`` mirrors this condition for the wait before the anchor (A12).
                 await source_change.decide(db, enabled=plan.accepted["spoolman_enabled"])
 
         for key, value in sorted(plan.accepted.items()):

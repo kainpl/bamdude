@@ -27,7 +27,9 @@ row of ``spool_assignments`` or ``spoolman_slot_assignments`` holds one from
 before its mode check to its commit. A change of the mode waits for those in
 flight before it clears the ledger of the mode it leaves, and new ones wait for
 the change. They raise no revision and no delete or base change sees them — a
-slot row's Spoolman number is the binding fence's business.
+slot row's Spoolman number is the binding fence's business. A door takes it
+BEFORE its first-evidence admission (A10): one waiting for a change of the mode
+holds no record that change's new address would take for a print's.
 
 Process memory only; one application process (spec §C6).
 """
@@ -247,6 +249,7 @@ async def slot_write(kind: str):
     and publishes its record. The door checks the mode INSIDE: from then on a change
     of the mode waits for this record to end before it clears the ledger of the mode
     it leaves, so a row written here is never left behind in the other mode's table.
+    Entered before the door's :func:`first_evidence` (A10).
 
     Nested in the same task, it reuses the open record.
     """

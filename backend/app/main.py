@@ -2445,10 +2445,10 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState, *, stock_res
             # The journal lock before the session, as the stock insertion takes it: the external
             # claim below holds SQLite's writer and must not wait for it (post-rebuild review). Its
             # Spoolman admission comes before the lane (C047 acceptance A05), and so does its
-            # slot-ledger write: the claim reads the mode under it (A08).
+            # slot-ledger write, first (A10): the claim reads the mode under it (A08).
             async with (
-                spoolman_activity.first_evidence("external_resume"),
                 spoolman_activity.slot_write("external_resume"),
+                spoolman_activity.first_evidence("external_resume"),
                 _get_ams_assignment_lock(printer_id),
                 journal_lock(printer_id),
                 async_session() as db,
@@ -3306,10 +3306,10 @@ async def on_stock_spool_inserted(printer_id: int, event: dict):
     # The journal lock BEFORE the session: the claim takes SQLite's writer at once and must
     # never wait for an in-process lock while it holds it (post-rebuild review). The Spoolman
     # admission of its journal facts comes before the lane (C047 acceptance A05), and so does
-    # its slot-ledger write: the claim reads the mode under it (A08).
+    # its slot-ledger write, first (A10): the claim reads the mode under it (A08).
     async with (
-        spoolman_activity.first_evidence("stock_insertion"),
         spoolman_activity.slot_write("stock_insertion"),
+        spoolman_activity.first_evidence("stock_insertion"),
         _get_ams_assignment_lock(printer_id),
         journal_lock(printer_id),
     ):
@@ -3466,16 +3466,17 @@ async def on_ams_change(printer_id: int, ams_data: list):
     # (``print_usage_journal._spoolman_fact``).
     #
     # The built-in pass also writes the built-in slot ledger, so it holds a slot-ledger write
-    # too, which a switch to Spoolman waits for before it empties that ledger (A08). A pass that
-    # began in Spoolman mode holds neither and leaves the built-in work to the next pass, even
-    # when the mode it reads under the lane is the built-in one by then.
+    # too, which a switch to Spoolman waits for before it empties that ledger (A08), taken before
+    # the admission (A10). A pass that began in Spoolman mode holds neither and leaves the
+    # built-in work to the next pass, even when the mode it reads under the lane is the built-in
+    # one by then.
     from backend.app.services import spoolman_activity
 
     built_in = not await _spoolman_mode_on()
     async with AsyncExitStack() as admission:
         if built_in:
-            await admission.enter_async_context(spoolman_activity.first_evidence("ams_change_rfid"))
             await admission.enter_async_context(spoolman_activity.slot_write("ams_change_rfid"))
+            await admission.enter_async_context(spoolman_activity.first_evidence("ams_change_rfid"))
         await admission.enter_async_context(_get_ams_assignment_lock(printer_id))
         state = printer_manager.get_status(printer_id)
         current = getattr(state, "raw_data", {}).get("ams") if state else None

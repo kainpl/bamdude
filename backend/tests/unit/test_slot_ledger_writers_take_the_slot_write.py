@@ -144,3 +144,14 @@ def test_every_door_takes_the_slot_ledger_write():
         body = _function_source(rel, qualname)
         assert "slot_write(" in body or "admitted_for(" in body, f"{rel}:{qualname} takes no slot-ledger write"
     assert "slot_write(" in _function_source("services/spoolman_source_changes.py", "admitted_for")
+
+
+def test_the_slot_ledger_write_comes_before_the_first_evidence():
+    """A10: a door waiting for a change of the mode holds no first evidence — its new address
+    would take that for a print's and refuse with ``print_accounting``."""
+    doors = [*sorted(DOORS), ("services/spoolman_source_changes.py", "admitted_for")]
+    for rel, qualname in doors:
+        body = _function_source(rel, qualname)
+        if "first_evidence(" not in body:
+            continue
+        assert body.index("slot_write(") < body.index("first_evidence("), f"{rel}:{qualname}"

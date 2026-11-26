@@ -17,7 +17,9 @@ Git's settings category) owns it through :class:`SourceChange`:
      slot-ledger writer starts, and the change waits for those in flight
      (``spoolman_activity.slot_write``; ``slot_writes`` when they do not finish
      in time); then it clears the ledger of the mode it leaves, in the door's
-     transaction — every door that moves the mode, not one route (acceptance A08);
+     transaction — every door that moves the mode, not one route (acceptance A08,
+     A09). A door that takes the credential anchor before ``decide`` waits
+     before that anchor (:meth:`SourceChange.wait_before_anchor`, A12);
    - a change of the **database** (a new non-empty address, ``rotate``) —
      the base-change flag is set in one synchronous step with the check of the
      open activity records, and only then a FRESH read of the durable
@@ -136,7 +138,7 @@ def source_changed() -> HTTPException:
 def require_unchanged(snapshot: SourceSnapshot) -> None:
     """After a door's remote proof and its admission: the source is still the snapshot's, or 409.
 
-    Called right after ``spoolman_activity.first_evidence`` and ``slot_write`` are
+    Called right after ``spoolman_activity.slot_write`` and ``first_evidence`` are
     entered: from there no change of the database can start and a change of the mode
     waits for the door, so a generation still equal to S0's means the proof belongs to
     the source the door writes for until its commit.
@@ -149,13 +151,14 @@ def require_unchanged(snapshot: SourceSnapshot) -> None:
 async def admitted_for(snapshot: SourceSnapshot, kind: str):
     """A slot-ledger door's admission for a proof taken under ``snapshot`` (acceptance A06, A08).
 
-    The first context of a door's ``async with``: the first-evidence admission, then the
-    slot-ledger write, both waited for before any lane, and the proof's source checked
-    right after them — before the lane too, and valid until the door's commit.
+    The first context of a door's ``async with``: the slot-ledger write, then the
+    first-evidence admission (A10), both waited for before any lane, and the proof's
+    source checked right after them — before the lane too, and valid until the door's
+    commit.
     """
     from backend.app.services import spoolman_activity  # noqa: PLC0415
 
-    async with spoolman_activity.first_evidence(kind), spoolman_activity.slot_write(kind):
+    async with spoolman_activity.slot_write(kind), spoolman_activity.first_evidence(kind):
         require_unchanged(snapshot)
         yield
 
@@ -311,16 +314,40 @@ class SourceChange:
                 spoolman_source.refuse_during_charge()
         except spoolman_source.SourceRefused as exc:
             raise refusal(exc) from exc
+        if mode_changes:
+            # After the last refusal (acceptance A11): a refused change rolls its rows back and
+            # keeps the overlay that describes them.
+            _forget_the_overlay()
         spoolman_source.bump_generation()
         return True
+
+    async def wait_before_anchor(self, db: AsyncSession, *, enabled) -> None:
+        """A change of the mode waits for the slot-ledger writers before the door's anchor (A12).
+
+        The general settings save, the reset and the Git settings restore take the credential
+        anchor — SQLite's writer — before :meth:`decide`, and a door holding it cannot wait
+        for writers that may need it. They call this first, under the guard in their clean
+        session, with the mode they will write: the flag is set and the writers in flight
+        finish here, as they do inside ``decide`` for the Spoolman settings route. ``decide``
+        then finds none open. No mode change → nothing.
+        """
+        spoolman_source.require_held()
+        if enabled is None or self._mode or _enabled(enabled) == await mode_on(db):
+            return
+        try:
+            spoolman_source.refuse_during_charge()
+            await self._wait_for_slot_writers(db)
+        except spoolman_source.SourceRefused as exc:
+            raise refusal(exc) from exc
 
     async def _wait_for_slot_writers(self, db: AsyncSession) -> None:
         """The mode-change flag, then the slot-ledger writers already in flight finish (A08).
 
         New writers wait for the flag before their lanes. A door that already holds
         SQLite's writer or a serialising row lock cannot wait for writers that may need
-        it: with one in flight it is refused at once. A print that finishes meanwhile
-        refuses the change as at its start.
+        it: with one in flight it is refused at once — the doors that take their anchor
+        first wait in :meth:`wait_before_anchor` instead, so this stays a safety net. A
+        print that finishes meanwhile refuses the change as at its start.
         """
         from backend.app.core.database import writer_reserved  # noqa: PLC0415
         from backend.app.services import spoolman_activity  # noqa: PLC0415
@@ -346,27 +373,36 @@ async def clear_left_ledger(db: AsyncSession, *, spoolman: bool) -> int:
     The ledgers hold the active mode only — no reader gates on the mode — so every door
     that moves it clears the other one: ``spool_assignments`` on the switch to
     Spoolman, ``spoolman_slot_assignments`` on the switch back (#1473). Only a
-    :class:`SourceChange` calls it, after the slot-ledger writers in flight finished.
+    :class:`SourceChange` calls it, after the slot-ledger writers in flight finished;
+    the change forgets the overlay once it can no longer be refused (A11).
     """
     from backend.app.models.spool_assignment import SpoolAssignment  # noqa: PLC0415
     from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment  # noqa: PLC0415
-    from backend.app.services import ams_advertised_overlay as overlay  # noqa: PLC0415
 
     # Two literal statements, one per ledger: the content-delete census names each site.
     if spoolman:
         result = await db.execute(delete(SpoolAssignment))
     else:
         result = await db.execute(delete(SpoolmanSlotAssignment))
-    # Every overlay entry was born of an assignment row; with the registry gone, so is every
-    # spool the masks stood for. Forgotten BEFORE the commit, like every ``remember`` on the
-    # assignment routes: a store that forgot too early is inert (the rebuild refills it from
-    # the registries), one that still claims a spool whose row is gone is not.
-    overlay.forget_all()
     if spoolman:
         logger.info("Cleared %d spool assignments on switch to Spoolman mode", result.rowcount)
     else:
         logger.info("Cleared %d Spoolman slot assignments on switch to internal mode", result.rowcount)
     return int(result.rowcount or 0)
+
+
+def _forget_the_overlay() -> None:
+    """Every overlay entry was born of an assignment row; with the ledger emptied, so is every
+    spool the masks stood for.
+
+    Forgotten after the change's last refusal and before its commit, like every ``remember``
+    on the assignment routes. A store that still claimed a spool whose row is gone would
+    route by it; one emptied by a commit that then fails shows the advertised profiles until
+    the slot's next ``remember`` or a restart (``refresh_overlay``) — the lesser fault.
+    """
+    from backend.app.services import ams_advertised_overlay as overlay  # noqa: PLC0415
+
+    overlay.forget_all()
 
 
 @contextlib.asynccontextmanager

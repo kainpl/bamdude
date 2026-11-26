@@ -1035,7 +1035,8 @@ class TestTheModeChangeWaitsForSlotWriters:
         assert mode == "true"
 
     async def test_a_door_holding_the_writer_is_refused_at_once(self, db_session):
-        """It cannot wait for writers that need the writer it holds (the general save, Git)."""
+        """It cannot wait for writers that need the writer it holds — the safety net: the doors that
+        take their anchor first wait before it (``wait_before_anchor``, A12)."""
         from backend.app.core.database import mark_writer_reserved
 
         await _spoolman(db_session)
@@ -1051,6 +1052,49 @@ class TestTheModeChangeWaitsForSlotWriters:
                     await change.decide(db_session, enabled="false")
             assert refused.value.detail["reason"] == "slot_writes"
             assert loop.time() - started < 1
+        finally:
+            release.set()
+            await asyncio.wait_for(writer, 2)
+
+    async def test_a_door_that_waits_before_its_anchor_then_decides_holding_the_writer(
+        self, db_session, printer_factory
+    ):
+        """A12: the general save, the reset and Git wait here, then ``decide`` finds no writer open."""
+        from backend.app.core.database import mark_writer_reserved
+
+        await _spoolman(db_session)
+        printer = await printer_factory()
+        await self._slot_row(db_session, printer.id)
+        writer, entered, release = self._holding()
+        await asyncio.wait_for(entered.wait(), 2)
+        waited = asyncio.Event()
+
+        async def door():
+            async with spoolman_source_changes.owning(db_session) as change:
+                await change.wait_before_anchor(db_session, enabled=False)
+                waited.set()
+                await db_session.execute(select(Settings.id))
+                mark_writer_reserved(db_session)
+                assert await asyncio.wait_for(change.decide(db_session, enabled=False), 1)
+                await db_session.commit()
+
+        running = asyncio.create_task(door())
+        await asyncio.sleep(0.1)
+        assert not waited.is_set() and spoolman_source.mode_change_in_flight()
+        release.set()
+        await asyncio.wait_for(asyncio.gather(running, writer), 3)
+        assert await self._rows() == []
+        assert not spoolman_source.mode_change_in_flight()
+
+    async def test_no_change_of_the_mode_waits_for_nothing_before_the_anchor(self, db_session):
+        await _spoolman(db_session)
+        writer, entered, release = self._holding()
+        await asyncio.wait_for(entered.wait(), 2)
+        try:
+            async with spoolman_source_changes.owning(db_session) as change:
+                await asyncio.wait_for(change.wait_before_anchor(db_session, enabled=True), 1)
+                await asyncio.wait_for(change.wait_before_anchor(db_session, enabled=None), 1)
+                assert not spoolman_source.mode_change_in_flight()
         finally:
             release.set()
             await asyncio.wait_for(writer, 2)

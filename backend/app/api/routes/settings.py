@@ -691,6 +691,9 @@ async def update_settings(
 async def _update_settings(settings_update: AppSettingsUpdate, db: AsyncSession, current_user, change):
     update_data = settings_update.model_dump(exclude_unset=True)
     actions = update_data.pop("secret_actions", None)
+    if change.held:
+        # A change of the mode waits for the slot-ledger writers before the anchor (C047 A12).
+        await change.wait_before_anchor(db, enabled=update_data.get("spoolman_enabled"))
     await lock_credential_config(db)
     if actions and not (current_user is not None and current_user.is_admin):
         raise HTTPException(403, "Requires admin role for protected settings")
@@ -713,6 +716,7 @@ async def _update_settings(settings_update: AppSettingsUpdate, db: AsyncSession,
             raise _energy_price_refusal(exc.reason) from None
         if source_held:
             await change.acquire(db)
+            await change.wait_before_anchor(db, enabled=update_data.get("spoolman_enabled"))
         await lock_credential_config(db)
         await _enforce_admin_settings(db, update_data, current_user)
         merged = await resolve_settings_credentials(db, update_data, actions)
@@ -948,11 +952,15 @@ async def reset_settings(
 
     Reset deletes the Spoolman mode, address and history-source rows too: a
     change of the source (C047 §C1), owned under the source guard taken before
-    the credential anchor and refused while a print is being charged.
+    the credential anchor and refused while a print is being charged. Without
+    its row the mode reads as the default, so a reset in Spoolman mode moves the
+    mode like any other door (acceptance A09): it waits for the slot-ledger
+    writers before its anchor and empties the Spoolman slot ledger.
     """
     from backend.app.services import spoolman_source_changes
 
     async with spoolman_source_changes.owning(db) as change:
+        await change.wait_before_anchor(db, enabled=DEFAULT_SETTINGS.spoolman_enabled)
         await _reset_settings(db, change)
     await _apply_mqtt_runtime(db)
     return await get_settings(db=db, _=None)
@@ -971,7 +979,8 @@ async def _reset_settings(db: AsyncSession, change) -> None:
         )
     ).scalar_one()
     if source_rows:
-        await change.decide(db, record_changes=True)
+        # The mode the rows' deletion leaves is the default one (A09).
+        await change.decide(db, enabled=DEFAULT_SETTINGS.spoolman_enabled, record_changes=True)
     # The installation transaction anchor is infrastructure, not a preference.
     # Keep it locked and present across reset; a later editor must never lazily
     # create its own independent serialization row.

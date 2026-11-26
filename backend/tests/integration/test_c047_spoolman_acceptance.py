@@ -868,3 +868,203 @@ async def test_a_sync_switched_off_meanwhile_saves_no_slot_row(async_client, db_
     assert response.status_code == 200, response.text
     assert "Spoolman was turned off during the sync: slot assignments were not saved" in response.json()["errors"]
     assert await _observe(SpoolmanSlotAssignment, SpoolmanSlotAssignment.spoolman_spool_id) == ("false", [])
+
+
+# --- A09-A12: every door that writes the mode waits, empties the ledger it leaves, keeps the overlay
+
+
+def _in_flight(kind="door_in_flight"):
+    """A slot-ledger writer in flight, released by the returned event."""
+    from backend.app.services import spoolman_activity
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def writer():
+        async with spoolman_activity.slot_write(kind):
+            entered.set()
+            await release.wait()
+
+    return asyncio.create_task(writer()), entered, release
+
+
+async def _spoolman_slot(db, printer_id) -> None:
+    db.add_all([Settings(key="spoolman_enabled", value="true"), Settings(key="spoolman_url", value=A)])
+    db.add(SpoolmanSlotAssignment(printer_id=printer_id, ams_id=0, tray_id=0, spoolman_spool_id=17))
+    await db.commit()
+
+
+async def _waits_for_the_writer(door, release, writer):
+    """The door is held back while the writer is in flight, and finishes once it is released."""
+    from backend.app.services import spoolman_source
+
+    await _until(spoolman_source.mode_change_in_flight)
+    await asyncio.sleep(0.2)
+    assert not door.done(), "the door waits for the slot-ledger writer in flight"
+    release.set()
+    await asyncio.wait_for(writer, 5)
+    return await asyncio.wait_for(door, 10)
+
+
+async def test_a_reset_in_spoolman_mode_waits_and_empties_the_spoolman_ledger(
+    async_client, db_session, printer_factory
+):
+    """A09: the reset deletes the mode's row (the default built-in mode) and cleared nothing."""
+    printer = await printer_factory()
+    await _spoolman_slot(db_session, printer.id)
+    writer, entered, release = _in_flight()
+    await asyncio.wait_for(entered.wait(), 2)
+
+    reset = asyncio.create_task(async_client.post("/api/v1/settings/reset"))
+    response = await _waits_for_the_writer(reset, release, writer)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["spoolman_enabled"] is False
+    assert await _observe(SpoolmanSlotAssignment, SpoolmanSlotAssignment.spoolman_spool_id) == (None, [])
+
+
+async def test_the_general_settings_save_waits_for_a_writer_before_its_anchor(
+    async_client, db_session, printer_factory
+):
+    """A12: it took the credential anchor first and could only refuse a writer in flight."""
+    printer = await printer_factory()
+    await _spoolman_slot(db_session, printer.id)
+    writer, entered, release = _in_flight()
+    await asyncio.wait_for(entered.wait(), 2)
+
+    save = asyncio.create_task(async_client.put("/api/v1/settings/", json={"spoolman_enabled": False}))
+    response = await _waits_for_the_writer(save, release, writer)
+
+    assert response.status_code == 200, response.text
+    assert await _observe(SpoolmanSlotAssignment, SpoolmanSlotAssignment.spoolman_spool_id) == ("false", [])
+
+
+async def test_a_git_settings_restore_waits_for_a_writer_before_its_anchor(  # noqa: F811
+    actor_restore, db_session, printer_factory
+):
+    """A12: the actor's proof took the anchor before the category's change of the mode."""
+    from backend.app.schemas.git_backup import RestoreCategory
+    from backend.app.services.git_restore import SETTINGS_PATH, GitRestoreService
+
+    _factory, _, capture, config_id = actor_restore
+    printer = await printer_factory()
+    await _spoolman_slot(db_session, printer.id)
+    service = GitRestoreService()
+    service._resolve_ref = AsyncMock(return_value=("a" * 40, "", None))
+    service._read_categories = AsyncMock(
+        return_value=({SETTINGS_PATH: {"settings": {"spoolman_enabled": "false"}}}, "")
+    )
+    writer, entered, release = _in_flight()
+    await asyncio.wait_for(entered.wait(), 2)
+
+    run = asyncio.create_task(
+        service.run_restore(
+            config_id,
+            "HEAD",
+            [RestoreCategory.SETTINGS],
+            True,
+            authority=capture,
+            required_permissions=("settings:update",),
+        )
+    )
+    result = await _waits_for_the_writer(run, release, writer)
+
+    assert result["success"], result
+    assert await _observe(SpoolmanSlotAssignment, SpoolmanSlotAssignment.spoolman_spool_id) == ("false", [])
+
+
+async def test_a_combined_change_is_not_refused_for_a_writer_that_waits_for_it(
+    async_client, db_session, printer_factory, monkeypatch
+):
+    """A10: a built-in door waiting for the mode flag held a first-evidence record already, and the
+    new address of the change took it for a print's: ``print_accounting`` with no print anywhere."""
+    from unittest.mock import MagicMock, patch
+
+    from backend.app.api.routes.settings import update_spoolman_settings
+    from backend.app.core import database
+    from backend.app.models.spool_assignment import SpoolAssignment
+    from backend.app.services import spoolman_activity, spoolman_source
+
+    printer = await printer_factory()
+    db_session.add_all([Settings(key="spoolman_enabled", value="false"), Settings(key="spoolman_url", value=A)])
+    spool = _built_in_spool()
+    db_session.add(spool)
+    await db_session.commit()
+    monkeypatch.setattr(
+        "backend.app.services.location_service.maybe_sync_spoolman_locations", AsyncMock(return_value=0)
+    )
+    writer, entered, release = _in_flight()
+    await asyncio.wait_for(entered.wait(), 2)
+    base = spoolman_source.base_generation()
+
+    async def combined():
+        async with database.async_session() as other:
+            return await update_spoolman_settings({"spoolman_enabled": "true", "spoolman_url": B}, db=other, _=None)
+
+    with patch("backend.app.services.printer_manager.printer_manager") as pm:
+        pm.get_client.return_value = MagicMock()
+        pm.get_status.return_value = None
+        pm.ensure_fresh_connection = AsyncMock()
+        change = asyncio.create_task(combined())
+        await _until(spoolman_source.mode_change_in_flight)
+        assign = asyncio.create_task(
+            async_client.post(
+                "/api/v1/inventory/assignments",
+                json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 0, "tray_id": 1},
+            )
+        )
+        await asyncio.sleep(0.2)
+        assert not assign.done()
+        assert not spoolman_activity.records_open(), "the waiting door holds no first evidence"
+        await _waits_for_the_writer(change, release, writer)
+        response = await asyncio.wait_for(assign, 10)
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["error"] == "spoolman_mode"
+    assert await _observe(SpoolAssignment, SpoolAssignment.spool_id) == ("true", [])
+    assert spoolman_source.base_generation() == base + 1, "the new address went in with the mode"
+
+
+async def test_a_switch_refused_after_its_clear_keeps_the_overlay(
+    async_client, db_session, printer_factory, monkeypatch
+):
+    """A11: the clear forgot the overlay, then the change was refused and only its rows came back."""
+    from backend.app.api.routes.settings import update_spoolman_settings
+    from backend.app.core import database
+    from backend.app.services import ams_advertised_overlay as overlay, spoolman_activity, spoolman_source_changes
+
+    printer = await printer_factory()
+    await _spoolman_slot(db_session, printer.id)
+    monkeypatch.setattr(
+        "backend.app.services.location_service.maybe_sync_spoolman_locations", AsyncMock(return_value=0)
+    )
+    entry = overlay.OverlayEntry(
+        actual_material="PLA-CF",
+        actual_color="000000",
+        actual_variant="GFL98",
+        actual_cols=(),
+        advertised_color="000000",
+        advertised_variant="GFL99",
+        source="spoolman",
+    )
+    overlay.replace_printer(printer.id, {(0, 0): entry})
+    real_clear = spoolman_source_changes.clear_left_ledger
+    opened = []
+
+    async def a_print_finishes_during_the_clear(db, *, spoolman):
+        count = await real_clear(db, spoolman=spoolman)
+        spoolman_activity.enter_window()
+        opened.append(True)
+        return count
+
+    monkeypatch.setattr(spoolman_source_changes, "clear_left_ledger", a_print_finishes_during_the_clear)
+    try:
+        with pytest.raises(HTTPException) as refused:
+            async with database.async_session() as other:
+                await update_spoolman_settings({"spoolman_enabled": "false"}, db=other, _=None)
+    finally:
+        if opened:
+            spoolman_activity.leave_window()
+
+    assert refused.value.detail["reason"] == "charge_window"
+    assert await _observe(SpoolmanSlotAssignment, SpoolmanSlotAssignment.spoolman_spool_id) == ("true", [17])
+    assert overlay.entries_for(printer.id) == {(0, 0): entry}

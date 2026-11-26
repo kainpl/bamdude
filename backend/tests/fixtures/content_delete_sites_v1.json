@@ -2118,7 +2118,7 @@
         "sqlalchemy.delete",
         "backend.app.models.spool_assignment.SpoolAssignment"
       ],
-      "owner_policy": "Outside C parent purge: services/spoolman_source_changes.py::clear_left_ledger (C047 acceptance A08, moved from api/routes/settings.py::_write_spoolman_settings) empties the built-in slot ledger on a switch to Spoolman, in the transaction of the door that moves the mode, under the Spoolman source guard, after the slot-ledger writers in flight finished; owned by SourceChange.decide for every such door; any new or changed locator requires adjudication"
+      "owner_policy": "Outside C parent purge: services/spoolman_source_changes.py::clear_left_ledger (C047 acceptance A08, moved from api/routes/settings.py::_write_spoolman_settings) empties the built-in slot ledger on a switch to Spoolman, in the transaction of the door that moves the mode, under the Spoolman source guard, after the slot-ledger writers in flight finished; owned by SourceChange.decide for every door that writes the mode, each naming it - the Spoolman settings route, the general settings save, the reset (C047 A09) and Git's settings category, pinned by tests/unit/test_spoolman_mode_writers_take_the_source_change.py; any new or changed locator requires adjudication"
     },
     {
       "site": [
@@ -2126,7 +2126,7 @@
         "sqlalchemy.delete",
         "backend.app.models.spoolman_slot_assignment.SpoolmanSlotAssignment"
       ],
-      "owner_policy": "Outside C parent purge: services/spoolman_source_changes.py::clear_left_ledger (C047 acceptance A08, moved from api/routes/settings.py::_write_spoolman_settings) empties the Spoolman slot ledger on a switch to the built-in inventory, in the transaction of the door that moves the mode, under the Spoolman source guard, after the slot-ledger writers in flight finished; owned by SourceChange.decide for every such door; any new or changed locator requires adjudication"
+      "owner_policy": "Outside C parent purge: services/spoolman_source_changes.py::clear_left_ledger (C047 acceptance A08, moved from api/routes/settings.py::_write_spoolman_settings) empties the Spoolman slot ledger on a switch to the built-in inventory, in the transaction of the door that moves the mode, under the Spoolman source guard, after the slot-ledger writers in flight finished; owned by SourceChange.decide for every door that writes the mode, each naming it - the Spoolman settings route, the general settings save, the reset (C047 A09) and Git's settings category, pinned by tests/unit/test_spoolman_mode_writers_take_the_source_change.py; any new or changed locator requires adjudication"
     },
     {
       "site": [

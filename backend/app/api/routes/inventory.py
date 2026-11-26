@@ -3011,10 +3011,12 @@ async def assign_spool(
     # write inside is a first Spoolman fact: its admission is waited for BEFORE the lanes, so a
     # change of the Spoolman database never keeps them taken (C047 acceptance A05). The row is a
     # write of the built-in ledger: the mode is asked again under its record, which a switch to
-    # Spoolman waits for before it empties that ledger (A08).
+    # Spoolman waits for before it empties that ledger (A08). The record comes first: a door
+    # waiting for a switch then holds no first evidence its new address would take for a
+    # print's (A10).
     async with AsyncExitStack() as locks:
-        await locks.enter_async_context(spoolman_activity.first_evidence("spool_assignment"))
         await locks.enter_async_context(spoolman_activity.slot_write("spool_assignment"))
+        await locks.enter_async_context(spoolman_activity.first_evidence("spool_assignment"))
         await _refuse_in_spoolman_mode(db)
         for printer_id in lock_ids:
             await locks.enter_async_context(_get_ams_assignment_lock(printer_id))
@@ -4696,13 +4698,13 @@ async def create_spool_from_slot(
     # second request answered 500 on PostgreSQL; without the second look SQLite ended with two spools
     # carrying one tag, the first of them out of its slot. Nothing was written yet, so nothing is held
     # while this waits. The assignment may journal the slot's reel — a first Spoolman fact when a
-    # Spoolman binding is still on file — so its admission comes first, before the lane, and the
-    # mode read above is asked again under it (C047 acceptance A07) and under the slot-ledger
-    # write a switch of the mode waits for before it empties this ledger (A08).
+    # Spoolman binding is still on file — so its admission comes before the lane, and the mode
+    # read above is asked again under it (C047 acceptance A07) and under the slot-ledger write a
+    # switch of the mode waits for before it empties this ledger (A08), taken first (A10).
     from backend.app.services import spoolman_activity
 
     await db.commit()  # no read transaction is carried into the wait
-    async with spoolman_activity.first_evidence("rfid_from_slot"), spoolman_activity.slot_write("rfid_from_slot"):
+    async with spoolman_activity.slot_write("rfid_from_slot"), spoolman_activity.first_evidence("rfid_from_slot"):
         await _refuse_in_spoolman_mode(db)
         async with _get_ams_assignment_lock(req.printer_id):
             spool = await get_spool_by_tag(db, tray.get("tag_uid", ""), tray.get("tray_uuid", ""))
