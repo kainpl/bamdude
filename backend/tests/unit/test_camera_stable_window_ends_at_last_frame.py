@@ -64,7 +64,9 @@ class Source:
         async def mjpeg(_url):
             async with contextlib.aclosing(session()) as pictures:
                 async for frame in pictures:
-                    await asyncio.sleep(0.02)  # the MJPEG path throttles on the loop clock
+                    # The MJPEG path throttles on the loop clock; twice its 1 ms interval keeps every frame
+                    # published. The stable-window verdict reads the faked clock, not this pacing.
+                    await asyncio.sleep(0.002)
                     yield frame
 
         async def wait(delay, stop_event):

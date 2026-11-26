@@ -608,7 +608,7 @@ class TestSmartPlugsAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_create_mqtt_plug_missing_topic(self, async_client: AsyncClient):
+    async def test_create_mqtt_plug_with_a_power_path_but_no_topic(self, async_client: AsyncClient):
         """Verify creating MQTT plug without topic fails."""
         data = {
             "name": "MQTT Plug",
@@ -989,14 +989,22 @@ class TestSmartPlugsAPI:
     @pytest.mark.integration
     async def test_rest_plug_is_controllable(self, async_client: AsyncClient, smart_plug_factory, db_session):
         """Verify REST plugs can be controlled (not monitor-only like MQTT)."""
+        from unittest.mock import AsyncMock, patch
+
+        from backend.app.services.rest_smart_plug import rest_smart_plug_service
+
         plug = await smart_plug_factory(plug_type="rest")
 
-        # REST plugs should NOT return 400 like MQTT plugs
-        response = await async_client.post(
-            f"/api/v1/smart-plugs/{plug.id}/control",
-            json={"action": "on"},
-        )
+        # The plug's URL is not real: answer as an unreachable device at once rather than
+        # through the service's ten-second HTTP timeout.
+        with patch.object(rest_smart_plug_service, "turn_on", AsyncMock(return_value=False)) as turn_on:
+            # REST plugs should NOT return 400 like MQTT plugs
+            response = await async_client.post(
+                f"/api/v1/smart-plugs/{plug.id}/control",
+                json={"action": "on"},
+            )
 
-        # Should attempt to send the request (may fail with 503 since URL is not real,
+        # Should attempt to send the request (fails with 503 since the device does not answer,
         # but should NOT return 400 "monitor-only")
         assert response.status_code != 400
+        turn_on.assert_awaited_once()

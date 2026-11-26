@@ -211,10 +211,19 @@ class TestTunnelCloseStaysOwned:
         assert h.writers[0].aborted is True
         assert h.runtime.in_flight() == 0
 
-    async def test_the_cancel_that_reached_the_close_is_still_raised(self, held_tunnel):
+    async def test_the_cancel_that_reached_the_close_is_still_raised(self, held_tunnel, monkeypatch):
         """Not swallowed: the operation ends cancelled once its socket is gone."""
         h = held_tunnel
         h.state.abortable = True
+        original = TunnelTransport._client
+
+        def quick(self):
+            # The same graceful close, abort at its deadline and re-raise; only the grace is short.
+            client = original(self)
+            client._close_grace = 0.05
+            return client
+
+        monkeypatch.setattr(TunnelTransport, "_client", quick)
 
         async def operation():
             async with h.transport._client():

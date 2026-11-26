@@ -260,7 +260,9 @@ async def test_a_few_unanswered_status_requests_do_not_lose_the_job(runtime, mon
         return await real(command, timeout)
 
     monkeypatch.setattr(runtime, "rpc", flaky)
-    result = await runtime.run(_slow(runtime, "a"), job_id=21)
+    # Any job will do: status is the only way main learns the result, so the first three polls
+    # are lost whatever the job's length, and the fourth must still read it.
+    result = await runtime.run(_job(runtime, "a", [("lid", 1)]), job_id=21)
     assert result["outcome"] == "ok" and len(failed) == 3 and runtime.ready
 
 

@@ -192,7 +192,9 @@ class TestFarmPrinters:
         assert entry["model"] == "X1C"
         assert entry["nozzle_diameters"] == []
 
-    async def test_unarchived_offline_printer_is_listed(self, async_client, printer_factory, farm):
+    async def test_unarchived_offline_printer_is_listed(self, async_client, printer_factory, farm, monkeypatch):
+        # Unarchive connects for real and the address is unreachable: do not wait out the connect confirmation.
+        monkeypatch.setattr("backend.app.services.printer_manager.CONNECT_CONFIRM_SECONDS", 0.2)
         printer = await printer_factory(name="back", archived=True)
         assert printer.id not in {p["printer_id"] for p in (await _answer(async_client))["farm_printers"]}
 

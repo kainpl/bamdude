@@ -41,9 +41,13 @@ class TestPrintersAPI:
         empty-card fix). Default the probe to success so the existing create
         tests exercise the create flow; the probe-failure path is tested
         explicitly below."""
-        with _orig_patch(
-            "backend.app.api.routes.printers.printer_manager.test_connection",
-            new=AsyncMock(return_value={"success": True, "state": "IDLE", "model": "X1C"}),
+        with (
+            _orig_patch(
+                "backend.app.api.routes.printers.printer_manager.test_connection",
+                new=AsyncMock(return_value={"success": True, "state": "IDLE", "model": "X1C"}),
+            ),
+            # A created printer's address is unreachable: do not wait out the real connect confirmation.
+            _orig_patch("backend.app.services.printer_manager.CONNECT_CONFIRM_SECONDS", 0.2),
         ):
             yield
 

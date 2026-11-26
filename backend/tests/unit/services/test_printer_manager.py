@@ -285,7 +285,10 @@ class TestPrinterManager:
     @pytest.mark.asyncio
     async def test_connect_printer_returns_false_on_failure(self, manager, mock_printer):
         """Verify returns False when connection fails."""
-        with patch("backend.app.services.printer_manager.BambuMQTTClient") as MockClient:
+        with (
+            patch("backend.app.services.printer_manager.BambuMQTTClient") as MockClient,
+            patch("backend.app.services.printer_manager.CONNECT_CONFIRM_SECONDS", 0.2),
+        ):
             mock_instance = MagicMock()
             mock_instance.state = MagicMock()
             mock_instance.state.connected = False

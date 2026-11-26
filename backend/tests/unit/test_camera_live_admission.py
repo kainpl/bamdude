@@ -181,16 +181,18 @@ async def test_accessor_rejects_frame_without_producer_metadata(live):
 
 
 @pytest.mark.asyncio
-async def test_stalled_producer_returns_unavailable_at_its_bounded_deadline(live):
+async def test_stalled_producer_returns_unavailable_at_its_bounded_deadline(live, monkeypatch):
+    assert pd.LIVE_FRAME_WAIT_SECONDS == 10.0  # the production bound; the wait below runs on a shorter one
+    monkeypatch.setattr(pd, "LIVE_FRAME_WAIT_SECONDS", 1.0)
     pid, start, observer, calls, capture, old = live
     await start()
     began = time.monotonic()
     frame, reason = await asyncio.wait_for(
-        pd.capture_camera_image(pid, "192.0.2.60", "synthetic", "A1M", fresh=True), 12
+        pd.capture_camera_image(pid, "192.0.2.60", "synthetic", "A1M", fresh=True), 3
     )
     assert frame is None
     assert "buffer" in reason
-    assert 9.9 <= time.monotonic() - began < 12
+    assert 0.99 <= time.monotonic() - began < 3  # at its deadline, with the same 2 s of slack as before
     capture.assert_not_awaited()
 
 
@@ -215,7 +217,8 @@ async def test_a_repeat_of_the_pre_check_frame_is_not_a_fresh_frame(live):
 
 
 @pytest.mark.asyncio
-async def test_a_frozen_live_view_fails_the_fresh_plate_frame_at_its_deadline(live):
+async def test_a_frozen_live_view_fails_the_fresh_plate_frame_at_its_deadline(live, monkeypatch):
+    monkeypatch.setattr(pd, "LIVE_FRAME_WAIT_SECONDS", 1.0)  # five repeats of the frozen picture, not fifty
     pid, start, observer, calls, capture, old = live
     await start()
 
@@ -227,7 +230,7 @@ async def test_a_frozen_live_view_fails_the_fresh_plate_frame_at_its_deadline(li
     repeating = asyncio.create_task(repeat())
     try:
         frame, reason = await asyncio.wait_for(
-            pd.capture_camera_image(pid, "192.0.2.60", "synthetic", "A1M", fresh=True), 12
+            pd.capture_camera_image(pid, "192.0.2.60", "synthetic", "A1M", fresh=True), 3
         )
     finally:
         repeating.cancel()

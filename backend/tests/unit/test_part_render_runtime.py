@@ -233,10 +233,14 @@ async def test_a_worker_dying_mid_attempt_leaves_no_orphan_and_restarts(live, tm
     with pytest.raises(RuntimeUnavailable):
         await render
     assert dead(tree)  # proven through the attempt's records, not through the dead worker's descendants
+    # Wait for what is asserted: a new worker that admits the fallback lane. Health is the wrong signal
+    # here: without a provisioned Node pin (the Backend Tests job has none) it reports "unavailable"
+    # even with a healthy restarted worker, and the loop always ran its full 30 s.
     for _ in range(300):
-        if runtime.health()["state"] != "unavailable" and runtime.service and runtime.service.process.pid != old_pid:
+        if runtime.refusal("fallback") is None and runtime.service and runtime.service.process.pid != old_pid:
             break
         await asyncio.sleep(0.1)
+    assert runtime.service is not None and runtime.service.process.pid != old_pid  # it really restarted
     assert runtime.refusal("fallback") is None
     assert broker.nc.is_connected
 

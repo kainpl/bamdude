@@ -61,6 +61,21 @@ PLATE_FILAMENTS = [{"id": 3, "type": "PLA", "color": "#FF0000", "used_g": "0.000
 
 
 @pytest.fixture(autouse=True)
+def _settle_without_production_pacing(monkeypatch):
+    """A refused plan here is refused by ``final_guard``; the window before it is production pacing.
+
+    ``settle_plan`` binds its poll and converge defaults when it is defined, so the module constants
+    cannot shorten them: the dispatcher's own name is wrapped instead. A slot that does not fit is
+    still waited on and still refused; only the five-second converge window becomes 50 ms.
+    """
+    import functools
+
+    from backend.app.services import background_dispatch as bd, filament_preflight
+
+    monkeypatch.setattr(bd, "settle_plan", functools.partial(filament_preflight.settle_plan, poll=0.01, converge=0.05))
+
+
+@pytest.fixture(autouse=True)
 def clean_spool_state():
     """Process-global capture state must not travel between tests."""
     queue_sources._reset_state()

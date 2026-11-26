@@ -227,6 +227,9 @@ class TestUsbStreamTeardown:
     async def test_a_process_that_never_exits_does_not_hold_the_teardown_forever(self, monkeypatch):
         from backend.app.services import camera_cleanup
 
+        # The order of signals and the bounded end do not depend on how long each one is waited for.
+        monkeypatch.setattr(camera_cleanup, "_PROCESS_TERMINATE_TIMEOUT", 0.1)
+        monkeypatch.setattr(camera_cleanup, "_PROCESS_KILL_TIMEOUT", 0.1)
         proc = _StuckUsbProc()
         task = await _watch(monkeypatch, proc)
         task.cancel()

@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from starlette.requests import ClientDisconnect
 
 from backend.app.api.routes import support
+from backend.app.services.log_reader import LOG_ENTRY_BUDGET
 
 
 @pytest.fixture
@@ -38,13 +39,19 @@ async def test_list_current_and_archives_separately(async_client, log_dir):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("lines", [0, 220_000], ids=["empty", "larger-than-bundle-limit"])
-async def test_download_full_snapshot_without_debug(async_client, log_dir, monkeypatch, lines):
+@pytest.mark.parametrize("entries", [0, 200], ids=["empty", "larger-than-bundle-limit"])
+async def test_download_full_snapshot_without_debug(async_client, log_dir, monkeypatch, entries):
     """No support-bundle tail cap, and copying never runs on the event loop."""
     # Exercise an uncapped full download using real bounded log records. An
     # oversized unparented prefix is intentionally omitted as one unsafe record.
-    content = ("2026-11-10 12:00:00,000 INFO [test] Поточний лог\n" * lines).encode()
-    if lines:
+    # Few large records rather than many one-liners: the sanitizer runs once per
+    # record, so 220,000 one-line records spent ~24 s of a 30 s work budget on CI
+    # to prove what 200 records of one long continuation line each (~11.5 MB,
+    # each under the per-record budget) prove too.
+    entry = "2026-11-10 12:00:00,000 INFO [test] Поточний лог\n" + "    " + "Поточний лог, продовження " * 1200 + "\n"
+    assert len(entry.encode()) < LOG_ENTRY_BUDGET
+    content = (entry * entries).encode()
+    if entries:
         assert len(content) > 10 * 1024 * 1024
     (log_dir / "bamdude.log").write_bytes(content)
     loop_thread = threading.get_ident()

@@ -73,8 +73,14 @@ async def _stopped(rt) -> None:
         await asyncio.wait_for(rt.stop(), 60)
 
 
-def _fail_ready_on_attempt(rt, attempt: int = 1):
-    """The service misses its readiness answer during ``attempt`` only."""
+def _fail_ready_on_attempt(rt, attempt: int = 1, *, missed_wait: float = 0.5):
+    """The service misses its readiness answer during ``attempt`` only.
+
+    The failing attempt waits ``missed_wait`` for the answer that never comes, not the
+    whole readiness wait ``_fast`` gave the real service: the miss, its phase and its
+    proven cleanup are the same after half a second as after eight. Every other
+    attempt keeps the ordinary wait. Call after ``_fast``.
+    """
     real = rt._rpc
 
     async def rpc(command, operation=None, **kwargs):
@@ -83,6 +89,14 @@ def _fail_ready_on_attempt(rt, attempt: int = 1):
         return await real(command, operation, **kwargs)
 
     rt._rpc = rpc
+    ordinary, real_launch = r.READY_SECONDS, rt._launch
+
+    async def launch(launch_attempt=None):
+        # READY_SECONDS is read when ``_launch`` runs; ``_fast``'s monkeypatch restores it afterwards.
+        r.READY_SECONDS = min(missed_wait, ordinary) if launch_attempt == attempt else ordinary
+        return await real_launch(launch_attempt)
+
+    rt._launch = launch
 
 
 class _FakeProcess:
@@ -137,7 +151,9 @@ def _closed_port_url() -> str:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    return f"nats://127.0.0.1:{port}"  # nothing listens: connection refused at once
+    # Nothing listens, so every connect is refused at once; but nats-py retries a refused
+    # server internally until the attempt's STARTUP_SECONDS run out, so give such a test a short budget.
+    return f"nats://127.0.0.1:{port}"
 
 
 def _record_clients(monkeypatch) -> list:
@@ -697,7 +713,7 @@ async def test_a_stop_during_connect_closes_its_client(tmp_path, monkeypatch):
 async def test_a_client_whose_close_fails_forbids_a_retry(tmp_path, monkeypatch):
     from nats.aio.client import Client
 
-    _fast(monkeypatch)
+    _fast(monkeypatch, budget=0.5)  # a refused connect ends at the startup budget (see _closed_port_url)
     clients = _record_clients(monkeypatch)
 
     async def broken_close(self):
@@ -948,7 +964,7 @@ async def test_a_stopped_start_ends_with_one_terminal_line(tmp_path, monkeypatch
 @pytest.mark.asyncio
 async def test_a_start_that_ended_with_its_own_outcome_gets_no_second_terminal_line(tmp_path, monkeypatch, caplog):
     caplog.set_level(logging.INFO, logger=LOGGER)
-    _fast(monkeypatch, attempts=1)
+    _fast(monkeypatch, attempts=1, budget=0.5)  # a refused connect ends at the startup budget (see _closed_port_url)
     rt = r.PreviewRuntime(tmp_path, SimpleNamespace(token="t", url=_closed_port_url()))
     try:
         await rt.start()
@@ -1007,7 +1023,7 @@ async def test_a_stop_that_wins_the_race_after_a_final_outcome_adds_no_second_te
     """White-box: an external stop gets in between the owner's final failure line and its own give-up, so the
     shared stop cancels the owner. The outcome was already said; the cancelled owner says nothing more."""
     caplog.set_level(logging.INFO, logger=LOGGER)
-    _fast(monkeypatch, attempts=1)
+    _fast(monkeypatch, attempts=1, budget=0.5)  # a refused connect ends at the startup budget (see _closed_port_url)
     rt = r.PreviewRuntime(tmp_path, SimpleNamespace(token="t", url=_closed_port_url()))
     real = rt._log_start_failure
 

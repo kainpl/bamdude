@@ -84,6 +84,12 @@ async def test_startup_while_paused_then_finish_closes_only_the_recovered_run(
     background = []
 
     def schedule(coro, *, name):
+        if name.startswith("post-print-cleanup-"):
+            # The printer is not there: its SD cleanup would wait out FTP timeouts (as swap_terminal_support does).
+            coro.close()
+            done = asyncio.get_running_loop().create_future()
+            done.set_result(None)
+            return done
         task = spawn_background_task(coro, name=name)
         background.append(task)
         return task

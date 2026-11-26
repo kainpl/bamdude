@@ -12,9 +12,13 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 @pytest.fixture
 def _connection_probe():
     """Add-Printer probes MQTT before persisting; default it to success."""
-    with patch(
-        "backend.app.api.routes.printers.printer_manager.test_connection",
-        new=AsyncMock(return_value={"success": True, "state": "IDLE", "model": "P1S"}),
+    with (
+        patch(
+            "backend.app.api.routes.printers.printer_manager.test_connection",
+            new=AsyncMock(return_value={"success": True, "state": "IDLE", "model": "P1S"}),
+        ),
+        # A created printer's address is unreachable: do not wait out the real connect confirmation.
+        patch("backend.app.services.printer_manager.CONNECT_CONFIRM_SECONDS", 0.2),
     ):
         yield
 

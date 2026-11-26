@@ -54,6 +54,12 @@ logger = logging.getLogger(__name__)
 # short enough that a genuinely dead printer is not waited on for minutes.
 MACRO_DISCONNECT_GRACE_SECONDS = 30.0
 
+# How long ``connect_printer`` waits for paho's first ``_on_connect`` before it answers
+# False (rationale at the poll). Read when the poll runs, so a test whose printer can
+# never be reached shortens it instead of spending the full ten seconds.
+CONNECT_CONFIRM_SECONDS = 10.0
+_CONNECT_CONFIRM_POLL_SECONDS = 0.1
+
 
 async def _sync_kprofiles_for_printer(printer_id: int) -> None:
     """Async coroutine wired into ``on_kprofiles_changed``: opens a fresh
@@ -1603,10 +1609,10 @@ class PrinterManager:
         # like before. Fully offline: still returns False, just after 10s
         # instead of 1s — the slower failure path is the trade-off for not
         # spuriously failing on a busy moment.
-        for _ in range(100):  # 100 × 100 ms = 10 s
+        for _ in range(max(1, round(CONNECT_CONFIRM_SECONDS / _CONNECT_CONFIRM_POLL_SECONDS))):  # 100 × 100 ms = 10 s
             if client.state.connected:
                 break
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(_CONNECT_CONFIRM_POLL_SECONDS)
 
         # Trigger a one-shot 3MF download retry for any fallback archives
         # on this printer — now that we're back online, the file may be
