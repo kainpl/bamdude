@@ -64,17 +64,6 @@ async def _plant_parts(db_session, archive_id, parts: dict[str, list[int]]):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_skipped_objects_raise_the_counter(patched_session, db_session):
-    archive = await _archive(db_session)
-
-    await _record_skipped_as_defective(1, [941, 942, 943])
-
-    await db_session.refresh(archive)
-    assert archive.defective_count == 3
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
 async def test_the_same_list_arriving_twice_does_not_double_count(patched_session, db_session):
     """The callback fires from two places by design — see the MQTT client."""
     archive = await _archive(db_session)
@@ -200,6 +189,7 @@ async def test_a_hand_raised_row_value_survives_a_smaller_skip(patched_session, 
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_an_archive_without_part_rows_keeps_the_legacy_count(patched_session, db_session):
+    """Skipped objects raise the counter, one per object, on an archive with no part rows."""
     archive = await _archive(db_session)
 
     await _record_skipped_as_defective(1, [941, 942, 943])

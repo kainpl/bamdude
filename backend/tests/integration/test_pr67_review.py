@@ -29,7 +29,9 @@ from backend.tests.unit.services.test_usage_tracker_runout import _journal, _mak
 @pytest.mark.integration
 @pytest.mark.parametrize("same_spool", [True, False])
 @pytest.mark.parametrize("preassigned_while_empty", [True, False])
-@pytest.mark.parametrize("later_runout_kind", [None, KIND_PAUSE, KIND_AUTOSWITCH])
+# No ``None`` case: everything before the second episode is the same for both kinds, so each
+# of them already makes every assertion a run that stopped there would make.
+@pytest.mark.parametrize("later_runout_kind", [KIND_PAUSE, KIND_AUTOSWITCH])
 async def test_manual_correction_after_runout_before_ams_insertion_wins(
     async_client, db_session, printer_factory, tmp_path, same_spool, preassigned_while_empty, later_runout_kind
 ):
@@ -124,9 +126,6 @@ async def test_manual_correction_after_runout_before_ams_insertion_wins(
     else:
         assert old.weight_used == 1000
         assert old.archived_at is not None
-
-    if later_runout_kind is None:
-        return
 
     # The real SQLite journal has second-resolution server timestamps. Let a
     # later episode happen after the manual API write rather than rewriting

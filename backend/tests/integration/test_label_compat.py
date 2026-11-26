@@ -140,6 +140,7 @@ class TestNamingADesignDirectly:
         assert response.status_code == 422
 
     async def test_naming_neither_is_refused(self, async_client: AsyncClient, a_spool):
+        """Neither a template nor a sheet (nothing at all beside the spools) is refused."""
         response = await async_client.post("/api/v1/inventory/labels", json={"spools": [{"id": a_spool.id}]})
         assert response.status_code == 422
 
@@ -206,11 +207,6 @@ class TestNamingADesignDirectly:
 
         assert response.status_code == 200, response.text
         assert response.content.startswith(b"%PDF")
-
-    async def test_naming_nothing_at_all_is_still_refused(self, async_client: AsyncClient, a_spool):
-        response = await async_client.post("/api/v1/inventory/labels", json={"spools": [{"id": a_spool.id}]})
-
-        assert response.status_code == 422
 
 
 class TestTheNameOnTheLabel:
