@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session, SessionTransaction
 from backend.app.core.config import settings
 from backend.app.core.credential_config import initialize_credential_config_anchor
 from backend.app.core.database import Base, _strip_tz_from_params, configure_sqlite_connection, import_all_models
+from backend.tests.schema_image import closed_sqlite_threads_have_exited, load_schema
 
 
 @dataclass(frozen=True, eq=False)
@@ -121,18 +122,23 @@ async def test_engine(monkeypatch, tmp_path, request):
         loop.set_task_factory(remembering_parents)
         request.addfinalizer(lambda: loop.set_task_factory(previous))
     import_all_models()
+    if not schema:
+        # A new file in tmp_path, written from the per-process schema image before anything connects.
+        await load_schema(engine)
     async with engine.begin() as connection:
         if schema:
             await connection.execute(text(f'CREATE SCHEMA "{schema}"'))
-        await connection.run_sync(Base.metadata.create_all)
+            await connection.run_sync(Base.metadata.create_all)
         # What ``init_db`` and conftest's engine create: a settings save without it is a 503.
         await initialize_credential_config_anchor(connection)
     monkeypatch.setattr("backend.app.core.database.async_session", async_sessionmaker(engine, expire_on_commit=False))
     yield engine
-    async with engine.begin() as connection:
-        if schema:
+    if schema:
+        async with engine.begin() as connection:
             await connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
-        else:
-            await connection.run_sync(Base.metadata.drop_all)
+        await engine.dispose()
+        await asyncio.sleep(0.1)
+        return
+    # SQLite: the file goes with tmp_path, so a drop_all before disposing it only cost time.
     await engine.dispose()
-    await asyncio.sleep(0.1)
+    await closed_sqlite_threads_have_exited()

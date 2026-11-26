@@ -20,6 +20,7 @@ from backend.app.models.printer import Printer
 from backend.app.services import obico_history as module
 from backend.app.services.obico_geometry import project_boxes, validate_boxes
 from backend.app.services.obico_history import HistoryUnavailable, ObicoHistory, filename, now
+from backend.tests.schema_image import load_schema
 
 pytestmark = pytest.mark.asyncio
 
@@ -64,8 +65,11 @@ async def history(tmp_path, request, monkeypatch):
         monkeypatch.setattr("backend.app.core.db_dialect.is_sqlite", lambda: False)
     else:
         engine = create_async_engine(f"sqlite+aiosqlite:///{(tmp_path / 'history.db').as_posix()}")
-    async with engine.begin() as connection:
-        await connection.run_sync(database.Base.metadata.create_all)
+    if postgres:
+        async with engine.begin() as connection:
+            await connection.run_sync(database.Base.metadata.create_all)
+    else:
+        await load_schema(engine)
     if postgres:
         from backend.app.migrations import _discover_migrations, _ensure_migrations_table
 

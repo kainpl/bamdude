@@ -29,6 +29,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.services import archive_media, queue_sources, timelapse_baseline as tb
 from backend.app.services.archive import ArchiveService
 from backend.app.services.archive_media import RemoteSource
+from backend.tests.schema_image import load_schema
 from backend.tests.unit.services.test_printer_file_delete_doors import printer as guarded_printer  # noqa: F401
 from backend.tests.unit.test_archive_media_publication import _archive, _pointer, _publish, _rows, _token_of
 
@@ -43,8 +44,8 @@ async def test_engine(tmp_path, monkeypatch):
     database.import_all_models()
     engine = create_async_engine(f"sqlite+aiosqlite:///{(tmp_path / 'media.db').as_posix()}")
     event.listen(engine.sync_engine, "connect", database.configure_sqlite_connection)
+    await load_schema(engine)
     async with engine.begin() as conn:
-        await conn.run_sync(database.Base.metadata.create_all)
         await initialize_credential_config_anchor(conn)
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(database, "async_session", factory)

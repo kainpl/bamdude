@@ -28,6 +28,7 @@ from backend.app.models.user import User
 from backend.app.services import queue_sources, swap_compatibility as sc, swap_source_declarations as decl
 from backend.tests.auth_helpers import mint_test_session
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
+from backend.tests.schema_image import load_schema
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
@@ -48,8 +49,7 @@ async def factory(tmp_path, monkeypatch):
     from backend.app.core.database import import_all_models
 
     import_all_models()
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await load_schema(engine)
     made = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr("backend.app.core.database.async_session", made)
     from backend.app.services import archive_write_scope, queue_ops

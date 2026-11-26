@@ -1561,13 +1561,13 @@ async def _separate_connections(test_engine, tmp_path):
     from sqlalchemy import event as sql_event
     from sqlalchemy.ext.asyncio import create_async_engine
 
-    from backend.app.core.database import Base, configure_sqlite_connection
+    from backend.app.core.database import configure_sqlite_connection
+    from backend.tests.schema_image import load_schema
 
     engine = create_async_engine("sqlite+aiosqlite:///" + str(tmp_path / "record-hold.sqlite"))
     sql_event.listen(engine.sync_engine, "connect", configure_sqlite_connection)
     try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        await load_schema(engine)
         yield engine
     finally:
         await engine.dispose()

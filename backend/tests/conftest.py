@@ -75,6 +75,9 @@ from backend.app.core.database import Base  # noqa: E402
 # Use in-memory SQLite for tests
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
+# The application's schema, built once per process and copied into each test database.
+from backend.tests.schema_image import closed_sqlite_threads_have_exited, load_schema  # noqa: E402
+
 
 @pytest.fixture(autouse=True, scope="session")
 def _dialect_follows_the_test_database():
@@ -248,8 +251,8 @@ async def test_engine(monkeypatch):
 
     import_all_models()
 
+    await load_schema(engine)
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
         # Production init_db initializes this before opening admission. The
         # harness builds tables directly, so reproduce that bootstrap seam.
         from backend.app.core.credential_config import initialize_credential_config_anchor
@@ -270,13 +273,11 @@ async def test_engine(monkeypatch):
 
     yield engine
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+    # The database lives in the engine's one connection (in-memory, StaticPool),
+    # so disposing the engine is what discards it; a drop_all before that only
+    # cost a quarter of a second per test.
     await engine.dispose()
-    # Allow aiosqlite's background thread to finish processing the close
-    # response before the per-function event loop shuts down, preventing
-    # "RuntimeError: Event loop is closed" in call_soon_threadsafe.
-    await asyncio.sleep(0.1)
+    await closed_sqlite_threads_have_exited()
 
 
 @pytest.fixture
@@ -618,6 +619,22 @@ async def _library_preview_jobs_isolation():
     library_file_runtime.upload_writes = previous_writes
 
 
+_ADMIN_PASSWORD_HASHES: dict = {}
+
+
+def _test_admin_password_hash(hasher) -> str:
+    """The seeded admin's password hash, computed once per process and per hasher.
+
+    Hashing is deliberately slow (~30 ms), and every client fixture seeded the same
+    password. Keyed by the hashing function itself, so a test that patches
+    ``get_password_hash`` still gets a hash from its own patched function.
+    """
+    digest = _ADMIN_PASSWORD_HASHES.get(hasher)
+    if digest is None:
+        digest = _ADMIN_PASSWORD_HASHES[hasher] = hasher("Test_AdminPass1!")
+    return digest
+
+
 @asynccontextmanager
 async def _build_client(test_engine, *, commit: bool) -> AsyncGenerator[AsyncClient, None]:
     """Shared body of ``async_client`` and ``committing_client``.
@@ -694,7 +711,7 @@ async def _build_client(test_engine, *, commit: bool) -> AsyncGenerator[AsyncCli
         async with test_async_session() as setup_db:
             admin = User(
                 username="test_admin",
-                password_hash=get_password_hash("Test_AdminPass1!"),
+                password_hash=_test_admin_password_hash(get_password_hash),
                 role="admin",
                 is_active=True,
             )

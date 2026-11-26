@@ -21,6 +21,7 @@ from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 from backend.tests.integration.test_order_resources import resource_shop, shop  # noqa: F401
 from backend.tests.integration.test_swap_library_ingest import clean_spool_state, sessions  # noqa: F401
 from backend.tests.integration.test_workshop_library_rights import _key
+from backend.tests.schema_image import load_schema
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
@@ -83,8 +84,11 @@ async def test_engine(tmp_path, monkeypatch, request):
         event.listen(engine.sync_engine, "connect", database.configure_sqlite_connection)
     old_url = settings.database_url
     object.__setattr__(settings, "database_url", url)
-    async with engine.begin() as conn:
-        await conn.run_sync(database.Base.metadata.create_all)
+    if pg:
+        async with engine.begin() as conn:
+            await conn.run_sync(database.Base.metadata.create_all)
+    else:
+        await load_schema(engine)
     try:
         yield engine
     finally:

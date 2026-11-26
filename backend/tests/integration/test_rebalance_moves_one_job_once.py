@@ -56,17 +56,17 @@ async def test_returned_work_never_rebalances_but_shared_refusal_remains_open(
 async def test_engine(monkeypatch, tmp_path):
     """A database file, so two sessions are two connections and a commit is the other's evidence."""
     from backend.app.core import database as database_module
-    from backend.app.core.database import Base, configure_sqlite_connection, import_all_models
+    from backend.app.core.database import configure_sqlite_connection, import_all_models
+    from backend.tests.schema_image import closed_sqlite_threads_have_exited, load_schema
 
     import_all_models()
     engine = create_async_engine("sqlite+aiosqlite:///" + str(tmp_path / "moves.sqlite"))
     event.listen(engine.sync_engine, "connect", configure_sqlite_connection)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await load_schema(engine)
     monkeypatch.setattr(database_module, "async_session", async_sessionmaker(engine, expire_on_commit=False))
     yield engine
     await engine.dispose()
-    await asyncio.sleep(0.1)
+    await closed_sqlite_threads_have_exited()
 
 
 async def _rows(test_engine) -> list[AutoQueueItem]:

@@ -24,6 +24,7 @@ from backend.app.services.library_delete_scope import library_delete_scope
 from backend.app.services.library_identity import LibraryIdentity
 from backend.app.services.library_trash import library_trash_service
 from backend.app.services.queue_counters import detach_auto_queue_refs, detach_print_queue_refs
+from backend.tests.schema_image import load_schema
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
@@ -47,8 +48,11 @@ async def independent_factory(request, tmp_path, monkeypatch):
     else:
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'protocol.db'}")
         event.listen(engine.sync_engine, "connect", database.configure_sqlite_connection)
-    async with engine.begin() as conn:
-        await conn.run_sync(database.Base.metadata.create_all)
+    if admin:
+        async with engine.begin() as conn:
+            await conn.run_sync(database.Base.metadata.create_all)
+    else:
+        await load_schema(engine)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     monkeypatch.setattr(database, "async_session", factory)
     from backend.app.services import archive_write_scope, queue_ops

@@ -26,7 +26,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.app import main
-from backend.app.core.database import Base
 from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
@@ -34,6 +33,7 @@ from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services import swap_compatibility as sc
 from backend.app.services.print_run_binding import bind_print_run
 from backend.app.services.printer_manager import PrinterManager
+from backend.tests.schema_image import load_schema
 
 CHANGE_TABLE = "swap_mode_change_table"
 START = "swap_mode_start"
@@ -76,8 +76,7 @@ async def make_rig(test_engine, tmp_path, monkeypatch):
         if test_engine.dialect.name == "sqlite":
             engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / f'swap-{len(engines)}.db'}")
             engines.append(engine)
-            async with engine.begin() as connection:
-                await connection.run_sync(Base.metadata.create_all)
+            await load_schema(engine)
         else:
             engine = test_engine
         factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
