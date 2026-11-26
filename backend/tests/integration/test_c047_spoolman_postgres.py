@@ -615,3 +615,55 @@ async def test_a_switch_to_spoolman_waits_for_the_rfid_from_slot_past_its_check(
     async with factory() as db:
         assert await db.scalar(text("SELECT value FROM settings WHERE key='spoolman_enabled'")) == "true"
         assert (await db.scalars(select(SpoolAssignment.id))).all() == [], "the switch emptied it after the commit"
+
+
+# --- A13: the Spoolman route stores the mode it decides ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"spoolman_enabled": True}, {"spoolman_enabled": "true", "spoolman_disable_weight_sync": True}],
+    ids=["json-true", "a-json-switch-beside-it"],
+)
+async def test_a_json_switch_is_stored_as_the_mode_the_change_decided(pg, body):
+    """A13 on PostgreSQL: asyncpg refused a bool for the text column at the write, after ``decide``
+    had emptied the built-in ledger and forgotten the overlay — a 500 that rolled the rows back and
+    left the overlay empty. The route now stores the strings the change decided."""
+    from backend.app.api.routes.settings import update_spoolman_settings
+    from backend.app.models.spool import Spool
+    from backend.app.models.spool_assignment import SpoolAssignment
+    from backend.app.services import ams_advertised_overlay as overlay, spoolman_source
+
+    factory, _ = pg
+    printer = await _printer(factory)
+    async with factory() as db:
+        spool = Spool(material="PLA", subtype="Basic", brand="Generic", rgba="FF0000FF", label_weight=1000)
+        db.add(spool)
+        await db.commit()
+        db.add(SpoolAssignment(spool_id=spool.id, printer_id=printer.id, ams_id=0, tray_id=1))
+        await db.commit()
+    entry = overlay.OverlayEntry(
+        actual_material="PLA",
+        actual_color="FF0000",
+        actual_variant="GFL98",
+        actual_cols=(),
+        advertised_color="FF0000",
+        advertised_variant="GFL99",
+        source="internal",
+    )
+    overlay.replace_printer(printer.id, {(0, 1): entry})
+    generation = spoolman_source.generation()
+    try:
+        async with factory() as db:
+            result = await update_spoolman_settings(dict(body), db=db, _=None)
+        assert result["spoolman_enabled"] == "true"
+        async with factory() as db:
+            rows = dict((await db.execute(text("SELECT key, value FROM settings"))).all())
+            assert rows["spoolman_enabled"] == "true"
+            if "spoolman_disable_weight_sync" in body:
+                assert rows["spoolman_disable_weight_sync"] == "true"
+            assert (await db.scalars(select(SpoolAssignment.id))).all() == []
+        assert overlay.entries_for(printer.id) == {}
+        assert spoolman_source.generation() == generation + 1
+    finally:
+        overlay.forget_all()

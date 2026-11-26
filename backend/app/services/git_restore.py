@@ -1480,7 +1480,9 @@ class GitRestoreService:
             # the actor's proof inside the category's own transaction until its commit (S30).
             async with spoolman_source_changes.owning(db) as source_change:
                 # Before the actor's anchor: a change of the mode waits there for the slot-ledger
-                # writers, which a door holding SQLite's writer could only refuse (C047 A12).
+                # writers, which a door holding SQLite's writer could only refuse (C047 A12). The
+                # run proved the actor before its first category; only one revoked since is
+                # refused after this wait (A14).
                 await source_change.wait_before_anchor(
                     db, enabled=await self._restored_mode(db, payload.get(SETTINGS_PATH), overwrite)
                 )

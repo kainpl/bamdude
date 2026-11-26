@@ -330,6 +330,12 @@ class SourceChange:
         session, with the mode they will write: the flag is set and the writers in flight
         finish here, as they do inside ``decide`` for the Spoolman settings route. ``decide``
         then finds none open. No mode change → nothing.
+
+        What a door refuses without its anchor it refuses before this (acceptance A14): the
+        general save asks the caller's role first, the reset is admin-only at its dependency,
+        a Git run proves its actor before its first category. A refusal decided only under
+        the anchor — the save's effective settings, an actor revoked during a Git run — comes
+        after the wait: bounded by it, nothing written, the flag dropped at release.
         """
         spoolman_source.require_held()
         if enabled is None or self._mode or _enabled(enabled) == await mode_on(db):

@@ -602,14 +602,6 @@
     },
     {
       "site": [
-        "api/routes/orca_cloud.py::_upsert_settings",
-        "db.delete",
-        "row"
-      ],
-      "owner_policy": "Outside C parent purge: api/routes/orca_cloud.py::_upsert_settings retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
-    },
-    {
-      "site": [
         "api/routes/print_options_preferences.py::admin_delete_preference",
         "db.delete",
         "pref"

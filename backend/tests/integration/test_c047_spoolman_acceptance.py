@@ -1068,3 +1068,132 @@ async def test_a_switch_refused_after_its_clear_keeps_the_overlay(
     assert refused.value.detail["reason"] == "charge_window"
     assert await _observe(SpoolmanSlotAssignment, SpoolmanSlotAssignment.spoolman_spool_id) == ("true", [17])
     assert overlay.entries_for(printer.id) == {(0, 0): entry}
+
+
+# --- A13, A14: the Spoolman route stores the mode it decides; a refused caller holds no writer
+
+
+def _overlay_entry(source: str):
+    from backend.app.services import ams_advertised_overlay as overlay
+
+    return overlay.OverlayEntry(
+        actual_material="PLA-CF",
+        actual_color="000000",
+        actual_variant="GFL98",
+        actual_cols=(),
+        advertised_color="000000",
+        advertised_variant="GFL99",
+        source=source,
+    )
+
+
+async def _built_in_slot(db, printer_id) -> int:
+    """Built-in mode, one built-in slot assignment and its overlay entry; the spool's id."""
+    from backend.app.models.spool_assignment import SpoolAssignment
+    from backend.app.services import ams_advertised_overlay as overlay
+
+    spool = _built_in_spool()
+    db.add_all([Settings(key="spoolman_enabled", value="false"), Settings(key="spoolman_url", value=A), spool])
+    await db.commit()
+    db.add(SpoolAssignment(spool_id=spool.id, printer_id=printer_id, ams_id=0, tray_id=1))
+    await db.commit()
+    overlay.replace_printer(printer_id, {(0, 1): _overlay_entry("internal")})
+    return spool.id
+
+
+@pytest.mark.parametrize("sent", [True, 1, "TRUE", "yes"], ids=["json-true", "one", "upper", "yes"])
+async def test_the_spoolman_route_stores_the_mode_it_decides(
+    async_client, db_session, printer_factory, monkeypatch, sent
+):
+    """A13: a JSON ``true`` was decided as Spoolman — the built-in ledger and the overlay emptied —
+    and stored as ``1``, which every reader takes for the built-in inventory."""
+    from backend.app.models.spool_assignment import SpoolAssignment
+    from backend.app.services import ams_advertised_overlay as overlay, spoolman_source_changes
+
+    printer = await printer_factory()
+    await _built_in_slot(db_session, printer.id)
+    monkeypatch.setattr(
+        "backend.app.services.location_service.maybe_sync_spoolman_locations", AsyncMock(return_value=0)
+    )
+
+    response = await async_client.put("/api/v1/settings/spoolman", json={"spoolman_enabled": sent})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["spoolman_enabled"] == "true"
+    assert await _observe(SpoolAssignment, SpoolAssignment.spool_id) == ("true", [])
+    assert overlay.entries_for(printer.id) == {}
+    from backend.app.core import database
+
+    async with database.async_session() as observer:
+        assert await spoolman_source_changes.mode_on(observer)
+    assert (await async_client.get("/api/v1/settings/")).json()["spoolman_enabled"] is True
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"spoolman_enabled": " true"},
+        {"spoolman_enabled": "maybe"},
+        {"spoolman_enabled": None},
+        {"spoolman_enabled": 2},
+        {"spoolman_enabled": "true", "spoolman_disable_weight_sync": 5},
+        {"spoolman_enabled": "true", "spoolman_url": 7912},
+    ],
+    ids=["padded", "word", "null", "two", "other-key-wrong-type", "address-not-a-string"],
+)
+async def test_a_value_the_spoolman_route_cannot_store_is_refused_before_the_change(
+    async_client, db_session, printer_factory, body
+):
+    """A13: the route wrote what it was sent after ``decide`` — ``" true"`` read as Spoolman by some
+    readers and not by others; on PostgreSQL a non-string failed at the write, after the change had
+    forgotten the overlay. Every value is validated before the change."""
+    from backend.app.models.spool_assignment import SpoolAssignment
+    from backend.app.services import ams_advertised_overlay as overlay, spoolman_source
+
+    printer = await printer_factory()
+    spool_id = await _built_in_slot(db_session, printer.id)
+    generation = spoolman_source.generation()
+
+    response = await async_client.put("/api/v1/settings/spoolman", json=body)
+
+    assert response.status_code == 422, response.text
+    assert await _observe(SpoolAssignment, SpoolAssignment.spool_id) == ("false", [spool_id])
+    assert overlay.entries_for(printer.id) == {(0, 1): _overlay_entry("internal")}
+    assert spoolman_source.generation() == generation
+    assert not spoolman_source.mode_change_in_flight()
+
+
+async def test_a_save_its_caller_may_not_make_holds_no_slot_ledger_writer(db_session, printer_factory, monkeypatch):
+    """A14: a save refused by the caller's role raised the mode flag first and waited for the
+    writers — then 403, or 409 ``slot_writes`` after the whole wait when the writer did not end."""
+    from backend.app.api.routes.settings import update_settings
+    from backend.app.core import database
+    from backend.app.schemas.settings import AppSettingsUpdate
+    from backend.app.services import spoolman_source_changes
+
+    printer = await printer_factory()
+    await _spoolman_slot(db_session, printer.id)
+    waited = []
+    real_wait = spoolman_source_changes.SourceChange._wait_for_slot_writers
+
+    async def recorded(self, db):
+        waited.append(True)
+        return await real_wait(self, db)
+
+    monkeypatch.setattr(spoolman_source_changes.SourceChange, "_wait_for_slot_writers", recorded)
+    writer, entered, release = _in_flight()
+    await asyncio.wait_for(entered.wait(), 2)
+    try:
+        with pytest.raises(HTTPException) as refused:
+            async with database.async_session() as other:
+                # An API key (no user) may not change an administrator's setting.
+                await asyncio.wait_for(
+                    update_settings(AppSettingsUpdate(spoolman_enabled=False), db=other, current_user=None), 3
+                )
+    finally:
+        release.set()
+        await asyncio.wait_for(writer, 5)
+
+    assert refused.value.status_code == 403
+    assert waited == [], "the refused save never raised the flag"
+    assert await _observe(SpoolmanSlotAssignment, SpoolmanSlotAssignment.spoolman_spool_id) == ("true", [17])

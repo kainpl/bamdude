@@ -1442,6 +1442,7 @@
   "{}: clear the credential to select anonymous authentication": "{}: очистьте облікові дані, щоб обрати анонімну автентифікацію",
   "{}: credential is required while enabled": "{}: у ввімкненому стані потрібні облікові дані",
   "{}: expected a string": "{}: очікується рядок",
+  "{}: expected true or false": "{}: очікується true або false",
   "{}: no stored credential to keep": "{}: немає збережених облікових даних",
   "{}: replace or clear credential when changing destination": "{}: при зміні адреси замініть або очистьте облікові дані",
   "{}: replacement must not be empty": "{}: нове значення не може бути порожнім",

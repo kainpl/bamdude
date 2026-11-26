@@ -10,7 +10,7 @@ from typing import Literal
 from anyio import CancelScope
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.types import Message, Receive, Scope, Send
@@ -136,6 +136,13 @@ async def _enforce_admin_settings(db: AsyncSession, changes: dict, user: User | 
     # not persist them: another administrator may change policy after our read.
     for key in protected:
         changes.pop(key)
+
+
+async def _refuse_by_role(db: AsyncSession, changes: dict, actions, user: User | None) -> None:
+    """A save's refusals that depend on the caller's role alone (403); equal protected baggage is dropped."""
+    if actions and not (user is not None and user.is_admin):
+        raise HTTPException(403, "Requires admin role for protected settings")
+    await _enforce_admin_settings(db, changes, user)
 
 
 async def get_setting(db: AsyncSession, key: str) -> str | None:
@@ -693,11 +700,13 @@ async def _update_settings(settings_update: AppSettingsUpdate, db: AsyncSession,
     actions = update_data.pop("secret_actions", None)
     if change.held:
         # A change of the mode waits for the slot-ledger writers before the anchor (C047 A12).
+        # The caller's role needs no anchor: a save it refuses is refused before that wait and
+        # holds no writer (A14). A copy, so equal protected baggage is dropped only under the
+        # anchor, which asks again.
+        await _refuse_by_role(db, dict(update_data), actions, current_user)
         await change.wait_before_anchor(db, enabled=update_data.get("spoolman_enabled"))
     await lock_credential_config(db)
-    if actions and not (current_user is not None and current_user.is_admin):
-        raise HTTPException(403, "Requires admin role for protected settings")
-    await _enforce_admin_settings(db, update_data, current_user)
+    await _refuse_by_role(db, update_data, actions, current_user)
     merged = await resolve_settings_credentials(db, update_data, actions)
     # The electricity price from Home Assistant (m245). The read is network I/O, so it happens with
     # no transaction open: the destination is frozen under the anchor, the anchor is released, the
@@ -1191,14 +1200,16 @@ async def update_spoolman_settings(
     """
     from backend.app.services import spoolman_source_changes
 
-    async with spoolman_source_changes.owning(db, when=spoolman_source_changes.names_source(settings)) as change:
+    values = _spoolman_route_values(settings)
+    async with spoolman_source_changes.owning(db, when=spoolman_source_changes.names_source(values)) as change:
         if change.held:
-            await change.decide(db, enabled=settings.get("spoolman_enabled"), url=settings.get("spoolman_url"))
-        await _write_spoolman_settings(db, settings)
+            # The mode and the address as they will be stored (acceptance A13).
+            await change.decide(db, enabled=values.get("spoolman_enabled"), url=values.get("spoolman_url"))
+        await _write_spoolman_settings(db, values)
         await db.commit()
     db.expire_all()
 
-    spoolman_changed = "spoolman_enabled" in settings or "spoolman_url" in settings
+    spoolman_changed = "spoolman_enabled" in values or "spoolman_url" in values
     # When the integration was toggled on or repointed, import Spoolman's
     # distinct location strings into the local catalog so the new store's
     # locations show up immediately (upstream #1505).
@@ -1210,6 +1221,41 @@ async def update_spoolman_settings(
 
     # Return updated settings
     return await _spoolman_settings(db, with_address=True)
+
+
+_SPOOLMAN_ROUTE_KEYS = (
+    "spoolman_enabled",
+    "spoolman_url",
+    "spoolman_sync_mode",
+    "spoolman_disable_weight_sync",
+    "spoolman_report_partial_usage",
+    "auto_add_unknown_rfid",
+)
+
+
+def _spoolman_route_values(settings: dict) -> dict[str, str]:
+    """The route's values in the form they are stored, each validated before any is decided or written.
+
+    Each key takes its type from ``AppSettings``, as in the general save, and a switch is
+    stored there as ``"true"`` / ``"false"``. ``SourceChange.decide`` is given exactly what
+    ``set_setting`` then writes, so the mode it decides is the mode the row holds: a raw JSON
+    ``true`` was decided as Spoolman and stored as ``1``, which every reader takes for the
+    built-in inventory (C047 acceptance A13). A null or a value of another type is a 422
+    before the source guard; a key the route does not own is ignored, as before.
+    """
+    values: dict[str, str] = {}
+    for key in _SPOOLMAN_ROUTE_KEYS:
+        if key not in settings:
+            continue
+        kind = AppSettings.model_fields[key].annotation
+        try:
+            value = TypeAdapter(kind).validate_python(settings[key])
+        except ValidationError:
+            if kind is bool:
+                raise HTTPException(422, f"{key}: expected true or false") from None
+            raise HTTPException(422, f"{key}: expected a string") from None
+        values[key] = ("true" if value else "false") if kind is bool else value
+    return values
 
 
 async def _write_spoolman_settings(db: AsyncSession, settings: dict) -> None:
