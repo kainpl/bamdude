@@ -1241,9 +1241,9 @@ def _spoolman_route_values(settings: dict) -> dict[str, str]:
     stored there as ``"true"`` / ``"false"``. ``SourceChange.decide`` is given exactly what
     ``set_setting`` then writes, so the mode it decides is the mode the row holds: a raw JSON
     ``true`` was decided as Spoolman and stored as ``1``, which every reader takes for the
-    built-in inventory (C047 acceptance A13). A null, a value of another type or text no
-    database can hold (``storable_text``, A16) is a 422 before the source guard; a key the
-    route does not own is ignored, as before.
+    built-in inventory (C047 acceptance A13). A null, a value of another type or text not
+    every database can hold (``storable_text``, A16) is a 422 before the source guard; a key
+    the route does not own is ignored, as before.
     """
     values: dict[str, str] = {}
     for key in _SPOOLMAN_ROUTE_KEYS:

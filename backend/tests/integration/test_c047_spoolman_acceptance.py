@@ -1183,13 +1183,13 @@ UNSTORABLE_IDS = [
 
 
 @pytest.mark.parametrize(("path", "body"), UNSTORABLE, ids=UNSTORABLE_IDS)
-async def test_text_no_database_can_hold_is_refused_before_the_change(
+async def test_text_not_every_database_can_hold_is_refused_before_the_change(
     async_client, db_session, printer_factory, path, body
 ):
-    """A16: a string of the right type that the database cannot hold — an unpaired surrogate on
+    """A16: a string of the right type that a database cannot hold — an unpaired surrogate on
     both backends, a NUL on PostgreSQL — passed the route's check and failed at the write, after
-    ``decide`` had forgotten the overlay and raised the generations. Both saves refuse it first,
-    on both backends alike."""
+    ``decide`` had forgotten the overlay and raised the generations. Both saves refuse it first;
+    a NUL on SQLite too (A20), so a value means the same on both backends."""
     from backend.app.models.spool_assignment import SpoolAssignment
     from backend.app.services import ams_advertised_overlay as overlay, spoolman_source
 

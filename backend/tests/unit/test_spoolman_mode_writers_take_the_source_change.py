@@ -11,31 +11,49 @@ The scan reads the source under ``backend/app`` (not ``migrations/`` or ``models
 each function that writes a ``settings`` row whose key is ``spoolman_enabled`` or not known:
 
 - a call of a keyed helper (KEYED_HELPERS) whose key, or dict of keys, is not a string the
-  scan can read — a literal, or a constant of its own module or one imported — positional
-  or keyword, under any import or assignment alias, through ``functools.partial`` too; a
-  helper handed on as a value (acceptance A15, A17). A name the function, or one around it,
-  binds itself (a parameter, an assignment, a loop, ``with``, ``except``, a comprehension) is
-  not read as the module's constant, and a module name rebound anywhere (``global``) is none;
+  scan can read (see below), positional or keyword; through ``functools.partial`` too, where
+  only a key bound by position counts (the caller can replace one bound by keyword); a helper
+  handed on as a value (acceptance A15, A17, A19). The helper is found by its name, an import
+  alias (a relative import too), a module path (``cloud_credentials.write``,
+  ``backend.app.services.cloud_credentials.write``, a package's ``services.cloud_credentials``),
+  a star import of its module, or a name bound to it or to its module; a name bound to two
+  helpers has no readable key;
 - the ``Settings`` constructor (any alias) with such a key, or with no readable key;
-- a SQLAlchemy ``delete`` / ``update`` / ``insert`` of the model or its table — ``Settings``,
-  ``Settings.__table__``, a name bound to either, ``metadata.tables["settings"]`` — under any
-  alias, a dialect's insert through its module too; ``.delete()`` / ``.update()`` /
-  ``.insert()`` called on the table; a bulk ``*_mappings`` / ``bulk_save_objects`` of the
-  model; a lightweight ``Table("settings", …)``;
-- SQL text that writes the table, with or without a schema: ``INSERT [OR …] INTO``,
-  ``REPLACE INTO``, ``MERGE INTO``, ``UPDATE``, ``DELETE FROM``, ``TRUNCATE``, ``DROP TABLE``,
-  ``COPY``;
-- in a function that names the model: an ORM ``.delete(row)``, a ``row.value =``, a
+- a SQLAlchemy ``delete`` / ``update`` / ``insert`` (or a name bound to one) of the model or its
+  table — ``Settings``, ``Settings.__table__``, a name bound to either,
+  ``metadata.tables["settings"]`` — a dialect's insert through its module too; ``.delete()`` /
+  ``.update()`` / ``.insert()`` called on the table; a legacy ``query(Settings)…`` bulk
+  ``.delete()`` / ``.update(…)``; a bulk ``*_mappings`` / ``bulk_save_objects`` of the model; a
+  lightweight ``Table("settings", …)``;
+- SQL text that writes the table, its comments aside, with or without a schema:
+  ``INSERT [OR …] INTO``, ``REPLACE INTO``, ``MERGE INTO``, ``UPDATE [OR …]``, ``DELETE FROM``,
+  ``TRUNCATE`` and ``DROP TABLE`` (the table anywhere in their list), ``ALTER TABLE``, ``COPY``;
+- in a function that names the model: any ``.delete(…)`` (an ORM row, a query, a table bound
+  any way), a ``.update()`` / ``.insert()`` without arguments, a ``row.value =``, a
   ``setattr(row, "value", …)``.
+
+A name is bound to a helper, a module, a statement, the model or its table by ``=`` (element by
+element into a tuple or list), an annotated assignment or ``:=``, anywhere in the module. A
+string the scan can read is a literal, a constant of the module or one imported (by name or
+through its module), read the way Python binds the name where it is read: a name the
+function, or one around it, binds itself (a parameter, an assignment, a loop, ``with``,
+``except``, a comprehension, a lambda's parameter, a ``match`` capture, ``global`` /
+``nonlocal``) is its own, and its own import is read through its module. A module-level name
+is a constant only when every binding of it at module level is a top-level ``NAME = "…"``, and
+an import only when every one is an import of the same thing; any other binding — an assignment
+after the import, one in a block, a loop, a ``match`` capture, a parameter of a module-level
+lambda, ``del``, ``global`` in a function — or a star import in the module leaves it unread.
 
 Each is a MODE writer, whose door names the mode, a keyed helper (its callers are scanned), or
 is listed in NOT_THE_MODE with the keys it writes; a new writer fails here until it is
-classified. SEEN pins the forms above. The scan cannot prove that no other form exists; BLIND
-pins examples of what it cannot see: a value carried through variables to an object fetched
-in a function that does not name the model, SQL or a table name assembled at run time, a
-helper reached through a name built at run time (``getattr``). The whole-database restore is
-outside the scan that way: it replaces the database below it — on SQLite the file, through
-the backup API; on PostgreSQL every table, by names read at run time — and asks for a restart.
+classified. SEEN pins the forms above and NOT_SEEN the resolution. The scan cannot prove that
+no other form exists; BLIND pins examples of what it cannot see: the model, its table or a row
+carried through variables into a function that does not name the model (a parameter, a
+helper's return value), SQL or a table name assembled at run time (an f-string, a sum of
+strings), a helper reached through a name built at run time (``getattr``). The whole-database
+restore is outside the scan that way: it replaces the database below it — on SQLite the file,
+through the backup API; on PostgreSQL every table, by names read at run time — and asks for a
+restart.
 """
 
 from __future__ import annotations
@@ -47,14 +65,20 @@ from pathlib import Path
 
 APP = Path(__file__).resolve().parents[2] / "app"
 MODEL_MODULE = "backend.app.models.settings"
+_NAME = r"(?:[\"`\[]?\w+[\"`\]]?\.)?[\"`\[]?\w+[\"`\]]?"  # a table, with or without a schema
+_SETTINGS = r"(?:[\"`\[]?\w+[\"`\]]?\.)?[\"`\[]?settings[\"`\]]?\b"
+_CONFLICT = r"(?:OR\s+(?:ROLLBACK|ABORT|REPLACE|FAIL|IGNORE)\s+)?"  # SQLite's ``INSERT OR …`` / ``UPDATE OR …``
 SQL_WRITE = re.compile(
-    r"\b(INSERT\s+(OR\s+\w+\s+)?INTO|REPLACE\s+INTO|MERGE\s+INTO|UPDATE(\s+ONLY)?|DELETE\s+FROM(\s+ONLY)?"
-    r"|TRUNCATE(\s+TABLE)?(\s+ONLY)?|DROP\s+TABLE(\s+IF\s+EXISTS)?|COPY)"
-    r"\s+([\"`\[]?\w+[\"`\]]?\.)?[\"`\[]?settings[\"`\]]?\b",
+    rf"\b(?:INSERT\s+{_CONFLICT}INTO\s+|REPLACE\s+INTO\s+|MERGE\s+INTO\s+|UPDATE\s+{_CONFLICT}(?:ONLY\s+)?"
+    r"|DELETE\s+FROM\s+(?:ONLY\s+)?|ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?|COPY\s+"
+    rf"|(?:TRUNCATE(?:\s+TABLE)?|DROP\s+TABLE(?:\s+IF\s+EXISTS)?)\s+(?:(?:ONLY\s+)?{_NAME}(?:\s*\*)?\s*,\s*)*"
+    rf"(?:ONLY\s+)?){_SETTINGS}",
     re.IGNORECASE,
 )
+SQL_COMMENT = re.compile(r"/\*.*?\*/|--[^\n]*", re.DOTALL)
 STATEMENTS = {"delete", "update", "insert"}
 BULK = {"bulk_insert_mappings", "bulk_update_mappings", "bulk_save_objects"}
+AMBIGUOUS = "<a name bound to two keyed helpers>"
 
 # A helper whose key comes from its caller: name → (its definition, the key's position in a
 # call and its keyword, one key or a dict of keys, the module a bare name must come from — None
@@ -166,14 +190,128 @@ def _fold(node, local: dict[str, str]) -> str | None:
     return None
 
 
+def _absolute(rel: str, node: ast.ImportFrom) -> str | None:
+    """The module a from-import names; a relative one is resolved against its file's package."""
+    if not node.level:
+        return node.module
+    if not rel:
+        return None
+    package = f"backend/app/{rel}".removesuffix(".py").split("/")[: -node.level]
+    return ".".join([*package, node.module] if node.module else package)
+
+
+def _import_bindings(rel: str, node) -> list[tuple[str, str | None]]:
+    """(local name, the dotted path it is bound to) for each name an import binds; ``*`` for a star."""
+    if isinstance(node, ast.ImportFrom):
+        module = _absolute(rel, node)
+        return [
+            ("*", module) if alias.name == "*" else (alias.asname or alias.name, module and f"{module}.{alias.name}")
+            for alias in node.names
+        ]
+    return [
+        (alias.asname, alias.name) if alias.asname else (alias.name.split(".")[0], alias.name.split(".")[0])
+        for alias in node.names
+    ]
+
+
+def _pairs(target, value):
+    """(name, value) for each name a target binds to a part of the value it is given."""
+    if isinstance(target, ast.Name):
+        yield target.id, value
+    elif isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (ast.Tuple, ast.List)):
+        if any(isinstance(item, ast.Starred) for item in value.elts):
+            return
+        stars = [index for index, item in enumerate(target.elts) if isinstance(item, ast.Starred)]
+        head = stars[0] if stars else len(target.elts)
+        tail = len(target.elts) - head - 1 if stars else 0
+        if (len(value.elts) < head + tail) if stars else (len(value.elts) != head):
+            return
+        for item, part in zip(target.elts[:head], value.elts[:head], strict=True):
+            yield from _pairs(item, part)
+        for item, part in zip(
+            target.elts[len(target.elts) - tail :], value.elts[len(value.elts) - tail :], strict=True
+        ):
+            yield from _pairs(item, part)
+
+
+_BINDINGS = (ast.Assign, ast.AnnAssign, ast.NamedExpr)
+
+
+def _bound_pairs(node):
+    """(name, value) for what a node binds a name to: ``=`` (element by element into a tuple or
+    list), an annotated assignment, ``:=``."""
+    if isinstance(node, ast.Assign):
+        for target in node.targets:
+            yield from _pairs(target, node.value)
+    elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+        yield from _pairs(node.target, node.value)
+
+
+def _statements(node):
+    """Every statement under a node, without walking into expressions."""
+    for field in ("body", "orelse", "finalbody", "handlers", "cases"):
+        for child in getattr(node, field, None) or ():
+            if isinstance(child, ast.stmt):
+                yield child
+            yield from _statements(child)
+
+
+@functools.cache
+def _module_bindings(rel: str, tree) -> dict[str, set[tuple]]:
+    """How the module binds each name at its own level (acceptance A19).
+
+    ``("constant",)`` — a top-level ``NAME = …`` / ``NAME: T = …``; ``("import", path)`` — an
+    import and what it binds; ``("other",)`` — any other binding: one in a block, a loop, a
+    definition, ``except``, a ``match`` capture, ``del``, ``global`` in a function, a name a
+    module-level lambda binds. A star import is the name ``*``.
+    """
+    bindings: dict[str, set[tuple]] = {}
+
+    def bind(name, kind):
+        bindings.setdefault(name, set()).add(kind)
+
+    top: set[int] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            top.update(id(target) for target in node.targets if isinstance(target, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and node.value is not None and isinstance(node.target, ast.Name):
+            top.add(id(node.target))
+    for node in _statements(tree):
+        if isinstance(node, ast.Global):
+            for name in node.names:
+                bind(name, ("other",))
+    for node in _module_level(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bind(node.id, ("constant",) if id(node) in top else ("other",))
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for name, path in _import_bindings(rel, node):
+                bind(name, ("import", path))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) or (
+            isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and node.name
+        ):
+            bind(node.name, ("other",))
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            bind(node.rest, ("other",))
+        elif isinstance(node, ast.Lambda):
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.arg):
+                    bind(inner.arg, ("other",))
+                elif isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store):
+                    bind(inner.id, ("other",))
+    return bindings
+
+
 def _constants_of(rel: str, tree) -> dict[tuple[str, str], str]:
     """(file, name) → the string a module-level ``NAME = "…"`` (or a sum of such) binds.
 
-    A name the module binds any other way as well — a loop, an import, a definition, an
-    assignment inside a block — or that a function rebinds through ``global`` is no constant.
+    Only a name every module-level binding of which is such an assignment is a constant
+    (``_module_bindings``); a module with a star import has none.
     """
+    bindings = _module_bindings(rel, tree)
+    if "*" in bindings:
+        return {}
+    stable = {name for name, kinds in bindings.items() if kinds == {("constant",)}}
     local: dict[str, str] = {}
-    folded: set[int] = set()
     for node in tree.body:
         if isinstance(node, ast.Assign):
             targets = node.targets
@@ -181,25 +319,14 @@ def _constants_of(rel: str, tree) -> dict[tuple[str, str], str]:
             targets = [node.target]
         else:
             continue
-        value = _fold(node.value, local)
+        value = _fold(node.value, {name: text for name, text in local.items() if name in stable})
         for target in targets:
             if isinstance(target, ast.Name):
-                folded.add(id(target))
                 if value is None:
                     local.pop(target.id, None)
                 else:
                     local[target.id] = value
-    rebound = {name for node in ast.walk(tree) if isinstance(node, ast.Global) for name in node.names}
-    for node in _module_level(tree):
-        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)) and id(node) not in folded:
-            rebound.add(node.id)
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            rebound.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) or (
-            isinstance(node, ast.ExceptHandler) and node.name
-        ):
-            rebound.add(node.name)
-    return {(rel, name): value for name, value in local.items() if name not in rebound}
+    return {(rel, name): value for name, value in local.items() if name in stable}
 
 
 @functools.cache
@@ -215,25 +342,24 @@ def _module_constants() -> dict[tuple[str, str], str]:
     return constants
 
 
-def _own_view(nodes) -> dict[str, tuple]:
-    """How one function binds names itself: ``("import", (file, name), module)`` or ``("local",)``.
+def _own_view(nodes, rel: str = "") -> dict[str, tuple]:
+    """How one function binds names itself: ``("import", (file, name) or None, path)`` or ``("local",)``.
 
-    A name both imported and bound another way in the same function is a local.
+    A name both imported and bound another way in the same function, or imported twice to
+    different things, is a local.
     """
     imports: dict[str, tuple] = {}
     local: set[str] = set()
     for node in nodes:
-        if isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                name = alias.asname or alias.name
-                file = _rel(node.module)
-                imports[name] = ("import", (file, alias.name), f"{node.module}.{alias.name}") if file else ("local",)
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.asname:
-                    imports[alias.asname] = ("import", None, alias.name)
-                else:
-                    local.add(alias.name.split(".")[0])
+        if isinstance(node, (ast.ImportFrom, ast.Import)):
+            for name, path in _import_bindings(rel, node):
+                if path is None:
+                    local.add(name)
+                    continue
+                file = _rel(path.rsplit(".", 1)[0]) if isinstance(node, ast.ImportFrom) else None
+                binding = ("import", (file, path.rsplit(".", 1)[1]) if file else None, path)
+                if imports.setdefault(name, binding) != binding:
+                    local.add(name)
         elif isinstance(node, ast.arg):
             local.add(node.arg)
         elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
@@ -258,71 +384,89 @@ def _root(node):
 
 
 class _Names:
-    """What one module's names are bound to by its imports."""
+    """What one module's names are bound to by its imports and assignments."""
 
     def __init__(self, rel: str, tree: ast.AST, constants: dict):
         self.rel, self.constants = rel, constants
-        imports, assignments, own = [], [], False
+        bindings = _module_bindings(rel, tree)
+        star = "*" in bindings
+        imports, pairs, own = [], [], False
         for node in ast.walk(tree):
             if isinstance(node, (ast.ImportFrom, ast.Import)):
                 imports.append(node)
-            elif isinstance(node, ast.Assign):
-                assignments.append(node)
             elif isinstance(node, ast.ClassDef) and node.name == "Settings":
                 own = True
+            if isinstance(node, _BINDINGS):
+                # Only a name, an attribute or a subscript can be a helper, the model, a module or a statement.
+                pairs.extend(
+                    pair for pair in _bound_pairs(node) if isinstance(pair[1], (ast.Name, ast.Attribute, ast.Subscript))
+                )
         # The model's name unless the module has a class of its own by that name (core/config.py).
         self.models: set[str] = set() if own else {"Settings"}
         self.statements = {name: name for name in STATEMENTS}  # local name → delete / update / insert
         self.sqlalchemy_names: set[str] = set()  # local names of sqlalchemy modules and their members
-        self.helpers: dict[str, str] = {}  # local name → keyed helper
-        # Imports anywhere in the module say what a name may be (helpers, the model); only
-        # the module-level ones resolve a constant -- a function's own are in its view.
-        self.modules_anywhere: dict[str, str] = {}
-        self.modules: dict[str, str] = {}  # local name → the dotted module it binds
-        self.imported: dict[str, tuple[str, str]] = {}  # local name → (file, name)
+        self.helpers: dict[str, set[str]] = {}  # local name → every keyed helper it may be
+        # Imports and assignments anywhere in the module say what a name may be (a helper, the
+        # model, a module); only a module-level import that is the name's one binding at module
+        # level resolves a constant -- a function's own imports are in its view (acceptance A19).
+        self.modules_anywhere: dict[str, set[str]] = {}  # local name → every dotted path it may be
+        self.modules: dict[str, str] = {}  # local name → the dotted path its one import binds
+        self.imported: dict[str, tuple[str, str]] = {}  # local name → (file, name) of that import
         module_level = {id(node) for node in _module_level(tree) if isinstance(node, (ast.ImportFrom, ast.Import))}
         for node in imports:
-            top = id(node) in module_level
-            if isinstance(node, ast.ImportFrom):
-                for alias in node.names:
-                    local = alias.asname or alias.name
-                    if node.module in {MODEL_MODULE, "backend.app.models"} and alias.name == "Settings":
+            module = _absolute(rel, node) if isinstance(node, ast.ImportFrom) else None
+            for (local, path), alias in zip(_import_bindings(rel, node), node.names, strict=True):
+                if local == "*":
+                    # A star import may bind any keyed helper of its module.
+                    for name, spec in KEYED_HELPERS.items():
+                        if spec[4] in {None, module}:
+                            self.helpers.setdefault(name, set()).add(name)
+                    continue
+                if isinstance(node, ast.ImportFrom):
+                    if module in {MODEL_MODULE, "backend.app.models"} and alias.name == "Settings":
                         self.models.add(local)
-                    if (node.module or "").startswith("sqlalchemy"):
+                    if (module or "").startswith("sqlalchemy"):
                         if alias.name in STATEMENTS:
                             self.statements[local] = alias.name
                         else:
                             self.sqlalchemy_names.add(local)
-                    helper = KEYED_HELPERS.get(alias.name)
-                    if helper and helper[4] in {None, node.module}:
-                        self.helpers[local] = alias.name
-                    if _rel(node.module) is not None:
-                        self.modules_anywhere[local] = f"{node.module}.{alias.name}"
-                        if top:
-                            self.imported[local] = (_rel(node.module), alias.name)
-                            self.modules[local] = f"{node.module}.{alias.name}"
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name.split(".")[0] == "sqlalchemy":
-                        self.sqlalchemy_names.add(alias.asname or "sqlalchemy")
-                    if alias.asname:
-                        self.modules_anywhere[alias.asname] = alias.name
-                        if top:
-                            self.modules[alias.asname] = alias.name
+                    spec = KEYED_HELPERS.get(alias.name)
+                    if spec and spec[4] in {None, module}:
+                        self.helpers.setdefault(local, set()).add(alias.name)
+                elif alias.name.split(".")[0] == "sqlalchemy":
+                    self.sqlalchemy_names.add(local)
+                if path is None:
+                    continue
+                self.modules_anywhere.setdefault(local, set()).add(path)
+                if id(node) in module_level and not star and bindings.get(local) == {("import", path)}:
+                    self.modules[local] = path
+                    file = _rel(module) if isinstance(node, ast.ImportFrom) else None
+                    if file is not None:
+                        self.imported[local] = (file, alias.name)
         changed = True
         while changed:
-            # ``put = set_setting``, ``t = Settings.__table__``: a name bound to a helper or to the
-            # model or its table is that helper, or the model.
+            # ``put = set_setting``, ``t = Settings.__table__``, ``cc = cloud_credentials``,
+            # ``op = sa.delete``: a name bound to a helper, the model or its table, a module or a
+            # statement may be that, wherever in the module it is bound.
             changed = False
-            for node in assignments:
-                targets = {target.id for target in node.targets if isinstance(target, ast.Name)}
-                if self.is_model(node.value) and not targets <= self.models:
-                    self.models |= targets
+            for target, value in pairs:
+                if self.is_model(value) and target not in self.models:
+                    self.models.add(target)
                     changed = True
-                helper = self.alias_of_helper(node.value)
-                if helper is not None and not targets <= self.helpers.keys():
-                    self.helpers.update(dict.fromkeys(targets, helper))
+                statement = self.statement_ref(value)
+                if statement is not None and target not in self.statements:
+                    self.statements[target] = statement
                     changed = True
+                if _root(value) in self.sqlalchemy_names and target not in self.sqlalchemy_names:
+                    self.sqlalchemy_names.add(target)
+                    changed = True
+                for mapping, found in (
+                    (self.helpers, self.alias_of_helper(value)),
+                    (self.modules_anywhere, self._paths_anywhere(value)),
+                ):
+                    if not found <= mapping.get(target, set()):
+                        mapping.setdefault(target, set()).update(found)
+                        changed = True
 
     def literal(self, node, view=None) -> str | None:
         view = view or {}
@@ -338,9 +482,8 @@ class _Names:
             if node.id in self.imported:
                 return self.constants.get(self.imported[node.id])
             return None
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-            binding = view.get(node.value.id)
-            module = (binding[2] if binding[0] == "import" else None) if binding else self.modules.get(node.value.id)
+        if isinstance(node, ast.Attribute):
+            module = self.path(node.value, view)
             if module and _rel(module) is not None:
                 return self.constants.get((_rel(module), node.attr))
         return None
@@ -348,6 +491,29 @@ class _Names:
     def may_be_the_mode(self, node, view=None) -> bool:
         key = self.literal(node, view)
         return key is None or key == "spoolman_enabled"
+
+    def path(self, node, view=None) -> str | None:
+        """The dotted path a name or an attribute chain names, by the scope's imports or the module's one."""
+        view = view or {}
+        attrs = []
+        while isinstance(node, ast.Attribute):
+            attrs.append(node.attr)
+            node = node.value
+        if not isinstance(node, ast.Name):
+            return None
+        binding = view.get(node.id)
+        base = (binding[2] if binding[0] == "import" else None) if binding else self.modules.get(node.id)
+        return ".".join([base, *reversed(attrs)]) if base else None
+
+    def _paths_anywhere(self, node) -> set[str]:
+        """Every dotted path a name or an attribute chain may name, by what binds it anywhere."""
+        attrs = []
+        while isinstance(node, ast.Attribute):
+            attrs.append(node.attr)
+            node = node.value
+        if not isinstance(node, ast.Name):
+            return set()
+        return {".".join([base, *reversed(attrs)]) for base in self.modules_anywhere.get(node.id, ())}
 
     def is_model(self, node, view=None) -> bool:
         """The model, its table, or a name bound to either."""
@@ -359,51 +525,56 @@ class _Names:
             return self.literal(node.slice, view) == "settings"  # ``metadata.tables["settings"]``
         return isinstance(node, ast.Attribute) and node.attr == "Settings"
 
-    def statement(self, call: ast.Call) -> str | None:
-        func = call.func
+    def statement_ref(self, func) -> str | None:
         if isinstance(func, ast.Name):
             return self.statements.get(func.id)
         if isinstance(func, ast.Attribute) and func.attr in STATEMENTS and _root(func.value) in self.sqlalchemy_names:
             return func.attr  # ``sa.delete``, ``postgresql.insert``, ``sa.dialects.sqlite.insert``
         return None
 
-    def helper_ref(self, func) -> str | None:
-        """The keyed helper a name or an attribute refers to, or None."""
-        if isinstance(func, ast.Name):
-            if func.id in self.helpers:
-                return self.helpers[func.id]
-            spec = KEYED_HELPERS.get(func.id)
-            if spec and spec[0][0] == self.rel and spec[0][1] == func.id:
-                return func.id  # in its own module
-            return None
-        if isinstance(func, ast.Attribute):
-            spec = KEYED_HELPERS.get(func.attr)
-            if spec is None:
-                return None
-            if spec[4] is None:
-                return func.attr
-            if isinstance(func.value, ast.Name) and self.modules_anywhere.get(func.value.id) == spec[4]:
-                return func.attr
-        return None
+    def statement(self, call: ast.Call) -> str | None:
+        return self.statement_ref(call.func)
 
-    def alias_of_helper(self, node) -> str | None:
-        helper = self.helper_ref(node)
-        if helper is None and isinstance(node, ast.Name):
+    def helper_refs(self, node) -> set[str]:
+        """Every keyed helper a name or an attribute may refer to."""
+        if isinstance(node, ast.Name):
+            refs = set(self.helpers.get(node.id, ()))
+            spec = KEYED_HELPERS.get(node.id)
+            if spec and spec[0][0] == self.rel and spec[0][1] == node.id:
+                refs.add(node.id)  # in its own module
+            return refs
+        if isinstance(node, ast.Attribute):
+            spec = KEYED_HELPERS.get(node.attr)
+            if spec and (spec[4] is None or spec[4] in self._paths_anywhere(node.value)):
+                return {node.attr}
+        return set()
+
+    def helper_ref(self, node) -> str | None:
+        """The keyed helper a name or an attribute refers to; AMBIGUOUS when it may be two (A19)."""
+        refs = self.helper_refs(node)
+        if not refs:
+            return None
+        return next(iter(refs)) if len(refs) == 1 else AMBIGUOUS
+
+    def alias_of_helper(self, node) -> set[str]:
+        refs = self.helper_refs(node)
+        if isinstance(node, ast.Name):
             spec = KEYED_HELPERS.get(node.id)
             if spec and spec[4] is None:
-                helper = node.id
-        return helper
+                refs.add(node.id)
+        return refs
 
     def helper(self, call: ast.Call) -> str | None:
         return self.helper_ref(call.func)
 
 
-def _scopes(tree):
+def _scopes(tree, rel: str = ""):
     """(qualified name, nodes, view) of the module and every function or class.
 
     A nested function's nodes are its own; its view is how its names are bound — by itself
     and by the functions around it (a class body is not around its methods). The module's
-    view is empty: its names are read through its constants and imports.
+    view is empty: its names are read through its constants and imports. ``rel`` resolves a
+    function's relative import.
     """
     out = []
 
@@ -419,7 +590,7 @@ def _scopes(tree):
         if owner is tree:
             view, inner = {}, {}
         else:
-            own = _own_view(nodes)
+            own = _own_view(nodes, rel)
             own.update(dict.fromkeys((node.name for node in nested), ("local",)))
             view = {**outer, **own}
             inner = outer if isinstance(owner, ast.ClassDef) else view
@@ -451,6 +622,8 @@ def _argument(call: ast.Call, index: int, keyword: str):
 
 def _helper_keys(call: ast.Call, helper: str):
     """The key nodes a keyed-helper call writes; None when they cannot be read."""
+    if helper not in KEYED_HELPERS:
+        return None  # AMBIGUOUS: which argument is the key depends on which helper it is
     _definition, index, keyword, kind, _module = KEYED_HELPERS[helper]
     argument = _argument(call, index, keyword)
     if argument is None:
@@ -460,6 +633,34 @@ def _helper_keys(call: ast.Call, helper: str):
     if isinstance(argument, ast.Dict) and None not in argument.keys:
         return list(argument.keys)
     return None
+
+
+def _replaceable_key(partial: ast.Call, helper: str) -> bool:
+    """Whether a ``partial`` binds a helper's key by keyword (or ``**``), which its caller can replace."""
+    if helper not in KEYED_HELPERS:
+        return True  # AMBIGUOUS
+    return any(item.arg in {None, KEYED_HELPERS[helper][2]} for item in partial.keywords)
+
+
+def _a_method_write(call: ast.Call) -> bool:
+    """A write, in a function that names the model: ``db.delete(row)``, a query's or a table's
+    ``.delete()``, a ``.update()`` / ``.insert()`` without arguments (a table bound any way)."""
+    func = call.func
+    return isinstance(func, ast.Attribute) and (
+        func.attr == "delete" or (func.attr in STATEMENTS and not call.args and not call.keywords)
+    )
+
+
+def _queries_the_model(names: _Names, node, view) -> bool:
+    """Whether a method chain starts from a legacy ``….query(<the model>)``."""
+    while isinstance(node, (ast.Call, ast.Attribute)):
+        if isinstance(node, ast.Call):
+            if _called(node) == "query" and any(names.is_model(arg, view) for arg in node.args):
+                return True
+            node = node.func
+        else:
+            node = node.value
+    return False
 
 
 def _writes(names: _Names, nodes, view=None) -> bool:
@@ -475,8 +676,8 @@ def _writes(names: _Names, nodes, view=None) -> bool:
             read.add(id(node.func))
             if _called(node) == "partial" and node.args:
                 read.add(id(node.args[0]))
-        elif isinstance(node, ast.Assign) and all(isinstance(t, ast.Name) for t in node.targets):
-            read.add(id(node.value))
+        elif isinstance(node, _BINDINGS):
+            read.update(id(value) for _name, value in _bound_pairs(node))
     for node in nodes:
         if (
             isinstance(node, (ast.Name, ast.Attribute))
@@ -488,8 +689,11 @@ def _writes(names: _Names, nodes, view=None) -> bool:
         if isinstance(node, ast.Call):
             helper, call = names.helper(node), node
             if _called(node) == "partial" and node.args and names.helper_ref(node.args[0]):
-                # ``partial(set_setting, db)``: the key is read from what the partial binds.
+                # ``partial(set_setting, db)``: the key is read from what the partial binds by
+                # position; one bound by keyword the caller can replace (acceptance A19).
                 helper = names.helper_ref(node.args[0])
+                if _replaceable_key(node, helper):
+                    return True
                 call = ast.Call(func=node.args[0], args=node.args[1:], keywords=node.keywords)
             if helper is not None:
                 keys = _helper_keys(call, helper)
@@ -511,12 +715,19 @@ def _writes(names: _Names, nodes, view=None) -> bool:
                 return True
             if _called(node) in {"Table", "table"} and node.args and names.literal(node.args[0], view) == "settings":
                 return True
-            if names_model and _called(node) == "delete" and isinstance(node.func, ast.Attribute) and node.args:
+            if isinstance(node.func, ast.Attribute) and node.func.attr in {"delete", "update"}:
+                if _queries_the_model(names, node.func.value, view):
+                    return True  # a legacy ``db.query(Settings)…`` bulk ``.delete()`` / ``.update(…)``
+            if names_model and _a_method_write(node):
                 return True
             if names_model and _called(node) == "setattr" and len(node.args) >= 2:
                 if names.literal(node.args[1], view) in {"value", None}:
                     return True
-        if isinstance(node, ast.Constant) and isinstance(node.value, str) and SQL_WRITE.search(node.value):
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and SQL_WRITE.search(SQL_COMMENT.sub(" ", node.value))
+        ):
             return True
         if names_model and isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
@@ -528,7 +739,7 @@ def _writes(names: _Names, nodes, view=None) -> bool:
 @functools.cache
 def _parsed():
     constants = _module_constants()
-    return tuple((rel, _Names(rel, tree, constants), _scopes(tree)) for rel, tree in _trees())
+    return tuple((rel, _Names(rel, tree, constants), _scopes(tree, rel)) for rel, tree in _trees())
 
 
 def _found():
@@ -642,6 +853,102 @@ SEEN = {
     "setattr": "async def f(db, v):\n    row = await db.get(Settings, 1)\n    setattr(row, 'value', v)\n",
     "row.value": "async def f(db, v):\n    row = await db.get(Row, 1)\n    row.value = v\n",
     "the constructor": "async def f(db, k, v):\n    await db.merge(Settings(key=k, value=v))\n",
+    # Acceptance A19: a module-level name bound more than once, or by more than an import.
+    "an imported constant rebound to the mode": (
+        "from backend.app.services.energy_price import SETTING_KEY\nSETTING_KEY = 'spoolman_enabled'\n"
+        "async def f(db, v):\n    await set_setting(db, SETTING_KEY, v)\n"
+    ),
+    "an imported constant rebound by a call": (
+        "from backend.app.services.energy_price import SETTING_KEY\nSETTING_KEY = pick()\n"
+        "async def f(db, v):\n    await set_setting(db, SETTING_KEY, v)\n"
+    ),
+    "an imported module rebound": (
+        "from backend.app.services import energy_price as ep\nep = SimpleNamespace(SETTING_KEY='spoolman_enabled')\n"
+        "async def f(db, v):\n    await set_setting(db, ep.SETTING_KEY, v)\n"
+    ),
+    "a name imported twice": (
+        "from backend.app.services.energy_price import SETTING_KEY\n"
+        "if FLAG:\n    from elsewhere import SETTING_KEY\n"
+        "async def f(db, v):\n    await set_setting(db, SETTING_KEY, v)\n"
+    ),
+    "a constant rebound by a module-level match": (
+        "match 'spoolman_enabled':\n    case str() as KEY:\n        pass\n"
+        "async def f(db, v):\n    await set_setting(db, KEY, v)\n"
+    ),
+    "a constant shadowed by a module-level lambda": "w = lambda db, v, KEY='spoolman_enabled': set_setting(db, KEY, v)\n",
+    "a constant after a star import": (
+        "from backend.app.services.spoolman_source_changes import *\n"
+        "async def f(db, v):\n    await set_setting(db, KEY, v)\n"
+    ),
+    "a constant rebound in a block": "if FLAG:\n    KEY = 'spoolman_enabled'\nasync def f(db, v):\n    await set_setting(db, KEY, v)\n",
+    "a constant deleted": "del KEY\nasync def f(db, v):\n    await set_setting(db, KEY, v)\n",
+    "a constant shadowed in a lambda": "def f(db, v):\n    return lambda KEY='spoolman_enabled': set_setting(db, KEY, v)\n",
+    "a constant shadowed by a comprehension": (
+        "async def f(db, v, keys):\n    [await set_setting(db, KEY, v) for KEY in keys]\n"
+    ),
+    "a constant rebound through nonlocal": (
+        "async def f(db, v):\n    KEY = 'time_format'\n    def g():\n        nonlocal KEY\n        KEY = 'spoolman_enabled'\n"
+        "    g()\n    await set_setting(db, KEY, v)\n"
+    ),
+    "a class attribute through self": (
+        "class C:\n    KEY = 'spoolman_enabled'\n    async def f(self, db, v):\n        await set_setting(db, self.KEY, v)\n"
+    ),
+    # The model's table bound to a name the writing function uses without naming the model.
+    "a table bound by an annotated assignment": (
+        "T1: object = Settings.__table__\nasync def f(db):\n    await db.execute(T1.delete())\n"
+    ),
+    "a table bound by a walrus": (
+        "if (T2 := Settings.__table__) is not None:\n    pass\nasync def f(db):\n    await db.execute(T2.update())\n"
+    ),
+    "a table bound by tuple unpacking": (
+        "T3, *_ = Settings.__table__, None, None\nasync def f(db):\n    await db.execute(T3.insert())\n"
+    ),
+    # A function that names the model and writes through a table it binds any way.
+    "a table bound by a loop": (
+        "async def f(db):\n    for t in (Settings.__table__,):\n        await db.execute(t.delete())\n"
+    ),
+    "a table bound by a call": (
+        "async def f(db):\n    t = (lambda: Settings.__table__)()\n    await db.execute(t.update().values(value='x'))\n"
+    ),
+    "a statement bound to a name": "op = sa.update\nasync def f(db):\n    await db.execute(op(Row).values(value='x'))\n",
+    "a legacy query's bulk delete": "def f(db, k):\n    db.query(Settings).filter_by(key=k).delete()\n",
+    "a legacy query's bulk update": "def f(db, v):\n    db.query(Row).update({'value': v})\n",
+    "a helper through a dotted import": (
+        "import backend.app.services.cloud_credentials\n"
+        "async def f(db, c, values):\n    await backend.app.services.cloud_credentials.write(db, c, values)\n"
+    ),
+    "a helper through its package": (
+        "from backend.app import services\n"
+        "async def f(db, c, values):\n    await services.cloud_credentials.write(db, c, values)\n"
+    ),
+    "a helper through a relative import": (
+        "from .services.cloud_credentials import write as put_values\n"
+        "async def f(db, c, values):\n    await put_values(db, c, values)\n"
+    ),
+    "a helper's module bound to a name": (
+        "cc = cloud_credentials\nasync def f(db, c, values):\n    await cc.write(db, c, values)\n"
+    ),
+    "a helper through a star import": (
+        "from backend.app.core.schema_repair_state import *\nasync def f(db, key, v):\n    await put_record(db, key, v)\n"
+    ),
+    "a helper bound by an annotated assignment": "put2: object = set_setting\nasync def f(db, key, v):\n    await put2(db, key, v)\n",
+    "a helper bound by a walrus": (
+        "async def f(db, key, v):\n    if (put3 := set_setting):\n        await put3(db, key, v)\n"
+    ),
+    "one name bound to two helpers": (
+        "def g():\n    global put9\n    put9 = upsert_setting\n"
+        "async def f(db):\n    put9 = set_setting\n    await put9(db, 'spoolman_enabled', 'time_format')\n"
+    ),
+    "a helper's name rebound to another helper": (
+        "set_setting = upsert_setting\nasync def f(db, v):\n    await set_setting(db, 'time_format', 'spoolman_enabled', v)\n"
+    ),
+    "a partial that binds the key by keyword": "def f(db):\n    return partial(set_setting, db, key='time_format')\n",
+    "SQL with a comment inside": "async def f(db):\n    await db.execute(text('DELETE /* all */ FROM settings'))\n",
+    "SQL with a line comment inside": "async def f(db):\n    await db.execute(text('UPDATE -- all\\n settings SET value = 1'))\n",
+    "UPDATE OR REPLACE": "async def f(db):\n    await db.execute(text('UPDATE OR REPLACE settings SET value = 1'))\n",
+    "TRUNCATE of two tables": "async def f(db):\n    await db.execute(text('TRUNCATE spools, ONLY public.settings'))\n",
+    "DROP TABLE of two tables": "async def f(db):\n    await db.execute(text('DROP TABLE IF EXISTS spools, settings'))\n",
+    "ALTER TABLE": "async def f(db):\n    await db.execute(text('ALTER TABLE settings RENAME TO settings_old'))\n",
 }
 
 # What the scan reads as a key that is not the mode: a constant stays a constant.
@@ -654,25 +961,67 @@ NOT_SEEN = {
         "    await set_setting(db, SETTING_KEY, v)\n"
     ),
     "a partial that binds the key": "def f(db):\n    return partial(set_setting, db, 'time_format')\n",
+    "a constant repeated at module level": (
+        "KEY = 'spoolman_enabled'\nKEY = 'time_format'\nasync def f(db, v):\n    await set_setting(db, KEY, v)\n"
+    ),
+    "a class attribute a method does not see": (
+        "class C:\n    KEY = 'spoolman_enabled'\n    async def f(self, db, v):\n        await set_setting(db, KEY, v)\n"
+    ),
+    "a constant read in a nested function": (
+        "def f():\n    async def g(db, v):\n        await set_setting(db, KEY, v)\n    return g\n"
+    ),
+    "a constant imported in the function under an alias": (
+        "async def f(db, v):\n"
+        "    from backend.app.services.energy_price import SETTING_KEY as KEY\n"
+        "    await set_setting(db, KEY, v)\n"
+    ),
+    "a constant through a module the function imports": (
+        "async def f(db, v):\n"
+        "    import backend.app.services.energy_price as ep\n"
+        "    await set_setting(db, ep.SETTING_KEY, v)\n"
+    ),
+    "a constant through a dotted module path": (
+        "import backend.app.services.energy_price\n"
+        "async def f(db, v):\n    await set_setting(db, backend.app.services.energy_price.SETTING_KEY, v)\n"
+    ),
+    "a constant through a relative import": (
+        "from .services.energy_price import SETTING_KEY\nasync def f(db, v):\n    await set_setting(db, SETTING_KEY, v)\n"
+    ),
+    "a name imported twice from one place": (
+        "from backend.app.services.energy_price import SETTING_KEY\n"
+        "if FLAG:\n    from backend.app.services.energy_price import SETTING_KEY\n"
+        "async def f(db, v):\n    await set_setting(db, SETTING_KEY, v)\n"
+    ),
 }
 
 # Examples of what it cannot see (the docstring names them; the list is not complete).
 BLIND = {
     "a row fetched elsewhere": "async def f(db, v):\n    row = await _row(db, 'spoolman_enabled')\n    row.value = v\n",
+    "a table handed on as a parameter": (
+        "async def f(db, table):\n    await db.execute(table.delete())\n"
+        "async def g(db):\n    await f(db, Settings.__table__)\n"
+    ),
     "a table name at run time": "async def f(db, t):\n    await db.execute(text(f'DELETE FROM {t}'))\n",
+    "SQL summed from strings": "async def f(db):\n    await db.execute(text('DELETE FROM ' + 'settings'))\n",
     "a helper reached through a name at run time": (
         "async def f(db, module, v):\n    await getattr(module, 'set_setting')(db, 'spoolman_enabled', v)\n"
     ),
 }
 
 
-def _sees(body: str) -> bool:
-    tree = ast.parse(_IMPORTS + body)
+def _judged(source: str) -> set[str]:
+    """The scopes of a synthetic module the scan takes for writers, the module's own included."""
+    tree = ast.parse(source)
     names = _Names("synthetic.py", tree, {**_module_constants(), **_constants_of("synthetic.py", tree)})
-    return any(_writes(names, nodes, view) for qual, nodes, view in _scopes(tree) if qual.split(".")[0] == "f")
+    return {qual for qual, nodes, view in _scopes(tree, "synthetic.py") if _writes(names, nodes, view)}
+
+
+def _sees(body: str) -> bool:
+    return bool(_judged(_IMPORTS + body))
 
 
 def test_the_scan_sees_the_forms_its_docstring_names():
+    assert _judged(_IMPORTS) == set(), "the forms' own imports already look like a writer"
     assert [label for label, body in SEEN.items() if not _sees(body)] == []
     assert [label for label, body in NOT_SEEN.items() if _sees(body)] == []
 
