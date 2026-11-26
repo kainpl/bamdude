@@ -239,6 +239,13 @@ async def delete_group(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a group (non-system groups only). Admin-only."""
+    # N07 §C.5: the OIDC policy lock comes before the group row, so a deletion and an
+    # issued session that inserts a membership in it (or a provider writer checking
+    # its mapping) take the same rows in one order. The FK SET NULL on a provider's
+    # default group leaves its revision alone — a deliberate exception (spec §C.1).
+    from backend.app.services.oidc_group_sync import lock_oidc_policy
+
+    await lock_oidc_policy(db)
     result = await db.execute(select(Group).where(Group.id == group_id))
     group = result.scalar_one_or_none()
     if not group:

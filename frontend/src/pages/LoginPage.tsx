@@ -6,7 +6,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { Mail, Shield, Smartphone, Key } from 'lucide-react';
-import { api, type LoginResponse } from '../api/client';
+import { api, ApiError, type LoginResponse } from '../api/client';
 import { Button } from '../components/Button';
 import { Modal } from '../components/Modal';
 import { PasswordField } from '../components/PasswordField';
@@ -50,10 +50,18 @@ function consumePostLoginRedirect(): string | null {
   }
 }
 
+// N07 spec §G: the 409 codes that end an OIDC attempt on exchange, resend and verify.
+const TERMINAL_OIDC_CODES = new Set(['oidc_login_expired', 'oidc_policy_changed', 'oidc_mapping_invalid', 'group_sync_last_admin']);
+
 export function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
+  // N07 S31: set the moment this load reads an OIDC return (the exchange fragment or a
+  // callback code) and kept for the whole load: autologin stays off from then on.
+  const oidcReturnRef = useRef(
+    window.location.hash.startsWith('#oidc_token=') || new URLSearchParams(window.location.search).has('oidc_error'),
+  );
   const { t } = useTranslation();
   const { login, loginWithToken, requiresSetup, user, loading: authLoading } = useAuth();
   const { showToast } = useToast();
@@ -147,6 +155,10 @@ export function LoginPage() {
     const hash = window.location.hash;
     const oidcToken = hash.startsWith('#oidc_token=') ? hash.slice('#oidc_token='.length) : null;
     const oidcError = searchParams.get('oidc_error');
+    // N07 S31 (A04): every reading of an OIDC return bans autologin for this load —
+    // before the URL is cleaned and before any async work, so an autologin that is
+    // already waiting for its authorize URL drops it.
+    if (oidcToken || oidcError) oidcReturnRef.current = true;
 
     if (oidcError) {
       // L-3: Whitelist known OIDC error codes so provider-controlled text is never
@@ -169,6 +181,12 @@ export function LoginPage() {
         account_inactive: t('login.oidcErrors.accountInactive'),
         user_resolution_failed: t('login.oidcErrors.userResolutionFailed'),
         internal_error: t('login.oidcErrors.internalError'),
+        // N07
+        provider_changed: t('login.oidcErrors.providerChanged'),
+        oidc_login_retry: t('login.oidcErrors.loginRetry'),
+        group_claims_incomplete: t('login.oidcErrors.groupClaimsIncomplete'),
+        group_claims_invalid: t('login.oidcErrors.groupClaimsInvalid'),
+        oidc_mapping_invalid: t('login.oidcErrors.mappingInvalid'),
       };
       // Dynamic codes like "token_exchange_<provider_code>" → generic message
       const errorMsg = KNOWN_OIDC_ERRORS[oidcError]
@@ -198,11 +216,12 @@ export function LoginPage() {
           navigate(resolvePostLoginRedirect(), { replace: true });
         }
       }).catch((err: Error) => {
+        oidcReturnRef.current = true;  // N07 S31: no autologin after a refused OIDC attempt
         showToast(err.message || t('login.oidcLoginFailed'), 'error');
         navigate('/login', { replace: true });
       });
     }
-  }, [searchParams]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [searchParams, location.hash]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // #1589: autologin redirect with fallback. When the backend reports an
   // `autologin_provider_id`, redirect unauthenticated visitors directly to
@@ -216,6 +235,9 @@ export function LoginPage() {
   const autologinAttemptedRef = useRef(false);
   useEffect(() => {
     if (autologinAttemptedRef.current) return;
+    // N07 S31: a load that came back from the IdP never autologins — not during the
+    // exchange, not during 2FA, not after the URL was cleaned and not after a refusal.
+    if (oidcReturnRef.current) return;
     if (searchParams.get('fallback') === 'local') return;
     if (!advancedAuthStatus || !advancedAuthStatus.autologin_provider_id) return;
     // Don't redirect mid-OIDC-exchange (we're already coming back from the IdP).
@@ -238,6 +260,7 @@ export function LoginPage() {
     );
     Promise.race([api.getOIDCAuthorizeUrl(providerId, false), timeoutPromise])
       .then((result) => {
+        if (oidcReturnRef.current) return;  // a late authorize URL after the ban is dropped
         window.location.href = (result as { auth_url: string }).auth_url;
       })
       .catch(() => {
@@ -300,6 +323,22 @@ export function LoginPage() {
   });
 
   // --- Step 2: 2FA verification ---
+  // N07: a terminal refusal of an OIDC attempt (409 with a code) ends it — the
+  // pre-auth is forgotten and the operator starts again with the button. An ordinary
+  // 401 (a wrong code) keeps the step so the right code can still be entered.
+  const endTerminalOidcAttempt = (error: unknown): boolean => {
+    if (!(error instanceof ApiError) || error.status !== 409 || !TERMINAL_OIDC_CODES.has(error.code ?? '')) {
+      return false;
+    }
+    oidcReturnRef.current = true;
+    setPreAuthToken('');
+    setTwoFACode('');
+    setEmailOTPSent(false);
+    setStep('credentials');
+    showToast(error.message || t('login.oidcLoginFailed'), 'error');
+    return true;
+  };
+
   const sendEmailOTPMutation = useMutation({
     mutationFn: () => api.sendEmailOTP(preAuthToken),
     onSuccess: (data: { message: string; pre_auth_token?: string }) => {
@@ -309,6 +348,7 @@ export function LoginPage() {
       showToast(data.message, 'success');
     },
     onError: (error: Error) => {
+      if (endTerminalOidcAttempt(error)) return;
       showToast(error.message || t('login.twoFA.sendCodeFailed'), 'error');
     },
   });
@@ -324,6 +364,7 @@ export function LoginPage() {
       }
     },
     onError: (error: Error) => {
+      if (endTerminalOidcAttempt(error)) return;
       showToast(error.message || t('login.twoFA.invalidCode'), 'error');
       setTwoFACode('');
     },

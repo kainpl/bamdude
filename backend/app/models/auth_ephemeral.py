@@ -23,7 +23,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Index, Integer, String
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from backend.app.core.database import Base
@@ -104,6 +104,13 @@ class AuthEphemeralToken(Base):
     # and refresh rotation. NULL preserves local pre-auth and legacy semantics;
     # new OIDC attempts and refresh rows always store an explicit bool.
     remember_me: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+    # N07 (m264): the OIDC login evidence — on an OIDC state row the provider
+    # revision authorize started under; on an OIDC exchange / pre-auth row the
+    # versioned evidence the callback wrote (``services/oidc_group_sync.py``).
+    # SQL NULL elsewhere: local and LDAP pre-auth rows keep their contract, and an
+    # OIDC row issued before m264 leads to a new login.
+    oidc_login_evidence: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True, default=None)
 
     # refresh (m015): timestamp when a refresh token was consumed by /auth/refresh.
     # Kept for reuse detection — an already-used refresh token coming back in is

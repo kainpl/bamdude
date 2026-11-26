@@ -498,11 +498,11 @@
     },
     {
       "site": [
-        "api/routes/mfa.py::consume_pre_auth_token",
+        "api/routes/mfa.py::consume_pre_auth_row",
         "sqlalchemy.delete",
         "backend.app.models.auth_ephemeral.AuthEphemeralToken"
       ],
-      "owner_policy": "Outside C parent purge: api/routes/mfa.py::consume_pre_auth_token retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+      "owner_policy": "Outside C parent purge: api/routes/mfa.py::consume_pre_auth_row retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
     },
     {
       "site": [
@@ -567,6 +567,14 @@
         "link"
       ],
       "owner_policy": "Outside C parent purge: api/routes/mfa.py::remove_oidc_link retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/mfa.py::remove_oidc_link",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_ephemeral.AuthEphemeralToken"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/mfa.py::remove_oidc_link deletes the account's unfinished OIDC exchange and pre-auth rows together with the link, under the same account guard and transaction (N07 S17); any new or changed locator requires adjudication"
     },
     {
       "site": [

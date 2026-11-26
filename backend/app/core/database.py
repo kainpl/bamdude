@@ -645,13 +645,26 @@ async def _migrate_encrypt_legacy_secrets() -> None:
             continue  # defensive: skip empty strings
         try:
             async with async_session() as wr:
-                provider = await wr.get(OIDCProvider, oidc_id)
+                # N07 §C.1 (S24): a provider writer like any other — credential config,
+                # then the OIDC policy lock — and the CURRENT value is encrypted, read
+                # fresh in this transaction. The scan only names candidates; its value
+                # is never written back over a secret rotated meanwhile.
+                from backend.app.core.credential_config import lock_credential_config
+                from backend.app.services.oidc_group_sync import lock_oidc_policy
+
+                await lock_credential_config(wr)
+                await lock_oidc_policy(wr)
+                provider = (
+                    await wr.execute(
+                        select(OIDCProvider).where(OIDCProvider.id == oidc_id).execution_options(populate_existing=True)
+                    )
+                ).scalar_one_or_none()
                 if provider is None:
                     continue  # row deleted between phase 1 and phase 2
-                # Idempotent guard: re-check inside the write session in case
-                # a concurrent worker beat us to it.
-                if not provider._client_secret_enc.startswith("fernet:"):
-                    provider.client_secret = stored  # setter -> mfa_encrypt
+                current = provider._client_secret_enc
+                # Idempotent guard: only a non-empty value that is still plaintext.
+                if current and not current.startswith("fernet:"):
+                    provider.client_secret = current  # setter -> mfa_encrypt; same plaintext, same revision
                     await wr.commit()
                     oidc_count += 1
         except Exception:

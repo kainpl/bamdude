@@ -14,6 +14,7 @@ fixes — the edges here are unusually sharp for how small the feature looks.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 
@@ -133,6 +134,11 @@ def read_env_oidc_config() -> dict | None:
         # against the database in apply_env_oidc_provider — the reader has no
         # session and stays dumb.
         "default_group": (os.environ.get("BAMDUDE_OIDC_DEFAULT_GROUP") or "").strip() or None,
+        # N07: the group claim and the mapping IdP group → EXACT BamDude group name
+        # (a JSON object). Names for the same reason as the default group; resolved to
+        # ids in apply_env_oidc_provider. Absent → the defaults (``groups``, ``{}``).
+        "group_claim": (os.environ.get("BAMDUDE_OIDC_GROUP_CLAIM") or "").strip() or "groups",
+        "group_mapping_names": (os.environ.get("BAMDUDE_OIDC_GROUP_MAPPING") or "").strip() or None,
     }
 
 
@@ -154,6 +160,8 @@ _APPLIED_FIELDS = (
     # the environment is the whole truth for this row, and the API lock means a
     # lingering value could not be removed in the UI either.
     "default_group_id",
+    "group_claim",
+    # group_mapping goes through assign_group_mapping (a change Python's == cannot see).
 )
 
 
@@ -186,12 +194,17 @@ async def apply_env_oidc_provider(db: AsyncSession) -> None:
 async def _apply_env_oidc_provider(db: AsyncSession) -> None:
     # Imported here rather than at module scope: app.core is imported by the
     # models themselves, so a top-level import would be a cycle.
+    from sqlalchemy import case
+
     from backend.app.core.credential_config import lock_credential_config
     from backend.app.models.group import Group
-    from backend.app.models.oidc_provider import OIDCProvider
+    from backend.app.models.oidc_provider import OIDCProvider, assign_group_mapping, new_policy_revision
     from backend.app.schemas.auth import OIDCProviderCreate
+    from backend.app.services.oidc_group_sync import lock_oidc_policy
 
     await lock_credential_config(db)
+    # N07 §C.5: a provider writer — credential config, then the OIDC policy lock.
+    await lock_oidc_policy(db)
 
     try:
         config = read_env_oidc_config()
@@ -260,6 +273,39 @@ async def _apply_env_oidc_provider(db: AsyncSession) -> None:
             return
         config["default_group_id"] = group.id
 
+    # N07: the mapping's names become ids now; an unknown name or JSON that is not an
+    # object of strings leaves the running provider untouched, like DEFAULT_GROUP.
+    # The value itself is never logged — it may name the IdP's internal groups.
+    mapping_names = config.pop("group_mapping_names", None)
+    mapping: dict[str, int] = {}
+    if mapping_names is not None:
+        try:
+            declared = json.loads(mapping_names)
+        except ValueError:
+            declared = None
+        if not isinstance(declared, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in declared.items()
+        ):
+            logger.error(
+                "BAMDUDE_OIDC_GROUP_MAPPING is not a JSON object of IdP group to group name, provider not applied (%s).",
+                "previous config left running" if existing is not None else "no provider created",
+            )
+            return
+        names = set(declared.values())
+        groups_by_name = {
+            g.name: g.id for g in (await db.execute(select(Group).where(Group.name.in_(names)))).scalars().all()
+        }
+        unknown = sorted(names - set(groups_by_name))
+        if unknown:
+            logger.error(
+                "BAMDUDE_OIDC_GROUP_MAPPING names %d group(s) that do not exist, provider not applied (%s).",
+                len(unknown),
+                "previous config left running" if existing is not None else "no provider created",
+            )
+            return
+        mapping = {idp: groups_by_name[name] for idp, name in declared.items()}
+    config["group_mapping"] = mapping
+
     try:
         # The same schema the API uses, so env config cannot reach a state the UI
         # would have refused (notably the auto-link safety check).
@@ -289,6 +335,7 @@ async def _apply_env_oidc_provider(db: AsyncSession) -> None:
         db.add(existing)
     for field in _APPLIED_FIELDS:
         setattr(existing, field, getattr(validated, field))
+    assign_group_mapping(existing, validated.group_mapping)
     existing.client_secret = validated.client_secret
     existing.is_env_managed = True
     await db.flush()  # the id is needed by the sweeps below
@@ -303,7 +350,15 @@ async def _apply_env_oidc_provider(db: AsyncSession) -> None:
     await db.execute(
         update(OIDCProvider)
         .where(OIDCProvider.id != existing.id, OIDCProvider.is_env_managed.is_(True))
-        .values(is_env_managed=False, is_enabled=False, is_autologin=False)
+        .values(
+            is_env_managed=False,
+            is_enabled=False,
+            is_autologin=False,
+            # N07 §C.1: disabling is a policy change — only for a row that was enabled.
+            policy_revision=case(
+                (OIDCProvider.is_enabled.is_(True), new_policy_revision()), else_=OIDCProvider.policy_revision
+            ),
+        )
     )
 
     if existing.is_autologin:

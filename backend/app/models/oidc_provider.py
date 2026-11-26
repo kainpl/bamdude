@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
+import secrets
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -13,9 +17,12 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     func,
+    inspect,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm.attributes import flag_modified
 
 from backend.app.core.database import Base
 from backend.app.core.encryption import mfa_decrypt, mfa_encrypt
@@ -156,6 +163,32 @@ class OIDCProvider(Base):
     # user_oidc_links.provider_id cascades and every linked account would be
     # unlinked for good. See core/oidc_env.py.
     is_env_managed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # N07: the ID-token claim that carries the IdP groups, and the mapping
+    # ``{"<IdP group>": <BamDude group id>}`` applied at every issued OIDC session.
+    # An empty mapping means no sync. The stored value is read through
+    # ``services/oidc_group_sync.stored_mapping``: anything that is not an object of
+    # string → in-domain integer is a damaged mapping, refused at login and shown
+    # to the admin for an explicit replacement (spec §F).
+    group_claim: Mapped[str] = mapped_column(String(64), nullable=False, default="groups", server_default="groups")
+    group_mapping: Mapped[Any] = mapped_column(JSON, nullable=False, default=dict, server_default="{}")
+    # N07: a random value that changes with every effective change of a policy
+    # field (``POLICY_FIELDS``) — set by the mapper hook below for ORM writes; a
+    # set-based UPDATE that touches a policy field sets it itself. A login attempt
+    # carries the revision it started under (spec §C.1).
+    policy_revision: Mapped[str] = mapped_column(
+        String(32), nullable=False, default=lambda: new_policy_revision(), server_default="0"
+    )
+
+    @property
+    def group_mapping_view(self) -> dict[str, int] | None:
+        """The stored mapping when it has the right shape, else None (N07 spec §F)."""
+        from backend.app.services.oidc_group_sync import stored_mapping
+
+        return stored_mapping(self.group_mapping)
+
+    @property
+    def group_mapping_invalid(self) -> bool:
+        return self.group_mapping_view is None
 
     @property
     def has_icon(self) -> bool:
@@ -197,6 +230,10 @@ class UserOIDCLink(Base):
     provider_user_id: Mapped[str] = mapped_column(String(500))
     # Email returned by the provider (informational; may differ from local email)
     provider_email: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
+    # N07 (spec §C.7): set on a link the callback created together with a new
+    # account. The account has no groups until the first issued session applies
+    # the provider's default group and the managed part as one result.
+    first_login_pending: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     provider: Mapped[OIDCProvider] = relationship("OIDCProvider", back_populates="user_links")
@@ -207,3 +244,101 @@ class UserOIDCLink(Base):
 
 # Canonical declarations also carry migration-owned indexes into portable DDL.
 Index("ix_oidc_providers_default_group_id", OIDCProvider.default_group_id)
+
+
+# ── N07: provider policy revision (spec §C.1) ────────────────────────────────
+#
+# A login attempt is valid only under the provider policy it started under. The
+# revision changes with every EFFECTIVE change of one of these fields; metadata
+# (name, icon, autologin, the env flag on its own, timestamps) does not touch it.
+# The secret compares by its plaintext, so the start-up re-encryption and an
+# unchanged env re-apply (Fernet gives a new ciphertext every time) leave it alone.
+POLICY_FIELDS = (
+    "issuer_url",
+    "client_id",
+    "_client_secret_enc",
+    "scopes",
+    "is_enabled",
+    "auto_create_users",
+    "auto_link_existing_accounts",
+    "email_claim",
+    "require_email_verified",
+    "default_group_id",
+    "group_claim",
+    "group_mapping",
+)
+
+_UNSET = object()
+
+
+def new_policy_revision() -> str:
+    return secrets.token_hex(16)
+
+
+def json_identity(value: Any) -> str:
+    """A JSON value spelled with its strict types: ``true`` and ``1`` differ (spec §F, S42)."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def assign_group_mapping(provider: OIDCProvider, value: Any) -> bool:
+    """Write a mapping so that a change Python's ``==`` cannot see still reaches the row.
+
+    ``{"team": true}`` and ``{"team": 1}`` are equal for Python, so a plain assignment
+    can skip the UPDATE. A real change is written with the column flagged as
+    modified, and the value it replaces is kept for the revision hook, which no
+    longer sees it in the attribute history after the flag (spec §F, S44).
+    Returns whether the value changed.
+    """
+    current = provider.group_mapping
+    if json_identity(current) == json_identity(value):
+        return False
+    if getattr(provider, "_n07_mapping_before", _UNSET) is _UNSET:
+        provider._n07_mapping_before = current
+    provider.group_mapping = value
+    flag_modified(provider, "group_mapping")
+    return True
+
+
+def _secret_plaintext(ciphertext: Any) -> Any:
+    if not ciphertext:
+        return ""
+    try:
+        return mfa_decrypt(ciphertext)
+    except Exception:
+        return _UNSET  # unreadable: never equal to anything
+
+
+def _policy_changed(target: OIDCProvider) -> bool:
+    state = inspect(target)
+    for field in POLICY_FIELDS:
+        history = state.attrs[field].history
+        if field == "group_mapping":
+            before = getattr(target, "_n07_mapping_before", _UNSET)
+            if before is _UNSET:
+                if not history.has_changes():
+                    continue
+                before = history.deleted[0] if history.deleted else _UNSET
+            if before is _UNSET or json_identity(before) != json_identity(target.group_mapping):
+                return True
+            continue
+        if not history.has_changes():
+            continue
+        if not history.deleted:
+            return True  # the old value was never loaded: count it as a change
+        old, new = history.deleted[0], history.added[0] if history.added else getattr(target, field)
+        if field == "_client_secret_enc":
+            old_plain, new_plain = _secret_plaintext(old), _secret_plaintext(new)
+            if old_plain is _UNSET or new_plain is _UNSET or old_plain != new_plain:
+                return True
+            continue
+        if type(old) is not type(new) or old != new:
+            return True
+    return False
+
+
+@event.listens_for(OIDCProvider, "before_update")
+def _bump_policy_revision(_mapper, _connection, target: OIDCProvider) -> None:
+    if _policy_changed(target):
+        target.policy_revision = new_policy_revision()
+    if getattr(target, "_n07_mapping_before", _UNSET) is not _UNSET:
+        del target._n07_mapping_before

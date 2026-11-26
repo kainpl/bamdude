@@ -1,5 +1,5 @@
 import re
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -467,6 +467,23 @@ class OIDCProviderCreate(BaseModel):
     # (#1173). NULL → callback falls back to "Viewers".
     default_group_id: int | None = None
     is_autologin: bool = False  # #1589 — at most one provider may carry this
+    # N07: the claim with the IdP groups and ``{"<IdP group>": <group id>}``. An empty
+    # mapping means no sync. Ids are strict integers 1..2³¹ − 1, checked before any
+    # query; their existence is checked under the policy lock at write time.
+    group_claim: str = Field(default="groups", max_length=64)
+    group_mapping: Any = Field(default_factory=dict)
+
+    @field_validator("group_claim")
+    @classmethod
+    def validate_group_claim(cls, v: str) -> str:
+        return _validate_email_claim_name(v)
+
+    @field_validator("group_mapping", mode="before")
+    @classmethod
+    def validate_group_mapping(cls, v: Any) -> dict[str, int]:
+        from backend.app.services.oidc_group_sync import normalize_mapping
+
+        return {} if v is None else normalize_mapping(v)
 
     @field_validator("issuer_url")
     @classmethod
@@ -526,6 +543,21 @@ class OIDCProviderUpdate(IgnoresNullForRequiredColumns):
     icon_url: str | None = None
     default_group_id: int | None = None
     is_autologin: bool | None = None  # #1589
+    # N07: absent or null leaves the stored value — a damaged mapping included; ``{}`` clears.
+    group_claim: str | None = Field(default=None, max_length=64)
+    group_mapping: Any = None
+
+    @field_validator("group_claim")
+    @classmethod
+    def validate_group_claim(cls, v: str | None) -> str | None:
+        return None if v is None else _validate_email_claim_name(v)
+
+    @field_validator("group_mapping", mode="before")
+    @classmethod
+    def validate_group_mapping(cls, v: Any) -> dict[str, int] | None:
+        from backend.app.services.oidc_group_sync import normalize_mapping
+
+        return None if v is None else normalize_mapping(v)
 
     @field_validator("scopes")
     @classmethod
@@ -599,6 +631,12 @@ class OIDCProviderResponse(BaseModel):
     # renders it read-only and the API refuses writes. Exposed rather than
     # inferred client-side: the environment is not visible to the browser.
     is_env_managed: bool = False
+    # N07 spec §F: a damaged stored mapping never breaks the list — it comes as
+    # ``group_mapping: null`` with ``group_mapping_invalid: true`` and the rest of
+    # the provider, so the form can offer an explicit replacement.
+    group_claim: str = "groups"
+    group_mapping: dict[str, int] | None = Field(default=None, validation_alias="group_mapping_view")
+    group_mapping_invalid: bool = False
 
     class Config:
         from_attributes = True
