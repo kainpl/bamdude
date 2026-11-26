@@ -247,11 +247,17 @@ def _target_writes(target: ast.AST, links: set[str]) -> bool:
 
 def _scopes(tree: ast.AST) -> list[list[ast.AST]]:
     """Each function's nodes (nested functions included, so a closure sees its outer
-    names), and the module's own code outside every function."""
-    functions = [node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
-    inside = {id(sub) for function in functions for sub in ast.walk(function)}
-    module = [node for node in ast.walk(tree) if id(node) not in inside]
-    return [module, *(list(ast.walk(function)) for function in functions)]
+    names), and the module's own code outside every function.
+
+    Each tree and each function subtree is walked once and the lists are reused: the
+    same lists, nodes and order as walking each of them twice.
+    """
+    all_nodes = list(ast.walk(tree))
+    functions = [node for node in all_nodes if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    per_function = [list(ast.walk(function)) for function in functions]
+    inside = {id(sub) for nodes in per_function for sub in nodes}
+    module = [node for node in all_nodes if id(node) not in inside]
+    return [module, *per_function]
 
 
 def _node_writes(node: ast.AST, links: set[str]) -> bool:

@@ -15,6 +15,7 @@ shrinks. T3-T7 emptied it; a touch that appears now belongs in ALLOWED with its 
 from __future__ import annotations
 
 import ast
+import functools
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -69,7 +70,10 @@ class _Touches(ast.NodeVisitor):
             self.carrier.append(f"{self.rel}:{node.lineno}")
 
 
-def _touches() -> tuple[set[tuple[str, str, str]], list[str]]:
+@functools.cache
+def _touches() -> tuple[frozenset[tuple[str, str, str]], tuple[str, ...]]:
+    """One scan per process for the four tests below (the tree does not change during a run);
+    immutable, so no test can edit another's view."""
     found: set[tuple[str, str, str]] = set()
     carrier: list[str] = []
     for path in sorted(APP.rglob("*.py")):
@@ -80,7 +84,7 @@ def _touches() -> tuple[set[tuple[str, str, str]], list[str]]:
         visitor.visit(ast.parse(path.read_text(encoding="utf-8")))
         found |= visitor.found
         carrier += visitor.carrier
-    return found, carrier
+    return frozenset(found), tuple(carrier)
 
 
 def test_every_touch_of_the_fact_is_allowed_or_pending():

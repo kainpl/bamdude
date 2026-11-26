@@ -36,13 +36,37 @@ bare ``None``.
 from __future__ import annotations
 
 import ast
+import functools
 import pathlib
+import unicodedata
 
 import pytest
 
 _BACKEND = pathlib.Path(__file__).resolve().parents[2] / "app"
 
 _MODELS = ("PrintQueueItem", "AutoQueueItem")
+
+
+def _names_a_model(text: str) -> bool:
+    """Whether a module's source can hold a site at all: every predicate below needs a Name that
+    spells a model (or an alias imported or assigned from one), so a module whose text never
+    spells one has nothing to find and is not parsed. Identifiers are NFKC-normalised by the
+    parser, hence the second look at a non-ASCII module."""
+    if any(model in text for model in _MODELS):
+        return True
+    return not text.isascii() and any(model in unicodedata.normalize("NFKC", text) for model in _MODELS)
+
+
+def _backend_sources() -> list[tuple[str, str]]:
+    """``(source, path relative to backend/app)`` of every module that spells a queue model."""
+    found = []
+    for path in sorted(_BACKEND.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if _names_a_model(text):
+            found.append((text, path.relative_to(_BACKEND).as_posix()))
+    return found
+
+
 _REQUIRED = ("queue_source_id", "source_snapshot")
 
 # (path relative to backend/app, dotted qualname of the enclosing scope) → why
@@ -143,12 +167,17 @@ def _sites_in(source: str, where: str) -> list[tuple[str, str, int, ast.Call]]:
     return found
 
 
-def _sites() -> list[tuple[str, str, int, ast.Call]]:
-    """Every queue-row construction under ``backend/app``."""
+@functools.cache
+def _sites() -> tuple[tuple[str, str, int, ast.Call], ...]:
+    """Every queue-row construction under ``backend/app``.
+
+    Cached per process: collection calls it for the parametrisation and two tests read it again;
+    the tree does not change during a run. A tuple, so no test can edit another's view.
+    """
     found: list[tuple[str, str, int, ast.Call]] = []
-    for path in sorted(_BACKEND.rglob("*.py")):
-        found.extend(_sites_in(path.read_text(encoding="utf-8"), path.relative_to(_BACKEND).as_posix()))
-    return found
+    for source, where in _backend_sources():
+        found.extend(_sites_in(source, where))
+    return tuple(found)
 
 
 def _literal_none(value: ast.expr) -> bool:
@@ -244,8 +273,8 @@ def test_no_writer_inserts_a_queue_row_behind_the_constructor():
     decorative. There is no such writer today and there must not be one.
     """
     offenders: list[str] = []
-    for path in sorted(_BACKEND.rglob("*.py")):
-        offenders.extend(_bulk_inserts_in(path.read_text(encoding="utf-8"), path.relative_to(_BACKEND).as_posix()))
+    for source, where in _backend_sources():
+        offenders.extend(_bulk_inserts_in(source, where))
     assert not offenders, (
         f"{offenders} builds queue rows with a bulk insert(), which the construction-site guard "
         "cannot see. Write the rows through the model constructor so the capture rule is "

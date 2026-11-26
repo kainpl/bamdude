@@ -5,7 +5,8 @@ Bodies moved verbatim out of ``routes/archives.py`` (vault
 the five new paths answer, the five old ones are gone (not aliased), and the
 ``/statistics/reports`` sub-path is reserved with nothing under it yet.
 
-⚠️ "Gone" is checked against OpenAPI, not against a status code: a one-segment
+⚠️ "Gone" is checked against the schema's path set (``route_table.schema_paths``), not
+against a status code: a one-segment
 old path such as ``/archives/stats`` falls through to the ``/archives/{archive_id}``
 catch-all and answers 422, not 404 (see ``test_the_slim_endpoint_is_gone``).
 """
@@ -13,6 +14,7 @@ catch-all and answers 422, not 404 (see ``test_the_slim_endpoint_is_gone``).
 import pytest
 
 from backend.app.main import app
+from backend.tests.route_table import schema_paths
 
 NEW = [
     ("get", "/api/v1/statistics/overview"),
@@ -31,7 +33,7 @@ OLD = [
 
 
 def test_the_five_paths_moved_and_nothing_answers_at_the_old_ones():
-    paths = app.openapi()["paths"]
+    paths = schema_paths(app)
     for method, path in NEW:
         assert path in paths and method in paths[path], (method, path)
     for path in OLD:

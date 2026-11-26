@@ -22,7 +22,9 @@ jobs in the admin's own queue. Upstream leaves it ownerless for the same reason.
 from __future__ import annotations
 
 import ast
+import functools
 import pathlib
+import unicodedata
 
 import pytest
 
@@ -34,11 +36,22 @@ _ALLOWED_OWNERLESS: dict[str, str] = {
 }
 
 
-def _construction_sites() -> list[tuple[str, int, ast.Call]]:
-    """Every ``PrintQueueItem(...)`` built anywhere under ``backend/app``."""
+@functools.cache
+def _construction_sites() -> tuple[tuple[str, int, ast.Call], ...]:
+    """Every ``PrintQueueItem(...)`` built anywhere under ``backend/app``.
+
+    Cached per process: collection calls it for the parametrisation and a test reads it again; the
+    tree does not change during a run. A module whose text never spells the name (NFKC-normalised,
+    as the parser normalises identifiers) cannot hold a ``Name`` call of it and is not parsed.
+    """
     found: list[tuple[str, int, ast.Call]] = []
     for path in _BACKEND.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        text = path.read_text(encoding="utf-8")
+        if "PrintQueueItem" not in text and (
+            text.isascii() or "PrintQueueItem" not in unicodedata.normalize("NFKC", text)
+        ):
+            continue
+        tree = ast.parse(text, filename=str(path))
         for node in ast.walk(tree):
             if (
                 isinstance(node, ast.Call)
@@ -48,7 +61,7 @@ def _construction_sites() -> list[tuple[str, int, ast.Call]]:
                 and node.keywords
             ):
                 found.append((path.relative_to(_BACKEND).as_posix(), node.lineno, node))
-    return found
+    return tuple(found)
 
 
 def test_there_are_construction_sites_to_check():

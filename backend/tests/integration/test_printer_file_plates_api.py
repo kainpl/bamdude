@@ -568,13 +568,14 @@ async def test_the_token_less_thumbnail_route_is_gone(committing_client, db_sess
     """Absent from the schema, not merely unreachable.
 
     A 404 is also what a typo'd path, a renamed prefix or a wrong method answers,
-    so the discriminating assertion is the OpenAPI one. The sibling
+    so the discriminating assertion is the schema's own path set. The sibling
     ``/files/plates`` path is asserted present alongside it: that pins the key
     form the schema actually uses, so "not in paths" cannot pass by misspelling.
     """
     from backend.app.main import app
+    from backend.tests.route_table import schema_paths
 
-    paths = app.openapi()["paths"]
+    paths = schema_paths(app)
     assert "/api/v1/printers/{printer_id}/files/plates" in paths
     assert "/api/v1/printers/{printer_id}/files/plate-thumbnail/{plate_index}" not in paths
 

@@ -133,17 +133,32 @@ def test_only_the_writer_holds_the_class_or_names_the_table():
     assert offenders == []
 
 
+def _functions_without_a_function_ancestor(tree: ast.AST) -> set[int]:
+    """``id``s of the functions not nested in another function (methods of a module-level class count).
+
+    One walk that stops descending at every function: the same set the per-function walks of every
+    function found, without walking each nested body again under every function that encloses it.
+    """
+    found: set[int] = set()
+    stack = [tree]
+    while stack:
+        for child in ast.iter_child_nodes(stack.pop()):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                found.add(id(child))
+            else:
+                stack.append(child)
+    return found
+
+
 def test_every_door_that_deletes_archive_rows_tells_the_registry():
     """A statement that deletes ``print_archives`` rows sits in a function that calls ``forget_archives``."""
     missing = []
     for path, source in _sources():
         tree = ast.parse(source)
         functions = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
-        nested = {
-            id(inner) for outer in functions for inner in ast.walk(outer) if inner is not outer and inner in functions
-        }
+        top_level = _functions_without_a_function_ancestor(tree)
         for function in functions:
-            if id(function) in nested:
+            if id(function) not in top_level:
                 continue  # a helper inside a function is covered by the function that holds it
             text = ast.unparse(function)
             deletes_rows = any(

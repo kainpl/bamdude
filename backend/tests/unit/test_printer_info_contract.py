@@ -19,6 +19,8 @@ def test_get_printer_results_use_only_the_fields_printer_info_has():
     offenders = []
     for path in pathlib.Path("backend/app").rglob("*.py"):
         text = path.read_text(encoding="utf-8", errors="replace")
+        if "printer_manager.get_printer(" not in text:
+            continue  # every match of _ASSIGN holds this literal; skip the regex over the other files
         for m in _ASSIGN.finditer(text):
             var = m.group(1)
             # A bounded window after the assignment — wide enough for the call

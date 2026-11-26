@@ -5,6 +5,7 @@ the Virtual Printer, calibration and the scanner never do — a new caller has t
 from __future__ import annotations
 
 import ast
+import functools
 from pathlib import Path
 
 APP = Path(__file__).resolve().parents[2] / "app"
@@ -31,18 +32,35 @@ NEGATIVE_DOORS = (
 )
 
 
-def _calls(name: str):
+_SCANNED_CALLS = frozenset({"_queue_step_thumbnail", "enqueue"})
+
+
+@functools.cache
+def _callers() -> dict[str, frozenset[tuple[str, str]]]:
+    """``{called name: {(module, enclosing function)}}`` for the names the tests ask about, in ONE pass.
+
+    Every enclosing function of a call counts, a nested call's outer functions included, as the
+    per-name walk this replaced counted them; the tree is parsed once per process, not once per name.
+    """
+    found: dict[str, set[tuple[str, str]]] = {name: set() for name in _SCANNED_CALLS}
     for path in APP.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        module = path.relative_to(APP).as_posix()
         for function in ast.walk(tree):
             if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
+            called = set()
             for node in ast.walk(function):
                 if isinstance(node, ast.Call):
                     target = node.func
-                    called = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", None)
-                    if called == name:
-                        yield path.relative_to(APP).as_posix(), function.name
+                    called.add(target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", None))
+            for name in _SCANNED_CALLS & called:
+                found[name].add((module, function.name))
+    return {name: frozenset(pairs) for name, pairs in found.items()}
+
+
+def _calls(name: str) -> frozenset[tuple[str, str]]:
+    return _callers()[name]
 
 
 def test_only_the_shared_upload_and_the_zip_door_ask_for_a_new_files_picture():
