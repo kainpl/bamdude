@@ -14,6 +14,19 @@ Every endpoint via `RequirePermission(Permission.X)`. Setup-gate middleware retu
 
 TOTP + email OTP + 10 backup codes. Login returns `requires_2fa=True` + `pre_auth_token` when enabled. OIDC: PKCE S256 + state + nonce + JWKS; SSRF guards reject non-HTTPS/loopback/private/link-local. TOTP secrets + OIDC `client_secret` Fernet-encrypted; `MFA_ENCRYPTION_KEY` auto-bootstraps (env → `DATA_DIR/.mfa_encryption_key` → generated, mode 0600). Backup ZIP packages key alongside DB.
 
+## OIDC groups change only in the transaction that issues the session (N07)
+
+An OIDC provider maps IdP groups to BamDude group ids (`group_mapping`); the values are the managed groups. Nothing is applied at the callback. It reads the group claim strictly (incompleteness markers such as `_claim_names` or `hasgroups` refuse), creates a new account **without groups** (its link is `first_login_pending`) and writes the login evidence into the exchange token: version, provider id, the provider's `policy_revision`, the subject, the IdP groups and a deadline `min(callback + 10 min, floor(exp))` that never moves. Exchange → pre-auth and every email resend carry the evidence from the row they actually consumed.
+
+The groups change in one place, `services/oidc_group_sync.apply_at_issuance`, inside the transaction that issues the session (exchange without 2FA, or `/2fa/verify`). Order: account guard → OIDC policy lock → token consumption → the administrators' advisory lock. The provider must still be enabled with the same revision and the link `(provider, subject)` must still belong to the account; the final groups and role are computed from the committed state, flushed before the issuer re-reads the account, and the deadline is checked once more after everything is flushed and before the single commit. Every refusal is a raised 409 with `{"error", "message"}`, never a returned response, so tokens, factors, groups and the session roll back whole.
+
+- **The revision.** A random value, new with every effective change of a policy field (`models/oidc_provider.POLICY_FIELDS`): the mapper hook compares old and new values (the secret by its plaintext, the mapping by its strict JSON); a set-based UPDATE that touches a policy field sets it itself (`tests/unit/test_n07_policy_writers.py`). A group deletion is the deliberate exception.
+- **The policy lock** (`lock_oidc_policy`): a transaction advisory lock on PostgreSQL, a real write reserving the writer on SQLite. Provider writers take `lock_credential_config` → policy lock → row; a group deletion takes it before the group row. Nothing takes an existing account's guard or `lock_credential_config` while holding it, and the callback's cleanup of expired exchange rows runs in its own transaction with `SKIP LOCKED`.
+- **Unlink** removes the account's unfinished OIDC exchange and pre-auth rows with the link.
+- **Group numbers** are never handed out again: `groups` is `AUTOINCREMENT` (m263), its counter starts above every number in `core/group_id_bound.py`, and the allocator itself is asked (`core/id_allocator.py`, shared with P-ID).
+
+Rejected: applying the snapshot at the callback (it changed rights before 2FA); a fingerprint of four provider fields instead of a revision (a deleted and recreated provider matched it); the default group granted at the callback (an abandoned login left a real "other administrator"). Guards: `tests/integration/test_n07_oidc_group_sync.py`, `test_n07_provider_api.py`, `test_n07_postgres.py`, `tests/unit/test_group_id_bound.py`.
+
 ## Rate limiting
 
 Sliding-window in `auth_rate_limit_events`. Login 10/15min per user + 20/15min per IP. Behind proxy: set `TRUSTED_PROXY_IPS`.

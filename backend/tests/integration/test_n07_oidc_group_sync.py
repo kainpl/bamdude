@@ -802,3 +802,150 @@ async def test_an_abandoned_default_administrator_cannot_cover_the_last_admins_d
     removed = await n07.client.delete(f"/api/v1/groups/{admins.id}/users/{admin_id}")
     assert removed.status_code == 400, removed.text  # still the last active administrator
     assert "Administrators" in await fresh_groups(admin_id)
+
+
+# ── deadlines at the side effects (S26, S33) ─────────────────────────────────
+
+
+async def _two_fa_attempts(username):
+    return await fresh_scalar(
+        "SELECT count(*) FROM auth_rate_limit_events WHERE username = :u AND event_type = '2fa_attempt'", u=username
+    )
+
+
+async def test_a_wrong_factor_after_the_deadline_records_no_failed_attempt(n07, monkeypatch):
+    provider = await n07.provider({})
+    user = await n07.user("n07-s26", provider, sub="s-s26")
+    factor = UserTOTP(user_id=user.id, is_enabled=True)
+    factor.secret = pyotp.random_base32()
+    n07.db.add(factor)
+    exchanged = await n07.exchange(await n07.login(provider, sub="s-s26"))
+    pre_auth = exchanged.json()["pre_auth_token"]
+    clock = _Clock(monkeypatch)
+    clock.deadline = await _deadline_of(pre_auth)
+    clock.jump_after(mfa, "check_rate_limit", monkeypatch)  # after the first check, before the factor re-read
+
+    response = await n07.client.post(
+        "/api/v1/auth/2fa/verify", json={"pre_auth_token": pre_auth, "code": "000000", "method": "totp"}
+    )
+    assert refusal(response) == oidc_group_sync.LOGIN_EXPIRED
+    assert clock.jumped
+    assert await _two_fa_attempts("n07-s26") == 0
+    assert await fresh_scalar("SELECT count(*) FROM auth_ephemeral_tokens WHERE token = :t", t=pre_auth) == 1
+
+
+async def test_a_wrong_factor_with_live_evidence_is_counted_as_today(n07):
+    provider = await n07.provider({})
+    user = await n07.user("n07-s26-control", provider, sub="s-s26-control")
+    factor = UserTOTP(user_id=user.id, is_enabled=True)
+    factor.secret = pyotp.random_base32()
+    n07.db.add(factor)
+    exchanged = await n07.exchange(await n07.login(provider, sub="s-s26-control"))
+    response = await n07.client.post(
+        "/api/v1/auth/2fa/verify",
+        json={"pre_auth_token": exchanged.json()["pre_auth_token"], "code": "000000", "method": "totp"},
+    )
+    assert response.status_code == 401
+    assert await _two_fa_attempts("n07-s26-control") == 1
+
+
+async def _email_attempt(n07, monkeypatch, username, sub):
+    provider = await n07.provider({})
+    user = await n07.user(username, provider, sub=sub, email=f"{username}@example.invalid")
+    await mfa._set_email_2fa_enabled(n07.db, user.id, True)
+    sent = []
+    monkeypatch.setattr(mfa, "get_smtp_settings", AsyncMock(return_value={"host": "offline"}))
+    monkeypatch.setattr(mfa, "send_email", lambda **kwargs: sent.append(kwargs))
+    exchanged = await n07.exchange(await n07.login(provider, sub=sub))
+    return user, exchanged.json()["pre_auth_token"], sent
+
+
+async def test_the_deadline_before_the_mail_sends_nothing(n07, monkeypatch):
+    user, pre_auth, sent = await _email_attempt(n07, monkeypatch, "n07-s33-before", "s-s33-before")
+    clock = _Clock(monkeypatch)
+    clock.deadline = await _deadline_of(pre_auth)
+    clock.jump_after(mfa, "hash_password_async", monkeypatch)
+
+    response = await n07.client.post("/api/v1/auth/2fa/email/send", json={"pre_auth_token": pre_auth})
+    assert refusal(response) == oidc_group_sync.LOGIN_EXPIRED
+    assert sent == []
+    assert await fresh_scalar("SELECT count(*) FROM user_otp_codes WHERE user_id = :u", u=user.id) == 0
+
+
+async def test_the_deadline_after_an_allowed_mail_publishes_nothing(n07, monkeypatch):
+    user, pre_auth, sent = await _email_attempt(n07, monkeypatch, "n07-s33-after", "s-s33-after")
+    clock = _Clock(monkeypatch)
+    clock.deadline = await _deadline_of(pre_auth)
+
+    def send_then_jump(**kwargs):
+        sent.append(kwargs)
+        clock.jumped = True
+
+    monkeypatch.setattr(mfa, "send_email", send_then_jump)
+    response = await n07.client.post("/api/v1/auth/2fa/email/send", json={"pre_auth_token": pre_auth})
+    assert refusal(response) == oidc_group_sync.LOGIN_EXPIRED
+    assert len(sent) == 1
+    assert await fresh_scalar("SELECT count(*) FROM user_otp_codes WHERE user_id = :u", u=user.id) == 0
+    assert (
+        await fresh_scalar(
+            "SELECT count(*) FROM auth_rate_limit_events WHERE username = :u AND event_type = 'email_send'",
+            u="n07-s33-after",
+        )
+        == 0
+    )
+    assert await fresh_scalar("SELECT count(*) FROM auth_ephemeral_tokens WHERE token = :t", t=pre_auth) == 1
+
+
+async def test_an_old_exchange_with_2fa_is_refused_before_the_factor(n07):
+    from backend.app.core.auth_lifetime import binding, capture_account
+
+    provider = await n07.provider({})
+    user = await n07.user("n07-legacy-2fa", provider, sub="s-legacy-2fa")
+    factor = UserTOTP(user_id=user.id, is_enabled=True)
+    factor.secret = pyotp.random_base32()
+    n07.db.add(factor)
+    n07.db.add(
+        AuthEphemeralToken(
+            token="legacy-exchange-2fa",
+            token_type=TokenType.OIDC_EXCHANGE,
+            auth_source="oidc",
+            username=user.username,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=2),
+            **binding(capture_account(user)),
+        )
+    )
+    await n07.db.commit()
+    assert refusal(await n07.exchange("legacy-exchange-2fa")) == oidc_group_sync.LOGIN_EXPIRED
+    assert (
+        await fresh_scalar(
+            "SELECT count(*) FROM auth_ephemeral_tokens WHERE token_type = 'pre_auth' AND account_identity = :a",
+            a=user.account_identity,
+        )
+        == 0
+    )
+
+
+async def test_the_deadline_at_the_resend_boundary_publishes_nothing(n07, monkeypatch):
+    user, pre_auth, sent = await _email_attempt(n07, monkeypatch, "n07-s36-resend", "s-s36-resend")
+    clock = _Clock(monkeypatch)
+    clock.deadline = await _deadline_of(pre_auth)
+    clock.jump_after(mfa, "create_pre_auth_token", monkeypatch)  # the new pre-auth is staged, not committed
+
+    response = await n07.client.post("/api/v1/auth/2fa/email/send", json={"pre_auth_token": pre_auth})
+    assert refusal(response) == oidc_group_sync.LOGIN_EXPIRED
+    assert clock.jumped and len(sent) == 1
+    assert await fresh_scalar("SELECT count(*) FROM user_otp_codes WHERE user_id = :u", u=user.id) == 0
+    assert (
+        await fresh_scalar(
+            "SELECT count(*) FROM auth_rate_limit_events WHERE username = :u AND event_type = 'email_send'",
+            u="n07-s36-resend",
+        )
+        == 0
+    )
+    assert (
+        await fresh_scalar(
+            "SELECT count(*) FROM auth_ephemeral_tokens WHERE token_type = 'pre_auth' AND account_identity = :a",
+            a=user.account_identity,
+        )
+        == 1
+    )  # only the old one, back after the rollback

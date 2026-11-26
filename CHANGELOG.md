@@ -80,6 +80,13 @@ The configuration editor preserves the quantities and descriptions of other save
 
 ### Added
 
+- **OIDC groups follow the identity provider at every sign-in.** An OIDC provider now has a group claim (`groups` by default) and a group mapping, Settings → Authentication → OIDC: an IdP group → a BamDude group. At every OIDC sign-in the mapped groups are set to what the IdP grants right now; groups outside the mapping stay as assigned by hand, and an empty mapping keeps groups as they are. The groups change only when the sign-in completes — after 2FA, if the account has it — so a sign-in that is abandoned or refused changes nothing.
+  - When the mapping manages Administrators, the IdP decides admin rights, the legacy admin role included. BamDude refuses to take them from the last active administrator; keep a separate local administrator outside the mapping.
+  - An incomplete or malformed group claim (for example Entra ID's group overage) refuses the sign-in instead of guessing.
+  - A provider whose settings change while someone is signing in refuses that sign-in; it is started again.
+  - A new account created through OIDC gets its default group and its mapped groups at its first completed sign-in.
+  - `BAMDUDE_OIDC_GROUP_CLAIM` and `BAMDUDE_OIDC_GROUP_MAPPING` (a JSON object IdP group → exact group name) configure the provider declared in the environment.
+
 - **Bambu Lab H3C and P3C are recognised.** Their names, model codes and firmware release pages are known now, so they can be added with the right model, carry their own name on the card and get the firmware update check. The printer descriptions BamDude mirrors from Bambu Studio come from 02.09.02.62. Their nozzle racks, the H3C's AMS 3H and their chambers are not supported yet, and nothing about them is guessed: such a printer is treated like a model BamDude knows nothing special about.
 
 - **A nozzle's used time and switch count.** The nozzle hover cards, for the rack and for both hotends, show how long a nozzle has printed and how many times it has been switched in, when the printer's firmware reports them, as Bambu Studio's hotend details do. A nozzle without them shows neither.
@@ -361,6 +368,9 @@ The configuration editor preserves the quantities and descriptions of other save
 - **API: `PUT /api/v1/settings/virtual-printer` refuses the settings it no longer applies.** The route dates from when there was one Virtual Printer. It went on accepting `enabled`, `access_code`, `mode`, `model`, `target_printer_id` and `remote_interface_ip`, stored them where nothing reads them and answered as if a Virtual Printer had changed. It now answers 400 and points to the Virtual Printers page (`PUT /api/v1/virtual-printers/{id}`); `archive_name_source` is still set here. BamDude's own interface never used the refused fields.
 
 ### Fixed
+
+- **A failed OIDC sign-in shows why.** The callback sent its errors to the start page, which passed a guest on to the login page without the error, so nothing was shown; they now land on the login page itself. An OIDC sign-in that came back from the identity provider no longer starts the automatic SSO redirect again — not during 2FA and not after an error.
+- **A deleted group's number is never given to a new group.** On SQLite the next group took the number of the newest deleted one, so an OIDC provider's default group or a Telegram chat's group that still named it pointed at the new group.
 
 - **The X1 Carbon, P1S and P2S no longer show a wired connection.** They have no Ethernet port, as the manufacturer's own guides say, but BamDude counted them among the wired printers, so a Wi-Fi signal of exactly -90 dBm (the value a wired printer reports with Wi-Fi off) showed an Ethernet badge in place of the signal strength.
 
