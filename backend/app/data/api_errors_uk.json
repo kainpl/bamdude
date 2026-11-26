@@ -280,6 +280,7 @@
   "Cloud credentials require an active owner": "Для доступу до облікових даних хмари потрібен активний власник",
   "Cloud presets require the cloud:auth permission ({})": "Хмарні пресети потребують дозволу cloud:auth ({})",
   "Columns and rows must be whole numbers of at least 1, cell sizes more than zero, and margins and gaps not negative.": "Колонки й рядки мають бути цілими числами від 1, розміри комірки — більшими за нуль, а поля й проміжки — не від'ємними.",
+  "Configure a Prometheus token before scraping metrics": "Налаштуйте токен Prometheus, перш ніж збирати метрики",
   "Contact {} does not belong to this customer": "Контакт {} не належить цьому замовнику",
   "Contact {} does not belong to this order's customer": "Контакт {} не належить замовнику цього замовлення",
   "Contact {} is listed twice": "Контакт {} указано двічі",

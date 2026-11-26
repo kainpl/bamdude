@@ -562,9 +562,12 @@ def _source_id_bounds(src, table_names) -> dict[str, int]:
     the frozen registry of ``core/spool_id_bound.py`` — every number the file still
     remembers, the orphaned usage history of spools deleted before the 409 rule
     included. That history itself is not carried (owner, 2026-11-25): the existing
-    FK repair removes it, only its numbers stay reserved. Reads only.
+    FK repair removes it, only its numbers stay reserved. A file older than m262 has
+    no counter for ``printers`` either: its bound is ``core/printer_id_bound.py`` —
+    historical columns the later chain drops included — joined with the file's own
+    counter even when the file already has m262 (P-ID, spec §C). Reads only.
     """
-    from backend.app.core import spool_id_bound
+    from backend.app.core import printer_id_bound, spool_id_bound
 
     names = set(table_names)
     bounds: dict[str, int] = {}
@@ -585,6 +588,12 @@ def _source_id_bounds(src, table_names) -> dict[str, int]:
             )
         if "spool" in bounds:
             logger.info("Highest spool number the source remembers: %d", bounds["spool"])
+    if "printers" in names:
+        printers = printer_id_bound.sqlite_bound(src, printer_id_bound.sqlite_applied_versions(src))
+        if printers is not None:
+            bounds["printers"] = max(printers, bounds.get("printers", printers))
+        if "printers" in bounds:
+            logger.info("Highest printer number the source remembers: %d", bounds["printers"])
     return bounds
 
 
@@ -1168,7 +1177,8 @@ async def _import_prepared_to_postgres(engine, metadata, prepared, *, acceptance
             # New tables have new sequences: raise only the ones that actually
             # exist, and fail the transaction if one cannot be raised. The bound is
             # the loaded MAX(id), the file's own counter (a table that has emptied
-            # keeps it) and, for spool, every number the file still remembers (C047).
+            # keeps it) and, for spool and printers, every number the file still
+            # remembers (C047, P-ID).
             if is_postgres():
                 from backend.app.core import pg_sequences
 
@@ -1238,6 +1248,8 @@ async def _import_prepared_to_postgres(engine, metadata, prepared, *, acceptance
         logger.info("Cross-database import complete: %d tables imported", imported)
         if "spool" in id_bounds:
             logger.info("Spool numbers up to %d stay reserved in the imported database", id_bounds["spool"])
+        if "printers" in id_bounds:
+            logger.info("Printer numbers up to %d stay reserved in the imported database", id_bounds["printers"])
         return imported
 
 

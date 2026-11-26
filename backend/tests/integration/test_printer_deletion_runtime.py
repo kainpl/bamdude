@@ -115,7 +115,9 @@ async def test_a_readded_printer_with_reused_ids_starts_its_own_runtime(
     response = await _delete(async_client, doomed_id)
     assert response.status_code == 200, response.text
 
-    readded = await printer_factory(name="re-added")
+    # Since P-ID (m262) an ordinary INSERT never hands the printer number out again; a restored older copy can
+    # (spec §E), so the reuse is made explicit here. The archive id is still reused by SQLite on its own.
+    readded = await printer_factory(name="re-added", id=doomed_id)
     new_archive = await archive_factory(readded.id, status="printing")
     # Both ids really reused: the new run's (printer, archive) is the old finishing lease's key.
     assert readded.id == doomed_id and new_archive.id == finishing_archive_id
