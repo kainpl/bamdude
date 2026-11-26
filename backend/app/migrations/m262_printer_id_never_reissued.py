@@ -26,7 +26,7 @@ and only for a plain sequence: increment 1, ``CACHE 1``, ``NO CYCLE``.
 
 from sqlalchemy import text
 
-from backend.app.core import pg_sequences, printer_id_bound
+from backend.app.core import id_allocator, pg_sequences, printer_id_bound
 from backend.app.core.db_dialect import is_sqlite
 from backend.app.migrations._sqlite_autoincrement import ensure_autoincrement
 
@@ -51,11 +51,7 @@ def upgrade_sqlite(dbapi_connection, *, fault=None):
 def require_next_postgres_number(state: pg_sequences.SequenceState, bound: int | None) -> None:
     """Stop when the sequence's next number, or the first one above the bound, lies past the
     ceiling — asked of the allocator itself, not only of the carriers (PID-S25)."""
-    ceiling = min(state.maximum, printer_id_bound.MAX_PRINTER_ID)
-    if state.next_value > ceiling or (bound is not None and bound >= ceiling):
-        raise pg_sequences.SequenceError(
-            f"printers: the id sequence is exhausted (bound {bound}, next {state.next_value}, ceiling {ceiling})"
-        )
+    id_allocator.require_next_postgres_number(state, bound, "printers")
 
 
 async def upgrade(conn):

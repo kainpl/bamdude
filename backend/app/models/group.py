@@ -33,6 +33,8 @@ class Group(Base):
     """
 
     __tablename__ = "groups"
+    # N07 spec §B: a deleted group's number is never handed out again (m263).
+    __table_args__ = {"sqlite_autoincrement": True}
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), unique=True, index=True)

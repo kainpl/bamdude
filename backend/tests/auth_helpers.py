@@ -11,6 +11,32 @@ from backend.app.core.auth_lifetime import VerifiedOutcome, capture_account, sta
 from backend.app.models.user import User
 
 
+async def oidc_login_evidence(db, user: User, *, provider=None, sub: str | None = None, groups=None) -> dict:
+    """A provider and a link for ``user``, and the N07 login evidence an OIDC exchange or
+    pre-auth row carries (``services/oidc_group_sync.build_evidence``). Flushes only."""
+    import time
+
+    from backend.app.models.oidc_provider import OIDCProvider, UserOIDCLink
+    from backend.app.services import oidc_group_sync
+
+    if provider is None:
+        provider = OIDCProvider(
+            name=f"evidence-{user.username}", issuer_url="https://idp.invalid", client_id="farm", client_secret="opaque"
+        )
+        db.add(provider)
+        await db.flush()
+    sub = sub or f"sub-{user.username}"
+    db.add(UserOIDCLink(user_id=user.id, provider_id=provider.id, provider_user_id=sub))
+    await db.flush()
+    return oidc_group_sync.build_evidence(
+        provider_id=provider.id,
+        revision=provider.policy_revision,
+        sub=sub,
+        groups=groups,
+        deadline=int(time.time()) + oidc_group_sync.EVIDENCE_WINDOW_SECONDS,
+    )
+
+
 async def mint_test_session(db, *, username: str | None = None, user: User | None = None, remember_me=False):
     if user is None:
         user = (await db.execute(select(User).where(User.username == username))).scalar_one()

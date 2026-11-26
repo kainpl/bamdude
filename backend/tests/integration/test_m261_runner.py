@@ -19,6 +19,15 @@ from backend.app.migrations import m261_spool_id_never_reissued as m261
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture(autouse=True)
+def _m261_is_the_head(monkeypatch):
+    """Later migrations must not take m261's place as the head: a plain migration after
+    it hands the pooled connection back with foreign keys ON (the runner's normal state),
+    which is not what these tests measure (m263 and m264 came after, N07)."""
+    real_discover = migrations._discover_migrations
+    monkeypatch.setattr(migrations, "_discover_migrations", lambda: [m for m in real_discover() if m["version"] <= 261])
+
+
 def _legacy_spool_ddl(dialect) -> list[str]:
     table = Base.metadata.tables["spool"]
     options = table.dialect_options["sqlite"]

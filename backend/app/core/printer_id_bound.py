@@ -48,7 +48,9 @@ import math
 import re
 from dataclasses import dataclass
 
-MAX_PRINTER_ID = 2**31 - 1
+from backend.app.core import id_allocator
+
+MAX_PRINTER_ID = id_allocator.MAX_ID
 
 
 @dataclass(frozen=True)
@@ -337,31 +339,9 @@ def _sqlite_text_affinity(declared: str | None) -> bool:
     return "INT" not in declared and any(token in declared for token in ("CHAR", "CLOB", "TEXT"))
 
 
-def _rows(conn, sql: str, params=()) -> list[tuple]:
-    cursor = conn.cursor()
-    try:
-        cursor.execute(sql, params)
-        return list(cursor.fetchall())
-    finally:
-        cursor.close()
-
-
-def _quote(identifier: str) -> str:
-    return '"' + identifier.replace('"', '""') + '"'
-
-
-def _lossless_int(value) -> int | None:
-    """A SQLite ``real`` or ``text`` value in an integer column that ``int()`` takes without loss."""
-    if isinstance(value, float):
-        return int(value) if math.isfinite(value) and value.is_integer() else None
-    if isinstance(value, (bytes, bytearray)):
-        value = value.decode("utf-8", "replace")
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return None
-    return None
+# Shared with every never-reissued table (core/id_allocator.py).
+_rows = id_allocator.rows
+_quote = id_allocator.quote
 
 
 def _best(best: int | None, values: list[int]) -> int | None:
@@ -371,20 +351,7 @@ def _best(best: int | None, values: list[int]) -> int | None:
     return top if best is None else max(best, top)
 
 
-def _sqlite_int_values(conn, table: str, column: str) -> list[int]:
-    t, c = _quote(table), _quote(column)
-    # One scan: the largest real integer in the domain, and whether any real/text value needs a closer look.
-    top, others = _rows(
-        conn,
-        f"SELECT MAX(CASE WHEN typeof({c}) = 'integer' AND {c} BETWEEN 1 AND ? THEN {c} END),"  # noqa: S608
-        f" SUM(CASE WHEN typeof({c}) IN ('real', 'text') THEN 1 ELSE 0 END) FROM {t}",
-        (MAX_PRINTER_ID,),
-    )[0]
-    values = [top] if top is not None else []
-    if others:
-        rows = _rows(conn, f"SELECT DISTINCT {c} FROM {t} WHERE typeof({c}) IN ('real', 'text')")  # noqa: S608
-        values += _domain(_lossless_int(raw) for (raw,) in rows)
-    return values
+_sqlite_int_values = id_allocator.sqlite_int_values
 
 
 def sqlite_bound(conn, applied: set[int]) -> int | None:
@@ -418,24 +385,12 @@ def sqlite_bound(conn, applied: set[int]) -> int | None:
 def sqlite_allocator(conn) -> int | None:
     """The highest number SQLite itself would continue from: ``MAX(printers.id)`` and the
     ``sqlite_sequence`` counter, domain or not. Reads only."""
-    found = []
-    if _rows(conn, "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'printers'"):
-        (top,) = _rows(conn, "SELECT MAX(id) FROM printers WHERE typeof(id) = 'integer'")[0]
-        found.append(top)
-    if _rows(conn, "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'sqlite_sequence'"):
-        found += [seq for (seq,) in _rows(conn, "SELECT seq FROM sqlite_sequence WHERE name = 'printers'")]
-    numbers = [v for v in found if isinstance(v, int) and not isinstance(v, bool)]
-    return max(numbers) if numbers else None
+    return id_allocator.sqlite_allocator(conn, "printers")
 
 
 def require_next_number(*highest: int | None) -> None:
     """Stop when no printer number is left at or below ``MAX_PRINTER_ID`` after ``highest``."""
-    numbers = [v for v in highest if v is not None]
-    if numbers and max(numbers) >= MAX_PRINTER_ID:
-        raise PrinterIdBoundError(
-            f"printers: the id counter is exhausted — {max(numbers)} is already remembered and no printer"
-            f" number is left up to {MAX_PRINTER_ID}"
-        )
+    id_allocator.require_next_number("printers", "printer", *highest, error=PrinterIdBoundError)
 
 
 _PG_INT_TYPES = {"smallint", "integer", "bigint"}

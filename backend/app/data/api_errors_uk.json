@@ -1455,5 +1455,15 @@
   "«{}»: only {} can be assembled": "«{}»: зібрати можна лише {}",
   "«{}»: only {} can be issued": "«{}»: видати можна лише {}",
   "«{}»: only {} can be received": "«{}»: оприбуткувати можна лише {}",
-  "«{}»: only {} can be written off": "«{}»: списати можна лише {}"
+  "«{}»: only {} can be written off": "«{}»: списати можна лише {}",
+  "The group mapping names groups that do not exist: {}": "Мапа груп називає групи, яких немає: {}",
+  "The identity provider no longer grants Administrators to the last active administrator. Sign-in refused; nothing was changed.": "Постачальник ідентичності більше не дає групу Administrators останньому активному адміністратору. Вхід відхилено, нічого не змінено.",
+  "The provider's group mapping is damaged. An administrator has to replace it.": "Мапа груп провайдера пошкоджена. Адміністратор має її замінити.",
+  "The sign-in provider changed during this sign-in. Start the sign-in again.": "Налаштування провайдера входу змінилися під час цього входу. Почніть вхід заново.",
+  "This sign-in has expired. Start the sign-in again.": "Цей вхід застарів. Почніть вхід заново.",
+  "The group mapping must be an object of IdP group to group id": "Мапа груп має бути об'єктом «група IdP → id групи»",
+  "The group mapping has more than 100 entries": "У мапі груп понад 100 записів",
+  "An IdP group in the mapping is empty or longer than 255 characters": "Група IdP у мапі порожня або довша за 255 символів",
+  "Two IdP groups in the mapping are the same after trimming spaces": "Дві групи IdP у мапі збігаються після обрізання пробілів",
+  "A group id in the mapping must be an integer from 1 to 2147483647": "Id групи в мапі має бути цілим числом від 1 до 2147483647"
 }

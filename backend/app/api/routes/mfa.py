@@ -37,6 +37,7 @@ from fastapi.responses import RedirectResponse
 from jwt import PyJWKClient
 from passlib.context import CryptContext
 from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload, undefer
 
@@ -74,7 +75,7 @@ from backend.app.core.oidc_env import env_bool
 from backend.app.core.permissions import Permission
 from backend.app.models.auth_ephemeral import AuthEphemeralToken, AuthRateLimitEvent, EventType, TokenType
 from backend.app.models.group import Group
-from backend.app.models.oidc_provider import OIDCProvider, UserOIDCLink
+from backend.app.models.oidc_provider import OIDCProvider, UserOIDCLink, assign_group_mapping
 from backend.app.models.user import User
 from backend.app.models.user_otp_code import UserOTPCode
 from backend.app.models.user_totp import UserTOTP
@@ -104,6 +105,7 @@ from backend.app.schemas.auth import (
     TwoFAVerifyResponse,
     UserResponse,
 )
+from backend.app.services import oidc_group_sync
 from backend.app.services.email_service import get_smtp_settings, send_email
 from backend.app.services.oidc_icon import OIDCIconError, fetch_icon
 
@@ -200,7 +202,18 @@ async def _generate_backup_codes_async() -> tuple[list[str], list[str]]:
 # ---------------------------------------------------------------------------
 # DB-backed pre-auth token helpers
 # ---------------------------------------------------------------------------
-async def create_pre_auth_token(db, username, challenge_id=None, *, remember_me=None, verified: VerifiedOutcome):
+async def create_pre_auth_token(
+    db,
+    username,
+    challenge_id=None,
+    *,
+    remember_me=None,
+    verified: VerifiedOutcome,
+    oidc_login_evidence: dict | None = None,
+    commit: bool = True,
+):
+    """Stage a pre-auth row. Local and LDAP logins keep the commit here; the OIDC transfer
+    paths pass ``commit=False`` and commit after their own permission boundary (N07 S36)."""
     capture = FrozenAuthority(
         "pending", verified.account.account_identity, verified.account.user_id, verified.account.generation
     )
@@ -217,15 +230,23 @@ async def create_pre_auth_token(db, username, challenge_id=None, *, remember_me=
             challenge_id=challenge_id,
             remember_me=remember_me,
             auth_source=verified.auth_source,
+            oidc_login_evidence=oidc_login_evidence,
             expires_at=utcnow() + PRE_AUTH_TOKEN_TTL,
             **binding(capture),
         )
     )
-    await db.commit()
+    if commit:
+        await db.commit()
     return token
 
 
 async def consume_pre_auth_token(db, token, challenge_id=None):
+    consumed = await consume_pre_auth_row(db, token, challenge_id)
+    return consumed[0] if consumed is not None else None
+
+
+async def consume_pre_auth_row(db, token, challenge_id=None):
+    """Consume a pre-auth row: ``(username, oidc_login_evidence)`` of the row actually deleted, or None."""
     row = await _peek_pre_auth_record(db, token, challenge_id)
     if row is None:
         return None
@@ -241,9 +262,10 @@ async def consume_pre_auth_token(db, token, challenge_id=None):
             AuthEphemeralToken.expires_at > utcnow(),
             *binding_conditions(capture),
         )
-        .returning(AuthEphemeralToken.id)
+        .returning(AuthEphemeralToken.id, AuthEphemeralToken.oidc_login_evidence)
     )
-    return principal.user.username if result.scalar_one_or_none() is not None else None
+    spent = result.one_or_none()
+    return (principal.user.username, spent[1]) if spent is not None else None
 
 
 async def _peek_pre_auth_record(db, token, challenge_id=None):
@@ -914,6 +936,8 @@ async def send_email_otp(request: Request, body: EmailOTPSendRequest, db: AsyncS
         row.auth_source,
         row.remember_me,
     )
+    # N07 S25: an OIDC attempt whose evidence is gone stops before the limit, SMTP and any write.
+    first_evidence = oidc_group_sync.require_live_evidence(row.oidc_login_evidence) if source == "oidc" else None
     user = row._principal.user
     email = user.email
     if not email:
@@ -925,6 +949,9 @@ async def send_email_otp(request: Request, body: EmailOTPSendRequest, db: AsyncS
     await db.rollback()
     code = str(secrets.randbelow(1_000_000)).zfill(6)
     hashed = await hash_password_async(code)
+    if first_evidence is not None:
+        # N07 S33: the last word before the mail leaves — after the limit, settings and hashing.
+        oidc_group_sync.require_deadline(first_evidence.deadline)
     try:
         await asyncio.shield(
             auth_runtime.spawn(
@@ -942,8 +969,11 @@ async def send_email_otp(request: Request, body: EmailOTPSendRequest, db: AsyncS
         raise HTTPException(500, "Failed to send OTP email") from None
     proof = await guard_accounts(db, [capture])
     principal = await validate_captured(db, capture, proof=proof)
-    if principal.user.email != email or not await consume_pre_auth_token(db, body.pre_auth_token, challenge):
+    consumed = await consume_pre_auth_row(db, body.pre_auth_token, challenge) if principal.user.email == email else None
+    if consumed is None:
         raise refused()
+    # N07 §C.4: the evidence travels from the row actually consumed, never from the first read.
+    carried = oidc_group_sync.require_live_evidence(consumed[1]) if source == "oidc" else None
     await db.execute(
         UserOTPCode.__table__.update()
         .where(UserOTPCode.user_id == principal.user.id, UserOTPCode.used.is_(False))
@@ -969,7 +999,14 @@ async def send_email_otp(request: Request, body: EmailOTPSendRequest, db: AsyncS
         challenge_id=challenge,
         remember_me=preference,
         verified=VerifiedOutcome(capture_account(principal.user), source),
+        oidc_login_evidence=consumed[1] if carried is not None else None,
+        commit=carried is None,
     )
+    if carried is not None:
+        # N07 S36: consumption, the new code, the send event and the new pre-auth are one result.
+        await db.flush()
+        oidc_group_sync.require_deadline(carried.deadline)
+        await db.commit()
     return {"message": "Code sent to your email address", "pre_auth_token": fresh}
 
 
@@ -984,6 +1021,9 @@ async def verify_2fa(
     capture = capture_ephemeral(pending, pending=True)
     username, source, preference = pending.username, pending.auth_source, pending.remember_me
     user_id = pending._principal.user.id
+    if source == "oidc":
+        # N07 S25: before the limit, the factor and any write.
+        oidc_group_sync.require_live_evidence(pending.oidc_login_evidence)
     await check_rate_limit(db, username)
     factor = (await db.execute(select(UserTOTP).where(UserTOTP.user_id == user_id))).scalar_one_or_none()
     code_row = None
@@ -1027,6 +1067,9 @@ async def verify_2fa(
         raise HTTPException(401, "Invalid or expired pre-auth token")
     if body.method == "email":
         code_row = await db.get(UserOTPCode, code_id, populate_existing=True) if code_id else None
+        if source == "oidc":
+            # N07 S26: after the authoritative re-read of the factor, before the failure's writes.
+            oidc_group_sync.require_live_evidence(current.oidc_login_evidence)
         if (
             code_row is None
             or code_row.used
@@ -1052,6 +1095,9 @@ async def verify_2fa(
                 .execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
+        if source == "oidc":
+            # N07 S26: after the authoritative re-read of the factor, before the failure's writes.
+            oidc_group_sync.require_live_evidence(current.oidc_login_evidence)
         if factor is None or not factor.is_enabled:
             valid = False
         elif body.method == "totp":
@@ -1061,8 +1107,13 @@ async def verify_2fa(
     if not valid:
         await record_failed_attempt(db, username)
         raise HTTPException(401, "Invalid verification code")
-    if not await consume_pre_auth_token(db, body.pre_auth_token, challenge):
+    if source == "oidc":
+        # N07 §C.8: account guard → policy lock → token consumption → admin lock.
+        await oidc_group_sync.lock_oidc_policy(db)
+    consumed = await consume_pre_auth_row(db, body.pre_auth_token, challenge)
+    if consumed is None:
         raise HTTPException(401, "Invalid or expired pre-auth token")
+    carried = oidc_group_sync.require_live_evidence(consumed[1]) if source == "oidc" else None
     if body.method == "email":
         code_row.used = True
     elif body.method == "totp":
@@ -1077,6 +1128,8 @@ async def verify_2fa(
             AuthRateLimitEvent.event_type == EventType.TWO_FA_ATTEMPT,
         )
     )
+    if carried is not None:
+        await oidc_group_sync.apply_at_issuance(db, principal.user.id, carried)
     from backend.app.api.routes.auth import _issue_refresh_cookie
 
     issued = await _issue_refresh_cookie(
@@ -1086,6 +1139,10 @@ async def verify_2fa(
         verified=VerifiedOutcome(capture_account(principal.user), source),
         remember_me=preference if preference is not None else body.remember_me,
     )
+    if carried is not None:
+        # N07 S36: factor, rights, flag, session and refresh are one result.
+        await db.flush()
+        oidc_group_sync.require_deadline(carried.deadline)
     await db.commit()
     response.delete_cookie("2fa_challenge", path="/api/v1/auth/2fa")
     return TwoFAVerifyResponse(
@@ -1234,6 +1291,7 @@ async def create_oidc_provider(
     Bambuddy #1333.
     """
     await lock_credential_config(db)
+    await oidc_group_sync.lock_oidc_policy(db)
     values = body.model_dump(exclude={"secret_actions"})
     values = merge_secret_fields({}, values, {"client_secret"}, body.secret_actions, creating=True)
     if values["is_enabled"] and not values.get("client_secret"):
@@ -1260,9 +1318,12 @@ async def create_oidc_provider(
         await db.rollback()
         icon_data, icon_content_type, icon_etag = await _fetch_icon_or_400(body.icon_url)
         await lock_credential_config(db)
+        await oidc_group_sync.lock_oidc_policy(db)
         if body.default_group_id is not None:
             if not (await db.execute(select(Group).where(Group.id == body.default_group_id))).scalar_one_or_none():
                 raise HTTPException(422, "default_group_id references a non-existent group")
+    # N07 §F: the mapping's groups exist — in this final transaction, under the policy lock.
+    await oidc_group_sync.require_mapping_targets(db, body.group_mapping)
 
     provider = OIDCProvider(
         name=body.name,
@@ -1281,6 +1342,8 @@ async def create_oidc_provider(
         icon_etag=icon_etag,
         default_group_id=body.default_group_id,
         is_autologin=body.is_autologin,
+        group_claim=body.group_claim,
+        group_mapping=body.group_mapping,
     )
     # Defense-in-depth: re-checks the safety guard against the constructed
     # ORM object so any future code path that bypasses Pydantic validation
@@ -1315,7 +1378,13 @@ def _refuse_if_env_managed(provider) -> None:
 def _oidc_snapshot(provider: OIDCProvider) -> dict:
     return {
         field: getattr(provider, field) for field in OIDCProviderCreate.model_fields if field != "secret_actions"
-    } | {"is_env_managed": provider.is_env_managed, "icon_etag": provider.icon_etag}
+    } | {
+        "is_env_managed": provider.is_env_managed,
+        "icon_etag": provider.icon_etag,
+        # N07 S28: a provider deleted and created again with the same id and values is
+        # another provider; its revision tells them apart.
+        "policy_revision": provider.policy_revision,
+    }
 
 
 def _oidc_scope(values: dict) -> tuple:
@@ -1345,6 +1414,7 @@ async def update_oidc_provider(
     #1333.
     """
     await lock_credential_config(db)
+    await oidc_group_sync.lock_oidc_policy(db)
     result2 = await db.execute(select(OIDCProvider).where(OIDCProvider.id == provider_id))
     provider = result2.scalar_one_or_none()
     if not provider:
@@ -1374,7 +1444,9 @@ async def update_oidc_provider(
     if resolved.get("is_enabled") and not resolved.get("client_secret"):
         raise HTTPException(400, "A client secret is required for an enabled OIDC provider")
     _enforce_auto_link_safety(SimpleNamespace(**resolved))
-    dumped = {key: value for key, value in resolved.items() if key not in {"is_env_managed", "icon_etag"}}
+    dumped = {
+        key: value for key, value in resolved.items() if key not in {"is_env_managed", "icon_etag", "policy_revision"}
+    }
 
     # Decide whether an icon refetch is needed BEFORE mutating the ORM
     # object, so the comparison sees provider.icon_url / icon_content_type
@@ -1394,6 +1466,7 @@ async def update_oidc_provider(
         await db.rollback()
         fetched_icon = await _fetch_icon_or_400(new_icon_url)
         await lock_credential_config(db)
+        await oidc_group_sync.lock_oidc_policy(db)
         provider = (
             await db.execute(
                 select(OIDCProvider).where(OIDCProvider.id == provider_id).execution_options(populate_existing=True)
@@ -1410,6 +1483,10 @@ async def update_oidc_provider(
     # silently ignore this request. Check ``model_fields_set`` on the
     # unfiltered body to distinguish "client cleared it" from "client
     # didn't include this field at all".
+    if changes.get("group_mapping") is not None:
+        # N07 §F: the final transaction, under the policy lock, after any icon fetch.
+        await oidc_group_sync.require_mapping_targets(db, changes["group_mapping"])
+
     if "icon_url" in body.model_fields_set and body.icon_url is None:
         provider.icon_url = None
         provider.icon_data = None
@@ -1419,6 +1496,10 @@ async def update_oidc_provider(
     for field, value in dumped.items():
         if field == "issuer_url" and value:
             value = value.rstrip("/")
+        if field == "group_mapping":
+            # N07 S42: a change Python's == cannot see (true vs 1) still reaches the row.
+            assign_group_mapping(provider, value)
+            continue
         setattr(provider, field, value)
 
     if fetched_icon is not None:
@@ -1505,6 +1586,9 @@ async def delete_oidc_provider_icon(
     the login page rendered a blank fallback (confusing half-state). To
     re-add an icon the admin re-types the URL in the edit form.
     """
+    # N07 §C.5: every provider writer takes credential config → policy lock → row.
+    await lock_credential_config(db)
+    await oidc_group_sync.lock_oidc_policy(db)
     result = await db.execute(select(OIDCProvider).where(OIDCProvider.id == provider_id))
     provider = result.scalar_one_or_none()
     if provider is None:
@@ -1528,6 +1612,7 @@ async def delete_oidc_provider(
 ) -> dict:
     """Delete an OIDC provider and all its user links (admin only)."""
     await lock_credential_config(db)
+    await oidc_group_sync.lock_oidc_policy(db)
     result2 = await db.execute(select(OIDCProvider).where(OIDCProvider.id == provider_id))
     provider = result2.scalar_one_or_none()
     if not provider:
@@ -1601,11 +1686,14 @@ async def oidc_authorize(
         AuthEphemeralToken(
             token=state,
             token_type=TokenType.OIDC_STATE,
-            contract_version=1,
+            # N07 §C.1: contract 2 carries the provider revision this attempt starts under;
+            # a contract-1 state left from before is refused as invalid_state (a new login).
+            contract_version=2,
             provider_id=provider_id,
             nonce=nonce,
             code_verifier=code_verifier,
             remember_me=remember_me,
+            oidc_login_evidence=oidc_group_sync.state_evidence(provider.policy_revision),
             expires_at=now + OIDC_STATE_TTL,
         )
     )
@@ -1636,7 +1724,9 @@ async def oidc_callback(
 ) -> RedirectResponse:
     """Handle the OIDC authorization code callback from the identity provider."""
     external_url = await _get_base_external_url(db)
-    frontend_error_url = f"{external_url}/?oidc_error="
+    # N07 S30: the public login page, never "/" — the guard of "/" sends a guest to
+    # /login and the code would be lost on the way.
+    frontend_error_url = f"{external_url}/login?oidc_error="
 
     try:
         if error:
@@ -1655,7 +1745,7 @@ async def oidc_callback(
             .where(
                 AuthEphemeralToken.token == state,
                 AuthEphemeralToken.token_type == TokenType.OIDC_STATE,
-                AuthEphemeralToken.contract_version == 1,
+                AuthEphemeralToken.contract_version == 2,
                 AuthEphemeralToken.expires_at > now,  # reject expired tokens atomically
             )
             .returning(
@@ -1663,6 +1753,7 @@ async def oidc_callback(
                 AuthEphemeralToken.nonce,
                 AuthEphemeralToken.code_verifier,
                 AuthEphemeralToken.remember_me,
+                AuthEphemeralToken.oidc_login_evidence,
             )
         )
         state_row = state_del.one_or_none()
@@ -1670,15 +1761,32 @@ async def oidc_callback(
             await db.rollback()
             return RedirectResponse(url=f"{frontend_error_url}invalid_state", status_code=302)
 
-        provider_id, nonce, code_verifier, stored_remember_me = state_row
+        provider_id, nonce, code_verifier, stored_remember_me, state_evidence = state_row
         remember_me = stored_remember_me is True
+        state_revision = oidc_group_sync.state_revision(state_evidence)
+        # N07 S19/S23: the opportunistic cleanup of expired exchange rows belongs to this
+        # first, short transaction — no account guard, no policy lock — and never waits
+        # for a row another transaction holds (PostgreSQL SKIP LOCKED; SQLite serializes
+        # on its writer). A skipped row is the next cleanup's.
+        expired_exchanges = select(AuthEphemeralToken.id).where(
+            AuthEphemeralToken.token_type == TokenType.OIDC_EXCHANGE,
+            AuthEphemeralToken.expires_at < now,
+        )
+        if db.get_bind().dialect.name == "postgresql":
+            expired_exchanges = expired_exchanges.with_for_update(skip_locked=True)
+        expired_ids = (await db.execute(expired_exchanges)).scalars().all()
+        if expired_ids:
+            await db.execute(delete(AuthEphemeralToken).where(AuthEphemeralToken.id.in_(expired_ids)))
         await db.commit()
+        if state_revision is None:
+            return RedirectResponse(url=f"{frontend_error_url}invalid_state", status_code=302)
 
-        # Load provider
-        result = await db.execute(select(OIDCProvider).where(OIDCProvider.id == provider_id))
-        provider = result.scalar_one_or_none()
-        if not provider:
-            return RedirectResponse(url=f"{frontend_error_url}provider_not_found", status_code=302)
+        # N07 S22: before anything leaves the process, the provider must still be the one
+        # the attempt started under — read fresh, past the identity map.
+        provider = await oidc_group_sync.fresh_provider(db, provider_id)
+        if not oidc_group_sync.provider_is_current(provider, state_revision):
+            await db.rollback()
+            return RedirectResponse(url=f"{frontend_error_url}{oidc_group_sync.PROVIDER_CHANGED}", status_code=302)
 
         redirect_uri = f"{external_url}/api/v1/auth/oidc/callback"
 
@@ -1795,11 +1903,16 @@ async def oidc_callback(
                 signing_key.key,
                 algorithms=["RS256", "ES256", "RS384", "ES384", "RS512"],
                 audience=provider.client_id,
-                options={"verify_iss": False},
+                # N07 S39: exp is checked by our validator only (form, representability,
+                # floor(exp)); every other PyJWT check stays.
+                options={"verify_iss": False, "verify_exp": False},
             )
             token_iss = claims.get("iss", "").rstrip("/")
             if token_iss != discovery_issuer:
                 raise jwt.exceptions.InvalidIssuerError("Invalid issuer")
+            token_exp = oidc_group_sync.exp_seconds(claims)
+            if not oidc_group_sync.now_utc().timestamp() < token_exp:
+                raise jwt.exceptions.ExpiredSignatureError("Signature has expired")
         except Exception as exc:
             logger.error("OIDC JWT validation failed for provider %d: %s", provider_id, exc, exc_info=True)
             return RedirectResponse(url=f"{frontend_error_url}token_validation_failed", status_code=302)
@@ -1818,6 +1931,30 @@ async def oidc_callback(
         # Resolve email via the provider's configured claim + verified policy.
         # See _resolve_provider_email docstring for Fall A/B/C semantics.
         provider_email: str | None = _resolve_provider_email(provider, claims, provider_sub)
+
+        # N07 §C.3, §D, §F: the mapping and the group claim are read before the user is
+        # resolved, so a refusal here writes nothing but the spent state.
+        mapping = oidc_group_sync.stored_mapping(provider.group_mapping)
+        if mapping is None:
+            logger.warning("OIDC provider %d has a damaged group mapping: sign-in refused", provider_id)
+            return RedirectResponse(url=f"{frontend_error_url}{oidc_group_sync.MAPPING_INVALID}", status_code=302)
+        try:
+            idp_groups = oidc_group_sync.idp_groups(claims, provider.group_claim) if mapping else None
+        except oidc_group_sync.CallbackRefused as refused_claims:
+            return RedirectResponse(url=f"{frontend_error_url}{refused_claims.code}", status_code=302)
+        deadline = oidc_group_sync.login_deadline(token_exp)
+
+        async def policy_gate() -> str | None:
+            """Step 5 of §C.3: the policy lock, then the provider read fresh and the deadline.
+            Taken after the guard of an existing account, before any write."""
+            await oidc_group_sync.lock_oidc_policy(db)
+            if not oidc_group_sync.provider_is_current(
+                await oidc_group_sync.fresh_provider(db, provider_id), state_revision
+            ):
+                return oidc_group_sync.PROVIDER_CHANGED
+            if not oidc_group_sync.now_utc().timestamp() < deadline:
+                return "token_validation_failed"
+            return None
 
         # ── Step 4: Resolve / create user ────────────────────────────────────
         try:
@@ -1847,6 +1984,10 @@ async def oidc_callback(
                 ).scalar_one_or_none()
                 if current_link is None:
                     raise refused()
+                gate = await policy_gate()
+                if gate is not None:
+                    await db.rollback()
+                    return RedirectResponse(url=f"{frontend_error_url}{gate}", status_code=302)
             else:
                 # 2. No OIDC link yet — check for an existing user with the same email.
                 # Use case-insensitive matching (func.lower) so that "User@Example.com"
@@ -1859,6 +2000,23 @@ async def oidc_callback(
 
                 if email_user and provider.auto_link_existing_accounts:
                     await guard_accounts(db, [capture_account(email_user)])
+                    # N07 §C.3: every precondition of the auto-link holds again under the
+                    # guard — the email still matches and the account is still active.
+                    email_user = (
+                        await db.execute(
+                            select(User)
+                            .where(User.id == email_user.id)
+                            .options(selectinload(User.groups))
+                            .execution_options(populate_existing=True)
+                        )
+                    ).scalar_one_or_none()
+                    if (
+                        email_user is None
+                        or not email_user.is_active
+                        or (email_user.email or "").lower() != provider_email.lower()
+                    ):
+                        await db.rollback()
+                        return RedirectResponse(url=f"{frontend_error_url}no_linked_account", status_code=302)
                     # M-4: Only auto-link when the provider has auto_link_existing_accounts
                     # enabled.  Operators can disable this to require explicit account linking,
                     # preventing an attacker-controlled IdP from hijacking local accounts.
@@ -1878,12 +2036,17 @@ async def oidc_callback(
                             email_user.username,
                         )
                         return RedirectResponse(url=f"{frontend_error_url}no_linked_account", status_code=302)
+                    gate = await policy_gate()
+                    if gate is not None:
+                        await db.rollback()
+                        return RedirectResponse(url=f"{frontend_error_url}{gate}", status_code=302)
                     db.add(
                         UserOIDCLink(
                             user_id=email_user.id,
                             provider_id=provider_id,
                             provider_user_id=provider_sub,
                             provider_email=provider_email,
+                            first_login_pending=False,
                         )
                     )
                     await db.flush()
@@ -1914,6 +2077,23 @@ async def oidc_callback(
                     raw = _derive_oidc_username_seed(claims, provider_email, provider_sub)
                     candidate = re.sub(r"[^a-zA-Z0-9._-]", "", raw)[:30] or "oidcuser"
 
+                    # N07 §C.3: a new account takes the policy lock first; under it, no
+                    # other attempt may have linked this subject meanwhile.
+                    gate = await policy_gate()
+                    if gate is not None:
+                        await db.rollback()
+                        return RedirectResponse(url=f"{frontend_error_url}{gate}", status_code=302)
+                    raced = await db.scalar(
+                        select(UserOIDCLink.id).where(
+                            UserOIDCLink.provider_id == provider_id, UserOIDCLink.provider_user_id == provider_sub
+                        )
+                    )
+                    if raced is not None:
+                        await db.rollback()
+                        return RedirectResponse(
+                            url=f"{frontend_error_url}{oidc_group_sync.LOGIN_RETRY}", status_code=302
+                        )
+
                     username = candidate
                     counter = 1
                     while True:
@@ -1923,24 +2103,10 @@ async def oidc_callback(
                         username = f"{candidate}{counter}"
                         counter += 1
 
-                    # I9 + #1173: Assign new OIDC users to a group before
-                    # flush. Accessing ``new_user.groups`` after the flush
-                    # triggers a lazy-load that fails in async context.
-                    # Resolution order:
-                    #   1. ``provider.default_group_id`` (operator-configured)
-                    #   2. ``"Viewers"`` (system fallback for read-only access)
-                    #   3. no group (last resort if Viewers was deleted)
-                    # SQLite has FK enforcement off by default, so a deleted
-                    # default group shows up as a dangling id; the lookup
-                    # below returns None and falls through to Viewers.
-                    default_group: Group | None = None
-                    if provider.default_group_id is not None:
-                        dg_result = await db.execute(select(Group).where(Group.id == provider.default_group_id))
-                        default_group = dg_result.scalar_one_or_none()
-                    if default_group is None:
-                        viewers_result = await db.execute(select(Group).where(Group.name == "Viewers"))
-                        default_group = viewers_result.scalar_one_or_none()
-
+                    # N07 §C.7 (owner, S12): the account is created here, as before, but
+                    # with NO groups. Its link is pending: the first issued session adds
+                    # the provider's default group (else Viewers) and the managed part as
+                    # one result. An abandoned login leaves an account without rights.
                     new_user = User(
                         username=username,
                         email=user_email_for_storage,
@@ -1950,20 +2116,27 @@ async def oidc_callback(
                         password_hash=None,  # OIDC users never use password auth
                         role="user",
                         is_active=True,
-                        groups=[default_group] if default_group else [],
+                        groups=[],
                     )
-                    db.add(new_user)
-                    await db.flush()
-
-                    db.add(
-                        UserOIDCLink(
-                            user_id=new_user.id,
-                            provider_id=provider_id,
-                            provider_user_id=provider_sub,
-                            provider_email=user_email_for_storage,
+                    try:
+                        db.add(new_user)
+                        await db.flush()
+                        db.add(
+                            UserOIDCLink(
+                                user_id=new_user.id,
+                                provider_id=provider_id,
+                                provider_user_id=provider_sub,
+                                provider_email=user_email_for_storage,
+                                first_login_pending=True,
+                            )
                         )
-                    )
-                    await db.flush()
+                        await db.flush()
+                    except IntegrityError:
+                        # Another attempt took the subject or the name meanwhile.
+                        await db.rollback()
+                        return RedirectResponse(
+                            url=f"{frontend_error_url}{oidc_group_sync.LOGIN_RETRY}", status_code=302
+                        )
                     user = new_user
                     logger.info("Auto-created user '%s' via OIDC provider %d", username, provider_id)
                 else:
@@ -1972,15 +2145,9 @@ async def oidc_callback(
             if not user or not user.is_active:
                 return RedirectResponse(url=f"{frontend_error_url}account_inactive", status_code=302)
 
-            # Issue an OIDC exchange token (short-lived, single-use) stored in DB.
-            # I7: Opportunistically prune expired exchange tokens to keep the table small.
+            # Issue an OIDC exchange token (short-lived, single-use) stored in DB, with the
+            # N07 login evidence. Expired exchange rows were pruned in the state transaction.
             now2 = utcnow()
-            await db.execute(
-                delete(AuthEphemeralToken).where(
-                    AuthEphemeralToken.token_type == TokenType.OIDC_EXCHANGE,
-                    AuthEphemeralToken.expires_at < now2,
-                )
-            )
             await guard_accounts(db, [capture_account(user)])
             exchange_token = secrets.token_urlsafe(32)
             db.add(
@@ -1991,9 +2158,21 @@ async def oidc_callback(
                     **binding(capture_account(user)),
                     username=user.username,
                     remember_me=remember_me,
+                    oidc_login_evidence=oidc_group_sync.build_evidence(
+                        provider_id=provider_id,
+                        revision=state_revision,
+                        sub=provider_sub,
+                        groups=idp_groups,
+                        deadline=deadline,
+                    ),
                     expires_at=now2 + OIDC_EXCHANGE_TTL,
                 )
             )
+            # N07 S36: the permission boundary — every row flushed, the deadline, one commit.
+            await db.flush()
+            if not oidc_group_sync.now_utc().timestamp() < deadline:
+                await db.rollback()
+                return RedirectResponse(url=f"{frontend_error_url}token_validation_failed", status_code=302)
             await db.commit()
 
             # H-4: Use a URL fragment (#) instead of a query parameter so the exchange
@@ -2041,10 +2220,21 @@ async def oidc_exchange(
     ).scalar_one_or_none()
     if row is None or row.auth_source != "oidc":
         raise HTTPException(401, "Invalid or expired OIDC exchange token")
+    # N07 S21: the evidence is checked before the 2FA decision.
+    oidc_group_sync.require_live_evidence(row.oidc_login_evidence)
     captured = capture_ephemeral(row, pending=True)
     preference = row.remember_me is True
     proof = await guard_accounts(db, [captured])
     principal = await validate_captured(db, captured, proof=proof)
+    user = principal.user
+    factor = (await db.execute(select(UserTOTP).where(UserTOTP.user_id == user.id))).scalar_one_or_none()
+    totp_enabled = bool(factor and factor.is_enabled)
+    email_enabled = await _get_email_2fa_enabled(db, user.id)
+    verified = VerifiedOutcome(capture_account(user), "oidc")
+    needs_factor = totp_enabled or email_enabled
+    if not needs_factor:
+        # N07 §C.8: account guard → policy lock → token consumption.
+        await oidc_group_sync.lock_oidc_policy(db)
     spent = await db.execute(
         delete(AuthEphemeralToken)
         .where(
@@ -2055,20 +2245,27 @@ async def oidc_exchange(
             AuthEphemeralToken.expires_at > utcnow(),
             *binding_conditions(captured),
         )
-        .returning(AuthEphemeralToken.id)
+        .returning(AuthEphemeralToken.id, AuthEphemeralToken.oidc_login_evidence)
     )
-    if spent.scalar_one_or_none() is None:
+    spent_row = spent.one_or_none()
+    if spent_row is None:
         raise refused()
-    user = principal.user
-    factor = (await db.execute(select(UserTOTP).where(UserTOTP.user_id == user.id))).scalar_one_or_none()
-    totp_enabled = bool(factor and factor.is_enabled)
-    email_enabled = await _get_email_2fa_enabled(db, user.id)
-    verified = VerifiedOutcome(capture_account(user), "oidc")
-    if totp_enabled or email_enabled:
+    carried = oidc_group_sync.require_live_evidence(spent_row[1])
+    if needs_factor:
         challenge = secrets.token_urlsafe(32)
         pending = await create_pre_auth_token(
-            db, user.username, challenge_id=challenge, remember_me=preference, verified=verified
+            db,
+            user.username,
+            challenge_id=challenge,
+            remember_me=preference,
+            verified=verified,
+            oidc_login_evidence=spent_row[1],
+            commit=False,
         )
+        # N07 S36: consumption and the new pre-auth are one result; the cookie follows the commit.
+        await db.flush()
+        oidc_group_sync.require_deadline(carried.deadline)
+        await db.commit()
         response.set_cookie(
             key="2fa_challenge",
             value=challenge,
@@ -2086,9 +2283,13 @@ async def oidc_exchange(
         return LoginResponse(
             requires_2fa=True, pre_auth_token=pending, two_fa_methods=methods, user=_user_to_response(user)
         )
+    await oidc_group_sync.apply_at_issuance(db, user.id, carried)
     from backend.app.api.routes.auth import _issue_refresh_cookie
 
     issued = await _issue_refresh_cookie(db, response, raw_request, verified=verified, remember_me=preference)
+    # N07 S36: rights, flag, session and refresh are one result.
+    await db.flush()
+    oidc_group_sync.require_deadline(carried.deadline)
     await db.commit()
     return LoginResponse(access_token=issued.access_token, token_type="bearer", user=_user_to_response(issued.user))
 
@@ -2173,6 +2374,15 @@ async def remove_oidc_link(
         raise HTTPException(status_code=400, detail="Cannot remove your last available login method")
 
     await db.delete(link)
+    # N07 S17: an unfinished OIDC attempt of this account dies with the link, evidence or not;
+    # a new link only ever comes with a new callback. Sessions already issued stay.
+    await db.execute(
+        delete(AuthEphemeralToken).where(
+            AuthEphemeralToken.account_identity == user.account_identity,
+            AuthEphemeralToken.auth_source == "oidc",
+            AuthEphemeralToken.token_type.in_([TokenType.OIDC_EXCHANGE, TokenType.PRE_AUTH]),
+        )
+    )
     await db.commit()
     return {"message": "OIDC link removed"}
 

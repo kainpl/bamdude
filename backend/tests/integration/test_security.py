@@ -282,12 +282,14 @@ class TestOIDCExchangeReplay:
     async def test_exchange_token_is_single_use(self, async_client: AsyncClient, db_session: AsyncSession):
         """The second call to /oidc/exchange with the same token returns 401."""
         from backend.app.core.auth_lifetime import binding, capture_account, guard_accounts
+        from backend.tests.auth_helpers import oidc_login_evidence
 
         user = User(username="oidc_replay_user", auth_source="oidc", is_active=True)
         db_session.add(user)
         await db_session.flush()
         captured = capture_account(user)
         await guard_accounts(db_session, [captured])
+        evidence = await oidc_login_evidence(db_session, user)  # N07: an exchange carries its evidence
         exchange_token = secrets.token_urlsafe(32)
         db_session.add(
             AuthEphemeralToken(
@@ -296,6 +298,7 @@ class TestOIDCExchangeReplay:
                 **binding(captured),
                 auth_source="oidc",
                 username="oidc_replay_user",
+                oidc_login_evidence=evidence,
                 expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
             )
         )

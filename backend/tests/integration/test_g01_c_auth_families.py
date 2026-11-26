@@ -151,7 +151,9 @@ async def test_oidc_delayed_remote_attempt_is_drained_before_restore_can_reopen(
             provider_id=provider.id,
             nonce="nonce",
             code_verifier="verifier",
-            contract_version=1,
+            # N07 §C.1: a state of contract 2 carries the provider revision it started under.
+            contract_version=2,
+            oidc_login_evidence={"v": 1, "revision": provider.policy_revision},
             expires_at=utcnow() + timedelta(minutes=5),
         )
     )
@@ -334,6 +336,11 @@ async def test_single_use_token_cannot_consume_replacement_with_reused_numeric_i
         raw = "one-shot-original"
         lookup = raw
         module = mfa
+        evidence = None
+        if family == "oidc":
+            from backend.tests.auth_helpers import oidc_login_evidence
+
+            evidence = await oidc_login_evidence(db_session, user)  # N07: an exchange carries its evidence
         db_session.add(
             AuthEphemeralToken(
                 token=raw,
@@ -341,6 +348,7 @@ async def test_single_use_token_cannot_consume_replacement_with_reused_numeric_i
                 auth_source="oidc" if family == "oidc" else "local",
                 remember_me=False,
                 username=user.username,
+                oidc_login_evidence=evidence,
                 expires_at=utcnow() + timedelta(minutes=5),
                 **binding(capture_account(user)),
             )

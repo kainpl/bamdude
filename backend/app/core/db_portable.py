@@ -565,9 +565,11 @@ def _source_id_bounds(src, table_names) -> dict[str, int]:
     FK repair removes it, only its numbers stay reserved. A file older than m262 has
     no counter for ``printers`` either: its bound is ``core/printer_id_bound.py`` —
     historical columns the later chain drops included — joined with the file's own
-    counter even when the file already has m262 (P-ID, spec §C). Reads only.
+    counter even when the file already has m262 (P-ID, spec §C). A file older than m263
+    has no counter for ``groups``: its bound is ``core/group_id_bound.py``, joined with
+    the file's own counter the same way (N07 spec §B). Reads only.
     """
-    from backend.app.core import printer_id_bound, spool_id_bound
+    from backend.app.core import group_id_bound, printer_id_bound, spool_id_bound
 
     names = set(table_names)
     bounds: dict[str, int] = {}
@@ -594,6 +596,12 @@ def _source_id_bounds(src, table_names) -> dict[str, int]:
             bounds["printers"] = max(printers, bounds.get("printers", printers))
         if "printers" in bounds:
             logger.info("Highest printer number the source remembers: %d", bounds["printers"])
+    if "groups" in names:
+        groups = group_id_bound.sqlite_bound(src, group_id_bound.sqlite_applied_versions(src))
+        if groups is not None:
+            bounds["groups"] = max(groups, bounds.get("groups", groups))
+        if "groups" in bounds:
+            logger.info("Highest group number the source remembers: %d", bounds["groups"])
     return bounds
 
 
@@ -1250,6 +1258,8 @@ async def _import_prepared_to_postgres(engine, metadata, prepared, *, acceptance
             logger.info("Spool numbers up to %d stay reserved in the imported database", id_bounds["spool"])
         if "printers" in id_bounds:
             logger.info("Printer numbers up to %d stay reserved in the imported database", id_bounds["printers"])
+        if "groups" in id_bounds:
+            logger.info("Group numbers up to %d stay reserved in the imported database", id_bounds["groups"])
         return imported
 
 
