@@ -146,10 +146,11 @@ def idp_groups(claims: dict, claim_name: str) -> list[str]:
     strings is taken element by element, one string is one group, a missing or
     ``null`` claim is no groups. Anything else is invalid.
     """
-    names = claims.get("_claim_names")
-    if names is not None and not isinstance(names, dict):
+    # A present ``_claim_names`` is read even when it is JSON null: only an absent key is
+    # "no marker" (N07-A01). The exception for null belongs to the group claim itself.
+    if "_claim_names" in claims and not isinstance(claims["_claim_names"], dict):
         raise CallbackRefused(CLAIMS_INVALID)
-    if (isinstance(names, dict) and claim_name in names) or claims.get("hasgroups") is True:
+    if claim_name in claims.get("_claim_names", {}) or claims.get("hasgroups") is True:
         raise CallbackRefused(CLAIMS_INCOMPLETE)
     value = claims.get(claim_name)
     if value is None:
@@ -226,9 +227,18 @@ def build_evidence(*, provider_id: int, revision: str, sub: str, groups: list[st
     }
 
 
+EVIDENCE_FIELDS = frozenset({"v", "provider_id", "revision", "sub", "groups", "deadline"})
+
+
 def read_evidence(raw) -> Evidence | None:
-    """The evidence of an OIDC exchange or pre-auth row, or ``None`` when absent or malformed."""
-    if not isinstance(raw, dict) or type(raw.get("v")) is not int or raw.get("v") != EVIDENCE_VERSION:
+    """The evidence of an OIDC exchange or pre-auth row, or ``None`` when absent or malformed.
+
+    Every field must be present; ``groups`` may be JSON null (the mapping was empty), but
+    a missing key is a malformed evidence, never an empty mapping (N07-A02).
+    """
+    if not isinstance(raw, dict) or not raw.keys() >= EVIDENCE_FIELDS:
+        return None
+    if type(raw.get("v")) is not int or raw.get("v") != EVIDENCE_VERSION:
         return None
     provider_id, revision, sub = raw.get("provider_id"), raw.get("revision"), raw.get("sub")
     groups, deadline = raw.get("groups"), raw.get("deadline")

@@ -1728,13 +1728,19 @@ async def oidc_callback(
     # /login and the code would be lost on the way.
     frontend_error_url = f"{external_url}/login?oidc_error="
 
+    async def refusal(code: str) -> RedirectResponse:
+        """Every own refusal of the callback (S07, N07-A05): the current transaction is rolled
+        back before the redirect. The spent state and the cleanup were committed on their own."""
+        await db.rollback()
+        return RedirectResponse(url=f"{frontend_error_url}{code}", status_code=302)
+
     try:
         if error:
             logger.warning("OIDC callback received error: %s", error)
-            return RedirectResponse(url=f"{frontend_error_url}oidc_provider_error", status_code=302)
+            return await refusal("oidc_provider_error")
 
         if not code or not state:
-            return RedirectResponse(url=f"{frontend_error_url}missing_parameters", status_code=302)
+            return await refusal("missing_parameters")
 
         # Atomically validate and consume OIDC state from DB (I6: single-use enforcement).
         # DELETE...RETURNING ensures concurrent callbacks with the same state token
@@ -1758,8 +1764,7 @@ async def oidc_callback(
         )
         state_row = state_del.one_or_none()
         if state_row is None:
-            await db.rollback()
-            return RedirectResponse(url=f"{frontend_error_url}invalid_state", status_code=302)
+            return await refusal("invalid_state")
 
         provider_id, nonce, code_verifier, stored_remember_me, state_evidence = state_row
         remember_me = stored_remember_me is True
@@ -1779,14 +1784,13 @@ async def oidc_callback(
             await db.execute(delete(AuthEphemeralToken).where(AuthEphemeralToken.id.in_(expired_ids)))
         await db.commit()
         if state_revision is None:
-            return RedirectResponse(url=f"{frontend_error_url}invalid_state", status_code=302)
+            return await refusal("invalid_state")
 
         # N07 S22: before anything leaves the process, the provider must still be the one
         # the attempt started under — read fresh, past the identity map.
         provider = await oidc_group_sync.fresh_provider(db, provider_id)
         if not oidc_group_sync.provider_is_current(provider, state_revision):
-            await db.rollback()
-            return RedirectResponse(url=f"{frontend_error_url}{oidc_group_sync.PROVIDER_CHANGED}", status_code=302)
+            return await refusal(oidc_group_sync.PROVIDER_CHANGED)
 
         redirect_uri = f"{external_url}/api/v1/auth/oidc/callback"
 
@@ -1801,19 +1805,19 @@ async def oidc_callback(
                 discovery = disc_resp.json()
         except Exception as exc:
             logger.error("OIDC discovery fetch failed for provider %d: %s", provider_id, exc)
-            return RedirectResponse(url=f"{frontend_error_url}discovery_failed", status_code=302)
+            return await refusal("discovery_failed")
 
         token_endpoint = discovery.get("token_endpoint")
         jwks_uri = discovery.get("jwks_uri")
         if not token_endpoint or not jwks_uri:
-            return RedirectResponse(url=f"{frontend_error_url}invalid_discovery_document", status_code=302)
+            return await refusal("invalid_discovery_document")
         # L-R7-C: Reject non-HTTP(S) URLs in the discovery document to prevent
         # SSRF via crafted responses (e.g. file://, gopher://, internal schemes).
         if not token_endpoint.startswith(("https://", "http://")) or not jwks_uri.startswith(("https://", "http://")):
             logger.warning(
                 "OIDC discovery document contains non-HTTP URL(s): token=%s jwks=%s", token_endpoint, jwks_uri
             )
-            return RedirectResponse(url=f"{frontend_error_url}invalid_discovery_document", status_code=302)
+            return await refusal("invalid_discovery_document")
 
         # ── Step 2: Exchange authorization code for tokens ───────────────────
         token_form: dict[str, str] = {
@@ -1836,7 +1840,7 @@ async def oidc_callback(
                 )
         except Exception as exc:
             logger.error("OIDC token exchange request failed for provider %d: %s", provider_id, exc)
-            return RedirectResponse(url=f"{frontend_error_url}token_exchange_network_error", status_code=302)
+            return await refusal("token_exchange_network_error")
 
         if not token_resp.is_success:
             try:
@@ -1858,16 +1862,13 @@ async def oidc_callback(
             # URL-encode the value to prevent query-parameter injection from provider responses.
             raw_err = oidc_err[:40] if oidc_err else str(token_resp.status_code)
             safe_err = urllib.parse.quote(raw_err, safe="")
-            return RedirectResponse(
-                url=f"{frontend_error_url}token_exchange_{safe_err}",
-                status_code=302,
-            )
+            return await refusal(f"token_exchange_{safe_err}")
 
         try:
             token_data = token_resp.json()
         except Exception as exc:
             logger.error("OIDC token exchange non-JSON response for provider %d: %s", provider_id, exc)
-            return RedirectResponse(url=f"{frontend_error_url}token_exchange_bad_response", status_code=302)
+            return await refusal("token_exchange_bad_response")
 
         id_token = token_data.get("id_token")
         if not id_token:
@@ -1877,7 +1878,7 @@ async def oidc_callback(
                 provider_id,
                 list(token_data.keys()),
             )
-            return RedirectResponse(url=f"{frontend_error_url}no_id_token", status_code=302)
+            return await refusal("no_id_token")
 
         # ── Step 3: Fetch JWKS and validate ID token ─────────────────────────
         # Use the issuer from the discovery document as the canonical value (OIDC Core
@@ -1915,18 +1916,18 @@ async def oidc_callback(
                 raise jwt.exceptions.ExpiredSignatureError("Signature has expired")
         except Exception as exc:
             logger.error("OIDC JWT validation failed for provider %d: %s", provider_id, exc, exc_info=True)
-            return RedirectResponse(url=f"{frontend_error_url}token_validation_failed", status_code=302)
+            return await refusal("token_validation_failed")
 
         # Verify nonce — fail closed: we always send a nonce, so the provider must echo it.
         # Skipping the check when nonce is absent would allow CSRF on non-nonce providers.
         token_nonce = claims.get("nonce")
         if token_nonce is None or token_nonce != nonce:
             logger.warning("OIDC nonce mismatch for provider %d (present=%r)", provider_id, token_nonce is not None)
-            return RedirectResponse(url=f"{frontend_error_url}nonce_mismatch", status_code=302)
+            return await refusal("nonce_mismatch")
 
         provider_sub: str = claims.get("sub", "")
         if not provider_sub:
-            return RedirectResponse(url=f"{frontend_error_url}missing_sub_claim", status_code=302)
+            return await refusal("missing_sub_claim")
 
         # Resolve email via the provider's configured claim + verified policy.
         # See _resolve_provider_email docstring for Fall A/B/C semantics.
@@ -1937,11 +1938,11 @@ async def oidc_callback(
         mapping = oidc_group_sync.stored_mapping(provider.group_mapping)
         if mapping is None:
             logger.warning("OIDC provider %d has a damaged group mapping: sign-in refused", provider_id)
-            return RedirectResponse(url=f"{frontend_error_url}{oidc_group_sync.MAPPING_INVALID}", status_code=302)
+            return await refusal(oidc_group_sync.MAPPING_INVALID)
         try:
             idp_groups = oidc_group_sync.idp_groups(claims, provider.group_claim) if mapping else None
         except oidc_group_sync.CallbackRefused as refused_claims:
-            return RedirectResponse(url=f"{frontend_error_url}{refused_claims.code}", status_code=302)
+            return await refusal(refused_claims.code)
         deadline = oidc_group_sync.login_deadline(token_exp)
 
         async def policy_gate() -> str | None:
@@ -1986,8 +1987,7 @@ async def oidc_callback(
                     raise refused()
                 gate = await policy_gate()
                 if gate is not None:
-                    await db.rollback()
-                    return RedirectResponse(url=f"{frontend_error_url}{gate}", status_code=302)
+                    return await refusal(gate)
             else:
                 # 2. No OIDC link yet — check for an existing user with the same email.
                 # Use case-insensitive matching (func.lower) so that "User@Example.com"
@@ -2015,8 +2015,7 @@ async def oidc_callback(
                         or not email_user.is_active
                         or (email_user.email or "").lower() != provider_email.lower()
                     ):
-                        await db.rollback()
-                        return RedirectResponse(url=f"{frontend_error_url}no_linked_account", status_code=302)
+                        return await refusal("no_linked_account")
                     # M-4: Only auto-link when the provider has auto_link_existing_accounts
                     # enabled.  Operators can disable this to require explicit account linking,
                     # preventing an attacker-controlled IdP from hijacking local accounts.
@@ -2035,11 +2034,10 @@ async def oidc_callback(
                             "Auto-link rejected for user '%s': already linked to another OIDC provider",
                             email_user.username,
                         )
-                        return RedirectResponse(url=f"{frontend_error_url}no_linked_account", status_code=302)
+                        return await refusal("no_linked_account")
                     gate = await policy_gate()
                     if gate is not None:
-                        await db.rollback()
-                        return RedirectResponse(url=f"{frontend_error_url}{gate}", status_code=302)
+                        return await refusal(gate)
                     db.add(
                         UserOIDCLink(
                             user_id=email_user.id,
@@ -2081,18 +2079,14 @@ async def oidc_callback(
                     # other attempt may have linked this subject meanwhile.
                     gate = await policy_gate()
                     if gate is not None:
-                        await db.rollback()
-                        return RedirectResponse(url=f"{frontend_error_url}{gate}", status_code=302)
+                        return await refusal(gate)
                     raced = await db.scalar(
                         select(UserOIDCLink.id).where(
                             UserOIDCLink.provider_id == provider_id, UserOIDCLink.provider_user_id == provider_sub
                         )
                     )
                     if raced is not None:
-                        await db.rollback()
-                        return RedirectResponse(
-                            url=f"{frontend_error_url}{oidc_group_sync.LOGIN_RETRY}", status_code=302
-                        )
+                        return await refusal(oidc_group_sync.LOGIN_RETRY)
 
                     username = candidate
                     counter = 1
@@ -2133,17 +2127,14 @@ async def oidc_callback(
                         await db.flush()
                     except IntegrityError:
                         # Another attempt took the subject or the name meanwhile.
-                        await db.rollback()
-                        return RedirectResponse(
-                            url=f"{frontend_error_url}{oidc_group_sync.LOGIN_RETRY}", status_code=302
-                        )
+                        return await refusal(oidc_group_sync.LOGIN_RETRY)
                     user = new_user
                     logger.info("Auto-created user '%s' via OIDC provider %d", username, provider_id)
                 else:
-                    return RedirectResponse(url=f"{frontend_error_url}no_linked_account", status_code=302)
+                    return await refusal("no_linked_account")
 
             if not user or not user.is_active:
-                return RedirectResponse(url=f"{frontend_error_url}account_inactive", status_code=302)
+                return await refusal("account_inactive")
 
             # Issue an OIDC exchange token (short-lived, single-use) stored in DB, with the
             # N07 login evidence. Expired exchange rows were pruned in the state transaction.
@@ -2171,8 +2162,7 @@ async def oidc_callback(
             # N07 S36: the permission boundary — every row flushed, the deadline, one commit.
             await db.flush()
             if not oidc_group_sync.now_utc().timestamp() < deadline:
-                await db.rollback()
-                return RedirectResponse(url=f"{frontend_error_url}token_validation_failed", status_code=302)
+                return await refusal("token_validation_failed")
             await db.commit()
 
             # H-4: Use a URL fragment (#) instead of a query parameter so the exchange
@@ -2189,7 +2179,7 @@ async def oidc_callback(
                 await db.rollback()
             except Exception as rb_exc:
                 logger.error("DB rollback failed after OIDC user-resolution error: %s", rb_exc, exc_info=True)
-            return RedirectResponse(url=f"{frontend_error_url}user_resolution_failed", status_code=302)
+            return await refusal("user_resolution_failed")
 
     except HTTPException:
         raise
@@ -2200,7 +2190,7 @@ async def oidc_callback(
         # redirect URL — leaking exception names aids attacker reconnaissance.
         logger.error("Unexpected error in OIDC callback (%s): %s", type(exc).__name__, exc, exc_info=True)
         try:
-            return RedirectResponse(url=f"{frontend_error_url}internal_error", status_code=302)
+            return await refusal("internal_error")
         except Exception:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="OIDC callback failed")
 

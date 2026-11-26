@@ -949,3 +949,134 @@ async def test_the_deadline_at_the_resend_boundary_publishes_nothing(n07, monkey
         )
         == 1
     )  # only the old one, back after the rollback
+
+
+# ── acceptance r1 (N07-A01, A02) and the remaining T2 pairs ──────────────────
+
+
+async def test_a_null_claim_names_refuses_the_callback(n07):
+    a = await n07.group("Team-A")
+    provider = await n07.provider({"idp-a": a.id})
+    user = await n07.user("n07-a01", provider, sub="s-a01", groups=[a])
+    location = await n07.callback(provider, sub="s-a01", _claim_names=None)
+    assert error_code(location) == oidc_group_sync.CLAIMS_INVALID
+    assert await fresh_groups(user.id) == {"Team-A"}
+
+
+@pytest.mark.parametrize("two_factor", [False, True])
+async def test_evidence_without_the_groups_key_is_refused(n07, two_factor):
+    provider = await n07.provider({})
+    user = await n07.user(f"n07-a02-{two_factor}", provider, sub=f"s-a02-{two_factor}")
+    if two_factor:
+        factor = UserTOTP(user_id=user.id, is_enabled=True)
+        factor.secret = pyotp.random_base32()
+        n07.db.add(factor)
+    token = await n07.login(provider, sub=f"s-a02-{two_factor}")
+    async with database.async_session() as session:
+        row = (await session.execute(select(AuthEphemeralToken).where(AuthEphemeralToken.token == token))).scalar_one()
+        row.oidc_login_evidence = {k: v for k, v in row.oidc_login_evidence.items() if k != "groups"}
+        await session.commit()
+    assert refusal(await n07.exchange(token)) == oidc_group_sync.LOGIN_EXPIRED
+    pending = await fresh_scalar(
+        "SELECT count(*) FROM auth_ephemeral_tokens WHERE token_type = 'pre_auth' AND account_identity = :a",
+        a=user.account_identity,
+    )
+    assert pending == 0
+
+
+async def test_two_logins_of_one_user_the_last_completed_wins(n07):
+    a, b = await n07.group("Team-A"), await n07.group("Team-B")
+    provider = await n07.provider({"idp-a": a.id, "idp-b": b.id})
+    user = await n07.user("n07-race", provider, sub="s-race")
+    first = await n07.login(provider, sub="s-race", groups=["idp-a"])
+    second = await n07.login(provider, sub="s-race", groups=["idp-b"])
+    assert (await n07.exchange(second)).status_code == 200
+    assert (await n07.exchange(first)).status_code == 200  # completes last
+    assert await fresh_groups(user.id) == {"Team-A"}
+
+
+async def test_an_auto_link_candidate_deactivated_before_its_guard_is_not_linked(n07, monkeypatch):
+    target = User(username="n07-deact", auth_source="local", role="user", is_active=True, email="deact@example.invalid")
+    n07.db.add(target)
+    provider = await n07.provider({}, auto_link_existing_accounts=True, email_claim="preferred_username")
+    await n07.db.commit()
+    real_guard = mfa.guard_accounts
+    fired = []
+
+    async def deactivate_then_guard(db, captures, **kwargs):
+        if not fired:
+            fired.append(1)
+            async with database.async_session() as session:
+                await session.execute(text("UPDATE users SET is_active = 0 WHERE id = :i"), {"i": target.id})
+                await session.commit()
+        return await real_guard(db, captures, **kwargs)
+
+    monkeypatch.setattr(mfa, "guard_accounts", deactivate_then_guard)
+    authorize = await n07.client.get(f"/api/v1/auth/oidc/authorize/{provider.id}")
+    query = parse_qs(urlsplit(authorize.json()["auth_url"]).query)
+    n07.idp.nonce = query["nonce"][0]
+    n07.idp.claims = {"sub": "s-deact", "preferred_username": "deact@example.invalid"}
+    callback = await n07.client.get(
+        "/api/v1/auth/oidc/callback", params={"state": query["state"][0], "code": "c"}, follow_redirects=False
+    )
+    # The account guard refuses the deactivated account as it does for any credential.
+    assert callback.status_code in (302, 401) and "#oidc_token=" not in callback.headers.get("location", "")
+    assert await fresh_scalar("SELECT count(*) FROM user_oidc_links WHERE user_id = :u", u=target.id) == 0
+    assert await fresh_scalar("SELECT count(*) FROM auth_ephemeral_tokens WHERE token_type = 'oidc_exchange'") == 0
+
+
+async def test_the_deadline_inside_verify_rolls_back_the_factor_and_the_rights(n07, monkeypatch):
+    from backend.app.api.routes import auth as auth_routes
+
+    a, b = await n07.group("Team-A"), await n07.group("Team-B")
+    provider = await n07.provider({"idp-a": a.id, "idp-b": b.id})
+    user = await n07.user("n07-verify-boundary", provider, sub="s-verify-boundary", groups=[a])
+    factor = UserTOTP(user_id=user.id, is_enabled=True)
+    factor.secret = pyotp.random_base32()
+    factor.backup_code_hashes = [mfa.pwd_context.hash("BOUNDRY1")]
+    n07.db.add(factor)
+    exchanged = await n07.exchange(await n07.login(provider, sub="s-verify-boundary", groups=["idp-b"]))
+    pre_auth = exchanged.json()["pre_auth_token"]
+    clock = _Clock(monkeypatch)
+    clock.deadline = await _deadline_of(pre_auth)
+    clock.jump_after(auth_routes, "_issue_refresh_cookie", monkeypatch)
+    response = await n07.client.post(
+        "/api/v1/auth/2fa/verify", json={"pre_auth_token": pre_auth, "code": "BOUNDRY1", "method": "backup"}
+    )
+    assert refusal(response) == oidc_group_sync.LOGIN_EXPIRED
+    assert clock.jumped
+    assert await fresh_groups(user.id) == {"Team-A"}
+    assert await fresh_scalar("SELECT count(*) FROM auth_ephemeral_tokens WHERE token = :t", t=pre_auth) == 1
+    async with database.async_session() as session:
+        kept = (await session.execute(select(UserTOTP).where(UserTOTP.user_id == user.id))).scalar_one()
+        assert len(kept.backup_code_hashes) == 1  # the backup code was not spent
+
+
+async def test_a_local_two_factor_login_keeps_a_sql_null_evidence(n07):
+    from backend.app.core.auth import get_password_hash
+
+    user = User(
+        username="n07-local-2fa",
+        password_hash=get_password_hash("LocalPass1!x"),
+        role="user",
+        is_active=True,
+        email="local2fa@example.invalid",
+    )
+    n07.db.add(user)
+    await n07.db.flush()
+    factor = UserTOTP(user_id=user.id, is_enabled=True)
+    factor.secret = pyotp.random_base32()
+    n07.db.add(factor)
+    await n07.db.commit()
+    login = await n07.client.post("/api/v1/auth/login", json={"username": "n07-local-2fa", "password": "LocalPass1!x"})
+    assert login.status_code == 200 and login.json()["requires_2fa"], login.text
+    pre_auth = login.json()["pre_auth_token"]
+    null_rows = await fresh_scalar(
+        "SELECT count(*) FROM auth_ephemeral_tokens WHERE token = :t AND oidc_login_evidence IS NULL", t=pre_auth
+    )
+    assert null_rows == 1
+    verified = await n07.client.post(
+        "/api/v1/auth/2fa/verify",
+        json={"pre_auth_token": pre_auth, "code": pyotp.TOTP(factor.secret).now(), "method": "totp"},
+    )
+    assert verified.status_code == 200, verified.text

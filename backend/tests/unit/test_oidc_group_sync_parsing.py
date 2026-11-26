@@ -49,6 +49,9 @@ def test_incompleteness_markers_win(claims):
         {"groups": ["a", 1]},
         {"groups": ["a"] * (sync.MAX_CLAIM_GROUPS + 1)},
         {"_claim_names": "groups"},
+        {"_claim_names": None},  # present as JSON null: not "no marker" (N07-A01)
+        {"_claim_names": None, "groups": []},
+        {"_claim_names": None, "groups": ["a"]},
     ],
 )
 def test_invalid_values_are_refused(claims):
@@ -154,6 +157,8 @@ def test_evidence_round_trip():
         _evidence(groups=[1]),
         _evidence(deadline="1000"),
         _evidence(deadline=1000.5),
+        {k: v for k, v in _evidence().items() if k != "groups"},  # a missing key is no empty mapping (N07-A02)
+        {k: v for k, v in _evidence().items() if k != "deadline"},
     ],
 )
 def test_malformed_evidence_reads_as_none(raw):
