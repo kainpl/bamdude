@@ -1163,6 +1163,53 @@ async def test_a_value_the_spoolman_route_cannot_store_is_refused_before_the_cha
     assert not spoolman_source.mode_change_in_flight()
 
 
+# Raw bodies: an unpaired surrogate is a valid JSON escape, but no client library encodes one.
+UNSTORABLE = [
+    ("/api/v1/settings/spoolman", '{"spoolman_enabled": true, "spoolman_sync_mode": "\\ud800"}'),
+    ("/api/v1/settings/spoolman", '{"spoolman_enabled": true, "spoolman_url": "http://b.invalid:7912/\\ud800"}'),
+    ("/api/v1/settings/spoolman", '{"spoolman_enabled": true, "spoolman_sync_mode": "auto\\u0000"}'),
+    ("/api/v1/settings/spoolman", '{"spoolman_enabled": true, "spoolman_url": "http://b.invalid:7912/\\u0000"}'),
+    ("/api/v1/settings/", '{"spoolman_enabled": true, "time_format": "\\ud800"}'),
+    ("/api/v1/settings/", '{"spoolman_enabled": true, "spoolman_url": "http://b.invalid:7912/\\u0000"}'),
+]
+UNSTORABLE_IDS = [
+    "route-mode-surrogate",
+    "route-address-surrogate",
+    "route-mode-nul",
+    "route-address-nul",
+    "save-surrogate",
+    "save-address-nul",
+]
+
+
+@pytest.mark.parametrize(("path", "body"), UNSTORABLE, ids=UNSTORABLE_IDS)
+async def test_text_no_database_can_hold_is_refused_before_the_change(
+    async_client, db_session, printer_factory, path, body
+):
+    """A16: a string of the right type that the database cannot hold — an unpaired surrogate on
+    both backends, a NUL on PostgreSQL — passed the route's check and failed at the write, after
+    ``decide`` had forgotten the overlay and raised the generations. Both saves refuse it first,
+    on both backends alike."""
+    from backend.app.models.spool_assignment import SpoolAssignment
+    from backend.app.services import ams_advertised_overlay as overlay, spoolman_source
+
+    printer = await printer_factory()
+    spool_id = await _built_in_slot(db_session, printer.id)
+    generation, base = spoolman_source.generation(), spoolman_source.base_generation()
+
+    response = await async_client.put(path, content=body, headers={"Content-Type": "application/json"})
+
+    assert response.status_code == 422, response.text
+    if path.endswith("/spoolman"):
+        assert response.json()["detail"].endswith(": contains a character that cannot be stored")
+    else:
+        assert "cannot be stored" in response.json()["detail"][0]["msg"]
+    assert await _observe(SpoolAssignment, SpoolAssignment.spool_id) == ("false", [spool_id])
+    assert overlay.entries_for(printer.id) == {(0, 1): _overlay_entry("internal")}
+    assert (spoolman_source.generation(), spoolman_source.base_generation()) == (generation, base)
+    assert not spoolman_source.mode_change_in_flight()
+
+
 async def test_a_save_its_caller_may_not_make_holds_no_slot_ledger_writer(db_session, printer_factory, monkeypatch):
     """A14: a save refused by the caller's role raised the mode flag first and waited for the
     writers — then 403, or 409 ``slot_writes`` after the whole wait when the writer did not end."""

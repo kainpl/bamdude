@@ -31,6 +31,20 @@ def test_explicit_allowlist_contains_only_current_editor_fields_and_accepts_thei
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["24h\x00", "\ud800"], ids=["nul", "unpaired-surrogate"])
+async def test_text_no_database_can_hold_is_skipped_as_invalid_before_anything_is_written(db_session, value):
+    """C047 acceptance A16: such text failed at the write -- a NUL on PostgreSQL, an unpaired
+    surrogate on both -- after the category had decided a change of the Spoolman mode."""
+    tally = await apply(db_session, {"time_format": value, "currency": "EUR"})
+    assert "settingsInvalidSkipped" in {note["code"] for note in tally.notes}
+    assert tally.restored == 1
+    stored = await db_session.execute(
+        select(Settings.key, Settings.value).where(Settings.key.in_(["time_format", "currency"]))
+    )
+    assert dict(stored.all()) == {"currency": "EUR"}
+
+
+@pytest.mark.asyncio
 async def test_classifier_rejects_unknown_runtime_bad_types_masks_and_auth_without_echo(db_session):
     values = {
         "foreign_key": "private-canary",

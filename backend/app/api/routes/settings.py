@@ -41,6 +41,7 @@ from backend.app.schemas.settings import (
     AppSettingsRead,
     AppSettingsUpdate,
     opaque_service_url,
+    storable_text,
 )
 from backend.app.services import energy_price
 
@@ -1240,8 +1241,9 @@ def _spoolman_route_values(settings: dict) -> dict[str, str]:
     stored there as ``"true"`` / ``"false"``. ``SourceChange.decide`` is given exactly what
     ``set_setting`` then writes, so the mode it decides is the mode the row holds: a raw JSON
     ``true`` was decided as Spoolman and stored as ``1``, which every reader takes for the
-    built-in inventory (C047 acceptance A13). A null or a value of another type is a 422
-    before the source guard; a key the route does not own is ignored, as before.
+    built-in inventory (C047 acceptance A13). A null, a value of another type or text no
+    database can hold (``storable_text``, A16) is a 422 before the source guard; a key the
+    route does not own is ignored, as before.
     """
     values: dict[str, str] = {}
     for key in _SPOOLMAN_ROUTE_KEYS:
@@ -1254,7 +1256,11 @@ def _spoolman_route_values(settings: dict) -> dict[str, str]:
             if kind is bool:
                 raise HTTPException(422, f"{key}: expected true or false") from None
             raise HTTPException(422, f"{key}: expected a string") from None
-        values[key] = ("true" if value else "false") if kind is bool else value
+        if kind is bool:
+            value = "true" if value else "false"
+        elif not storable_text(value):
+            raise HTTPException(422, f"{key}: contains a character that cannot be stored")
+        values[key] = value
     return values
 
 

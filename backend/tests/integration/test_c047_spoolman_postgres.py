@@ -667,3 +667,53 @@ async def test_a_json_switch_is_stored_as_the_mode_the_change_decided(pg, body):
         assert spoolman_source.generation() == generation + 1
     finally:
         overlay.forget_all()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"spoolman_enabled": True, "spoolman_sync_mode": "auto\x00"},
+        {"spoolman_enabled": True, "spoolman_url": "http://b.invalid:7912/\x00"},
+        {"spoolman_enabled": True, "spoolman_sync_mode": "\ud800"},
+    ],
+    ids=["mode-nul", "address-nul", "mode-surrogate"],
+)
+async def test_text_postgresql_cannot_hold_is_refused_before_the_change(pg, body):
+    """A16 on PostgreSQL: a NUL (and an unpaired surrogate) failed at the write, after ``decide``
+    had forgotten the overlay and raised the generations — a 500 that left them behind."""
+    from backend.app.api.routes.settings import update_spoolman_settings
+    from backend.app.models.spool import Spool
+    from backend.app.models.spool_assignment import SpoolAssignment
+    from backend.app.services import ams_advertised_overlay as overlay, spoolman_source
+
+    factory, _ = pg
+    printer = await _printer(factory)
+    async with factory() as db:
+        spool = Spool(material="PLA", subtype="Basic", brand="Generic", rgba="FF0000FF", label_weight=1000)
+        db.add(spool)
+        await db.commit()
+        db.add(SpoolAssignment(spool_id=spool.id, printer_id=printer.id, ams_id=0, tray_id=1))
+        await db.commit()
+    entry = overlay.OverlayEntry(
+        actual_material="PLA",
+        actual_color="FF0000",
+        actual_variant="GFL98",
+        actual_cols=(),
+        advertised_color="FF0000",
+        advertised_variant="GFL99",
+        source="internal",
+    )
+    overlay.replace_printer(printer.id, {(0, 1): entry})
+    generations = spoolman_source.generation(), spoolman_source.base_generation()
+    try:
+        async with factory() as db:
+            with pytest.raises(HTTPException) as refused:
+                await update_spoolman_settings(dict(body), db=db, _=None)
+        assert refused.value.status_code == 422
+        async with factory() as db:
+            assert (await db.scalars(select(SpoolAssignment.spool_id))).all() == [spool.id]
+        assert overlay.entries_for(printer.id) == {(0, 1): entry}
+        assert (spoolman_source.generation(), spoolman_source.base_generation()) == generations
+        assert not spoolman_source.mode_change_in_flight()
+    finally:
+        overlay.forget_all()
