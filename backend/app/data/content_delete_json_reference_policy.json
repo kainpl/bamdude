@@ -358,5 +358,15 @@
     "table": "auto_queue_items",
     "column": "slicer_options",
     "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "oidc_providers.group_mapping": {
+    "table": "oidc_providers",
+    "column": "group_mapping",
+    "policy": "N07 group mapping: IdP group name to BamDude group id. Group numbers are never reissued (m263), so the id of a deleted group names nobody and the form shows the row as deleted. Not a C parent reference; the row's deletion follows the OIDC provider's owner."
+  },
+  "auth_ephemeral_tokens.oidc_login_evidence": {
+    "table": "auth_ephemeral_tokens",
+    "column": "oidc_login_evidence",
+    "policy": "N07 login evidence of an OIDC state, exchange or pre-auth row: provider id, policy revision, subject, IdP group names and a deadline. It dies with its one-time token (consumption, expiry cleanup, unlink); the provider id is checked against the live row and its revision at use. Not a C parent reference."
   }
 }
