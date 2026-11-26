@@ -173,8 +173,8 @@ async def test_delete_target_cannot_rebind_vp_to_reused_printer_id(
     response = await async_client.delete(f"/api/v1/printers/{target_id}?delete_archives=false")
     assert response.status_code == 200, response.text
     replacement = await printer_factory(name="Different physical printer")
-    if test_engine.dialect.name == "sqlite":
-        assert replacement.id == target_id  # Actual reuse, not a manufactured fixture.
+    # A printer number is never handed out again (m262), so the VP can only stay unbound.
+    assert replacement.id != target_id
     bound_id = await db_session.scalar(select(VirtualPrinter.target_printer_id).where(VirtualPrinter.id == vp_id))
     assert bound_id is None
     sync.assert_awaited_once()
