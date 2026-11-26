@@ -186,8 +186,11 @@ jobs:
         run: python -m pytest ${{ matrix.targets }} -v --tb=short --timeout=60 --timeout-method=thread -n 4
 
   # The normal backend suite runs on Linux.  This deliberately small matrix
-  # exercises the 3MF service/child boundary on every native installer
-  # platform without multiplying the entire 14k-test suite threefold.
+  # exercises the 3MF service/child boundary on the other native installer
+  # platforms without multiplying the entire 14k-test suite threefold. No Linux
+  # leg: every file below is in backend/tests/unit, which Backend Tests (unit)
+  # already runs on ubuntu-latest with the same Python; a third copy only held
+  # a runner slot.
   print-analysis-process-smoke:
     name: Print Analysis Process Smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -196,7 +199,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
       - name: Set up Python
