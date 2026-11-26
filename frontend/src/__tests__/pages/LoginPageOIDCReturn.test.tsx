@@ -105,3 +105,49 @@ describe('LoginPage after an OIDC return', () => {
     expect(screen.getByPlaceholderText(/000000/)).toBeInTheDocument();
   });
 });
+
+describe('LoginPage — an OIDC return read after mount (A04)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sessionStorage.clear();
+  });
+
+  async function startAutologinThenReturn(returnUrl: string) {
+    window.history.replaceState(null, '', '/login');
+    let release!: () => void;
+    const held = new Promise<void>((done) => { release = done; });
+    const authorize = vi.fn();
+    server.use(
+      http.get('/api/v1/auth/advanced-auth/status', () =>
+        HttpResponse.json({ advanced_auth_enabled: true, local_login_enabled: true, autologin_provider_id: providerId }),
+      ),
+      http.get('/api/v1/auth/oidc/providers', () =>
+        HttpResponse.json([{ id: providerId, name: 'Farm SSO', has_icon: false, is_autologin: true }]),
+      ),
+      http.get(`/api/v1/auth/oidc/authorize/${providerId}`, async () => {
+        authorize();
+        await held;  // the automatic authorize is still waiting when the return arrives
+        return HttpResponse.json({ auth_url: '#auto' });
+      }),
+      http.post('/api/v1/auth/oidc/exchange', () =>
+        HttpResponse.json({ requires_2fa: true, pre_auth_token: 'pre-auth', two_fa_methods: ['totp'], user: null }),
+      ),
+    );
+    render(<LoginPage />);
+    await waitFor(() => expect(authorize).toHaveBeenCalledTimes(1));
+    window.history.pushState(null, '', returnUrl);  // the same page, no remount
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    await new Promise((done) => setTimeout(done, 50));
+    release();
+    await new Promise((done) => setTimeout(done, 150));
+    return window.location.hash;
+  }
+
+  it('drops a late authorize URL after a callback code', async () => {
+    expect(await startAutologinThenReturn('/login?oidc_error=provider_changed')).not.toBe('#auto');
+  });
+
+  it('drops a late authorize URL after an exchange fragment', async () => {
+    expect(await startAutologinThenReturn('/login#oidc_token=late-exchange')).not.toBe('#auto');
+  });
+});

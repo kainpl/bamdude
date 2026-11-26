@@ -84,7 +84,8 @@ function ProviderForm({
   const existingGroupIds = groupsList ? new Set(groupsList.map((g) => g.id)) : null;
   const adminGroupId = groupsList?.find((g) => g.name === ADMIN_GROUP_NAME)?.id;
   const editingMapping = !mappingDamaged || replacingDamaged;
-  const mappingToSend = rowsToMapping(rows, existingGroupIds);
+  const { mapping: mappingToSend, duplicates: duplicateKeys } = rowsToMapping(rows, existingGroupIds);
+  const mappingBlocked = editingMapping && duplicateKeys.length > 0;
   const clearsMapping =
     editingMapping && Object.keys(mappingToSend).length === 0 && (replacingDamaged || toRows(initial.group_mapping).length > 0);
   const updateRow = (index: number, change: Partial<MappingRow>) =>
@@ -270,6 +271,11 @@ function ProviderForm({
             {adminGroupId !== undefined && Object.values(mappingToSend).includes(adminGroupId) && (
               <p className="text-xs text-amber-700 dark:text-amber-300">{t('settings.oidc.form.mappingAdminHint')}</p>
             )}
+            {duplicateKeys.length > 0 && (
+              <p className="text-xs text-red-700 dark:text-red-400" data-testid="oidc-mapping-duplicates">
+                {t('settings.oidc.form.mappingDuplicate', { names: duplicateKeys.join(', ') })}
+              </p>
+            )}
             {clearsMapping && (
               <p className="text-xs text-amber-700 dark:text-amber-300" data-testid="oidc-mapping-clear-warning">
                 {t('settings.oidc.form.mappingClearWarning')}
@@ -332,7 +338,7 @@ function ProviderForm({
         <Button
           variant="primary"
           className="flex-1"
-          disabled={!form.name || !form.issuer_url || !form.client_id || (!isEdit && !form.client_secret) || (isEdit && secretChanged && !secretCleared && !form.client_secret) || (secretCleared && form.is_enabled) || isPending}
+          disabled={!form.name || !form.issuer_url || !form.client_id || (!isEdit && !form.client_secret) || (isEdit && secretChanged && !secretCleared && !form.client_secret) || (secretCleared && form.is_enabled) || mappingBlocked || isPending}
           onClick={handleSave}
         >
           {isPending ? t('common.saving') : t('common.save')}
@@ -356,6 +362,13 @@ export function OIDCProviderSettings() {
     queryKey: ['oidc-providers-all'],
     queryFn: () => api.getOIDCProvidersAll(),
   });
+  // The group names behind a mapping's ids; a mapped id that no longer exists is marked (§B, §G).
+  const { data: groupsList } = useQuery({ queryKey: ['groups'], queryFn: () => api.getGroups() });
+  const groupLabel = (groupId: number) => {
+    if (!groupsList) return `#${groupId}`;
+    const group = groupsList.find((g) => g.id === groupId);
+    return group ? group.name : `#${groupId} (${t('settings.oidc.form.mappingGroupDeleted')})`;
+  };
 
   const createMutation = useMutation({
     mutationFn: (data: OIDCProviderCreate) => api.createOIDCProvider(data),
@@ -596,7 +609,7 @@ export function OIDCProviderSettings() {
                       <span className="font-mono text-xs">
                         {provider.group_claim}:{' '}
                         {Object.entries(provider.group_mapping ?? {})
-                          .map(([idp, groupId]) => `${idp} → ${groupId}`)
+                          .map(([idp, groupId]) => `${idp} → ${groupLabel(groupId)}`)
                           .join(', ')}
                       </span>
                     )}

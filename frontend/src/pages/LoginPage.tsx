@@ -155,6 +155,10 @@ export function LoginPage() {
     const hash = window.location.hash;
     const oidcToken = hash.startsWith('#oidc_token=') ? hash.slice('#oidc_token='.length) : null;
     const oidcError = searchParams.get('oidc_error');
+    // N07 S31 (A04): every reading of an OIDC return bans autologin for this load —
+    // before the URL is cleaned and before any async work, so an autologin that is
+    // already waiting for its authorize URL drops it.
+    if (oidcToken || oidcError) oidcReturnRef.current = true;
 
     if (oidcError) {
       // L-3: Whitelist known OIDC error codes so provider-controlled text is never
@@ -217,7 +221,7 @@ export function LoginPage() {
         navigate('/login', { replace: true });
       });
     }
-  }, [searchParams]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [searchParams, location.hash]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // #1589: autologin redirect with fallback. When the backend reports an
   // `autologin_provider_id`, redirect unauthenticated visitors directly to

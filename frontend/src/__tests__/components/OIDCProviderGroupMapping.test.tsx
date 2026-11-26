@@ -107,7 +107,7 @@ describe('OIDC group mapping', () => {
   it('shows an env-managed mapping read-only', async () => {
     serve([{ ...BASE, id: 7, name: 'Env', is_env_managed: true, group_mapping: { ops: 3 }, group_mapping_invalid: false }]);
     render(<OIDCProviderSettings />);
-    expect(await screen.findByTestId('oidc-mapping-summary-7')).toHaveTextContent('ops → 3');
+    expect(await screen.findByTestId('oidc-mapping-summary-7')).toHaveTextContent('ops → Team');
     expect(screen.queryByTestId('edit-provider-7')).not.toBeInTheDocument();
   });
 });
@@ -123,11 +123,51 @@ describe('rowsToMapping', () => {
           { idp: 'none', groupId: '' },
         ],
         new Set([3]),
-      ),
+      ).mapping,
     ).toEqual({ ops: 3 });
   });
 
   it('judges no group deleted before the group list has loaded', () => {
-    expect(rowsToMapping([{ idp: 'ops', groupId: 3 }], null)).toEqual({ ops: 3 });
+    expect(rowsToMapping([{ idp: 'ops', groupId: 3 }], null).mapping).toEqual({ ops: 3 });
+  });
+
+  it('reports names two rows share after trimming instead of keeping the last', () => {
+    const result = rowsToMapping(
+      [
+        { idp: 'Team', groupId: 2 },
+        { idp: ' Team ', groupId: 3 },
+      ],
+      new Set([2, 3]),
+    );
+    expect(result.duplicates).toEqual(['Team']);
+    expect(result.mapping).toEqual({});
+  });
+
+  it('keeps a group literally named __proto__ as an own property', () => {
+    const { mapping } = rowsToMapping([{ idp: '__proto__', groupId: 2 }], new Set([2]));
+    expect(Object.keys(mapping)).toEqual(['__proto__']);
+    expect(JSON.stringify(mapping)).toBe('{"__proto__":2}');
+  });
+});
+
+describe('OIDC group mapping — form guards', () => {
+  it('refuses to save rows that collide after trimming', async () => {
+    const puts = serve([{ ...BASE, id: 5, name: 'Mapped', group_mapping: { Team: 3 }, group_mapping_invalid: false }]);
+    render(<OIDCProviderSettings />);
+    await openEdit(5);
+    await waitFor(() => expect(screen.getAllByRole('option', { name: 'Team' }).length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByTestId('oidc-mapping-add'));
+    const names = screen.getAllByLabelText('IdP group');
+    fireEvent.change(names[1], { target: { value: ' Team ' } });
+    fireEvent.change(screen.getAllByLabelText('BamDude group')[1], { target: { value: '1' } });
+    expect(screen.getByTestId('oidc-mapping-duplicates')).toHaveTextContent('Team');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(puts).toHaveLength(0);
+  });
+
+  it('marks a deleted group in the read-only summary', async () => {
+    serve([{ ...BASE, id: 8, name: 'Env gone', is_env_managed: true, group_mapping: { ops: 42 }, group_mapping_invalid: false }]);
+    render(<OIDCProviderSettings />);
+    await waitFor(() => expect(screen.getByTestId('oidc-mapping-summary-8')).toHaveTextContent('Group deleted'));
   });
 });

@@ -4878,6 +4878,7 @@ export default {
         mappingGroupDeleted: 'Group deleted',
         mappingAdd: 'Add mapping',
         mappingRemove: 'Remove mapping',
+        mappingDuplicate: 'Two rows name the same IdP group after trimming spaces: {{names}}. Keep one before saving.',
         mappingRemovedHint: 'A group removed from the mapping is no longer managed: users keep it until you remove them from it by hand.',
         mappingAdminHint: 'Administrators is managed by the IdP. Keep a separate local administrator outside the mapping, or a change in the IdP can lock everyone out.',
         mappingDamaged: 'The stored group mapping is damaged, and OIDC sign-in through this provider is refused until it is replaced. Saving the form keeps it as it is.',
