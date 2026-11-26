@@ -1957,6 +1957,12 @@ async def oidc_callback(
                 return "token_validation_failed"
             return None
 
+        async def refuse_no_linked_account() -> RedirectResponse:
+            """N07-A08: a missing link may be a provider deleted or changed while the IdP
+            answered (its links went with it). The policy is asked under its lock first, so
+            that case says provider_changed; only a current provider says no_linked_account."""
+            return await refusal(await policy_gate() or "no_linked_account")
+
         # ── Step 4: Resolve / create user ────────────────────────────────────
         try:
             # Resolve link + immutable account in one statement. A second lookup
@@ -2015,7 +2021,7 @@ async def oidc_callback(
                         or not email_user.is_active
                         or (email_user.email or "").lower() != provider_email.lower()
                     ):
-                        return await refusal("no_linked_account")
+                        return await refuse_no_linked_account()
                     # M-4: Only auto-link when the provider has auto_link_existing_accounts
                     # enabled.  Operators can disable this to require explicit account linking,
                     # preventing an attacker-controlled IdP from hijacking local accounts.
@@ -2034,7 +2040,7 @@ async def oidc_callback(
                             "Auto-link rejected for user '%s': already linked to another OIDC provider",
                             email_user.username,
                         )
-                        return await refusal("no_linked_account")
+                        return await refuse_no_linked_account()
                     gate = await policy_gate()
                     if gate is not None:
                         return await refusal(gate)
@@ -2131,7 +2137,7 @@ async def oidc_callback(
                     user = new_user
                     logger.info("Auto-created user '%s' via OIDC provider %d", username, provider_id)
                 else:
-                    return await refusal("no_linked_account")
+                    return await refuse_no_linked_account()
 
             if not user or not user.is_active:
                 return await refusal("account_inactive")
@@ -2176,10 +2182,9 @@ async def oidc_callback(
         except Exception as exc:
             logger.error("OIDC user resolution failed for provider %d: %s", provider_id, exc, exc_info=True)
             try:
-                await db.rollback()
-            except Exception as rb_exc:
-                logger.error("DB rollback failed after OIDC user-resolution error: %s", rb_exc, exc_info=True)
-            return await refusal("user_resolution_failed")
+                return await refusal("user_resolution_failed")
+            except AUTH_DATABASE_FAILURES as db_exc:  # N07-A09: an unavailable database stays 503
+                raise HTTPException(503, "Authentication temporarily unavailable") from db_exc
 
     except HTTPException:
         raise
@@ -2191,6 +2196,8 @@ async def oidc_callback(
         logger.error("Unexpected error in OIDC callback (%s): %s", type(exc).__name__, exc, exc_info=True)
         try:
             return await refusal("internal_error")
+        except AUTH_DATABASE_FAILURES as db_exc:  # N07-A09: an unavailable database stays 503
+            raise HTTPException(503, "Authentication temporarily unavailable") from db_exc
         except Exception:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="OIDC callback failed")
 

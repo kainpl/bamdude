@@ -1080,3 +1080,87 @@ async def test_a_local_two_factor_login_keeps_a_sql_null_evidence(n07):
         json={"pre_auth_token": pre_auth, "code": pyotp.TOTP(factor.secret).now(), "method": "totp"},
     )
     assert verified.status_code == 200, verified.text
+
+
+# ── acceptance r2 (N07-A08, A09) ─────────────────────────────────────────────
+
+
+async def _start_state(n07, provider, sub, **claims):
+    await n07.db.commit()
+    authorize = await n07.client.get(f"/api/v1/auth/oidc/authorize/{provider.id}")
+    query = parse_qs(urlsplit(authorize.json()["auth_url"]).query)
+    n07.idp.nonce = query["nonce"][0]
+    n07.idp.claims = {"sub": sub, **claims}
+    return query["state"][0]
+
+
+async def _callback(n07, state):
+    return await n07.client.get(
+        "/api/v1/auth/oidc/callback", params={"state": state, "code": "c"}, follow_redirects=False
+    )
+
+
+async def test_a_provider_deleted_while_the_idp_answers_says_provider_changed(n07):
+    provider = await n07.provider({}, auto_link_existing_accounts=False, auto_create_users=False)
+    user = await n07.user("n07-a08", provider, sub="s-a08")
+    state = await _start_state(n07, provider, "s-a08")
+    provider_id = provider.id
+
+    async def remove_provider():
+        removed = await n07.client.delete(f"/api/v1/auth/oidc/providers/{provider_id}")
+        assert removed.status_code == 200, removed.text
+
+    n07.idp.before_token = remove_provider
+    response = await _callback(n07, state)
+    assert error_code(response.headers["location"]) == oidc_group_sync.PROVIDER_CHANGED
+    assert await fresh_scalar("SELECT count(*) FROM users WHERE id = :u", u=user.id) == 1
+    assert await fresh_scalar("SELECT count(*) FROM auth_ephemeral_tokens WHERE token_type = 'oidc_exchange'") == 0
+
+
+async def test_a_current_provider_without_a_link_still_says_no_linked_account(n07):
+    provider = await n07.provider({}, auto_link_existing_accounts=False, auto_create_users=False)
+    location = await n07.callback(provider, sub="s-nobody")
+    assert error_code(location) == "no_linked_account"
+
+
+@pytest.mark.parametrize("outcome", ["internal", "database", "rollback-database"])
+async def test_the_callback_error_contract_outside_the_resolution(n07, monkeypatch, outcome):
+    from sqlalchemy.exc import OperationalError
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    provider = await n07.provider({})
+    await n07.user(f"n07-a09-{outcome}", provider, sub=f"s-a09-{outcome}")
+    state = await _start_state(n07, provider, f"s-a09-{outcome}")
+    real_read = oidc_group_sync.fresh_provider
+    real_rollback = AsyncSession.rollback
+    failing = {}
+    rollbacks = []
+
+    def outage():
+        return OperationalError("fixture", {}, OSError("injected database failure"))
+
+    async def fresh_provider(session, *args):
+        await real_read(session, *args)
+        failing["session"] = session
+        if outcome == "database":
+            raise outage()
+        raise RuntimeError("injected failure after the provider read")
+
+    async def rollback(session):
+        if session is failing.get("session"):
+            rollbacks.append(session)
+            if outcome == "rollback-database" and len(rollbacks) == 1:
+                raise outage()
+        return await real_rollback(session)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(oidc_group_sync, "fresh_provider", fresh_provider)
+        fault.setattr(AsyncSession, "rollback", rollback)
+        response = await _callback(n07, state)
+    if outcome == "internal":
+        assert response.status_code == 302 and error_code(response.headers["location"]) == "internal_error"
+        assert rollbacks
+    else:
+        assert response.status_code == 503, response.text
+    assert await fresh_scalar("SELECT count(*) FROM auth_ephemeral_tokens WHERE token = :t", t=state) == 0
+    assert await fresh_scalar("SELECT count(*) FROM auth_ephemeral_tokens WHERE token_type = 'oidc_exchange'") == 0

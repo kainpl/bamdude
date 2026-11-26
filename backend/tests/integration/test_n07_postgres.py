@@ -211,3 +211,84 @@ async def test_the_cleanup_never_waits_for_exchange_rows_an_account_writer_holds
         assert (
             await conn.execute(text("SELECT count(*) FROM auth_ephemeral_tokens WHERE token LIKE 'held-%'"))
         ).scalar() == 0
+
+
+# --- T2 through the route: the callback's cleanup against the account writers ------------------
+
+# The statements the three writers hold their exchange rows with, uncommitted.
+_HOLDERS = {
+    "unlink": (  # api/routes/mfa.py remove_oidc_link
+        "DELETE FROM auth_ephemeral_tokens WHERE account_identity = :a AND auth_source = 'oidc'"
+        " AND token_type IN ('oidc_exchange', 'pre_auth')"
+    ),
+    "end_sessions": (  # core/auth_lifetime.stage_end_sessions
+        "DELETE FROM auth_ephemeral_tokens WHERE account_identity = :a"
+        " AND key_identity IS NULL AND token_identity IS NULL"
+    ),
+    "exchange": "DELETE FROM auth_ephemeral_tokens WHERE token = 'held-0' RETURNING id",  # an exchange near its TTL
+}
+
+
+@pytest.mark.parametrize("holder", sorted(_HOLDERS))
+async def test_a_callback_completes_while_an_account_writer_holds_expired_exchange_rows(
+    async_client, db_session, test_engine, monkeypatch, holder
+):
+    from urllib.parse import parse_qs, urlsplit
+
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    from backend.app.api.routes import mfa
+    from backend.app.models.oidc_provider import OIDCProvider, UserOIDCLink
+    from backend.app.models.user import User
+    from backend.tests.integration.test_n07_oidc_group_sync import IdPStub
+
+    stub = IdPStub(rsa.generate_private_key(public_exponent=65537, key_size=2048))
+    monkeypatch.setattr(mfa.httpx, "AsyncClient", stub.client)
+    provider = OIDCProvider(
+        name="PG route", issuer_url="https://idp.invalid", client_id="farm", client_secret="secret", group_mapping={}
+    )
+    db_session.add(provider)
+    user = User(username=f"pg-route-{holder}", auth_source="oidc", role="user", is_active=True)
+    db_session.add(user)
+    await db_session.flush()
+    db_session.add(UserOIDCLink(user_id=user.id, provider_id=provider.id, provider_user_id="pg-sub"))
+    await db_session.commit()
+
+    account = str(uuid.uuid4())
+    expired = datetime.utcnow() - timedelta(minutes=5)
+    async with test_engine.begin() as conn:
+        for i in range(3):
+            await conn.execute(
+                text(
+                    "INSERT INTO auth_ephemeral_tokens (token, token_type, auth_source, account_identity,"
+                    " contract_version, expires_at, created_at) VALUES (:t, 'oidc_exchange', 'oidc', :a, 0, :e, :e)"
+                ),
+                {"t": f"held-{i}", "a": account, "e": expired},
+            )
+
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    writer = factory()
+    await _timeout(writer)
+    await writer.execute(text(_HOLDERS[holder]), {"a": account})  # the rows stay locked until the commit
+
+    authorize = await async_client.get(f"/api/v1/auth/oidc/authorize/{provider.id}")
+    query = parse_qs(urlsplit(authorize.json()["auth_url"]).query)
+    stub.nonce = query["nonce"][0]
+    stub.claims = {"sub": "pg-sub"}
+    callback = await asyncio.wait_for(
+        async_client.get(
+            "/api/v1/auth/oidc/callback",
+            params={"state": query["state"][0], "code": "c"},
+            follow_redirects=False,
+        ),
+        15,
+    )
+    assert callback.status_code == 302 and "#oidc_token=" in callback.headers["location"], callback.text
+    await writer.commit()
+    await writer.close()
+    async with test_engine.begin() as conn:
+        left = (
+            await conn.execute(text("SELECT count(*) FROM auth_ephemeral_tokens WHERE token LIKE 'held-%'"))
+        ).scalar()
+    # The writer removed what it held; the cleanup took only rows nobody held.
+    assert left == 0 if holder != "exchange" else left <= 2
