@@ -30,7 +30,10 @@ checkout, in `../research-artifacts/<task>-<date>/`; never inside a checkout,
 never staged. Follow-ups preserve existing evidence and checksums; durable
 findings go to the vault, reusable regression tests to the repo's test dirs.
 `SHA256SUMS` is UTF-8 without BOM with LF endings (so `sha256sum -c` reads it);
-never rewrite a sealed manifest.
+never rewrite a sealed manifest. Anything regenerable — pytest `--basetemp`, run
+scratch, Python/PostgreSQL runtimes, tree copies and exports, built sites,
+database copies — goes to `../research-artifacts/_runtime/<task>/`, never into
+the evidence folder or a manifest, and is deleted when the task closes.
 
 ## Commands
 

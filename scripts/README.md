@@ -1,7 +1,8 @@
 # `scripts/`
 
-Operator and maintainer tools that are not part of the running application.
-Nothing here is imported by the server — these are things a person runs.
+Operator, maintainer and CI tools that are not part of the running application.
+Nothing here is imported by the server — these are things a person or a
+workflow runs.
 
 This file exists because an unlisted script is an absent script. Four of these
 worked perfectly and were referenced from nowhere at all, so nobody knew to
@@ -25,6 +26,7 @@ was referenced and offered to delete every archived file on the machine.
 | `api_error_catalog.py` | `report` counts API refusals with no Ukrainian; `sync` adds the missing keys as empty strings, `--prune` drops orphans. A CI test fails when the catalogue drifts, and this is what fixes it. See `CONTRIBUTING.md`. |
 | `i18n_audit.py` | Finds frontend i18n keys nothing asks for, and the `en`/`uk` parity skew. Understands literal `t('x')`, template prefixes `` t(`x.${…}`) ``, `<Trans>` and plural siblings, so its "unused" list is worth acting on. Writes the full list to `temp/i18n_unused_keys.txt`. Needs Node. |
 | `benchmark_print_file_analysis.py` | Builds a disposable synthetic 70 MiB embedded-G-code 3MF and reports cold single-flight parsing, 100 concurrent waiters, event-loop gaps, retained bytes and child RSS. It does not touch printers or a database; numbers are local benchmark evidence, not farm SLA. |
+| `benchmark_camera_metrics.py` | `python -m scripts.benchmark_camera_metrics` — the overhead of the camera metrics: 50 synthetic producers × 400 frames, alternating baseline and instrumented runs. No camera, network or FFmpeg; numbers are local, not a farm benchmark. |
 | `cleanup-betas.sh` | After releasing a newer version of a line, removes the older betas' **GitHub pre-releases, Docker Hub tags and GHCR versions**. Never touches git tags (tag immutability). Dry-run by default, 14-day grace period. Needs `gh`, `jq`, `python3`. |
 
 ## Keeping mirrored data in sync
@@ -39,6 +41,41 @@ it writes and a test that pins its output shape.
 | `import_hms_catalogue.py` | Imports HMS error descriptions into `backend/app/data/hms/`. ⚠️ Fetches the half BambuStudio does not package directly from Bambu — "BS didn't ship it" is not "it doesn't exist". |
 | `translate_hms_catalogue.py` | `--export` collects the untranslated HMS strings, `--import` lays the Ukrainian back in. Reads the catalogue list off the directory, never a hardcoded prefix list. |
 | `update_hms_actions.py` | Refreshes `backend/app/data/hms_actions.json` (which buttons an HMS error offers) from Bambu's endpoint. |
+| `sync_slicer_translations.py` | Extracts the process-settings panel's Ukrainian strings from OrcaSlicer's pinned gettext catalog into `frontend/src/data/slicer/process-uk.json`; `--catalog` regenerates offline, `--check` verifies. Development only (`pip install polib==1.2.0`); see `frontend/src/data/slicer/README.md`. |
+
+## Pinned runtimes
+
+The Node.js the part renders run on and the STEP-preview CAD component are pinned
+files, written only by these scripts; weekly workflows check that the pins are
+still the newest the rules allow.
+
+| Script | What it is for |
+|---|---|
+| `pin_render_runtime.py` | The only writer of the Node pin and the render golden: for each platform, the newest Node.js LTS line with an official build, its archive hashes accepted only when signed by a key in `node-release-keys.asc` (TLS alone is not trusted). `--golden` re-renders the golden fixtures. |
+| `node-release-keys.asc` | The Node.js release signing keys `pin_render_runtime.py` verifies against. |
+| `node_pin_report.py` | The outputs and the issue text of the weekly `node-pin.yml` workflow. |
+| `pin_step_runtime.py` | Maintainer repin of the STEP-preview CAD component: verifies the wheels against PyPI, inventories their native closure and writes `backend/app/data/step_runtime_manifest.json` + `step_runtime_closure.json`. Never run on a user's machine. |
+| `step_preview_sources.py` | The corresponding source of the CAD component's copyleft parts as one release asset: `plan`, `collect`, `verify-release`. The publish workflows run it on every release; those assets are never deleted. |
+
+## CI and release gates
+
+Run by workflows on disposable runners. The installer acceptances install
+services, create users and wipe data directories — **never on a desk**.
+
+| Script | What it is for |
+|---|---|
+| `docker_http_smoke.py` | `ci.yml`: exercises a fresh production container over HTTP, standard library only, inside the container (`docker exec -i … python - < this_file`). |
+| `check_release_payload.py` | `windows-installer.yml`: `describe` records the built installer's sha256, the STEP bundle's receipt and the install-directory limit; `check` refuses to publish unless the built, accepted and published `.exe` are one file and the full acceptance passed. |
+| `windows_installer_acceptance.ps1` | `windows-installer.yml`: installs, upgrades, refuses and uninstalls the real installer and writes `acceptance.json` for `check_release_payload.py`. `windows_installer_http.py` is its HTTP half: the installed service turns a STEP into a library thumbnail, an STL as the control. |
+| `native_install_acceptance.sh` | `native-install-acceptance.yml`: the real `install.sh`, `update.sh` and `step-preview.sh`, one scenario per job. `native_install_http.py` is its HTTP half, the same flows as the Windows one on the scenario's own port. |
+| `part_render_armv7_smoke.sh` | `part-render-smoke.yml`: the part-render runtime on a real 32-bit armhf userland under QEMU, rendering the golden fixtures. |
+| `step_preview_armv7_smoke.sh`, `step_preview_armv7_stl_smoke.sh` | `step-preview-smoke.yml`: armhf has no CAD build, so the helper must answer "unsupported" with no network at all; STL pictures still render through Debian's own numpy, matplotlib and Pillow. |
+
+## Development fixtures
+
+| Script | What it is for |
+|---|---|
+| `dev/step_fixtures/` | Regenerates the STEP test fixtures under `backend/tests/fixtures/step/`: `make_fixtures.py` writes the authored planar ones with `p21.py` (a minimal Part 21 writer, no OCCT) plus `expected.json`; `make_occt_fixtures.py` writes the curved ones with the OCCT writer, checked against construction parameters, never against an OCCT read. |
 
 ## Maintenance on a live install
 
