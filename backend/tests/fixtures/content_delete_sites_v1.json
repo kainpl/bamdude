@@ -114,6 +114,22 @@
     },
     {
       "site": [
+        "api/routes/external_links.py::delete_external_link",
+        "sqlalchemy.delete",
+        "backend.app.models.external_link.ExternalLinkBadge"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/external_links.py::delete_external_link removes the link's app-reported count in the link's own transaction (SQLite runs without PRAGMA foreign_keys, so the CASCADE does not); any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/external_links.py::update_external_link",
+        "sqlalchemy.delete",
+        "backend.app.models.external_link.ExternalLinkBadge"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/external_links.py::update_external_link drops the app-reported count when the link's address changes: the count belongs to the address it was reported for; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
         "api/routes/filament_calibration.py::delete_calibration",
         "db.delete",
         "row"

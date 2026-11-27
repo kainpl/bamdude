@@ -2,25 +2,34 @@
 
 import logging
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequirePermission, require_external_message_sender
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
-from backend.app.models.external_link import ExternalLink
+from backend.app.models.external_link import ExternalLink, ExternalLinkBadge
 from backend.app.models.user import User
 from backend.app.schemas.external_link import (
+    ExternalLinkBadgeSet,
     ExternalLinkCreate,
     ExternalLinkReorder,
     ExternalLinkResponse,
     ExternalLinkUpdate,
 )
+
+# An app that stopped reporting (stopped, crashed) leaves no old number behind.
+BADGE_FRESH_FOR = timedelta(minutes=10)
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
 
 # Directory for storing custom icons
 ICONS_DIR = app_settings.base_dir / "icons"
@@ -31,15 +40,88 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/external-links", tags=["external-links"])
 
 
+def same_place(url: str) -> tuple[str, str, int | None, str]:
+    """Scheme, host, port and path of an address — what a reported count is matched by.
+
+    A login in the address, a default port written out and a trailing slash don't count
+    (upstream 29a81520d).
+    """
+    parts = urlsplit(url.strip())
+    scheme = parts.scheme.lower()
+    try:
+        port = parts.port or _DEFAULT_PORTS.get(scheme)
+    except ValueError:
+        port = None
+    return scheme, (parts.hostname or "").lower(), port, parts.path.rstrip("/")
+
+
+def _utcnow() -> datetime:
+    """Naive UTC, as every timestamp in the database."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+async def _with_badges(db: AsyncSession, links) -> list[ExternalLinkResponse]:
+    """The links as the sidebar reads them: each with the count its app still reports."""
+    fresh_since = _utcnow() - BADGE_FRESH_FOR
+    badges = {
+        badge.link_id: badge.count
+        for badge in (await db.execute(select(ExternalLinkBadge).where(ExternalLinkBadge.updated_at >= fresh_since)))
+        .scalars()
+        .all()
+    }
+    return [
+        ExternalLinkResponse.model_validate(link).model_copy(update={"badge_count": badges.get(link.id)})
+        for link in links
+    ]
+
+
 @router.get("/", response_model=list[ExternalLinkResponse])
 async def list_external_links(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.EXTERNAL_LINKS_READ),
 ):
-    """List all external links ordered by sort_order."""
+    """List all external links ordered by sort_order, each with its app's current count."""
     result = await db.execute(select(ExternalLink).order_by(ExternalLink.sort_order, ExternalLink.id))
-    links = result.scalars().all()
-    return links
+    return await _with_badges(db, result.scalars().all())
+
+
+@router.put("/badge")
+async def set_external_link_badge(
+    data: ExternalLinkBadgeSet,
+    db: AsyncSession = Depends(get_db),
+    _sender=Depends(require_external_message_sender()),
+):
+    """The app a sidebar link points at sets the count shown on it (upstream 29a81520d, N45).
+
+    For the app itself: only an API key allowed to send notifications
+    (``can_send_notifications``) whose owner may manage notifications — the door external
+    app messages use. Every link with the same address (scheme, host, port, path) gets
+    the count; none → 404. The count shows while the app keeps reporting it
+    (``BADGE_FRESH_FOR``). The key reads and changes nothing else: neither the links nor
+    their names.
+    """
+    wanted = same_place(data.url)
+    links = [
+        link for link in (await db.execute(select(ExternalLink))).scalars().all() if same_place(link.url) == wanted
+    ]
+    if not links:
+        raise HTTPException(status_code=404, detail="No sidebar link points at this address")
+    now = _utcnow()
+    for link in links:
+        values = {"count": data.count, "updated_at": now}
+        changed = await db.execute(
+            update(ExternalLinkBadge).where(ExternalLinkBadge.link_id == link.id).values(**values)
+        )
+        if changed.rowcount:
+            continue
+        try:
+            async with db.begin_nested():
+                db.add(ExternalLinkBadge(link_id=link.id, **values))
+        except IntegrityError:
+            # Another report made the row meanwhile: update that one.
+            await db.execute(update(ExternalLinkBadge).where(ExternalLinkBadge.link_id == link.id).values(**values))
+    await db.commit()
+    return {"links": len(links)}
 
 
 @router.post("/", response_model=ExternalLinkResponse)
@@ -104,15 +186,19 @@ async def update_external_link(
 
     # Update only provided fields
     update_dict = update_data.model_dump(exclude_unset=True)
+    moved = "url" in update_dict and same_place(update_dict["url"]) != same_place(link.url)
     for key, value in update_dict.items():
         setattr(link, key, value)
+    if moved:
+        # A count belongs to the address its app reported it for: another address, another app.
+        await db.execute(delete(ExternalLinkBadge).where(ExternalLinkBadge.link_id == link.id))
 
     await db.commit()
     await db.refresh(link)
 
     logger.info("Updated external link: %s", link.name)
 
-    return link
+    return (await _with_badges(db, [link]))[0]
 
 
 @router.delete("/{link_id}")
@@ -129,6 +215,9 @@ async def delete_external_link(
         raise HTTPException(status_code=404, detail="External link not found")
 
     name = link.name
+    # Its count goes in the same transaction: SQLite runs without ``PRAGMA foreign_keys``,
+    # and a later link given the same id would show it.
+    await db.execute(delete(ExternalLinkBadge).where(ExternalLinkBadge.link_id == link.id))
     await db.delete(link)
     await db.commit()
 
@@ -159,7 +248,7 @@ async def reorder_external_links(
 
     logger.info("Reordered %s external links", len(reorder_data.ids))
 
-    return links
+    return await _with_badges(db, links)
 
 
 @router.post("/{link_id}/icon", response_model=ExternalLinkResponse)

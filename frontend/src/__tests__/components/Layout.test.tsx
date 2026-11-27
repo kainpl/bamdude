@@ -175,6 +175,35 @@ describe('Layout', () => {
     });
   });
 
+  describe('external link badge', () => {
+    // N45 (upstream 29a81520d): the app a sidebar link points at reports a count for it.
+    const link = (id: number, badge_count: number | null) => ({
+      id,
+      name: `App ${id}`,
+      url: `http://app${id}.lan`,
+      icon: 'link',
+      open_in_new_tab: id === 1,
+      custom_icon: null,
+      nav_group: 'external',
+      sort_order: id,
+      created_at: '2026-11-27T00:00:00',
+      updated_at: '2026-11-27T00:00:00',
+      badge_count,
+    });
+
+    it('shows the count the app reports, capped at 99+, and nothing without one', async () => {
+      server.use(
+        http.get('/api/v1/external-links/', () => HttpResponse.json([link(1, 7), link(2, 150), link(3, null), link(4, 0)])),
+      );
+      render(<Layout />);
+
+      expect(await screen.findByTestId('external-link-badge-1')).toHaveTextContent('7');
+      expect(screen.getByTestId('external-link-badge-2')).toHaveTextContent('99+');
+      expect(screen.queryByTestId('external-link-badge-3')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('external-link-badge-4')).not.toBeInTheDocument();
+    });
+  });
+
   describe('keyboard shortcuts', () => {
     afterEach(() => {
       _resetForTests();

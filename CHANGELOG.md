@@ -80,6 +80,7 @@ The configuration editor preserves the quantities and descriptions of other save
 
 ### Added
 
+- **A count on an app's sidebar link.** An app added to the sidebar as an external link can show a number on its link, the way the queue shows its waiting jobs — open requests, items to check, anything the app counts. The app reports the count for its own address with `PUT /api/v1/external-links/badge` and an API key that may *Send notifications as an external app*; every sidebar link with that address shows it. A count not reported again for ten minutes disappears, so an app that stopped leaves no old number; deleting the link or changing its address drops the count too.
 - **Gotify notification provider.** Notifications can go to your own Gotify server: add a provider of type Gotify with the server URL and an application token. The token travels in a header, never in the URL, and is kept like every other provider secret. A server on your own network or on plain `http` is accepted, as for ntfy and Bark.
   - **Per-event priority:** like ntfy, each enabled event can be set to Min, Low, Default, High or Urgent, sent to Gotify as 0, 2, 5, 8 and 10. Events left at Default go out at 5, which plays a sound in the Gotify Android app; High and Urgent pop up.
   - **Photo:** with *External URL* set, the camera snapshot shows as a large picture in the Gotify Android app.

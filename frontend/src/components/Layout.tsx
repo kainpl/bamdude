@@ -304,6 +304,8 @@ export function Layout() {
   const { data: externalLinks } = useQuery({
     queryKey: ['external-links'],
     queryFn: api.getExternalLinks,
+    // Like the queue badge: the apps behind the links report counts (N45).
+    refetchInterval: 30_000,
   });
 
   // Fetch smart plugs to check for switchbar items
@@ -1019,6 +1021,29 @@ export function Layout() {
                 if (!link) return null;
 
                 const LinkIcon = link.custom_icon ? null : getIconByName(link.icon);
+                // A count the app behind the link reports while it keeps reporting (N45).
+                const linkBadge = link.badge_count ?? 0;
+                const linkIcon = (
+                  <div className="relative">
+                    {link.custom_icon ? (
+                      <img
+                        src={`/api/v1/external-links/${link.id}/icon`}
+                        alt=""
+                        className="w-5 h-5 flex-shrink-0"
+                      />
+                    ) : (
+                      LinkIcon && <LinkIcon className="w-5 h-5 flex-shrink-0" />
+                    )}
+                    {linkBadge > 0 && (
+                      <span
+                        data-testid={`external-link-badge-${link.id}`}
+                        className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 flex items-center justify-center text-[10px] font-bold rounded-full bg-yellow-500 text-black"
+                      >
+                        {linkBadge > 99 ? '99+' : linkBadge}
+                      </span>
+                    )}
+                  </div>
+                );
                 return (
                   <Fragment key={id}>
                   {groupHeader}
@@ -1034,15 +1059,7 @@ export function Layout() {
                         {sidebarExpanded && !isSidebarCompact && (
                           <GripVertical className="w-4 h-4 flex-shrink-0 opacity-0 group-hover:opacity-50 cursor-grab active:cursor-grabbing -ml-1" />
                         )}
-                        {link.custom_icon ? (
-                          <img
-                            src={`/api/v1/external-links/${link.id}/icon`}
-                            alt=""
-                            className="w-5 h-5 flex-shrink-0"
-                          />
-                        ) : (
-                          LinkIcon && <LinkIcon className="w-5 h-5 flex-shrink-0" />
-                        )}
+                        {linkIcon}
                         {(isSidebarCompact || sidebarExpanded) && <span>{link.name}</span>}
                       </a>
                     ) : (
@@ -1060,15 +1077,7 @@ export function Layout() {
                         {sidebarExpanded && !isSidebarCompact && (
                           <GripVertical className="w-4 h-4 flex-shrink-0 opacity-0 group-hover:opacity-50 cursor-grab active:cursor-grabbing -ml-1" />
                         )}
-                        {link.custom_icon ? (
-                          <img
-                            src={`/api/v1/external-links/${link.id}/icon`}
-                            alt=""
-                            className="w-5 h-5 flex-shrink-0"
-                          />
-                        ) : (
-                          LinkIcon && <LinkIcon className="w-5 h-5 flex-shrink-0" />
-                        )}
+                        {linkIcon}
                         {(isSidebarCompact || sidebarExpanded) && <span>{link.name}</span>}
                       </NavLink>
                     )}

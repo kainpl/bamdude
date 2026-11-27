@@ -4113,7 +4113,7 @@ export default {
     updateEnergyCostDescription: 'Only POST /settings/electricity-price — for Home Assistant and dynamic tariffs. It is not a general right to change settings.',
     energyCostBadge: 'Electricity price',
     sendNotifications: 'Send notifications as an external app',
-    sendNotificationsDescription: 'Only POST /notifications/external-message: the key\'s program tells the farm\'s people something, always under the key\'s name and its owner. The owner needs the right to manage notifications.',
+    sendNotificationsDescription: 'Only POST /notifications/external-message — the key\'s program tells the farm\'s people something, always under the key\'s name and its owner — and PUT /external-links/badge, a count on the sidebar link that points at the program. The owner needs the right to manage notifications.',
     sendNotificationsBadge: 'Notifications',
     legacyBadge: 'Legacy',
     unnamedKey: 'Unnamed Key',
