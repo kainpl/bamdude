@@ -437,7 +437,12 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                             <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-2">
                                     <Camera className="w-4 h-4 text-sky-600 dark:text-sky-400"/>
-                                    <p className="text-sm text-white">{t('notifications.attachPhoto')}</p>
+                                    <div>
+                                        <p className="text-sm text-white">{t('notifications.attachPhoto')}</p>
+                                        {notifyPhotosUnsupported && (
+                                            <p className="text-xs text-bambu-gray">{t('notifications.notifyPhotoUnavailable')}</p>
+                                        )}
+                                    </div>
                                 </div>
                                 <Toggle
                                     checked={!notifyPhotosUnsupported && provider.attach_photo !== false}
