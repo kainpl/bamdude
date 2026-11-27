@@ -454,6 +454,8 @@ def import_all_models() -> None:
         macro,
         maintenance,
         notification,
+        notification_live_activity,
+        notification_lock_screen_widget,
         notification_template,
         obico_event,
         oidc_provider,

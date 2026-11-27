@@ -21,6 +21,8 @@ from backend.app.models.location import Location
 from backend.app.models.macro import Macro
 from backend.app.models.maintenance import MaintenanceHistory, MaintenanceType, PrinterMaintenance
 from backend.app.models.notification import NotificationLog
+from backend.app.models.notification_live_activity import NotificationLiveActivity
+from backend.app.models.notification_lock_screen_widget import NotificationLockScreenWidget
 from backend.app.models.notification_template import NotificationTemplate
 from backend.app.models.obico_event import ObicoEvent
 from backend.app.models.orca_base_cache import OrcaBaseProfile
@@ -67,6 +69,8 @@ __all__ = [
     "KProfileNote",
     "NotificationTemplate",
     "NotificationLog",
+    "NotificationLiveActivity",
+    "NotificationLockScreenWidget",
     "Customer",
     "Product",
     "ProductPart",
