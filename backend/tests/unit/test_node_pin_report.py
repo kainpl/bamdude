@@ -1,4 +1,4 @@
-"""scripts/node_pin_report.py: what the weekly pin workflow outputs and writes into its one issue (spec D7)."""
+"""scripts/ci/node_pin_report.py: what the weekly pin workflow outputs and writes into its one issue (spec D7)."""
 
 import importlib.util
 import json
@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-_spec = importlib.util.spec_from_file_location("node_pin_report", ROOT / "scripts" / "node_pin_report.py")
+_spec = importlib.util.spec_from_file_location("node_pin_report", ROOT / "scripts" / "ci" / "node_pin_report.py")
 report_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(report_mod)
 

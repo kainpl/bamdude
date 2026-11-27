@@ -3,9 +3,9 @@
 # disposable runner, one scenario per job. It installs packages, creates a service user and a systemd unit, removes a
 # system library and moves a process into the unit's cgroup — a runner only, never a desk.
 #
-#   scripts/native_install_acceptance.sh fixture <out-dir> <candidate-sha>   the local remote every job installs from
-#   scripts/native_install_acceptance.sh <N1..N7|F1|M1> <fixture-dir>         one scenario
-#   scripts/native_install_acceptance.sh cleanup <scenario>                   end what that scenario started
+#   scripts/ci/native_install_acceptance.sh fixture <out-dir> <candidate-sha>   the local remote every job installs from
+#   scripts/ci/native_install_acceptance.sh <N1..N7|F1|M1> <fixture-dir>         one scenario
+#   scripts/ci/native_install_acceptance.sh cleanup <scenario>                   end what that scenario started
 #
 # GitHub is redirected to the fixture with `url.<fixture>.insteadOf` for every context that runs git (the runner,
 # and root: install.sh clones with sudo, update.sh runs as root), so the scripts run unchanged and the code they
@@ -14,7 +14,7 @@
 set -Eeuo pipefail
 
 REPO_URL="https://github.com/kainpl/bamdude.git"
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 STATE_DIR="${RUNNER_TEMP:-/tmp}/native-acceptance"
 REPORT_DIR="${REPORT_DIR:-$ROOT/native-acceptance}"
 LOGS="$REPORT_DIR/logs"
@@ -337,7 +337,7 @@ launchd_is_ours() {
 }
 
 http() {
-    logged "http-$1" "$HTTP_SECONDS" "$PYTHON" "$ROOT/scripts/native_install_http.py" "$1" --port "$PORT" \
+    logged "http-$1" "$HTTP_SECONDS" "$PYTHON" "$ROOT/scripts/ci/native_install_http.py" "$1" --port "$PORT" \
         --state "$STATE_DIR/http.json"
 }
 

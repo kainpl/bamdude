@@ -27,7 +27,7 @@ from urllib.request import Request, urlopen
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from docker_http_smoke import BASE_URL, request, wait_ready  # noqa: E402
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 STEP = ROOT / "backend" / "app" / "data" / "step_probe" / "box_mm.step"
 JOB_SECONDS = 600
 

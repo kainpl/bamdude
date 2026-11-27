@@ -518,7 +518,7 @@ jobs:
 
       - name: Exercise the production HTTP API and built assets
         timeout-minutes: 3
-        run: docker exec -i bamdude-ci-http python - < scripts/docker_http_smoke.py
+        run: docker exec -i bamdude-ci-http python - < scripts/ci/docker_http_smoke.py
 
       - name: Show logs on failure
         if: failure()

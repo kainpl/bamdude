@@ -58,7 +58,7 @@ jobs:
           set -e
           cat check.json
           case "$code" in 0|2|3) ;; *) exit 1 ;; esac
-          python scripts/node_pin_report.py outputs check.json >> "$GITHUB_OUTPUT"
+          python scripts/ci/node_pin_report.py outputs check.json >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7  # for a human to read; no job reads it back
         with:
           name: node-pin-check
@@ -209,7 +209,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           printf '%s' "$CHECK" > check.json
-          python scripts/node_pin_report.py issue check.json --repin "$REPIN" --smoke "$SMOKE" \
+          python scripts/ci/node_pin_report.py issue check.json --repin "$REPIN" --smoke "$SMOKE" \
             --tested-sha "$TESTED" --current-sha "$CURRENT" --base-sha "$BASE_SHA" --base "$BASE" --run-url "$RUN_URL" > body.md
           number=$(gh issue list --state open --label node-pin --json number --jq '.[0].number // empty')
           if [ "$ACTION" = "true" ]; then

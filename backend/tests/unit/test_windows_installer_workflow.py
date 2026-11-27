@@ -19,8 +19,8 @@ ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW_TEXT = (ROOT / ".github" / "workflows" / "windows-installer.yml").read_text(encoding="utf-8")
 WORKFLOW = yaml.safe_load(WORKFLOW_TEXT)
 JOBS = WORKFLOW["jobs"]
-ACCEPT = (ROOT / "scripts" / "windows_installer_acceptance.ps1").read_text(encoding="utf-8")
-CHECK = ROOT / "scripts" / "check_release_payload.py"
+ACCEPT = (ROOT / "scripts" / "ci" / "windows_installer_acceptance.ps1").read_text(encoding="utf-8")
+CHECK = ROOT / "scripts" / "ci" / "check_release_payload.py"
 
 
 def _runs(job: str) -> str:

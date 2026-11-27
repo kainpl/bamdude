@@ -128,7 +128,7 @@ jobs:
         run: |
           $exe = Get-ChildItem installers/windows/build/output -Filter "bamdude-*-windows-x64-setup.exe" | Select-Object -First 1
           if (-not $exe) { throw "no versioned installer .exe found" }
-          python scripts/check_release_payload.py describe --exe $exe.FullName `
+          python scripts/ci/check_release_payload.py describe --exe $exe.FullName `
             --app installers/windows/build/staging/app `
             --version-iss installers/windows/build/staging/version.iss `
             --out installers/windows/build/output/payload.json
@@ -181,7 +181,7 @@ jobs:
         run: |
           $exe = Get-ChildItem installer -Filter "bamdude-*-windows-x64-setup.exe" | Select-Object -First 1
           if (-not $exe) { throw "no versioned installer .exe in the artifact" }
-          ./scripts/windows_installer_acceptance.ps1 -Installer $exe.FullName -Payload installer/payload.json `
+          ./scripts/ci/windows_installer_acceptance.ps1 -Installer $exe.FullName -Payload installer/payload.json `
             -Scope $env:SCOPE -Report installer/acceptance.json
 
       # The report is an artifact of its own: an upload of several paths is
@@ -271,7 +271,7 @@ jobs:
         run: |
           exes=(installer/bamdude-*-windows-x64-setup.exe)
           [ "${#exes[@]}" -eq 1 ] || { echo "expected one versioned installer, found ${#exes[@]}"; exit 1; }
-          python3 scripts/check_release_payload.py check --exe "${exes[0]}" \
+          python3 scripts/ci/check_release_payload.py check --exe "${exes[0]}" \
             --payload installer/payload.json --acceptance acceptance/acceptance.json
 
       # Every tag release gets an unversioned copy alongside the versioned

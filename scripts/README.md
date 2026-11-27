@@ -1,8 +1,8 @@
 # `scripts/`
 
 Operator, maintainer and CI tools that are not part of the running application.
-Nothing here is imported by the server — these are things a person or a
-workflow runs.
+Nothing here is imported by the server — these are things a person runs;
+`ci/` holds what only the workflows run.
 
 This file exists because an unlisted script is an absent script. Four of these
 worked perfectly and were referenced from nowhere at all, so nobody knew to
@@ -55,23 +55,24 @@ still the newest the rules allow.
 |---|---|
 | `pin_render_runtime.py` | The only writer of the Node pin and the render golden: for each platform, the newest Node.js LTS line with an official build, its archive hashes accepted only when signed by a key in `node-release-keys.asc` (TLS alone is not trusted). `--golden` re-renders the golden fixtures. |
 | `node-release-keys.asc` | The Node.js release signing keys `pin_render_runtime.py` verifies against. |
-| `node_pin_report.py` | The outputs and the issue text of the weekly `node-pin.yml` workflow. |
+| `ci/node_pin_report.py` | The outputs and the issue text of the weekly `node-pin.yml` workflow. |
 | `pin_step_runtime.py` | Maintainer repin of the STEP-preview CAD component: verifies the wheels against PyPI, inventories their native closure and writes `backend/app/data/step_runtime_manifest.json` + `step_runtime_closure.json`. Never run on a user's machine. |
 | `step_preview_sources.py` | The corresponding source of the CAD component's copyleft parts as one release asset: `plan`, `collect`, `verify-release`. The publish workflows run it on every release; those assets are never deleted. |
 
 ## CI and release gates
 
-Run by workflows on disposable runners. The installer acceptances install
-services, create users and wipe data directories — **never on a desk**.
+Everything in `ci/` is run by a workflow on a disposable runner. The installer
+acceptances install services, create users and wipe data directories — **never
+on a desk**.
 
 | Script | What it is for |
 |---|---|
-| `docker_http_smoke.py` | `ci.yml`: exercises a fresh production container over HTTP, standard library only, inside the container (`docker exec -i … python - < this_file`). |
-| `check_release_payload.py` | `windows-installer.yml`: `describe` records the built installer's sha256, the STEP bundle's receipt and the install-directory limit; `check` refuses to publish unless the built, accepted and published `.exe` are one file and the full acceptance passed. |
-| `windows_installer_acceptance.ps1` | `windows-installer.yml`: installs, upgrades, refuses and uninstalls the real installer and writes `acceptance.json` for `check_release_payload.py`. `windows_installer_http.py` is its HTTP half: the installed service turns a STEP into a library thumbnail, an STL as the control. |
-| `native_install_acceptance.sh` | `native-install-acceptance.yml`: the real `install.sh`, `update.sh` and `step-preview.sh`, one scenario per job. `native_install_http.py` is its HTTP half, the same flows as the Windows one on the scenario's own port. |
-| `part_render_armv7_smoke.sh` | `part-render-smoke.yml`: the part-render runtime on a real 32-bit armhf userland under QEMU, rendering the golden fixtures. |
-| `step_preview_armv7_smoke.sh`, `step_preview_armv7_stl_smoke.sh` | `step-preview-smoke.yml`: armhf has no CAD build, so the helper must answer "unsupported" with no network at all; STL pictures still render through Debian's own numpy, matplotlib and Pillow. |
+| `ci/docker_http_smoke.py` | `ci.yml`: exercises a fresh production container over HTTP, standard library only, inside the container (`docker exec -i … python - < this_file`). |
+| `ci/check_release_payload.py` | `windows-installer.yml`: `describe` records the built installer's sha256, the STEP bundle's receipt and the install-directory limit; `check` refuses to publish unless the built, accepted and published `.exe` are one file and the full acceptance passed. |
+| `ci/windows_installer_acceptance.ps1` | `windows-installer.yml`: installs, upgrades, refuses and uninstalls the real installer and writes `acceptance.json` for `check_release_payload.py`. `windows_installer_http.py` is its HTTP half: the installed service turns a STEP into a library thumbnail, an STL as the control. |
+| `ci/native_install_acceptance.sh` | `native-install-acceptance.yml`: the real `install.sh`, `update.sh` and `step-preview.sh`, one scenario per job. `native_install_http.py` is its HTTP half, the same flows as the Windows one on the scenario's own port. |
+| `ci/part_render_armv7_smoke.sh` | `part-render-smoke.yml`: the part-render runtime on a real 32-bit armhf userland under QEMU, rendering the golden fixtures. |
+| `ci/step_preview_armv7_smoke.sh`, `ci/step_preview_armv7_stl_smoke.sh` | `step-preview-smoke.yml`: armhf has no CAD build, so the helper must answer "unsupported" with no network at all; STL pictures still render through Debian's own numpy, matplotlib and Pillow. |
 
 ## Maintenance on a live install
 

@@ -1,7 +1,7 @@
 """The weekly Node pin workflow's words (part-render-node-lines-spec D7): its job outputs and its one issue.
 
-python scripts/node_pin_report.py outputs check.json >> "$GITHUB_OUTPUT"
-python scripts/node_pin_report.py issue check.json --smoke <result> --run-url <url> > body.md
+python scripts/ci/node_pin_report.py outputs check.json >> "$GITHUB_OUTPUT"
+python scripts/ci/node_pin_report.py issue check.json --smoke <result> --run-url <url> > body.md
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 # the platforms of a line, for the "drop it" sentence -- the pin script's table, read without importing gpg paths
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pin_render_runtime import LINES  # noqa: E402
 
 

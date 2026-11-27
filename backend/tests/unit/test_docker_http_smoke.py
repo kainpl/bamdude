@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from scripts import docker_http_smoke as smoke
+from scripts.ci import docker_http_smoke as smoke
 
 
 @pytest.fixture

@@ -102,11 +102,11 @@ metadata (Inno defaults the binary version to `0.0.0.0`).
 ## CI build
 
 See `.github/workflows/windows-installer.yml`: build → acceptance → release. The acceptance installs the real
-`.exe` on a disposable Windows runner (`scripts/windows_installer_acceptance.ps1`: a fresh install, reinstalls,
+`.exe` on a disposable Windows runner (`scripts/ci/windows_installer_acceptance.ps1`: a fresh install, reinstalls,
 a service that will not stop, a failed verify, a missing CAD library, a too-long directory, a silent
 uninstall, an upgrade from v0.7.0, and a real STEP rendered by the installed service). Only a pushed tag
 publishes, only after the full acceptance, and only the artifact that was accepted, with the release pin
-(`scripts/check_release_payload.py`). A manual dispatch can build a candidate from a branch and run the
+(`scripts/ci/check_release_payload.py`). A manual dispatch can build a candidate from a branch and run the
 full or a diagnostic acceptance; it never publishes.
 
 ## Known limitations / open questions

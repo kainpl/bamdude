@@ -21,7 +21,7 @@ from backend.tests.unit.test_update_script_repairs_loop_flag import BASH
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github" / "workflows" / "native-install-acceptance.yml"
-SCRIPT = ROOT / "scripts" / "native_install_acceptance.sh"
+SCRIPT = ROOT / "scripts" / "ci" / "native_install_acceptance.sh"
 SCENARIOS = ["N1", "N2", "N3", "N4", "N5", "N6", "N7", "F1", "M1"]
 LINUX = ["N1", "N2", "N3", "N4", "N5", "N6", "N7"]
 

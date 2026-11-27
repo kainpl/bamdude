@@ -47,7 +47,7 @@ def test_the_armv7_job_decides_without_a_network_and_renders_an_stl():
         "step_preview_armv7_smoke.sh" in runs and "step_preview_armv7_stl_smoke.sh" in runs
     )  # app/STL, not only exit 3
     for script in ("step_preview_armv7_smoke.sh", "step_preview_armv7_stl_smoke.sh"):
-        assert (ROOT / "scripts" / script).is_file()
+        assert (ROOT / "scripts" / "ci" / script).is_file()
 
 
 def test_the_scheduled_pin_check_can_write_nothing():

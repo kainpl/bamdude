@@ -116,8 +116,8 @@ jobs:
       - name: Unsupported, decided without a download
         run: >
           docker run --rm --network none --platform linux/arm/v7 -v "$PWD:/src:ro" -w /src python:3.12-slim-trixie
-          sh scripts/step_preview_armv7_smoke.sh
+          sh scripts/ci/step_preview_armv7_smoke.sh
       - name: STL pictures still work on armhf
         run: >
           docker run --rm --platform linux/arm/v7 -v "$PWD:/src:ro" -w /src debian:trixie-slim
-          sh scripts/step_preview_armv7_stl_smoke.sh
+          sh scripts/ci/step_preview_armv7_stl_smoke.sh

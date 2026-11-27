@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   Installs, upgrades, refuses and uninstalls the compiled installer exactly as an operator's machine would see it,
-  and writes acceptance.json for the release gate (scripts/check_release_payload.py). It registers, replaces and
+  and writes acceptance.json for the release gate (scripts/ci/check_release_payload.py). It registers, replaces and
   deletes Windows services named BamDude and wipes C:\ProgramData\BamDude: it refuses to run anywhere but a CI
   runner. Every call of Setup is silent (/VERYSILENT /SUPPRESSMSGBOXES /NORESTART) under a deadline that ends the
   whole process tree; nothing here may wait on a window.
@@ -23,7 +23,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3
 if (-not $env:GITHUB_ACTIONS) { throw 'this harness runs only on a disposable CI runner: it replaces Windows services' }
 
-$Repo = Split-Path -Parent $PSScriptRoot
+$Repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $Installer = (Resolve-Path -LiteralPath $Installer).Path
 $Work = Join-Path $env:RUNNER_TEMP 'bamdude-acceptance'
 New-Item -ItemType Directory -Force $Work | Out-Null
@@ -111,7 +111,7 @@ function Invoke-Uninstall([string] $Dir) {
 }
 
 function Invoke-Http([string] $Mode) {
-    & python (Join-Path $Repo 'scripts\windows_installer_http.py') $Mode --state $State
+    & python (Join-Path $Repo 'scripts\ci\windows_installer_http.py') $Mode --state $State
     Assert ($LASTEXITCODE -eq 0) "http $Mode failed"
 }
 

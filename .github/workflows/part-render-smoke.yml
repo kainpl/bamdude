@@ -96,7 +96,7 @@ jobs:
         with:
           platforms: arm
       - name: Provision and render on Debian armhf
-        run: docker run --rm --platform linux/arm/v7 -e REPORT=/src/probe-report.json -v "$PWD:/src" -w /src debian:trixie-slim sh scripts/part_render_armv7_smoke.sh
+        run: docker run --rm --platform linux/arm/v7 -e REPORT=/src/probe-report.json -v "$PWD:/src" -w /src debian:trixie-slim sh scripts/ci/part_render_armv7_smoke.sh
       - name: Keep the probe report
         if: always()
         uses: actions/upload-artifact@v7
