@@ -154,10 +154,14 @@ export interface PrintModalProps {
    *  answer can produce many. Reported so a copy run can re-form the blocks the
    *  source queue had; nothing else needs it. */
   onQueued?: (createdItemIds: number[]) => void;
-  /** Rows earlier dialogs of the same run created. A «Run next» submit names them, and
-   *  the server puts this block behind the last one still pending — without it each
-   *  file of a multi-file run went IN FRONT of the one before (N03, upstream #3471). */
-  nextBlockAfterItemIds?: number[];
+  /** The «Run next» rows earlier dialogs of the same run put on this printer. A «Run next»
+   *  submit names them, and the server puts this block behind the last one still pending —
+   *  without it each file of a multi-file run went IN FRONT of the one before (N03, upstream
+   *  #3471). Only «Run next» rows: an end row as anchor would send the block to the end. */
+  nextBlockAnchors?: (printerId: number) => number[];
+  /** A «Run next» request for one printer succeeded — reported per request, so the rows of
+   *  a partly failed submit count too. */
+  onNextBlockQueued?: (printerId: number, createdItemIds: number[]) => void;
   /** The run's files are sliced for several printer models: offer Calculate (the order
    *  planner splits the same parts between models — our answer to upstream's
    *  "alternatives"). Called when the operator takes it; the caller ends the run. */

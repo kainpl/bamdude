@@ -69,6 +69,11 @@ interface QueueSequencerProps {
   lockAutoTarget?: boolean;
 }
 
+/** At most this many anchors per «Run next» request — the server's own cap on
+ *  ``after_item_ids`` (``PrintQueueNextBatchCreate``). The newest are the ones that matter:
+ *  the block goes behind the last still-pending one. */
+const RUN_NEXT_ANCHORS = 1000;
+
 /** One PrintModal mount: a file, and which of its plates this group holds. */
 interface RunMember {
   file: SequencedFile;
@@ -289,11 +294,14 @@ export function QueueSequencer({
   // batch can only be made after its rows exist.
   const cohortsRef = useRef(new Map<string, number[]>());
 
-  // Every row the run has created so far, on any printer. A «Run next» block names
-  // them so the server puts it behind the last one still pending in its queue —
-  // without that each later file went IN FRONT of the earlier ones (N03, upstream
-  // #3471). Ids of other queues are ignored there, so one list serves every printer.
-  const runCreatedRef = useRef<number[]>([]);
+  // The «Run next» rows the run has put on each printer. A later «Run next» block on
+  // that printer names them, so the server puts it behind the last one still pending —
+  // without that each later file went IN FRONT of the earlier ones (N03, upstream #3471).
+  // ⚠️ «Run next» rows only: anchored on a row the run queued at the END, the block would
+  // land behind all other work — the opposite of its label (N03 acceptance A1-01).
+  // ⚠️ Per printer, and the newest RUN_NEXT_ANCHORS only: the server takes at most that
+  // many, and a long run would otherwise refuse every later «Run next» (A1-02).
+  const runNextByPrinterRef = useRef(new Map<number, number[]>());
 
   const ids = useMemo(() => files.map((file) => file.id), [files]);
 
@@ -479,7 +487,12 @@ export function QueueSequencer({
       onAutoSubmitRefused={() => {
         askedRef.current += 1;
       }}
-      nextBlockAfterItemIds={[...runCreatedRef.current]}
+      nextBlockAnchors={(printerId) => (runNextByPrinterRef.current.get(printerId) ?? []).slice(-RUN_NEXT_ANCHORS)}
+      onNextBlockQueued={(printerId, createdItemIds) => {
+        const rows = runNextByPrinterRef.current.get(printerId) ?? [];
+        rows.push(...createdItemIds);
+        runNextByPrinterRef.current.set(printerId, rows.slice(-RUN_NEXT_ANCHORS));
+      }}
       onComputeOrderInstead={
         severalModels && onComputeOrder
           ? () => {
@@ -490,7 +503,6 @@ export function QueueSequencer({
           : undefined
       }
       onQueued={(createdItemIds) => {
-        runCreatedRef.current.push(...createdItemIds);
         // Only a copy carries a source batch; a selection has none to reproduce.
         const batchId = member.file.batchId;
         if (!batchId) return;

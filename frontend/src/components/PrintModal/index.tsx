@@ -124,7 +124,8 @@ export function PrintModal({
   applyToRest,
   onApplyToRestChange,
   onQueued,
-  nextBlockAfterItemIds,
+  nextBlockAnchors,
+  onNextBlockQueued,
   onComputeOrderInstead,
   autoSubmitWhenUnambiguous,
   seededAnswer,
@@ -1571,7 +1572,8 @@ export function PrintModal({
     mutationFn: (data: PrintQueueItemCreate) => api.addToQueue(data),
   });
   const addNextQueueBlockMutation = useMutation({
-    mutationFn: (items: PrintQueueItemCreate[]) => api.addNextQueueBlock(items, nextBlockAfterItemIds),
+    mutationFn: ({ items, afterItemIds }: { items: PrintQueueItemCreate[]; afterItemIds?: number[] }) =>
+      api.addNextQueueBlock(items, afterItemIds),
   });
 
   // Update queue item mutation. ⚠️ No onSuccess / onError of its own: the submit
@@ -2200,10 +2202,12 @@ export function PrintModal({
         setSubmitProgress({ current: progressCounter, total: totalCount });
         const printerName = printers?.find(p => p.id === printerId)?.name || `Printer ${printerId}`;
         try {
-          const added = await addNextQueueBlockMutation.mutateAsync(
-            entries.map(({ plateId }) => getQueueData(printerId, plateId)),
-          );
+          const added = await addNextQueueBlockMutation.mutateAsync({
+            items: entries.map(({ plateId }) => getQueueData(printerId, plateId)),
+            afterItemIds: nextBlockAnchors?.(printerId),
+          });
           createdItemIds.push(...added.map(item => item.id));
+          onNextBlockQueued?.(printerId, added.map(item => item.id));
           landedOn.add(printerId);
           for (const { plateId } of entries) {
             const copies = dealtCopies(plateId, printerId);

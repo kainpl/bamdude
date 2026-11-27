@@ -124,6 +124,90 @@ describe('QueueSequencer «Run next» keeps the selection in order (N03, upstrea
     expect(nextBlocks[0].after_item_ids ?? []).toEqual([]);
     expect(nextBlocks[1].after_item_ids).toEqual(createdIds[0]);
   });
+
+  /** Leader answered, «Apply to the rest» off, so the second file asks with the leader's answer seeded. */
+  async function answerLeaderThenOpenSecond({ runNextOnLeader }: { runNextOnLeader: boolean }) {
+    await screen.findByText('First');
+    await userEvent.click(await screen.findByRole('button', { name: /Beta/ }));
+    if (runNextOnLeader) await userEvent.click(screen.getByLabelText(/Run next/i));
+    await userEvent.click(screen.getByLabelText(/Apply to the rest of this group/i));
+    const submit = await screen.findByRole('button', { name: /Add to Queue/i });
+    await waitFor(() => expect(submit).toBeEnabled());
+    await userEvent.click(submit);
+    await screen.findByText('Second');
+  }
+
+  it('⚠️ anchors only on «Run next» rows: a file after one queued at the end still goes first (A1-01)', async () => {
+    server.use(http.get('/api/v1/library/grouping-metadata', () => HttpResponse.json([meta(1, 'X1C'), meta(2, 'X1C')])));
+    const endPosts: number[] = [];
+    server.use(
+      http.post('/api/v1/queue/', async () => {
+        endPosts.push(1);
+        return HttpResponse.json({ id: 900 + endPosts.length, status: 'pending', created_item_ids: [900 + endPosts.length] });
+      }),
+    );
+    const onDone = vi.fn();
+    render(<Run files={[{ id: 1, name: 'First' }, { id: 2, name: 'Second' }]} onDone={onDone} />);
+
+    await answerLeaderThenOpenSecond({ runNextOnLeader: false });
+    await userEvent.click(screen.getByLabelText(/Run next/i));
+    const submit = await screen.findByRole('button', { name: /Add to Queue/i });
+    await waitFor(() => expect(submit).toBeEnabled());
+    await userEvent.click(submit);
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith([]));
+    expect(endPosts).toHaveLength(1);
+    expect(nextBlocks).toHaveLength(1);
+    // The end row is no anchor: anchored on it, the «next» block would land behind all other work.
+    expect(nextBlocks[0].after_item_ids ?? []).toEqual([]);
+  });
+
+  it('anchors per printer: a block on Alpha does not name the rows the run put on Beta (A1-02)', async () => {
+    server.use(http.get('/api/v1/library/grouping-metadata', () => HttpResponse.json([meta(1, 'X1C'), meta(2, 'X1C')])));
+    const onDone = vi.fn();
+    render(<Run files={[{ id: 1, name: 'First' }, { id: 2, name: 'Second' }]} onDone={onDone} />);
+
+    await answerLeaderThenOpenSecond({ runNextOnLeader: true });
+    // The seeded answer is Beta + Run next; move this file to Alpha.
+    await userEvent.click(screen.getByRole('button', { name: /Beta/ }));
+    await userEvent.click(screen.getByRole('button', { name: /Alpha/ }));
+    const submit = await screen.findByRole('button', { name: /Add to Queue/i });
+    await waitFor(() => expect(submit).toBeEnabled());
+    await userEvent.click(submit);
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith([]));
+    expect(nextBlocks.map((b) => b.items[0].queue_id)).toEqual([8, 7]);
+    expect(nextBlocks[1].after_item_ids ?? []).toEqual([]);
+  });
+
+  it('sends at most the 1000 newest anchors of the printer (A1-02)', async () => {
+    server.use(http.get('/api/v1/library/grouping-metadata', () => HttpResponse.json([meta(1, 'X1C'), meta(2, 'X1C')])));
+    let call = 0;
+    server.use(
+      http.post('/api/v1/queue/next-block', async ({ request }) => {
+        const body = (await request.json()) as NextBlockPost;
+        nextBlocks.push(body);
+        call += 1;
+        // The first file came back as 1005 rows (quantity), the second as one.
+        const ids = call === 1 ? Array.from({ length: 1005 }, (_, i) => 1 + i) : [5000];
+        createdIds.push(ids);
+        return HttpResponse.json(ids.map((id) => ({ id, status: 'pending' })));
+      }),
+    );
+    const onDone = vi.fn();
+    render(<Run files={[{ id: 1, name: 'First' }, { id: 2, name: 'Second' }]} onDone={onDone} />);
+
+    await screen.findByText('First');
+    await userEvent.click(await screen.findByRole('button', { name: /Beta/ }));
+    await userEvent.click(screen.getByLabelText(/Run next/i));
+    const submit = await screen.findByRole('button', { name: /Add to Queue/i });
+    await waitFor(() => expect(submit).toBeEnabled());
+    await userEvent.click(submit);
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith([]));
+    expect(nextBlocks[1].after_item_ids).toHaveLength(1000);
+    expect(nextBlocks[1].after_item_ids).toEqual(createdIds[0].slice(-1000));
+  });
 });
 
 describe('QueueSequencer points a several-model selection at Calculate', () => {
