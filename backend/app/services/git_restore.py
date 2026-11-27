@@ -59,7 +59,15 @@ from backend.app.models.settings import Settings
 from backend.app.models.spool import Spool
 from backend.app.models.spool_usage_history import SpoolUsageHistory
 from backend.app.schemas.git_backup import RestoreCategory
-from backend.app.services import archive_outcome, meter_watch, swap_compatibility, wear_cost
+from backend.app.services import (
+    archive_outcome,
+    meter_watch,
+    spoolman_activity,
+    spoolman_source,
+    spoolman_source_changes,
+    swap_compatibility,
+    wear_cost,
+)
 from backend.app.services.git_providers.factory import get_provider_backend
 from backend.app.services.git_restore_fields import (
     INVALID,
@@ -632,6 +640,21 @@ class _Detail:
     code: str
     message: str
     params: dict[str, str | int] = dataclasses_field(default_factory=dict)
+
+
+def _restore_failure_message(error: BaseException) -> str:
+    """What a failed restore's log says (C047 S43).
+
+    A coded refusal — ``{"error", "message"}``, e.g. ``spoolman_print_in_progress`` with
+    the text of its reason — says its own sentence; any other HTTP refusal came from
+    the actor's guard and keeps the authorization text; anything else its own text.
+    """
+    if isinstance(error, HTTPException):
+        detail = error.detail
+        if isinstance(detail, dict) and isinstance(detail.get("error"), str) and isinstance(detail.get("message"), str):
+            return detail["message"][:1000]
+        return "Restore authorization is no longer valid"
+    return str(error)[:1000]
 
 
 class _CategoryTally:
@@ -1307,9 +1330,7 @@ class GitRestoreService:
                     log.status = "failed"
                     log.completed_at = datetime.now(timezone.utc)
                     log.files_changed = committed
-                    log.error_message = (
-                        "Restore authorization is no longer valid" if isinstance(e, HTTPException) else str(e)[:1000]
-                    )
+                    log.error_message = _restore_failure_message(e)
                     await db.commit()
                     if isinstance(e, HTTPException):
                         raise
@@ -1425,34 +1446,56 @@ class GitRestoreService:
             results[RestoreCategory.ARCHIVES.value] = tally
 
         if RestoreCategory.SPOOLS in categories:
-            await self._guard_restore_actor(db, authority, required_permissions)
             self._progress = "Restoring spool inventory..."
             tally = _CategoryTally()
             spool_rows(payload.get(SPOOLS_PATH, MISSING), payload.get(SPOOL_USAGE_PATH, MISSING))
-            await self._begin_record_category(db)
-            await self._restore_spools(
-                db,
-                payload.get(SPOOLS_PATH, MISSING),
-                payload.get(SPOOL_USAGE_PATH, MISSING),
-                overwrite,
-                tally,
-                archive_id_map,
-                archive_proofs=archive_proofs,
-            )
-            await self._restore_spoolman_usage(
-                db, payload.get(SPOOLMAN_USAGE_PATH), tally, archive_id_map, archive_proofs=archive_proofs
-            )
-            await db.commit()
+            # The category owns the proof of the Spoolman source to its commit (C047 S29, S30):
+            # clean session -> source guard -> category transaction -> actor guard -> rows -> commit.
+            async with spoolman_source.guard(db), spoolman_activity.arecord("git_spools"):
+                try:
+                    await self._begin_record_category(db)
+                    await self._guard_restore_actor(db, authority, required_permissions)
+                    await self._restore_spools(
+                        db,
+                        payload.get(SPOOLS_PATH, MISSING),
+                        payload.get(SPOOL_USAGE_PATH, MISSING),
+                        overwrite,
+                        tally,
+                        archive_id_map,
+                        archive_proofs=archive_proofs,
+                    )
+                    await self._restore_spoolman_usage(
+                        db, payload.get(SPOOLMAN_USAGE_PATH), tally, archive_id_map, archive_proofs=archive_proofs
+                    )
+                    await db.commit()
+                except BaseException:
+                    await db.rollback()
+                    raise
             results[RestoreCategory.SPOOLS.value] = tally
 
         if RestoreCategory.SETTINGS in categories:
-            await self._guard_restore_actor(db, authority, required_permissions)
             self._progress = "Restoring app settings..."
             tally = _CategoryTally()
-            await self._restore_settings(
-                db, payload.get(SETTINGS_PATH), overwrite, tally, keys_written=settings_keys_written
-            )
-            await db.commit()
+            # The Spoolman mode is part of the source (C047 §C1): the same order as SPOOLS, and
+            # the actor's proof inside the category's own transaction until its commit (S30).
+            async with spoolman_source_changes.owning(db) as source_change:
+                # Before the actor's anchor: a change of the mode waits there for the slot-ledger
+                # writers, which a door holding SQLite's writer could only refuse (C047 A12). The
+                # run proved the actor before its first category; only one revoked since is
+                # refused after this wait (A14).
+                await source_change.wait_before_anchor(
+                    db, enabled=await self._restored_mode(db, payload.get(SETTINGS_PATH), overwrite)
+                )
+                await self._guard_restore_actor(db, authority, required_permissions)
+                await self._restore_settings(
+                    db,
+                    payload.get(SETTINGS_PATH),
+                    overwrite,
+                    tally,
+                    keys_written=settings_keys_written,
+                    source_change=source_change,
+                )
+                await db.commit()
             results[RestoreCategory.SETTINGS.value] = tally
 
         # Last, because it leaves the database and publishes over MQTT.
@@ -2258,11 +2301,15 @@ class GitRestoreService:
         _, accepted_proofs = await usage_basis(db, entries, archive_id_map, archive_proofs)
         accepted_archive_ids = {old: proof.local_id for old, proof in accepted_proofs.items()}
         printers = (await db.execute(select(Printer.serial_number, Printer.id))).all()
+        # Staged in this category's transaction under the source guard the category holds:
+        # one commit for the token and the rows, or one rollback of both (C047 S29, S30).
+        token = await spoolman_usage_history.persist_source(db)
         outcome = await spoolman_usage_history.restore_rows(
             db,
             entries,
             archive_ids=accepted_archive_ids,
             printer_ids={serial: printer_id for serial, printer_id in printers if serial},
+            source_token=token,
         )
         tally.restored += outcome.restored
         tally.failed += outcome.malformed
@@ -2289,6 +2336,27 @@ class GitRestoreService:
                 count=outcome.unlinked,
             )
 
+    @staticmethod
+    async def _restored_mode(db: AsyncSession, payload, overwrite: bool) -> str | None:
+        """The Spoolman mode the settings category will write, read before its anchor (C047 A12).
+
+        The value and the condition ``_restore_settings`` hands to ``decide``: the backup's
+        canonical ``spoolman_enabled``, written when overwriting or when the row is missing.
+        None — the category leaves the mode alone, or its plan refuses the value.
+        """
+        values = payload.get("settings") if isinstance(payload, dict) else None
+        if not isinstance(values, dict) or "spoolman_enabled" not in values:
+            return None
+        try:
+            mode = _restore_setting_value("spoolman_enabled", values["spoolman_enabled"])
+        except (ValidationError, ValueError, TypeError, KeyError):
+            return None
+        if not overwrite:
+            existing = await db.scalar(select(Settings.id).where(Settings.key == "spoolman_enabled"))
+            if existing is not None:
+                return None
+        return mode
+
     async def _restore_settings(
         self,
         db: AsyncSession,
@@ -2296,6 +2364,7 @@ class GitRestoreService:
         overwrite: bool,
         tally: _CategoryTally,
         keys_written: set[str] | None = None,
+        source_change=None,
     ) -> None:
         values = payload.get("settings") if isinstance(payload, dict) else None
         if not isinstance(values, dict):
@@ -2310,6 +2379,15 @@ class GitRestoreService:
 
         await lock_credential_config(db)
         plan = await self._plan_settings(db, values, overwrite=overwrite)
+
+        if source_change is not None and "spoolman_enabled" in plan.accepted and "spoolman_enabled" not in plan.no_op:
+            existing_mode = (
+                await db.execute(select(Settings.id).where(Settings.key == "spoolman_enabled"))
+            ).scalar_one_or_none()
+            if overwrite or existing_mode is None:
+                # Git never moves the address (a frozen destination); the mode is a first-tier change.
+                # ``_restored_mode`` mirrors this condition for the wait before the anchor (A12).
+                await source_change.decide(db, enabled=plan.accepted["spoolman_enabled"])
 
         for key, value in sorted(plan.accepted.items()):
             if key in plan.no_op:

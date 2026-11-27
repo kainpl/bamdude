@@ -19,6 +19,25 @@ def _operator_timezone(value: str) -> str:
 
 
 OperatorTimezone = Annotated[str, AfterValidator(_operator_timezone)]
+
+
+def storable_text(value: str) -> bool:
+    """Whether a ``settings`` row can hold this text on every backend (C047 acceptance A16).
+
+    SQLite refuses an unpaired surrogate at the write and PostgreSQL a NUL character as well.
+    Refused only there, a save fails after it has decided what it changes -- a change of the
+    Spoolman source after the overlay is forgotten and the generation raised -- so every door
+    that writes a setting refuses such text before anything is decided, on both backends alike.
+    """
+    if "\x00" in value:
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 OPERATOR_TIME_PATTERN = r"^([01][0-9]|2[0-3]):[0-5][0-9]$"
 
 # Outbound service URLs validated when they are saved, so a bad value is rejected
@@ -863,6 +882,14 @@ class AppSettingsUpdate(BaseModel):
     model_config = {"extra": "forbid"}
 
     secret_actions: dict[str, Literal["keep", "clear", "replace"]] | None = None
+
+    @field_validator("*")
+    @classmethod
+    def validate_storable_text(cls, value):
+        # Before the save decides anything (acceptance A16); the Git restore's plan asks the same.
+        if isinstance(value, str) and not storable_text(value):
+            raise ValueError("Text contains a character that cannot be stored")
+        return value
 
     @field_validator("ha_url", "obico_ml_url", "ldap_server_url")
     @classmethod

@@ -14,7 +14,7 @@ PostgreSQL only — this codebase never sets ``PRAGMA foreign_keys``.
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Any
@@ -54,28 +54,48 @@ def journal_lock(printer_id: int) -> "JournalLock":
 
 
 class JournalLock:
-    """``async with journal_lock(printer_id)``: the lock, then the printer's pending replays."""
+    """``async with journal_lock(printer_id)``: the lock, then the printer's pending replays.
 
-    __slots__ = ("_lock", "_printer_id")
+    Every journal write is a first Spoolman fact of its print (C047 S41, S44): before the
+    lock — the owner's boundary, ahead of the shielded replay and the body — the holder
+    waits until no change of the Spoolman database is in flight and publishes its
+    activity record, kept until the lock is released (after the holder's commit).
+    """
+
+    __slots__ = ("_evidence", "_lock", "_printer_id")
 
     def __init__(self, printer_id: int, lock: asyncio.Lock) -> None:
         self._printer_id = printer_id
         self._lock = lock
+        self._evidence = None
 
     def locked(self) -> bool:
         return self._lock.locked()
 
     async def __aenter__(self) -> "JournalLock":
-        await self._lock.acquire()
+        from backend.app.services import spoolman_activity
+
+        evidence = spoolman_activity.first_evidence("usage_journal")
+        await evidence.__aenter__()
+        try:
+            await self._lock.acquire()
+        except BaseException:
+            await evidence.__aexit__(None, None, None)
+            raise
         try:
             await deliver_pending_replay(self._printer_id)
         except BaseException:
             self._lock.release()
+            await evidence.__aexit__(None, None, None)
             raise
+        self._evidence = evidence
         return self
 
     async def __aexit__(self, *_exc) -> None:
         self._lock.release()
+        evidence, self._evidence = self._evidence, None
+        if evidence is not None:
+            await evidence.__aexit__(None, None, None)
 
 
 @dataclass
@@ -148,9 +168,35 @@ async def deliver_pending_replay(printer_id: int) -> None:
             logger.debug("[UsageJournal] Printer %d: no replay to take from the client", printer_id)
     if not _pending_replays.get(printer_id):
         return
-    writer = loop.create_task(_write_pending_replays(printer_id), name=f"usage-journal-replay-{printer_id}")
-    _replay_writers[printer_id] = writer
+    writer = _start_replay_writer(loop, printer_id)
     await asyncio.shield(writer)
+
+
+def _start_replay_writer(loop: asyncio.AbstractEventLoop, printer_id: int) -> asyncio.Task:
+    """The shielded writer, owning its own Spoolman activity record (C047 acceptance A01).
+
+    The record is published before the task exists — while the caller's own record (the
+    journal lock's first evidence) is still open, so the protection never lapses — and it
+    ends when the task is done: after its commit, or its proven rollback, or a cancellation
+    before it ran. A holder cancelled while it waits therefore never leaves a writer
+    unprotected: a change of the Spoolman database keeps refusing until the write is over.
+    Synchronous: nothing can run between the record and the task.
+    """
+    from backend.app.services import spoolman_activity, spoolman_source
+
+    if spoolman_source.base_change_in_flight():
+        # Only a holder of the journal lock reaches here, and it was admitted with no base
+        # change in flight, which none can start while its record is open.
+        raise RuntimeError("a restart replay started while a change of the Spoolman database was in flight")
+    release = spoolman_activity.hold("usage_journal_replay")
+    try:
+        writer = loop.create_task(_write_pending_replays(printer_id), name=f"usage-journal-replay-{printer_id}")
+    except BaseException:
+        release()
+        raise
+    writer.add_done_callback(lambda _task: release())
+    _replay_writers[printer_id] = writer
+    return writer
 
 
 async def _write_pending_replays(printer_id: int) -> None:
@@ -200,12 +246,35 @@ async def _write_pending_replays(printer_id: int) -> None:
 
 async def _write_replay_batch(db: AsyncSession, printer_id: int, batch) -> int | None:
     """Every fact of ``batch``, in order, into the archive of the print it ran for; no commit.
-    None when no printing archive of that print takes it."""
+    None when no printing archive of that print takes it.
+
+    A Spoolman number the batch names was read when its bindings were (the seed's snapshot, a
+    held change) — possibly in an earlier hold of the lock than this write. It is written only
+    while the Spoolman database is still the one it was read under (``bindings_stamp``); else
+    that fact's Spoolman spool is unknown — a frozen ``None``, which no writer fills from the
+    binding of the moment — and the built-in spool keeps its name (C047 acceptance A01). The
+    writer's own activity record keeps the database from changing until the commit.
+    """
+    from backend.app.services import spoolman_source
+
     archive_id = await tail_archive(db, printer_id, generation=batch.generation, subtask_id=batch.subtask_id)
     if archive_id is None:
         return None
+    stamp = getattr(batch, "bindings_stamp", None)
+    same_base = stamp is not None and stamp == spoolman_source.base_generation()
+    unproven = 0
     for fact in batch.facts:
+        if not same_base and fact.ids is not None and fact.ids[1] is not None:
+            fact = replace(fact, ids=(fact.ids[0], None))
+            unproven += 1
         await _write_replay_fact(db, printer_id, archive_id, fact)
+    if unproven:
+        logger.warning(
+            "[UsageJournal] Printer %d: %d replayed fact(s) named a Spoolman spool read under another Spoolman "
+            "database (or unstamped); their Spoolman spool is recorded as unknown",
+            printer_id,
+            unproven,
+        )
     return len(batch.facts)
 
 
@@ -450,8 +519,34 @@ def open_tail_episode(events: list, tray: int | None = None) -> TailEpisode | No
     return last
 
 
+def _spoolman_fact(db: AsyncSession, printer_id: int, spoolman_spool_id: int | None) -> int | None:
+    """The Spoolman number a new journal row may carry (C047 acceptance A07).
+
+    Every row the journal creates goes through here — whatever door reached it, with
+    or without the journal lock. A Spoolman number is a print's first Spoolman fact, so
+    it is written only with the right to one (``spoolman_activity.admit_for_transaction``:
+    the writer's admission, or one bound to this transaction, never a wait). While a
+    change of the Spoolman database is in flight the row keeps its built-in spool and
+    its Spoolman spool is unknown — a frozen ``None`` no writer fills from a later binding.
+    """
+    if spoolman_spool_id is None:
+        return None
+    from backend.app.services import spoolman_activity
+
+    if spoolman_activity.admit_for_transaction(db, "usage_journal_write"):
+        return spoolman_spool_id
+    logger.warning(
+        "[UsageJournal] Printer %d: Spoolman spool %s not journaled while the Spoolman database changes; "
+        "recorded as unknown",
+        printer_id,
+        spoolman_spool_id,
+    )
+    return None
+
+
 async def _append(db: AsyncSession, **fields) -> PrintUsageEvent:
     """One journal row, flushed into the caller's transaction (the caller commits)."""
+    fields["spoolman_spool_id"] = _spoolman_fact(db, fields["printer_id"], fields.get("spoolman_spool_id"))
     row = PrintUsageEvent(
         **fields, slot_occupied=_slot_occupied_now(fields["printer_id"], fields.get("global_tray_id"))
     )
@@ -677,9 +772,14 @@ async def ensure_tail_recorded(
     tray_id: int,
     new_spool_id: int | None = None,
     new_spoolman_spool_id: int | None = None,
+    spoolman_proved_under: int | None = None,
 ) -> bool:
     """Before an assignment rewrites a slot's binding: if that slot's reel is feeding its
     tail right now, make sure the tail_start exists, frozen with the reel going out.
+
+    ``spoolman_proved_under`` — the base generation under which the writer proved
+    ``new_spoolman_spool_id`` (its source snapshot, before its remote read); the held
+    change is stamped with the older of that and the base now (acceptance A06).
 
     The tail is observed on the MQTT thread and journaled by a queued callback; an
     assignment that commits in between would hand the new reel to the tail. So whoever
@@ -699,6 +799,14 @@ async def ensure_tail_recorded(
     except Exception:  # noqa: BLE001
         held = False
     if held and generation is not None:
+        from backend.app.services import spoolman_source
+
+        # Which Spoolman database the numbers read here belong to: the seed writes them much
+        # later, and only under the same base (C047 acceptance A01). A number the writer proved
+        # earlier carries the base of its proof (A06).
+        stamp = spoolman_source.base_generation()
+        if new_spoolman_spool_id is not None and spoolman_proved_under is not None:
+            stamp = min(stamp, spoolman_proved_under)
         outgoing = await freeze_spool_ids(db, printer_id, tray)
         incoming = None
         if new_spool_id is not None or new_spoolman_spool_id is not None:
@@ -706,7 +814,7 @@ async def ensure_tail_recorded(
                 new_spool_id if new_spool_id is not None else outgoing[0],
                 new_spoolman_spool_id if new_spoolman_spool_id is not None else outgoing[1],
             )
-        if client.note_held_binding_change(generation, tray, outgoing, incoming):
+        if client.note_held_binding_change(generation, tray, outgoing, incoming, stamp=stamp):
             logger.info(
                 "[UsageJournal] Tray %d on printer %d re-linked while its journal waits for the seed; "
                 "the reel going out is %s/%s",
@@ -821,7 +929,7 @@ async def record_event(
             kind=kind,
             global_tray_id=global_tray_id,
             spool_id=spool_id,
-            spoolman_spool_id=spoolman_spool_id,
+            spoolman_spool_id=_spoolman_fact(db, printer_id, spoolman_spool_id),
             slot_occupied=_slot_occupied_now(printer_id, global_tray_id),
         )
     )
@@ -1137,7 +1245,7 @@ async def record_runout(
             kind=kind,
             global_tray_id=global_tray_id,
             spool_id=spool_id,
-            spoolman_spool_id=spoolman_spool_id,
+            spoolman_spool_id=_spoolman_fact(db, printer_id, spoolman_spool_id),
             slot_occupied=occupied,
         )
     )

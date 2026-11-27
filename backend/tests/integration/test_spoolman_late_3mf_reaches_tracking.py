@@ -34,7 +34,8 @@ from backend.app.services import spoolman_tracking, usage_tracker
 from backend.app.services.print_file_analysis import PrintFileAnalysis
 from backend.app.utils.tray_split import CompletionSnapshot, terminal_snapshot_fields
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
+# C047 part 2: the accounting tail runs inside an admitted charge (services/spoolman_charge).
+pytestmark = [pytest.mark.asyncio, pytest.mark.integration, pytest.mark.usefixtures("spoolman_charge_admitted")]
 
 UUID = "A1B2C3D4E5F60718293A4B5C6D7E8F90"
 ANALYSIS = PrintFileAnalysis(

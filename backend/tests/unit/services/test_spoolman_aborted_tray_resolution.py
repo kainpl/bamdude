@@ -15,8 +15,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from backend.app.services import spoolman_charge
 from backend.app.utils.tray_split import CompletionSnapshot, terminal_snapshot_fields
 from backend.tests.unit.services.test_spoolman_tray_split import _AsyncCtx
+
+# C047 part 2: the accounting tail runs inside an admitted charge (services/spoolman_charge).
+pytestmark = pytest.mark.usefixtures("spoolman_charge_admitted")
 
 #: Four loaded AMS trays; Spoolman knows each by its tag.
 AMS_TRAYS = {tray: {"tray_uuid": f"TRAY{tray}", "tray_type": "PLA"} for tray in range(4)}
@@ -77,6 +81,7 @@ async def cancelled(pm, *, usage=ONE_COLOUR, slot_to_tray=None, ams_trays=AMS_TR
         patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
     ):
         await _report_partial_usage(
+            charge=await spoolman_charge.admit("test"),
             printer_id=1,
             tracking=tracking,
             last_layer_num=CANCELLED_AT_40_PERCENT["last_layer_num"],

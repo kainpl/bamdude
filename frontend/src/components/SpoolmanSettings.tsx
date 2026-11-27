@@ -5,6 +5,7 @@ import { Loader2, Check, X, RefreshCw, Link2, Database, Info, AlertTriangle, Pac
 import { api, ApiError } from '../api/client';
 import type { SpoolmanSyncResult, SpoolmanTagMigrationReport, Printer } from '../api/client';
 import { invalidateSpoolViews } from '../utils/queryInvalidation';
+import { spoolmanSourceRefusalText } from '../utils/spoolmanSourceRefusal';
 import { Card, CardContent, CardHeader } from './Card';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
@@ -110,8 +111,10 @@ export function SpoolmanSettings() {
       queryClient.invalidateQueries({ queryKey: ['spoolman-inventory-filaments'] });
       showToast(t('settings.toast.settingsSaved'));
     },
-    onError: () => {
-      showToast(t('settings.toast.saveFailed'), 'error');
+    onError: (error: Error) => {
+      // A print accounting in Spoolman holds its address and database (C047 S38).
+      const refused = spoolmanSourceRefusalText(error, t);
+      showToast(refused ?? t('settings.toast.saveFailed'), refused ? 'warning' : 'error');
     },
   });
 
@@ -135,8 +138,9 @@ export function SpoolmanSettings() {
       queryClient.invalidateQueries({ queryKey: ['spoolman-inventory-filaments'] });
       showToast(t('settings.toast.settingsSaved'));
     },
-    onError: () => {
-      showToast(t('settings.toast.saveFailed'), 'error');
+    onError: (error: Error) => {
+      const refused = spoolmanSourceRefusalText(error, t);
+      showToast(refused ?? t('settings.toast.saveFailed'), refused ? 'warning' : 'error');
     },
   });
 
@@ -254,6 +258,7 @@ export function SpoolmanSettings() {
     const values = { spool: failure.spool_id, tag: failure.tag };
     if (failure.reason === 'spool_gone') return t('settings.nativeTagsFailedGone', values);
     if (failure.reason === 'unreachable') return t('settings.nativeTagsFailedUnreachable', values);
+    if (failure.reason === 'being_deleted') return t('settings.nativeTagsFailedBeingDeleted', values);
     return t('settings.nativeTagsFailedRefused', values);
   };
   const tagConflictText = (conflict: SpoolmanTagMigrationReport['conflicts'][number]) => {

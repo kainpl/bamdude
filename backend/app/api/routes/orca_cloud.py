@@ -376,24 +376,6 @@ async def _clear_credentials(db: AsyncSession, user: User | None, *, captured=No
     )
 
 
-async def _upsert_settings(db: AsyncSession, values: dict[str, str | None]) -> None:
-    """Idempotent upsert into the Settings table. ``None`` values delete the row."""
-    keys = [k for k, _ in values.items()]
-    result = await db.execute(select(Settings).where(Settings.key.in_(keys)))
-    existing = {s.key: s for s in result.scalars().all()}
-    for key, value in values.items():
-        row = existing.get(key)
-        if value is None:
-            if row is not None:
-                await db.delete(row)
-            continue
-        if row is not None:
-            row.value = value
-        else:
-            db.add(Settings(key=key, value=value))
-    await db.commit()
-
-
 # ---------------------------------------------------------------------------
 # Authenticated service builder with JIT refresh
 # ---------------------------------------------------------------------------

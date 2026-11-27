@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from backend.app.core.config import settings
 from backend.app.core.database import Base, _strip_tz_from_params, import_all_models
 from backend.tests.integration.test_vp_nozzle import (  # noqa: F401
-    test_delete_target_cannot_rebind_vp_to_reused_printer_id,
+    test_delete_target_unbinds_vp_and_its_number_is_not_reissued,
     test_http_configuration_round_trip_and_null_rejection,
     test_migration_backfills_existing_rows_and_is_repeatable,
     test_queue_selection_skips_only_positive_diameter_mismatch,

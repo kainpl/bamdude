@@ -2439,11 +2439,20 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState, *, stock_res
 
         try:
             from backend.app.models.print_usage_event import EVENT_RESUME
+            from backend.app.services import spoolman_activity
             from backend.app.services.print_usage_journal import active_archive_id, journal_lock, record_event
 
             # The journal lock before the session, as the stock insertion takes it: the external
-            # claim below holds SQLite's writer and must not wait for it (post-rebuild review).
-            async with _get_ams_assignment_lock(printer_id), journal_lock(printer_id), async_session() as db:
+            # claim below holds SQLite's writer and must not wait for it (post-rebuild review). Its
+            # Spoolman admission comes before the lane (C047 acceptance A05), and so does its
+            # slot-ledger write, first (A10): the claim reads the mode under it (A08).
+            async with (
+                spoolman_activity.slot_write("external_resume"),
+                spoolman_activity.first_evidence("external_resume"),
+                _get_ams_assignment_lock(printer_id),
+                journal_lock(printer_id),
+                async_session() as db,
+            ):
                 archive_id = await active_archive_id(db, printer_id)
                 # The id may name the next printer's run by now (spec gh109-o1 r2 R6).
                 if archive_id is not None and printer_manager.session_still_lives(printer_id):
@@ -3290,12 +3299,20 @@ async def on_stock_spool_inserted(printer_id: int, event: dict):
     logger = logging.getLogger(__name__)
     from sqlalchemy.orm import selectinload
 
+    from backend.app.services import spoolman_activity
     from backend.app.services.auto_stock_spool import claim_on_insertion
     from backend.app.services.print_usage_journal import journal_lock
 
     # The journal lock BEFORE the session: the claim takes SQLite's writer at once and must
-    # never wait for an in-process lock while it holds it (post-rebuild review).
-    async with _get_ams_assignment_lock(printer_id), journal_lock(printer_id):
+    # never wait for an in-process lock while it holds it (post-rebuild review). The Spoolman
+    # admission of its journal facts comes before the lane (C047 acceptance A05), and so does
+    # its slot-ledger write, first (A10): the claim reads the mode under it (A08).
+    async with (
+        spoolman_activity.slot_write("stock_insertion"),
+        spoolman_activity.first_evidence("stock_insertion"),
+        _get_ams_assignment_lock(printer_id),
+        journal_lock(printer_id),
+    ):
         key = (printer_id, event["ams_id"], event["tray_id"])
         token = (event["generation"], event["sequence"])
         if token <= _stock_insertion_seen.get(key, (-1, -1)):
@@ -3421,13 +3438,49 @@ async def _recheck_held_unlinks(printer_id: int) -> None:
         await on_ams_change(printer_id, current)
 
 
+async def _spoolman_mode_on() -> bool:
+    """The Spoolman mode now, from a session of its own (no transaction carried on).
+
+    Unreadable counts as the built-in inventory: the caller then takes the admission —
+    the side that can only wait, never the side that writes unguarded.
+    """
+    from backend.app.api.routes.settings import get_setting
+
+    try:
+        async with async_session() as db:
+            return (await get_setting(db, "spoolman_enabled") or "").strip().lower() == "true"
+    except Exception:  # noqa: BLE001 - see the docstring
+        logging.getLogger(__name__).debug("Spoolman mode unreadable before the AMS pass", exc_info=True)
+        return False
+
+
 async def on_ams_change(printer_id: int, ams_data: list):
     # Unlink/replay and insertion assignment must share the same lock. Otherwise
     # a delayed empty-slot callback could delete the freshly assigned refill.
-    async with _get_ams_assignment_lock(printer_id):
+    #
+    # The built-in inventory's RFID pass may journal a slot's reel — a first Spoolman fact when
+    # a Spoolman binding is still on file — so in that mode the admission is waited for before
+    # the lane (C047 acceptance A07); the pass reads the mode again under it. In Spoolman mode
+    # the pass does no RFID assignment and takes no admission: an AMS update is no reason to
+    # hold back a Spoolman delete. Whatever reaches the journal either way is guarded there
+    # (``print_usage_journal._spoolman_fact``).
+    #
+    # The built-in pass also writes the built-in slot ledger, so it holds a slot-ledger write
+    # too, which a switch to Spoolman waits for before it empties that ledger (A08), taken before
+    # the admission (A10). A pass that began in Spoolman mode holds neither and leaves the
+    # built-in work to the next pass, even when the mode it reads under the lane is the built-in
+    # one by then.
+    from backend.app.services import spoolman_activity
+
+    built_in = not await _spoolman_mode_on()
+    async with AsyncExitStack() as admission:
+        if built_in:
+            await admission.enter_async_context(spoolman_activity.slot_write("ams_change_rfid"))
+            await admission.enter_async_context(spoolman_activity.first_evidence("ams_change_rfid"))
+        await admission.enter_async_context(_get_ams_assignment_lock(printer_id))
         state = printer_manager.get_status(printer_id)
         current = getattr(state, "raw_data", {}).get("ams") if state else None
-        await _on_ams_change(printer_id, current if isinstance(current, list) else ams_data)
+        await _on_ams_change(printer_id, current if isinstance(current, list) else ams_data, built_in_owned=built_in)
     # A spool sits in one slot: what the pass above put into a slot of this
     # printer may still have rows on OTHER printers. Those are deleted under
     # their own printers' locks, one at a time, with this one released.
@@ -3436,8 +3489,12 @@ async def on_ams_change(printer_id: int, ams_data: list):
     await spool_single_slot.release_elsewhere(printer_id)
 
 
-async def _on_ams_change(printer_id: int, ams_data: list):
-    """Handle AMS data changes - sync to Spoolman if enabled and auto mode."""
+async def _on_ams_change(printer_id: int, ams_data: list, *, built_in_owned: bool = True):
+    """Handle AMS data changes - sync to Spoolman if enabled and auto mode.
+
+    ``built_in_owned`` — the caller holds the built-in pass's slot-ledger write (C047
+    acceptance A08); without it the built-in inventory's work waits for the next pass.
+    """
     logger = logging.getLogger(__name__)
 
     # The advertised-profile overlay is memory only (spec
@@ -4008,7 +4065,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
             _spoolman_on = await get_setting(db, "spoolman_enabled")
             _auto_add_raw = await get_setting(db, "auto_add_unknown_rfid")
             _auto_add_unknown = _auto_add_raw is None or _auto_add_raw.lower() == "true"
-            if not _spoolman_on or _spoolman_on.lower() != "true":
+            if built_in_owned and (not _spoolman_on or _spoolman_on.lower() != "true"):
                 # Rows that were double before "a spool sits in one slot" was a
                 # rule are settled as printers report in (owner decision Р36):
                 # the slot that reports the tag keeps the spool, else the newest
@@ -4477,6 +4534,15 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                                     tray.tray_id,
                                     e,
                                 )
+                    except SpoolBeingDeleted as refused:
+                        # C047 §C3: the background sync skips a spool being deleted; the next report retries.
+                        logger.info(
+                            "[Printer %s] AMS %s tray %s: Spoolman spool %s is being deleted; skipped",
+                            printer_id,
+                            ams_id,
+                            tray.tray_id,
+                            refused.number,
+                        )
                     except Exception as e:
                         logger.error("Error syncing AMS %s tray %s: %s", ams_id, tray.tray_id, e)
 
@@ -7208,14 +7274,17 @@ async def _restore_usage_tracking_session_locked(
 
         client = printer_manager.get_client(printer_id)
         if client is not None and generation is not None:
+            from backend.app.services import spoolman_source
             from backend.app.services.print_usage_journal import (
                 binding_snapshot,
                 deliver_pending_replay,
                 queue_replay,
             )
 
-            # The bindings the replay names its facts with, read under the journal lock; then
-            # this session's own work ends, so the replay's write never waits for its writer.
+            # The bindings the replay names its facts with, read under the journal lock, and the
+            # Spoolman database they belong to (C047 acceptance A01); then this session's own work
+            # ends, so the replay's write never waits for its writer.
+            bindings_stamp = spoolman_source.base_generation()
             bindings = await binding_snapshot(db, printer_id)
             await db.commit()
             # A reconnect during those awaits replaced the client and carried the hold to the new
@@ -7230,6 +7299,7 @@ async def _restore_usage_tracking_session_locked(
                 tail_origin=tail.origin if tail is not None else None,
                 tail_open_layer=tail.start.layer_num if tail is not None else 0,
                 bindings=bindings,
+                bindings_stamp=bindings_stamp,
             ):
                 queue_replay(printer_id, client.take_replay_batches(), archive_id=archive_id)
                 await deliver_pending_replay(printer_id)
@@ -7307,6 +7377,7 @@ async def _abandon_held_journal_locked(printer_id: int, generation: int) -> bool
     waited for the lock carried it to a new client. The caller holds the journal lock.
     """
     from backend.app.core import database
+    from backend.app.services import spoolman_source
     from backend.app.services.print_usage_journal import (
         active_archive_id,
         binding_snapshot,
@@ -7315,6 +7386,8 @@ async def _abandon_held_journal_locked(printer_id: int, generation: int) -> bool
     )
 
     bindings = archive_id = None
+    # The Spoolman database the snapshot's numbers belong to (C047 acceptance A01).
+    bindings_stamp = spoolman_source.base_generation()
     try:
         # The factory the journal writes with, looked up now (as ``deliver_pending_replay`` does).
         async with database.async_session() as db:
@@ -7323,7 +7396,7 @@ async def _abandon_held_journal_locked(printer_id: int, generation: int) -> bool
     except Exception:  # noqa: BLE001 - the write then reads them, still under this lock
         logging.getLogger(__name__).exception("Binding snapshot for printer %s failed", printer_id)
     client = printer_manager.get_client(printer_id)
-    if client is None or not client.abandon_journal_hold(generation, bindings=bindings):
+    if client is None or not client.abandon_journal_hold(generation, bindings=bindings, bindings_stamp=bindings_stamp):
         return False
     queue_replay(printer_id, client.take_replay_batches(), archive_id=archive_id)
     await deliver_pending_replay(printer_id)
@@ -11607,7 +11680,21 @@ async def on_print_complete(printer_id: int, data: dict) -> None:
 
     The wrapper closes registration in finally. Cleanup waits for consumers,
     independently of the token that fences actions against newer print runs.
+
+    The Spoolman accounting window (C047 S15) opens here, before the first await,
+    and closes after the last Spoolman writer: a delete of a Spoolman spool
+    refuses while it is open and admits only if none came and went meanwhile.
     """
+    from backend.app.services import spoolman_activity
+
+    spoolman_activity.enter_window()
+    try:
+        await _on_print_complete_windowed(printer_id, data)
+    finally:
+        spoolman_activity.leave_window()
+
+
+async def _on_print_complete_windowed(printer_id: int, data: dict) -> None:
     from backend.app.services.print_completion_tasks import PrintCompletionTasks
 
     scope = PrintCompletionTasks(printer_id)
@@ -13619,6 +13706,11 @@ async def _application_lifespan(app: FastAPI):
     auto_queue_return_runtime.close_admission()
     if not await auto_queue_return_runtime.quiesce_for_restore(10):
         logging.getLogger(__name__).warning("AutoQueue return shutdown work remains owned")
+    # Spoolman deletes and print charges: closed and drained before network and DB resources go (C047 S35).
+    from backend.app.services.spoolman_delete import delete_runtime as spoolman_delete_runtime
+
+    if not await spoolman_delete_runtime.quiesce_for_restore(10):
+        logging.getLogger(__name__).warning("Spoolman delete or charge shutdown work remains owned")
     from backend.app.services.print_run_binding import revoke_print_effects
     from backend.app.services.print_state_observer import print_state_observer
 
@@ -14010,6 +14102,27 @@ async def forecast_source_unavailable_handler(request, exc):
     from backend.app.i18n.api_errors import json_error
 
     return json_error(503, {"error": "spoolman_unreachable", "message": "Spoolman server is not reachable"})
+
+
+from backend.app.services.spoolman_binding_fence import SpoolBeingDeleted  # noqa: E402
+
+
+@app.exception_handler(SpoolBeingDeleted)
+async def spool_being_deleted_handler(request, exc):
+    # A binding or tag writer met a Spoolman spool being deleted (C047 §C3): nothing was
+    # written locally; after a confirmed create the answer names the new spool (S37).
+    from backend.app.i18n.api_errors import json_error
+
+    if exc.created:
+        return json_error(
+            409,
+            {
+                "error": "spool_created_not_bound",
+                "spool_id": exc.number,
+                "message": "The spool was created in Spoolman but not bound because of a concurrent delete",
+            },
+        )
+    return json_error(409, {"error": "spool_being_deleted", "message": "This spool is being deleted"})
 
 
 # Every ``HTTPException`` answers in the system language: the English sentence

@@ -18,6 +18,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from backend.app.services import spoolman_charge
+
+# C047 part 2: the accounting tail runs inside an admitted charge (services/spoolman_charge).
+pytestmark = pytest.mark.usefixtures("spoolman_charge_admitted")
+
 
 class _AsyncCtx:
     """async_session() shim — same shape as test_spoolman_no3mf_remain_fallback."""
@@ -798,7 +803,12 @@ async def test_a_cancelled_print_on_spoolman_is_split_by_the_feed_as_the_interna
         patch("backend.app.services.printer_manager.printer_manager", printer_manager),
         patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
     ):
-        await _report_partial_usage(printer_id=1, tracking=tracking, completion=_completion_from(printer_manager))
+        await _report_partial_usage(
+            charge=await spoolman_charge.admit("test"),
+            printer_id=1,
+            tracking=tracking,
+            completion=_completion_from(printer_manager),
+        )
 
     assert {call.args[0]: call.args[1] for call in client.use_spool.await_args_list} == charged
     if not_recorded:
@@ -846,7 +856,12 @@ async def test_a_cancelled_multi_colour_print_on_spoolman_keeps_its_slot_mapping
         patch("backend.app.services.printer_manager.printer_manager", printer_manager),
         patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
     ):
-        await _report_partial_usage(printer_id=1, tracking=tracking, completion=_completion_from(printer_manager))
+        await _report_partial_usage(
+            charge=await spoolman_charge.admit("test"),
+            printer_id=1,
+            tracking=tracking,
+            completion=_completion_from(printer_manager),
+        )
 
     assert {call.args[0]: call.args[1] for call in client.use_spool.await_args_list} == {11: 150.0, 12: 50.0}
     notify.assert_not_awaited()
@@ -895,7 +910,12 @@ async def test_a_cancelled_print_honours_an_unknown_feed_only_the_journal_holds(
         patch("backend.app.services.printer_manager.printer_manager", printer_manager),
         patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
     ):
-        await _report_partial_usage(printer_id=1, tracking=tracking, completion=_completion_from(printer_manager))
+        await _report_partial_usage(
+            charge=await spoolman_charge.admit("test"),
+            printer_id=1,
+            tracking=tracking,
+            completion=_completion_from(printer_manager),
+        )
 
     assert {call.args[0]: call.args[1] for call in client.use_spool.await_args_list} == {11: 150.0}
     assert notify.await_args.args[1] == [(-1, 150.0)]
@@ -942,7 +962,13 @@ async def test_a_cancelled_print_with_no_client_at_all_reads_the_journal():
         patch("backend.app.services.printer_manager.printer_manager", printer_manager),
         patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
     ):
-        await _report_partial_usage(printer_id=1, tracking=tracking, last_layer_num=100, last_progress=50)
+        await _report_partial_usage(
+            charge=await spoolman_charge.admit("test"),
+            printer_id=1,
+            tracking=tracking,
+            last_layer_num=100,
+            last_progress=50,
+        )
 
     assert {call.args[0]: call.args[1] for call in client.use_spool.await_args_list} == {11: 75.0}
     assert notify.await_args.args[1] == [(-1, 75.0)]

@@ -814,7 +814,7 @@ async def _own_spoolman_rows(
     from backend.app.models.spoolman_usage_history import SpoolmanUsageHistory  # noqa: PLC0415
     from backend.app.services import spoolman_usage_history  # noqa: PLC0415
 
-    token = await spoolman_usage_history.source_token(db)
+    token = await spoolman_usage_history.current_token(db)
     if token is None or not spools:
         return []
     rows = (

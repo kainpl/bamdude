@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from backend.app.services import spoolman_charge
 from backend.app.services.usage_tracker import _active_sessions
 from backend.app.utils.threemf_tools import partial_slot_grams
 from backend.app.utils.tray_split import CompletionSnapshot, terminal_snapshot_fields
@@ -34,6 +35,9 @@ from backend.tests.unit.services.test_partial_print_split import (  # noqa: F401
     stage,
 )
 from backend.tests.unit.services.test_spoolman_tray_split import _AsyncCtx, _make_db
+
+# C047 part 2: the accounting tail runs inside an admitted charge (services/spoolman_charge).
+pytestmark = pytest.mark.usefixtures("spoolman_charge_admitted")
 
 #: The slicer's per-slot estimates — flush and purge included (46.35 g in all).
 TWO_COLOURS = [
@@ -111,6 +115,7 @@ async def spoolman_stopped(data, *, usage=TWO_COLOURS, layer_usage=TIMELINE_JSON
         patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", AsyncMock()),
     ):
         await _report_partial_usage(
+            charge=await spoolman_charge.admit("test"),
             printer_id=1,
             tracking=_tracking(usage, layer_usage),
             last_layer_num=data["last_layer_num"],

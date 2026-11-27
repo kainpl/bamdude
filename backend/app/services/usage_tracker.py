@@ -1625,7 +1625,11 @@ async def on_print_start(
     if db:
         try:
             await persist_session(db, session)
-            await _journal_print_start(db, printer_id, state)
+            # The journal's opening row may name a Spoolman spool: a first fact (C047 S41).
+            from backend.app.services import spoolman_activity
+
+            async with spoolman_activity.first_evidence("usage_journal"):
+                await _journal_print_start(db, printer_id, state)
         except Exception:
             logger.exception("[UsageTracker] Failed to persist print session for printer %d", printer_id)
 

@@ -79,6 +79,9 @@ async def lock_credential_config(db: AsyncSession) -> None:
     anchor = (
         await db.execute(select(Settings.id).where(Settings.key == CONFIG_GUARD_KEY).with_for_update())
     ).scalar_one_or_none()
+    from backend.app.core.database import mark_writer_reserved  # noqa: PLC0415
+
+    mark_writer_reserved(db)
     if anchor is None:
         raise HTTPException(status_code=503, detail="Credential configuration is not ready")
 

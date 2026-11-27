@@ -93,6 +93,8 @@ async def run_route(
         merge_spool_extra=AsyncMock(return_value={"id": SPOOL_ID, "extra": {}}),
         link_native_tags=AsyncMock(return_value=[]),
         health_check=AsyncMock(return_value=True),
+        # The re-link finds the tag's other holders before its first mutation (C047 S27).
+        get_spools=AsyncMock(return_value=[]),
     )
     state = SimpleNamespace(
         nozzles=list(nozzles),

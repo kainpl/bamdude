@@ -120,7 +120,16 @@ FORWARDED_EXCEPTIONS = frozenset(
 # Safe domain error maps forwarded by code instead of a literal constructor
 # argument. Keep this explicit: arbitrary dictionaries are not API messages.
 FORWARDED_MESSAGE_MAPS = frozenset(
-    {"LDAP_ERROR_MESSAGES", "LABEL_GEOMETRY_MESSAGES", "MANYFOLD_MESSAGES", "USER_CONTENT_DELETE_MESSAGES"}
+    {
+        "LDAP_ERROR_MESSAGES",
+        "LABEL_GEOMETRY_MESSAGES",
+        "MANYFOLD_MESSAGES",
+        "USER_CONTENT_DELETE_MESSAGES",
+        # C047 part 2: the reasons of ``spoolman_print_in_progress`` (services/spoolman_source_changes)
+        # and the coded refusals of the Spoolman delete door (services/spoolman_delete).
+        "SPOOLMAN_SOURCE_MESSAGES",
+        "SPOOLMAN_DELETE_MESSAGES",
+    }
 )
 
 # Kinds the guard requires a translation for. ``value`` is optional (see module doc).

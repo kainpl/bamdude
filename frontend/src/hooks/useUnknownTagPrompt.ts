@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import type { Printer } from '../api/client';
+import type { ApiError, Printer } from '../api/client';
 import { api } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -130,6 +130,13 @@ export function useUnknownTagPrompt() {
       setQueue(prev => prev.slice(1));
     },
     onError: (error: Error) => {
+      const refusal = error as Partial<ApiError>;
+      if (refusal.code === 'spool_created_not_bound') {
+        // Created in Spoolman, not bound: a concurrent delete took the number first (C047 S37).
+        queryClient.invalidateQueries({ queryKey: ['spoolman-inventory-spools'] });
+        showToast(t('inventory.spoolCreatedNotBound', { id: refusal.spoolId ?? '' }), 'warning');
+        return;
+      }
       showToast(error.message || t('inventory.addToInventoryFailed'), 'error');
     },
   });

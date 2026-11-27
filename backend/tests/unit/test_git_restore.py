@@ -3223,6 +3223,9 @@ class TestApplyOrdering:
         db = MagicMock()
         db.in_transaction.return_value = False
         db.commit = AsyncMock(side_effect=lambda: calls.append("commit"))
+        # A clean session to the Spoolman source guard the SPOOLS and settings categories take (C047 S30).
+        db.new = db.dirty = db.deleted = ()
+        db.sync_session.get_transaction.return_value = None
 
         await service._apply(
             db,
@@ -3241,6 +3244,9 @@ class TestApplyOrdering:
         db = MagicMock()
         db.in_transaction.return_value = False
         db.commit = AsyncMock(side_effect=lambda: calls.append("commit"))
+        # A clean session to the Spoolman source guard the SPOOLS and settings categories take (C047 S30).
+        db.new = db.dirty = db.deleted = ()
+        db.sync_session.get_transaction.return_value = None
 
         await service._apply(
             db,

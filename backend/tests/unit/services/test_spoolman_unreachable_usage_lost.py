@@ -15,9 +15,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from backend.app.services import spoolman_charge
 from backend.app.utils.tray_split import CompletionSnapshot, terminal_snapshot_fields
 from backend.tests.unit.services.test_partial_print_split import next_print_state
 from backend.tests.unit.services.test_spoolman_tray_split import _AsyncCtx, _make_db
+
+# C047 part 2: the accounting tail runs inside an admitted charge (services/spoolman_charge).
+pytestmark = pytest.mark.usefixtures("spoolman_charge_admitted")
 
 TWO_COLOURS = [{"slot_id": 1, "used_g": 30.0}, {"slot_id": 2, "used_g": 16.35}]
 TIMELINE = {"50": {"0": 900.0, "1": 300.0}, "100": {"0": 1500.0, "1": 750.0}}
@@ -89,6 +93,7 @@ async def stopped_while_down(tracking, caplog):
         p = _patches(tracking, notify, db=AsyncMock())
         with p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]:
             await _report_partial_usage(
+                charge=await spoolman_charge.admit("test"),
                 printer_id=3,
                 tracking=tracking,
                 last_layer_num=50,

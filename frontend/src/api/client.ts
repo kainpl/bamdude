@@ -205,6 +205,16 @@ export class ApiError extends Error {
    * composes into sentences (`partBinding.reasonText`); only well-formed entries.
    */
   reasons?: CombinationReason[];
+  /**
+   * Why a refusal with one code was given, when it says (C047 S43): `spoolman_print_in_progress`
+   * answers `{error, reason, message}` — `charge_window` (a print is being charged, a moment) or
+   * `print_accounting` (a print accounts in Spoolman, after it ends). A caller picks its text by it.
+   */
+  reason?: string;
+  /** The spool a refusal names (C047 S37 `spool_created_not_bound`: created in Spoolman, not bound). */
+  spoolId?: number;
+  /** The reason codes of a Spoolman delete refused as in use (C047 §C2): `usage_history`, `print_tag`, `open_print`. */
+  spoolInUseReasons?: string[];
   constructor(message: string, status: number, code?: string, retryAfterMs?: number) {
     super(message);
     this.name = 'ApiError';
@@ -753,6 +763,14 @@ async function handleErrorResponse(response: Response, __isRetry: boolean, signa
   if (jobs) refusal.jobs = jobs;
   const reasons = refusalReasons(error.detail);
   if (reasons) refusal.reasons = reasons;
+  const detail = error.detail && typeof error.detail === 'object' && !Array.isArray(error.detail) ? error.detail : null;
+  if (detail && typeof detail.reason === 'string') refusal.reason = detail.reason;
+  if (code === 'spool_created_not_bound' && Number.isSafeInteger(detail?.spool_id) && detail.spool_id > 0) {
+    refusal.spoolId = detail.spool_id;
+  }
+  if (code === 'spool_in_use' && Array.isArray(detail?.reasons)) {
+    refusal.spoolInUseReasons = detail.reasons.filter((r: unknown): r is string => typeof r === 'string');
+  }
   throw refusal;
 }
 
@@ -2324,7 +2342,22 @@ export interface SpoolmanBulkResult {
   deleted?: number;
   archived?: number;
   restored?: number;
-  errors: { id: number; status: number; detail: string }[];
+  /** A refusal carries its code and, for `spool_in_use`, its reasons (C047 §C7). Never a confirmed delete. */
+  errors: { id: number; status: number; detail: string; code?: string; reasons?: string[] }[];
+  /** Bulk delete only: confirmed deletes whose local cleanup left something to say (C047 §C7). */
+  warnings?: SpoolmanDeleteWarning[];
+}
+
+/** What a confirmed Spoolman delete's local cleanup says (C047 §C5, §C7). */
+export interface SpoolmanDeleteWarning {
+  id?: number;
+  code: 'local_cleanup_failed' | 'local_cleanup_skipped' | 'slot_kept_feeding';
+  slots?: { printer_id: number; ams_id: number; tray_id: number }[];
+}
+
+export interface SpoolmanDeleteResult {
+  status: 'deleted';
+  warning?: SpoolmanDeleteWarning;
 }
 
 /**
@@ -8638,7 +8671,7 @@ export interface SpoolmanTagMigrationReport {
     holder_filament: number | null;
   }>;
   /** Links a run could not make; each is one spool's, and the run went on. */
-  failed?: Array<{ spool_id: number; tag: string; reason: 'spool_gone' | 'refused' | 'unreachable' }>;
+  failed?: Array<{ spool_id: number; tag: string; reason: 'spool_gone' | 'refused' | 'unreachable' | 'being_deleted' }>;
 }
 
 /**
@@ -14086,7 +14119,7 @@ export const api = {
       body: JSON.stringify(data),
     }),
   deleteSpoolmanInventorySpool: (id: number) =>
-    request<{ status: string }>(`/spoolman/inventory/spools/${id}`, { method: 'DELETE' }),
+    request<SpoolmanDeleteResult>(`/spoolman/inventory/spools/${id}`, { method: 'DELETE' }),
   archiveSpoolmanInventorySpool: (id: number) =>
     request<InventorySpool>(`/spoolman/inventory/spools/${id}/archive`, { method: 'POST' }),
   restoreSpoolmanInventorySpool: (id: number) =>

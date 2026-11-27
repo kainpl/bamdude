@@ -41,7 +41,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import delete, func, select, update
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core import database
@@ -88,13 +87,22 @@ async def _read_source(db: AsyncSession) -> tuple[Settings | None, dict]:
     return row, data
 
 
-async def _write_source(db: AsyncSession, row: Settings | None, data: dict) -> None:
+async def _stage_source(db: AsyncSession, data: dict) -> None:
+    """Write the record into the caller's transaction — never commits (the owner does)."""
+    from backend.app.services import spoolman_source  # noqa: PLC0415
+
+    spoolman_source.require_held()
     value = json.dumps(data, sort_keys=True)
+    row = (
+        await db.execute(
+            select(Settings).where(Settings.key == SOURCE_SETTING).execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
     if row is None:
         db.add(Settings(key=SOURCE_SETTING, value=value))
     else:
         row.value = value
-    await db.commit()
+    await db.flush()
 
 
 async def _configured_url(db: AsyncSession) -> str:
@@ -102,33 +110,49 @@ async def _configured_url(db: AsyncSession) -> str:
     return normalize_url(raw)
 
 
-async def source_token(db: AsyncSession) -> str | None:
-    """The current Spoolman's token, creating or rotating it as the address demands.
+@dataclass(frozen=True)
+class ResolvedSource:
+    """The source as the configured address asks for it — computed, never written (C047 S39).
 
-    None only when no token exists yet and no address is configured — there is
-    no Spoolman to name. A cleared address never rotates: the token stays bound
-    to the last address, so switching Spoolman off and on again keeps the
-    history. Commits on ``db`` only when it created or rotated the token.
+    ``token`` — the effective token now; None when the current address has no
+    history yet (its UUID is allocated only by an owner that writes, S42).
+    ``record`` — the stored record as it would be after the lazy transition.
+    ``stale`` — the stored record does not match the address yet.
     """
-    row, data = await _read_source(db)
-    url = await _configured_url(db)
+
+    token: str | None
+    record: dict
+    stale: bool
+    url: str
+
+
+async def resolve_source(db: AsyncSession, *, data: dict | None = None, url: str | None = None) -> ResolvedSource:
+    """The ONE rule of the lazy transition, as a pure read (S39).
+
+    A cleared address never rotates: the token stays bound to the last address,
+    so switching Spoolman off and on again keeps the history. A different
+    address is a different Spoolman until the operator says otherwise — unless
+    this installation has named it before, whose token (and history) it gets
+    back: A → B → A is a mistyped host put right, not a third Spoolman. The one
+    "previous" the Settings card can offer is the source just left, unless it
+    recorded nothing and an earlier one — not the one now current again — still
+    holds rows. Readers take the token and the card's state from here; only an
+    owner under the source guard persists it (:func:`persist_source`).
+    """
+    if data is None:
+        _row, data = await _read_source(db)
+    if url is None:
+        url = await _configured_url(db)
     if data:
         if not url or url == data.get("url"):
-            return data["token"]
-        # A different address: a different Spoolman until the operator says
-        # otherwise — unless it is an address this installation has named
-        # before, whose token (and history) it gets back: A → B → A is a
-        # mistyped host put right, not a third Spoolman.
+            return ResolvedSource(data["token"], data, False, url)
         leaving = {"token": data["token"], "url": data.get("url") or ""}
         known = _known(data)
         if leaving["url"]:
             known[leaving["url"]] = leaving["token"]
-        token = known.get(url) or uuid.uuid4().hex
-        known.pop(url, None)
-        known[url] = token
-        # The one "previous" the Settings card can offer: the source just left,
-        # unless it recorded nothing and an earlier one — not the one now
-        # current again — still holds rows.
+        token = known.pop(url, None)
+        if token is not None:
+            known[url] = token
         previous = leaving
         earlier = data.get("previous") if isinstance(data.get("previous"), dict) else None
         if (
@@ -138,22 +162,66 @@ async def source_token(db: AsyncSession) -> str | None:
             and await _row_count(db, earlier["token"])
         ):
             previous = earlier
-        data = {"token": token, "url": url, "previous": previous, "known": _trimmed(known)}
-        await _write_source(db, row, data)
-        logger.info("[SPOOLMAN] The Spoolman address changed: usage history follows the address")
-        return data["token"]
+        record = {"token": token, "url": url, "previous": previous, "known": _trimmed(known)}
+        return ResolvedSource(token, record, True, url)
     if not url:
-        return None
-    data = {"token": uuid.uuid4().hex, "url": url, "known": {}}
-    data["known"][url] = data["token"]
-    try:
-        await _write_source(db, row, data)
-    except IntegrityError:
-        # Two first uses at once: the other one named the source. Use its name.
-        await db.rollback()
-        _row, data = await _read_source(db)
-        return data.get("token")
-    return data["token"]
+        return ResolvedSource(None, {}, False, url)
+    return ResolvedSource(None, {"token": None, "url": url, "known": {}}, True, url)
+
+
+async def current_token(db: AsyncSession) -> str | None:
+    """The effective token for readers — writes nothing (S39)."""
+    return (await resolve_source(db)).token
+
+
+async def source_token(db: AsyncSession) -> str | None:
+    """Persist the source the configured address asks for, as its own owner — and name it.
+
+    The lazy transition as ONE owned step (C047 §C1): the source guard taken in a
+    clean session, :func:`persist_source`, a commit. No reader calls this (they use
+    :func:`current_token`); the charge's admission, Git's SPOOLS category and the
+    "same / new database" doors persist inside their own ownership.
+    """
+    from backend.app.services import spoolman_source  # noqa: PLC0415
+
+    async with spoolman_source.guard(db):
+        token = await persist_source(db)
+        await db.commit()
+    return token
+
+
+async def persist_source(db: AsyncSession, resolved: ResolvedSource | None = None) -> str | None:
+    """Under the source guard: write the record the address asks for, into the caller's transaction.
+
+    Owners only (a charge's admission, Git's SPOOLS category, "same database",
+    "new database"); never commits. A known token persisted again changes no
+    generation. The FIRST token of an address (``None → T``) is an internal
+    allocation, not a change of the database: it is never refused for a print,
+    but it raises the generation before its write (S42) — a delete whose S0 saw
+    "no token" cannot then pass the history committed under T.
+    """
+    from backend.app.services import spoolman_source  # noqa: PLC0415
+
+    spoolman_source.require_held()
+    if resolved is None:
+        resolved = await resolve_source(db)
+    if not resolved.stale:
+        return resolved.token
+    record = dict(resolved.record)
+    token = record.get("token")
+    if token is None:
+        token = uuid.uuid4().hex
+        spoolman_source.bump_generation()
+        known = dict(record.get("known") or {})
+        known.pop(resolved.url, None)
+        known[resolved.url] = token
+        record["token"] = token
+        record["known"] = _trimmed(known)
+    if "previous" in record and record["previous"] is None:
+        record.pop("previous")
+    await _stage_source(db, record)
+    logger.info("[SPOOLMAN] The Spoolman address changed: usage history follows the address")
+    return token
 
 
 # How many addresses the setting remembers a token for; the oldest go first.
@@ -183,9 +251,10 @@ async def _row_count(db: AsyncSession, token: str) -> int:
 
 
 async def source_state(db: AsyncSession) -> dict:
-    """What the Settings card needs: is there a previous source, and how much it holds."""
-    token = await source_token(db)
-    _row, data = await _read_source(db)
+    """What the Settings card needs: is there a previous source, and how much it holds. Writes nothing (S39)."""
+    resolved = await resolve_source(db)
+    token = resolved.token
+    data = resolved.record
     previous = data.get("previous") if isinstance(data.get("previous"), dict) else None
     previous_rows = 0
     if previous and previous.get("token"):
@@ -210,7 +279,8 @@ async def source_state(db: AsyncSession) -> dict:
             ).scalar_one()
         )
     return {
-        "has_source": token is not None,
+        # A configured address is a source, whether or not its UUID was allocated yet.
+        "has_source": token is not None or bool(resolved.url),
         "rows": rows,
         "previous_url": ((previous or {}).get("url") or None) if previous_rows else None,
         "previous_rows": previous_rows,
@@ -221,12 +291,14 @@ async def keep_previous_source(db: AsyncSession) -> int:
     """ "The new address is the SAME Spoolman database": its history comes along.
 
     Moves the previous token's rows to the current one and forgets the previous
-    source. Returns how many rows moved. Commits.
+    source. Returns how many rows moved. Under the caller's source guard; the
+    lazy transition is persisted in the same transaction. Commits.
     """
-    token = await source_token(db)
-    row, data = await _read_source(db)
+    token = await persist_source(db)
+    _row, data = await _read_source(db)
     previous = data.get("previous") if isinstance(data.get("previous"), dict) else None
     if token is None or not previous or not previous.get("token"):
+        await db.commit()
         return 0
     result = await db.execute(
         update(SpoolmanUsageHistory)
@@ -236,19 +308,23 @@ async def keep_previous_source(db: AsyncSession) -> int:
     data.pop("previous", None)
     # The old address names the same database: going back to it finds the rows.
     data["known"] = {url: token if held == previous["token"] else held for url, held in _known(data).items()}
-    await _write_source(db, row, data)
+    await _stage_source(db, data)
+    await db.commit()
     return int(result.rowcount or 0)
 
 
 async def rotate_source(db: AsyncSession) -> None:
     """ "This is a NEW Spoolman database behind the same address": history starts over.
 
-    The rows recorded so far stay as the previous source's. Commits.
+    The rows recorded so far stay as the previous source's. Under the caller's
+    source guard and base-change flag; the lazy transition is persisted in the
+    same transaction. Commits.
     """
-    token = await source_token(db)
+    token = await persist_source(db)
     if token is None:
+        await db.commit()
         return
-    row, data = await _read_source(db)
+    _row, data = await _read_source(db)
     url = data.get("url") or ""
     fresh = uuid.uuid4().hex
     known = _known(data)
@@ -256,7 +332,8 @@ async def rotate_source(db: AsyncSession) -> None:
         # The address names the new database from now on, after a round trip too.
         known[url] = fresh
     data = {"token": fresh, "url": url, "previous": {"token": token, "url": url}, "known": _trimmed(known)}
-    await _write_source(db, row, data)
+    await _stage_source(db, data)
+    await db.commit()
 
 
 def belongs_to(row_registered: str | None, row_created_at: datetime | None, spool_registered: str | None) -> bool:
@@ -324,12 +401,18 @@ async def record_print(
     archive_id: int | None,
     status: str,
     charges: list[Charge],
+    source_token: str | None,
 ) -> int:
     """One row per landed charge of one print. Returns how many were written.
 
     Runs in a short transaction of its own, after every charge has landed: it
     observes them and can change none. The caller catches whatever this raises
     — a history that could not be written never fails or alters a charge.
+
+    ``source_token`` is the token of the Spoolman the charges LANDED in, taken
+    by the charge's admission from the same snapshot as its client (C047 S33).
+    It is never derived here from the Settings of now: the address may have
+    changed between the charge and this write.
     """
     charges = [c for c in charges if c.grams > 0 and c.spool_id]
     if not charges:
@@ -337,10 +420,10 @@ async def record_print(
 
     from backend.app.models.archive import PrintArchive  # noqa: PLC0415
 
+    token = source_token
+    if token is None:
+        return 0
     async with database.async_session() as db:
-        token = await source_token(db)
-        if token is None:
-            return 0
         known_archive = archive_id if archive_id is not None and archive_id > 0 else None
         print_name = None
         if known_archive is not None:
@@ -375,7 +458,7 @@ async def clear_for_spool(db: AsyncSession, spool_id: int, spool_registered: str
     Only the rows :func:`belongs_to` gives this spool — an earlier holder of
     the id keeps its history. The caller commits.
     """
-    token = await source_token(db)
+    token = await current_token(db)
     if token is None:
         return 0
     rows = (
@@ -393,7 +476,7 @@ async def clear_for_spool(db: AsyncSession, spool_id: int, spool_registered: str
 
 async def delete_row(db: AsyncSession, spool_id: int, usage_id: int) -> bool:
     """Forget one row of the current source. Spoolman's totals are untouched. The caller commits."""
-    token = await source_token(db)
+    token = await current_token(db)
     if token is None:
         return False
     result = await db.execute(
@@ -467,20 +550,14 @@ _SNAPSHOT_TEXT = {
 
 
 async def _current_token_without_writing(db: AsyncSession) -> str | None:
-    """The token :func:`source_token` would answer, without creating or rotating one.
+    """The token of the current source without creating or rotating one — :func:`current_token`.
 
     A backup observes: it must not be the thing that names or rotates a source.
     An address changed and not used yet answers the token that address is
     already known by, or None — the stored rows are then the ones of the
     address that was left.
     """
-    _row, data = await _read_source(db)
-    if not data:
-        return None
-    url = await _configured_url(db)
-    if not url or url == data.get("url"):
-        return data["token"]
-    return _known(data).get(url)
+    return await current_token(db)
 
 
 async def export_rows(db: AsyncSession) -> list[dict]:
@@ -601,8 +678,13 @@ async def restore_rows(
     *,
     archive_ids: dict[int, int],
     printer_ids: dict[str, int],
+    source_token: str | None,
 ) -> RestoreOutcome:
     """Write exported rows under THIS installation's current source. The caller commits.
+
+    ``source_token`` is the token the SPOOLS category proved and staged under the
+    source guard in its own transaction (C047 S29, S30); this helper takes no guard
+    and derives no token itself.
 
     ``archive_ids`` maps an archive's id inside the backup to the local archive
     the same restore resolved it to; ``printer_ids`` maps a serial number to
@@ -615,7 +697,7 @@ async def restore_rows(
     entry is counted and skipped; nothing here raises for one.
     """
     outcome = RestoreOutcome()
-    token = await source_token(db)
+    token = source_token
     if token is None:
         outcome.no_source = len(entries)
         return outcome

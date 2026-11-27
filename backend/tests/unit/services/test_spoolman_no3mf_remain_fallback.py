@@ -19,10 +19,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from backend.app.services import spoolman_charge
 from backend.app.services.spoolman_tracking import (
     _snapshot_tray_remain,
     store_print_data,
 )
+
+# C047 part 2: the accounting tail runs inside an admitted charge (services/spoolman_charge).
+pytestmark = pytest.mark.usefixtures("spoolman_charge_admitted")
 
 
 def _analysis_runner(path, plate_id):
@@ -453,6 +457,7 @@ class TestPartialUsageRemainDelta:
 
             # The abort's own terminal figures travel in its completion event.
             await _report_partial_usage(
+                charge=await spoolman_charge.admit("test"),
                 printer_id=1,
                 tracking=tracking,
                 completion=CompletionSnapshot(

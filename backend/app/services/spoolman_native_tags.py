@@ -35,6 +35,7 @@ from backend.app.services.spoolman import (
     is_linkable_tag_uid,
     native_tag_uids,
 )
+from backend.app.services.spoolman_binding_fence import SpoolBeingDeleted
 from backend.app.services.spoolman_tracking import get_fallback_spool_tag_for_slot
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,7 @@ HELD_ELSEWHERE = "held_elsewhere"  # Spoolman refused without naming a holder
 SPOOL_GONE = "spool_gone"  # the spool was deleted since the listing
 REFUSED = "refused"  # Spoolman would not take this uid
 UNREACHABLE = "unreachable"  # Spoolman stopped answering; nothing after it was tried
+BEING_DELETED = "being_deleted"  # a delete of the spool holds it (C047 S27); the rest goes on
 
 
 def is_slot_fallback_tag(tag: str, printer_serials) -> bool:
@@ -155,6 +157,10 @@ async def copy_extra_tags_to_native(client: SpoolmanClient, printer_serials, *, 
                 logger.warning("Native tag copy stopped at spool %s: %s", spool_id, down)
                 unreachable = True
                 report["failed"].append({"spool_id": spool_id, "tag": uid, "reason": UNREACHABLE})
+                continue
+            except SpoolBeingDeleted:
+                # C047 S27: a spool being deleted is no tag's new home; the rest goes on.
+                report["failed"].append({"spool_id": spool_id, "tag": uid, "reason": BEING_DELETED})
                 continue
             except NativeTagConflict as refused:
                 if refused.spool_id is not None:

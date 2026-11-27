@@ -10,7 +10,7 @@ from typing import Literal
 from anyio import CancelScope
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.types import Message, Receive, Scope, Send
@@ -41,6 +41,7 @@ from backend.app.schemas.settings import (
     AppSettingsRead,
     AppSettingsUpdate,
     opaque_service_url,
+    storable_text,
 )
 from backend.app.services import energy_price
 
@@ -136,6 +137,13 @@ async def _enforce_admin_settings(db: AsyncSession, changes: dict, user: User | 
     # not persist them: another administrator may change policy after our read.
     for key in protected:
         changes.pop(key)
+
+
+async def _refuse_by_role(db: AsyncSession, changes: dict, actions, user: User | None) -> None:
+    """A save's refusals that depend on the caller's role alone (403); equal protected baggage is dropped."""
+    if actions and not (user is not None and user.is_admin):
+        raise HTTPException(403, "Requires admin role for protected settings")
+    await _enforce_admin_settings(db, changes, user)
 
 
 async def get_setting(db: AsyncSession, key: str) -> str | None:
@@ -674,13 +682,32 @@ async def update_settings(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
-    """Update application settings."""
+    """Update application settings.
+
+    A save that names the Spoolman mode or address may change the Spoolman source
+    (C047 §C1): the source guard is taken before the credential anchor, released
+    for the Home Assistant read and taken again before the second anchor, and
+    released right after the commit.
+    """
+    from backend.app.services import spoolman_source_changes
+
+    names_source = spoolman_source_changes.names_source(settings_update.model_dump(exclude_unset=True))
+    async with spoolman_source_changes.owning(db, when=names_source) as change:
+        return await _update_settings(settings_update, db, current_user, change)
+
+
+async def _update_settings(settings_update: AppSettingsUpdate, db: AsyncSession, current_user, change):
     update_data = settings_update.model_dump(exclude_unset=True)
     actions = update_data.pop("secret_actions", None)
+    if change.held:
+        # A change of the mode waits for the slot-ledger writers before the anchor (C047 A12).
+        # The caller's role needs no anchor: a save it refuses is refused before that wait and
+        # holds no writer (A14). A copy, so equal protected baggage is dropped only under the
+        # anchor, which asks again.
+        await _refuse_by_role(db, dict(update_data), actions, current_user)
+        await change.wait_before_anchor(db, enabled=update_data.get("spoolman_enabled"))
     await lock_credential_config(db)
-    if actions and not (current_user is not None and current_user.is_admin):
-        raise HTTPException(403, "Requires admin role for protected settings")
-    await _enforce_admin_settings(db, update_data, current_user)
+    await _refuse_by_role(db, update_data, actions, current_user)
     merged = await resolve_settings_credentials(db, update_data, actions)
     # The electricity price from Home Assistant (m245). The read is network I/O, so it happens with
     # no transaction open: the destination is frozen under the anchor, the anchor is released, the
@@ -690,10 +717,16 @@ async def update_settings(
     price_target = await _energy_price_plan(db, update_data, merged)
     if price_target is not None:
         await db.rollback()
+        # The source guard is not held over the network (C047 S30): taken again before the next anchor.
+        source_held = change.held
+        await change.release()
         try:
             ha_price = await energy_price.fetch_price(price_target)
         except energy_price.PriceReadFailed as exc:
             raise _energy_price_refusal(exc.reason) from None
+        if source_held:
+            await change.acquire(db)
+            await change.wait_before_anchor(db, enabled=update_data.get("spoolman_enabled"))
         await lock_credential_config(db)
         await _enforce_admin_settings(db, update_data, current_user)
         merged = await resolve_settings_credentials(db, update_data, actions)
@@ -778,6 +811,10 @@ async def update_settings(
     }
     mqtt_updated = bool(mqtt_keys & set(update_data.keys()))
 
+    if change.held:
+        # After every validation, before the first write (C047 §C1, S44).
+        await change.decide(db, enabled=update_data.get("spoolman_enabled"), url=update_data.get("spoolman_url"))
+
     for key, value in update_data.items():
         # Convert value to string for storage
         if isinstance(value, bool):
@@ -796,6 +833,8 @@ async def update_settings(
         await energy_price.set_price(db, ha_price, "homeassistant")
 
     await db.commit()
+    # The source is settled with the commit; the side effects below do not hold it.
+    await change.release()
     # Expire all objects to ensure fresh reads after commit
     db.expire_all()
 
@@ -919,11 +958,39 @@ async def reset_settings(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
-    """Reset all settings to defaults."""
+    """Reset all settings to defaults.
+
+    Reset deletes the Spoolman mode, address and history-source rows too: a
+    change of the source (C047 §C1), owned under the source guard taken before
+    the credential anchor and refused while a print is being charged. Without
+    its row the mode reads as the default, so a reset in Spoolman mode moves the
+    mode like any other door (acceptance A09): it waits for the slot-ledger
+    writers before its anchor and empties the Spoolman slot ledger.
+    """
+    from backend.app.services import spoolman_source_changes
+
+    async with spoolman_source_changes.owning(db) as change:
+        await change.wait_before_anchor(db, enabled=DEFAULT_SETTINGS.spoolman_enabled)
+        await _reset_settings(db, change)
+    await _apply_mqtt_runtime(db)
+    return await get_settings(db=db, _=None)
+
+
+async def _reset_settings(db: AsyncSession, change) -> None:
     from backend.app.core.credential_config import CONFIG_GUARD_KEY
 
     await lock_credential_config(db)
     await _lock_mcp_http_policy(db)
+    source_rows = (
+        await db.execute(
+            select(func.count())
+            .select_from(Settings)
+            .where(Settings.key.in_(("spoolman_enabled", "spoolman_url", "spoolman_usage_source")))
+        )
+    ).scalar_one()
+    if source_rows:
+        # The mode the rows' deletion leaves is the default one (A09).
+        await change.decide(db, enabled=DEFAULT_SETTINGS.spoolman_enabled, record_changes=True)
     # The installation transaction anchor is infrastructure, not a preference.
     # Keep it locked and present across reset; a later editor must never lazily
     # create its own independent serialization row.
@@ -938,9 +1005,6 @@ async def reset_settings(
             await db.delete(setting)
 
     await db.commit()
-
-    await _apply_mqtt_runtime(db)
-    return await get_settings(db=db, _=None)
 
 
 # Curated, non-sensitive UI-rendering settings exposed without SETTINGS_READ
@@ -1129,55 +1193,24 @@ async def update_spoolman_settings(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
-    """Update Spoolman integration settings."""
-    if "spoolman_enabled" in settings:
-        old_val = await get_setting(db, "spoolman_enabled") or "false"
-        new_val = settings["spoolman_enabled"]
-        await set_setting(db, "spoolman_enabled", new_val)
+    """Update Spoolman integration settings.
 
-        # Switching to Spoolman: clear built-in inventory slot assignments
-        if old_val.lower() != "true" and new_val.lower() == "true":
-            from backend.app.models.spool_assignment import SpoolAssignment
-            from backend.app.services import ams_advertised_overlay as overlay
+    The mode and the address are the Spoolman *source* (C047 §C1): their change
+    is owned under the source guard, refused while a print is being charged, and
+    a new address is refused while any print accounts in Spoolman.
+    """
+    from backend.app.services import spoolman_source_changes
 
-            result = await db.execute(delete(SpoolAssignment))
-            # Every overlay entry was born of an assignment row; with the whole
-            # registry gone, so is every spool the masks stood for. Cleared
-            # BEFORE this handler's commit, like every ``remember`` on the
-            # assignment routes: an in-memory store that forgot too early is
-            # inert (the rebuild refills it from the registries), while one that
-            # still claims a spool whose row is gone would answer routing with
-            # an inventory item nobody can see.
-            overlay.forget_all()
-            logger.info("Cleared %d spool assignments on switch to Spoolman mode", result.rowcount)
-        # Switching back to internal mode: clear Spoolman slot assignments — the
-        # symmetric counterpart of the clear above. Without this, stale
-        # spoolman_slot_assignments rows linger and would wrongly count as
-        # "assigned" in any mode-agnostic check (e.g. the missing-spool-
-        # assignment notification, which unions both tables — #1473).
-        elif old_val.lower() == "true" and new_val.lower() != "true":
-            from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
-            from backend.app.services import ams_advertised_overlay as overlay
-
-            result = await db.execute(delete(SpoolmanSlotAssignment))
-            overlay.forget_all()  # same reasoning as the switch above
-            logger.info("Cleared %d Spoolman slot assignments on switch to internal mode", result.rowcount)
-    if "spoolman_url" in settings:
-        await set_setting(db, "spoolman_url", settings["spoolman_url"])
-    if "spoolman_sync_mode" in settings:
-        await set_setting(db, "spoolman_sync_mode", settings["spoolman_sync_mode"])
-    if "spoolman_disable_weight_sync" in settings:
-        await set_setting(db, "spoolman_disable_weight_sync", settings["spoolman_disable_weight_sync"])
-    if "spoolman_report_partial_usage" in settings:
-        await set_setting(db, "spoolman_report_partial_usage", settings["spoolman_report_partial_usage"])
-    if "auto_add_unknown_rfid" in settings:
-        await set_setting(db, "auto_add_unknown_rfid", settings["auto_add_unknown_rfid"])
-
-    spoolman_changed = "spoolman_enabled" in settings or "spoolman_url" in settings
-
-    await db.commit()
+    values = _spoolman_route_values(settings)
+    async with spoolman_source_changes.owning(db, when=spoolman_source_changes.names_source(values)) as change:
+        if change.held:
+            # The mode and the address as they will be stored (acceptance A13).
+            await change.decide(db, enabled=values.get("spoolman_enabled"), url=values.get("spoolman_url"))
+        await _write_spoolman_settings(db, values)
+        await db.commit()
     db.expire_all()
 
+    spoolman_changed = "spoolman_enabled" in values or "spoolman_url" in values
     # When the integration was toggled on or repointed, import Spoolman's
     # distinct location strings into the local catalog so the new store's
     # locations show up immediately (upstream #1505).
@@ -1189,6 +1222,64 @@ async def update_spoolman_settings(
 
     # Return updated settings
     return await _spoolman_settings(db, with_address=True)
+
+
+_SPOOLMAN_ROUTE_KEYS = (
+    "spoolman_enabled",
+    "spoolman_url",
+    "spoolman_sync_mode",
+    "spoolman_disable_weight_sync",
+    "spoolman_report_partial_usage",
+    "auto_add_unknown_rfid",
+)
+
+
+def _spoolman_route_values(settings: dict) -> dict[str, str]:
+    """The route's values in the form they are stored, each validated before any is decided or written.
+
+    Each key takes its type from ``AppSettings``, as in the general save, and a switch is
+    stored there as ``"true"`` / ``"false"``. ``SourceChange.decide`` is given exactly what
+    ``set_setting`` then writes, so the mode it decides is the mode the row holds: a raw JSON
+    ``true`` was decided as Spoolman and stored as ``1``, which every reader takes for the
+    built-in inventory (C047 acceptance A13). A null, a value of another type or text not
+    every database can hold (``storable_text``, A16) is a 422 before the source guard; a key
+    the route does not own is ignored, as before.
+    """
+    values: dict[str, str] = {}
+    for key in _SPOOLMAN_ROUTE_KEYS:
+        if key not in settings:
+            continue
+        kind = AppSettings.model_fields[key].annotation
+        try:
+            value = TypeAdapter(kind).validate_python(settings[key])
+        except ValidationError:
+            if kind is bool:
+                raise HTTPException(422, f"{key}: expected true or false") from None
+            raise HTTPException(422, f"{key}: expected a string") from None
+        if kind is bool:
+            value = "true" if value else "false"
+        elif not storable_text(value):
+            raise HTTPException(422, f"{key}: contains a character that cannot be stored")
+        values[key] = value
+    return values
+
+
+async def _write_spoolman_settings(db: AsyncSession, settings: dict) -> None:
+    """The Spoolman settings route's writes, in its transaction (the caller commits)."""
+    if "spoolman_enabled" in settings:
+        # A switch of the mode empties the ledger it leaves inside ``SourceChange.decide``,
+        # for every door that moves the mode (C047 acceptance A08).
+        await set_setting(db, "spoolman_enabled", settings["spoolman_enabled"])
+    if "spoolman_url" in settings:
+        await set_setting(db, "spoolman_url", settings["spoolman_url"])
+    if "spoolman_sync_mode" in settings:
+        await set_setting(db, "spoolman_sync_mode", settings["spoolman_sync_mode"])
+    if "spoolman_disable_weight_sync" in settings:
+        await set_setting(db, "spoolman_disable_weight_sync", settings["spoolman_disable_weight_sync"])
+    if "spoolman_report_partial_usage" in settings:
+        await set_setting(db, "spoolman_report_partial_usage", settings["spoolman_report_partial_usage"])
+    if "auto_add_unknown_rfid" in settings:
+        await set_setting(db, "auto_add_unknown_rfid", settings["auto_add_unknown_rfid"])
 
 
 async def get_homeassistant_settings(db: AsyncSession) -> dict:
@@ -1655,6 +1746,10 @@ async def _restore_backup(
                 slice_dispatch.close_admission()
                 library_scan.close_admission()
                 auto_queue_return_runtime.close_admission()
+                # Spoolman deletes AND print charges share one gate and one drain (C047 S35).
+                from backend.app.services.spoolman_delete import delete_runtime as spoolman_delete_runtime
+
+                spoolman_delete_runtime.close_admission()
                 git_backup_service.close_admission()
                 farm_startup_guard.hold("restore")
                 from backend.app.services.farm_startup_guard import notify_change
@@ -1670,6 +1765,8 @@ async def _restore_backup(
                     vp_drain = await virtual_printer_manager.drain_for_restore()
                 except VPDrainRefused as exc:
                     raise HTTPException(409, str(exc)) from exc
+                if not await spoolman_delete_runtime.quiesce_for_restore():
+                    raise HTTPException(409, "Spoolman delete or charge work has not stopped; restart before restoring")
                 if not await auto_queue_return_runtime.quiesce_for_restore():
                     raise HTTPException(409, "AutoQueue return work has not stopped; restart before restoring")
                 if not await git_backup_service.quiesce_for_restore():

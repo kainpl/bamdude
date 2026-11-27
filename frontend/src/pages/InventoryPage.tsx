@@ -25,6 +25,7 @@ import type {
   SpoolGroupItem,
   SpoolListItem,
   SpoolListParams,
+  SpoolmanDeleteResult,
 } from '../api/client';
 import { Button } from '../components/Button';
 import { Select } from '../components/Select';
@@ -1411,14 +1412,35 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
   const deleteMutation = useMutation({
     mutationFn: (id: number) =>
       spoolmanMode ? api.deleteSpoolmanInventorySpool(id) : api.deleteSpool(id),
-    onSuccess: () => {
+    onSuccess: (result) => {
       refreshSpoolQueries();
+      const warning = (result as SpoolmanDeleteResult).warning;
+      if (warning) {
+        // Deleted in Spoolman; its local cleanup has something to say (C047 §C7).
+        showToast(t(`inventory.spoolmanDeleteWarning.${warning.code}`), 'warning');
+        return;
+      }
       showToast(t('inventory.spoolDeleted'), 'success');
     },
     onError: (error: Error) => {
       if (error instanceof ApiError && error.code === 'spool_in_use') {
         // A spool that has been used, or sits in a slot, is archived — never deleted.
         showToast(t('inventory.spoolDeleteInUse'), 'warning');
+      } else if (error instanceof ApiError && error.code === 'spool_feeds_print') {
+        showToast(t('inventory.spoolDeleteFeedsPrint'), 'warning');
+      } else if (error instanceof ApiError && error.code === 'print_closing') {
+        showToast(t('inventory.spoolDeletePrintClosing'), 'warning');
+      } else if (
+        error instanceof ApiError &&
+        (error.code === 'spool_state_changed' ||
+          error.code === 'spoolman_source_changed' ||
+          error.code === 'spool_being_deleted')
+      ) {
+        showToast(t('inventory.spoolDeleteRetry'), 'warning');
+      } else if (error instanceof ApiError && error.code === 'spoolman_outcome_unknown') {
+        // Spoolman did not confirm: the list may be out of date either way.
+        refreshSpoolQueries();
+        showToast(t('inventory.spoolmanDeleteOutcomeUnknown'), 'error');
       } else if (error instanceof ApiError && error.status === 404) {
         showToast(t('inventory.deleteSpoolNotFound'), 'error');
       } else if (error instanceof ApiError && error.status === 503) {
@@ -1517,7 +1539,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
   const runBulk = async (
     kind: 'archive' | 'restore' | 'delete',
     ids: number[],
-  ): Promise<{ ok: number; failed: number; refused: number }> => {
+  ): Promise<{ ok: number; failed: number; refused: number; warned?: number }> => {
     if (spoolmanMode) {
       const res =
         kind === 'archive'
@@ -1526,11 +1548,12 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
             ? await api.bulkRestoreSpoolmanInventorySpools(ids)
             : await api.bulkDeleteSpoolmanInventorySpools(ids);
       const ok = res.archived ?? res.restored ?? res.deleted ?? 0;
-      // An archive Spoolman never saw: the spool's slot feeds a running print (409).
-      // A refusal with a reason, not a failure — counted apart, as the built-in route reports it.
+      // An archive Spoolman never saw: the spool's slot feeds a running print (409); a delete
+      // of a used or in-use spool (409, C047). A refusal with a reason, not a failure —
+      // counted apart, as the built-in route reports it.
       const refused =
-        kind === 'archive' ? (res.errors ?? []).filter((e) => e.status === 409).length : 0;
-      return { ok, failed: (res.errors?.length ?? 0) - refused, refused };
+        kind === 'restore' ? 0 : (res.errors ?? []).filter((e) => e.status === 409).length;
+      return { ok, failed: (res.errors?.length ?? 0) - refused, refused, warned: res.warnings?.length ?? 0 };
     }
     const res =
       kind === 'archive'
@@ -1547,9 +1570,13 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
       runBulk(kind, ids),
     onMutate: () => setBulkPending(true),
     onSettled: () => setBulkPending(false),
-    onSuccess: ({ ok, failed, refused }, { kind }) => {
+    onSuccess: ({ ok, failed, refused, warned }, { kind }) => {
       refreshSpoolQueries();
       const label = t(`inventory.bulk.action.${kind}`);
+      if (warned) {
+        // Deleted in Spoolman, with a local cleanup to look at (C047 §C7) — said beside the rest.
+        showToast(t('inventory.bulk.deleteWarnings', { count: warned }), 'warning');
+      }
       if (refused > 0) {
         // Used / in-use spools are never deleted, and a spool feeding a running
         // print is never archived: say how many stayed and why, and KEEP the

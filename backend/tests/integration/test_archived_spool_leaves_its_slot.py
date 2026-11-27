@@ -146,11 +146,23 @@ class TestBuiltInInventory:
 
 class TestSpoolmanInventory:
     @pytest.fixture
-    def spoolman(self, monkeypatch):
+    async def spoolman(self, monkeypatch, db_session):
+        from backend.app.models.settings import Settings
+        from backend.app.services import spoolman_delete
+
         client = MagicMock()
         client.set_spool_archived = AsyncMock(return_value={"id": 42, "archived": True})
         client.delete_spool = AsyncMock(return_value=None)
+        # The delete door (C047 part 2) reads the mode and address itself and builds its own client.
+        client.health_check = AsyncMock(return_value=True)
+        client.get_spool = AsyncMock(return_value={"id": 42})
+        client.close = AsyncMock()
+        db_session.add_all(
+            [Settings(key="spoolman_enabled", value="true"), Settings(key="spoolman_url", value="http://spoolman.test")]
+        )
+        await db_session.commit()
         monkeypatch.setattr(spoolman_inventory, "_get_client", AsyncMock(return_value=client))
+        monkeypatch.setattr(spoolman_delete, "_client_for", lambda url: client)
         monkeypatch.setattr(spoolman_inventory, "_map_spoolman_spool", lambda spool: spool)
         return client
 

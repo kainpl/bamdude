@@ -157,7 +157,7 @@ async def test_sync_hot_updates_both_fields_without_dropping_sessions(db_session
 
 
 @pytest.mark.parametrize("mode", ["file_manager", "proxy", "auto_queue"])
-async def test_delete_target_cannot_rebind_vp_to_reused_printer_id(
+async def test_delete_target_unbinds_vp_and_its_number_is_not_reissued(
     async_client, db_session, test_engine, tmp_path, printer_factory, monkeypatch, mode
 ):
     from backend.app.services.virtual_printer import virtual_printer_manager
@@ -173,8 +173,9 @@ async def test_delete_target_cannot_rebind_vp_to_reused_printer_id(
     response = await async_client.delete(f"/api/v1/printers/{target_id}?delete_archives=false")
     assert response.status_code == 200, response.text
     replacement = await printer_factory(name="Different physical printer")
-    if test_engine.dialect.name == "sqlite":
-        assert replacement.id == target_id  # Actual reuse, not a manufactured fixture.
+    # A printer number is never handed out again (m262): no later printer can take the old binding.
+    assert replacement.id != target_id
+    # The delete itself clears the VP's binding.
     bound_id = await db_session.scalar(select(VirtualPrinter.target_printer_id).where(VirtualPrinter.id == vp_id))
     assert bound_id is None
     sync.assert_awaited_once()

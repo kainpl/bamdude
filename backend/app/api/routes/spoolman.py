@@ -22,6 +22,7 @@ from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.models.user import User
 from backend.app.schemas.spoolman import SlotAmsId, SlotTrayId
+from backend.app.services import spoolman_activity, spoolman_binding_fence, spoolman_source_changes
 from backend.app.services.ams_slot_presence import spool_present, tray_definitely_empty
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.spoolman import (
@@ -227,11 +228,20 @@ async def _read_slot_ledger(db: AsyncSession, printer_id: int | None = None) -> 
         return None
 
 
+def _being_deleted_text(refused, where: str) -> str:
+    """A sync's line for a number the fence refused (C047 S32, S37)."""
+    if refused.created:
+        return f"{where}: spool #{refused.number} was created in Spoolman but not bound because of a concurrent delete"
+    return f"{where}: spool #{refused.number} is being deleted; not synced"
+
+
 async def _write_and_announce_sync(
     db: AsyncSession,
     read: dict[tuple[int, int, int], int] | None,
     changes: list[tuple[int, int, int, int]],
     empties: list[tuple[int, int, int]],
+    *,
+    issued: int | None = None,
 ) -> list[str]:
     """Persist what a sync resolved and tell open browsers which slots moved.
 
@@ -245,23 +255,37 @@ async def _write_and_announce_sync(
 
     ``read`` is keyed ``(printer_id, ams_id, tray_id)``; ``None`` = unreadable.
     One printer at a time, each under its own assignment lock. Returns errors.
+
+    The whole write is one write of the Spoolman slot ledger (C047 acceptance A08): the
+    mode is asked again under its record, which a switch to the built-in inventory waits
+    for before it empties this ledger. Switched off since the sync began: nothing is saved.
     """
     errors: list[str] = []
-    for printer_id in dict.fromkeys([c[0] for c in changes] + [e[0] for e in empties]):
-        try:
-            moved = await write_sync_results(
-                db,
-                printer_id=printer_id,
-                read=None if read is None else {(a, t): s for (p, a, t), s in read.items() if p == printer_id},
-                changes=[(a, t, s) for p, a, t, s in changes if p == printer_id],
-                empties=[(a, t) for p, a, t in empties if p == printer_id],
-            )
-        except Exception as e:
-            logger.error("Error persisting Spoolman slot assignments for printer %s: %s", printer_id, e)
-            errors.append(f"Failed to persist slot assignments: {type(e).__name__}")
-            continue
-        for ams_id, tray_id in moved:
-            await _announce_slot(printer_id, ams_id, tray_id)
+    printers = list(dict.fromkeys([c[0] for c in changes] + [e[0] for e in empties]))
+    if not printers:
+        return errors
+    async with spoolman_activity.slot_write("spoolman_sync"):
+        if not await spoolman_source_changes.mode_on(db):
+            return ["Spoolman was turned off during the sync: slot assignments were not saved"]
+        for printer_id in printers:
+            try:
+                moved = await write_sync_results(
+                    db,
+                    printer_id=printer_id,
+                    read=None if read is None else {(a, t): s for (p, a, t), s in read.items() if p == printer_id},
+                    changes=[(a, t, s) for p, a, t, s in changes if p == printer_id],
+                    empties=[(a, t) for p, a, t in empties if p == printer_id],
+                    issued=issued,
+                )
+            except spoolman_binding_fence.SpoolBeingDeleted as refused:
+                errors.append(_being_deleted_text(refused, f"printer {printer_id}"))
+                continue
+            except Exception as e:
+                logger.error("Error persisting Spoolman slot assignments for printer %s: %s", printer_id, e)
+                errors.append(f"Failed to persist slot assignments: {type(e).__name__}")
+                continue
+            for ams_id, tray_id in moved:
+                await _announce_slot(printer_id, ams_id, tray_id)
     return errors
 
 
@@ -271,6 +295,13 @@ async def sync_printer_ams(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
+    """A manual AMS sync owns every number it proves, to its batch commit (C047 S32)."""
+    issued = spoolman_binding_fence.ticket()
+    with spoolman_binding_fence.tag_operation(issued=issued):
+        return await _sync_printer_ams(printer_id, db, _, issued=issued)
+
+
+async def _sync_printer_ams(printer_id: int, db: AsyncSession, _, *, issued: int):
     """Sync AMS data from a specific printer to Spoolman."""
     # Check if Spoolman is enabled and connected.
     # ``disable_weight_sync`` is deprecated (#1119): weight is now always
@@ -469,6 +500,8 @@ async def sync_printer_ams(
                             color=tray.tray_color[:6] if tray.tray_color else None,
                         )
                     )
+            except spoolman_binding_fence.SpoolBeingDeleted as refused:
+                errors.append(_being_deleted_text(refused, f"AMS {ams_id} tray {tray.tray_id}"))
             except Exception as e:
                 error_msg = f"Error syncing AMS {ams_id} tray {tray.tray_id}: {e}"
                 logger.error(error_msg)
@@ -480,6 +513,7 @@ async def sync_printer_ams(
         ledger_read,
         [(printer_id, a, t, s) for a, t, s in slot_changes],
         [(printer_id, a, t) for a, t in empty_slots],
+        issued=issued,
     )
 
     return SyncResult(
@@ -496,6 +530,13 @@ async def sync_all_printers(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
+    """A manual AMS sync of every printer owns every number it proves, to its batch commit (C047 S32)."""
+    issued = spoolman_binding_fence.ticket()
+    with spoolman_binding_fence.tag_operation(issued=issued):
+        return await _sync_all_printers(db, _, issued=issued)
+
+
+async def _sync_all_printers(db: AsyncSession, _, *, issued: int):
     """Sync AMS data from all connected printers to Spoolman."""
     # Check if Spoolman is enabled.
     # ``disable_weight_sync`` is deprecated (#1119): weight is now always
@@ -674,11 +715,13 @@ async def sync_all_printers(
                                 color=tray.tray_color[:6] if tray.tray_color else None,
                             )
                         )
+                except spoolman_binding_fence.SpoolBeingDeleted as refused:
+                    all_errors.append(_being_deleted_text(refused, f"{printer.name} AMS {ams_id}:{tray.tray_id}"))
                 except Exception as e:
                     all_errors.append(f"{printer.name} AMS {ams_id}:{tray.tray_id}: {e}")
 
     # Persist slot assignment changes across all printers
-    all_errors += await _write_and_announce_sync(db, ledger_read, all_slot_changes, all_empty_slots)
+    all_errors += await _write_and_announce_sync(db, ledger_read, all_slot_changes, all_empty_slots, issued=issued)
 
     return SyncResult(
         success=len(all_errors) == 0,
@@ -877,6 +920,7 @@ async def link_spool(
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Link a Spoolman spool to an AMS tag by setting Spoolman extra.tag."""
+    issued = spoolman_binding_fence.ticket()
     sm = await get_spoolman_settings(db)
     enabled, url = sm["enabled"], sm["url"]
     if not enabled:
@@ -928,306 +972,339 @@ async def link_spool(
         ):
             if spool_single_slot.slot_feeds_running_print(*_other):
                 raise spool_single_slot.refusal(spool_single_slot.SpoolFeedsPrint(_other))
-    _vacated: list = []
+    # One tag operation for the whole re-link (C047 S27): the other holders of this
+    # tag in ``extra.tag`` are found NOW, before the first mutation, and owned with the
+    # spool, ascending — a refusal of any of them is 409 with nothing written.
+    holders = await _extra_tag_holders(client, spool_tag, keep_spool_id=spool_id)
+    with spoolman_binding_fence.tag_operation([spool_id, *holders], issued=issued):
+        _vacated: list = []
 
-    try:
-        if printer_context and (await client.get_spool(spool_id)).get("archived"):
-            # A link with a slot is an assignment: as the assign routes refuse,
-            # and before any tag — native or extra.tag — is written (upstream
-            # c2bc41a5e).
-            raise HTTPException(status_code=400, detail="Cannot assign an archived spool")
-        # A tray UUID also becomes a native tag (Spoolman 0.27+), linked first:
-        # it is the step Spoolman can refuse, so a refusal leaves extra.tag
-        # untouched. The 16-character values this route takes — a slot's
-        # fallback id, the AMS's padded chip uid — are not what a reader sees
-        # and stay in extra.tag alone.
-        added_native = await client.link_native_tags(spool_id, [spool_tag] if len(spool_tag) == 32 else [], "bambu")
         try:
-            # A reel newly linked to the spool: read it while it still carries
-            # the previous extra.tag, to know which reel it was before.
-            before = await client.get_spool(spool_id) if added_native else None
-            await client.merge_spool_extra(spool_id, {"tag": json.dumps(spool_tag)})
-        except Exception:
-            await client.take_back_native_tags(spool_id, added_native)
-            raise
-    except NativeTagConflict as conflict:
-        raise native_tag_refused("tray_uuid", conflict) from conflict
-    except SpoolmanNotFoundError:
-        raise HTTPException(status_code=404, detail="Spool not found in Spoolman")
-    except SpoolmanClientError:
-        raise HTTPException(status_code=502, detail="Spoolman rejected the request")
-    except SpoolmanUnavailableError:
-        raise HTTPException(status_code=503, detail="Spoolman is not reachable")
+            if printer_context and (await client.get_spool(spool_id)).get("archived"):
+                # A link with a slot is an assignment: as the assign routes refuse,
+                # and before any tag — native or extra.tag — is written (upstream
+                # c2bc41a5e).
+                raise HTTPException(status_code=400, detail="Cannot assign an archived spool")
+            # A tray UUID also becomes a native tag (Spoolman 0.27+), linked first:
+            # it is the step Spoolman can refuse, so a refusal leaves extra.tag
+            # untouched. The 16-character values this route takes — a slot's
+            # fallback id, the AMS's padded chip uid — are not what a reader sees
+            # and stay in extra.tag alone.
+            added_native = await client.link_native_tags(spool_id, [spool_tag] if len(spool_tag) == 32 else [], "bambu")
+            try:
+                # A reel newly linked to the spool: read it while it still carries
+                # the previous extra.tag, to know which reel it was before.
+                before = await client.get_spool(spool_id) if added_native else None
+                await client.merge_spool_extra(spool_id, {"tag": json.dumps(spool_tag)})
+            except Exception:
+                await client.take_back_native_tags(spool_id, added_native)
+                raise
+        except NativeTagConflict as conflict:
+            raise native_tag_refused("tray_uuid", conflict) from conflict
+        except SpoolmanNotFoundError:
+            raise HTTPException(status_code=404, detail="Spool not found in Spoolman")
+        except SpoolmanClientError:
+            raise HTTPException(status_code=502, detail="Spoolman rejected the request")
+        except SpoolmanUnavailableError:
+            raise HTTPException(status_code=503, detail="Spoolman is not reachable")
 
-    # Upsert slot assignment locally when printer context was supplied
-    if printer_context:
-        p_id, a_id, t_id = printer_context
-        try:
-            await db.execute(
-                text(
-                    "INSERT INTO spoolman_slot_assignments"
-                    " (printer_id, ams_id, tray_id, spoolman_spool_id)"
-                    " VALUES (:printer_id, :ams_id, :tray_id, :spool_id)"
-                    " ON CONFLICT(printer_id, ams_id, tray_id)"
-                    " DO UPDATE SET spoolman_spool_id = excluded.spoolman_spool_id"
-                ),
-                {"printer_id": p_id, "ams_id": a_id, "tray_id": t_id, "spool_id": spool_id},
-            )
-            # Its other ledger rows go with the same commit (rows only). A slot
-            # that began feeding a print since the check above keeps its row.
-            _vacated = (
-                await spool_single_slot.release_other_spoolman_slots(
-                    db, spoolman_spool_id=spool_id, keep=printer_context, refuse=False
-                )
-            ).vacated
-            await db.commit()
-        except Exception as e:
-            await db.rollback()
-            # The native tag goes back (the previous reel's are still there —
-            # they are dropped only below); extra.tag stays, as the message
-            # says, and the retry it asks for links the reel again.
-            await client.take_back_native_tags(spool_id, added_native)
-            logger.error(
-                "Linked spool %s in Spoolman but failed to persist local slot assignment "
-                "(printer=%s ams=%s tray=%s): %s",
-                spool_id,
-                p_id,
-                a_id,
-                t_id,
-                e,
-            )
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Spool linked in Spoolman but the local slot assignment could not be saved. "
-                    "Please re-open the link dialog to retry."
-                ),
-            ) from e
-
-    # The spool is THIS reel now: the reel it was linked to before no longer
-    # resolves to it. A 16-character value names no physical tag here (nothing
-    # was added for it), so it takes nothing away. Last, once the slot row is
-    # saved: a link that failed half way keeps the spool's previous reel.
-    if before is not None:
-        await client.drop_previous_reel_tags(before, [spool_tag], bambu_reel=True)
-
-    logger.info("Linked Spoolman spool %s to tag %s", spool_id, spool_tag)
-    await spool_single_slot.announce(_vacated)
-
-    # #1457: clear stale tag links on OTHER spools still claiming this exact tag.
-    # A given AMS-slot tag (RFID or deterministic fallback) belongs to one
-    # physical spool; without this cleanup the previous holder's extra.tag
-    # keeps it visible in the hover card / fill-level lookup.
-    await _clear_stale_tag_links(
-        client,
-        tag=spool_tag,
-        keep_spool_id=spool_id,
-        log_context=(
-            f"printer={printer_context[0]} ams={printer_context[1]} tray={printer_context[2]}"
-            if printer_context
-            else "via /spools/{id}/link"
-        ),
-    )
-
-    # Auto-configure AMS slot via MQTT (best-effort; tag link and slot assignment already persisted)
-    if printer_context:
-        p_id, a_id, t_id = printer_context
-        try:
-            spool_data = await client.get_spool(spool_id)
-            mapped = _map_spoolman_spool(spool_data)
-
-            mqtt_client = printer_manager.get_client(p_id)
-            if mqtt_client:
-                tray_type = mapped.get("material") or ""
-                brand = mapped.get("brand") or ""
-                subtype = mapped.get("subtype") or ""
-                if brand:
-                    tray_sub_brands = f"{brand} {tray_type} {subtype}".strip()
-                elif subtype:
-                    tray_sub_brands = f"{tray_type} {subtype}".strip()
-                else:
-                    tray_sub_brands = tray_type
-
-                tray_color = (mapped.get("rgba") or "808080FF").upper()
-                if len(tray_color) == 6:
-                    tray_color = tray_color + "FF"
-
-                # Pull printer state via printer_manager (mqtt_client.printer_state
-                # was a non-existent attribute — the hasattr check silently
-                # returned None, defeating every state-based lookup below).
-                state = printer_manager.get_status(p_id)
-                # The nozzle THIS slot feeds — diameter, hotend and flow type.
-                nozzle = slot_nozzle(state, a_id, t_id)
-                nozzle_diameter = nozzle.diameter
-                slot_extruder = nozzle.extruder_or_default
-                nozzle_dia_float = nozzle.diameter_float
-
-                # Pick link by matching nozzle on the joined filament_calibration.
-                matching_fc = await resolve_spoolman_slot_kprofile(
-                    db,
-                    printer_id=p_id,
-                    spoolman_spool_id=spool_id,
-                    nozzle_diameter=nozzle_dia_float,
-                    slot_extruder=nozzle.extruder,
-                    nozzle_flow=nozzle.flow,
-                )
-
-                # ONE identity path (spec A §5.2): the family catalog builds the
-                # payload. The Spoolman spool's identity is the family of its
-                # linked calibration when one exists; otherwise the preset
-                # stored on the spool, otherwise a stand-in for the material —
-                # resolved inside the builder, no hand-rolled realignment.
-                from backend.app.services.ams_backup_compatibility import (  # noqa: PLC0415
-                    kprofile_allowed,
-                    live_tray_for,
-                )
-                from backend.app.services.slot_assignment import build_slot_assignment  # noqa: PLC0415
-                from backend.app.services.slot_assignment_publish import (  # noqa: PLC0415
-                    publish_projected_slot,
-                )
-
-                supports_user_preset = bool(getattr(state, "support_user_preset", False))
-                # Model cache, not PrinterInfo — see configure_ams_slot.
-                printer_model = printer_manager.get_model(p_id)
-                plan = await build_slot_assignment(
-                    db,
-                    family_id=matching_fc.filament_id if matching_fc else None,
-                    stored_preset=mapped.get("slicer_filament"),
-                    material_override=tray_type,
-                    color_rgba=tray_color,
-                    temp_overrides=(mapped.get("nozzle_temp_min"), None),
-                    printer_model=printer_model,
-                    nozzle_diameter=nozzle_diameter,
-                    supports_user_preset=supports_user_preset,
-                )
-                for note in plan.warnings:
-                    logger.info("Spoolman link: %s", note)
-                # The K half below keys off the ACTUAL family, never the advertised one.
-                effective_tray_info_idx = plan.tray_info_idx
-
-                # Project under the printer's policy, publish, remember what was
-                # masked — the one helper all three assignment paths share. The
-                # actual plan stays the spool's truth; only what the printer is
-                # told changes.
-                printer_row = (await db.execute(select(Printer).where(Printer.id == p_id))).scalar_one_or_none()
-                # A slot the firmware calls empty will not echo the filament back, so it is
-                # published (this path has no replay on insert) but not verified; and a
-                # publish that went out asks for a fresh report, so the verification has
-                # current telemetry instead of an idle printer's next push (upstream 53ef17dc5).
-                slot_live_tray = live_tray_for(state, a_id, t_id)
-                sent, projection = await publish_projected_slot(
-                    db,
-                    mqtt_client,
-                    printer=printer_row,
-                    printer_id=p_id,
-                    ams_id=a_id,
-                    tray_id=t_id,
-                    actual_plan=plan,
-                    live_tray=slot_live_tray,
-                    spool_tag_uid=mapped.get("tag_uid"),
-                    spool_tray_uuid=mapped.get("tray_uuid"),
-                    material=tray_type,
-                    extra_colors=None,
-                    printer_model=printer_model,
-                    nozzle_diameter=nozzle_diameter,
-                    supports_user_preset=supports_user_preset,
-                    tray_sub_brands=tray_sub_brands,
-                    tray_type_fallback=tray_type,
-                    source="spoolman",
-                    verify=not tray_definitely_empty(slot_live_tray),
-                )
-                if sent:
-                    mqtt_client.request_status_update()
-
-                from backend.app.services.calibration_service import (  # noqa: PLC0415
-                    apply_active_calibration_to_slot,
-                )
-
-                fired = False
-                if matching_fc and kprofile_allowed(projection):
-                    fired, _ = await apply_active_calibration_to_slot(
-                        db=db,
-                        printer_id=p_id,
-                        ams_id=a_id,
-                        slot_id=t_id,
-                        filament_id=matching_fc.filament_id,
-                        nozzle_diameter=nozzle_dia_float,
-                        nozzle_volume_type=matching_fc.nozzle_volume_type,
-                        extruder_id=slot_extruder,
-                    )
-                elif not matching_fc and effective_tray_info_idx and kprofile_allowed(projection):
-                    # As the assign route: no link made by hand, so the spool
-                    # gets its K by default through its filament — the ACTIVE
-                    # calibration of the slot's combo, through the same helper
-                    # the built-in inventory uses.
-                    fired, _ = await apply_active_calibration_to_slot(
-                        db=db,
-                        printer_id=p_id,
-                        ams_id=a_id,
-                        slot_id=t_id,
-                        filament_id=effective_tray_info_idx,
-                        nozzle_diameter=nozzle_dia_float,
-                        nozzle_volume_type=nozzle.flow_or_standard,
-                        extruder_id=nozzle.extruder_or_default,
-                    )
-                if not fired:
-                    from backend.app.api.routes.inventory import _find_tray_in_ams_data  # noqa: PLC0415
-
-                    live_tray = None
-                    if state and state.raw_data:
-                        ams_raw = state.raw_data.get("ams", [])
-                        if isinstance(ams_raw, dict):
-                            ams_raw = ams_raw.get("ams", [])
-                        live_tray = _find_tray_in_ams_data(ams_raw, a_id, t_id)
-                    live_cali_idx = (live_tray or {}).get("cali_idx")
-                    # As the assign route: a family from the stored preset keeps
-                    # the slot's index only when the printer's own table files
-                    # that index under this filament.
-                    from backend.app.utils.kprofile_lookup import slot_profile_filament_ids  # noqa: PLC0415
-
-                    if plan.from_stored_preset and slot_profile_filament_ids(state, live_cali_idx, a_id, t_id) != {
-                        effective_tray_info_idx
-                    }:
-                        live_cali_idx = None
-                    if live_cali_idx is not None and live_cali_idx >= 0:
-                        mqtt_client.extrusion_cali_sel(
-                            ams_id=a_id,
-                            tray_id=t_id,
-                            cali_idx=live_cali_idx,
-                            filament_id=effective_tray_info_idx,
-                            nozzle_diameter=nozzle_diameter,
+        # Upsert slot assignment locally when printer context was supplied
+        if printer_context:
+            p_id, a_id, t_id = printer_context
+            # A write of the Spoolman slot ledger (C047 acceptance A08): the mode is asked again
+            # under its record, which a switch to the built-in inventory waits for before it
+            # empties this ledger. Switched off since the check above: nothing is saved, the
+            # native tag goes back as below.
+            async with spoolman_activity.slot_write("spoolman_link"):
+                if not await spoolman_source_changes.mode_on(db):
+                    await client.take_back_native_tags(spool_id, added_native)
+                    raise spoolman_source_changes.source_changed()
+                # A binding writer (C047 §C3): the fence's guard around the slot's DML and commit.
+                with spoolman_binding_fence.enter([spool_id], issued):
+                    try:
+                        await db.execute(
+                            text(
+                                "INSERT INTO spoolman_slot_assignments"
+                                " (printer_id, ams_id, tray_id, spoolman_spool_id)"
+                                " VALUES (:printer_id, :ams_id, :tray_id, :spool_id)"
+                                " ON CONFLICT(printer_id, ams_id, tray_id)"
+                                " DO UPDATE SET spoolman_spool_id = excluded.spoolman_spool_id"
+                            ),
+                            {"printer_id": p_id, "ams_id": a_id, "tray_id": t_id, "spool_id": spool_id},
                         )
+                        # Its other ledger rows go with the same commit (rows only). A slot
+                        # that began feeding a print since the check above keeps its row.
+                        _vacated = (
+                            await spool_single_slot.release_other_spoolman_slots(
+                                db, spoolman_spool_id=spool_id, keep=printer_context, refuse=False
+                            )
+                        ).vacated
+                        await db.commit()
+                    except Exception as e:
+                        await db.rollback()
+                        # The native tag goes back (the previous reel's are still there —
+                        # they are dropped only below); extra.tag stays, as the message
+                        # says, and the retry it asks for links the reel again.
+                        await client.take_back_native_tags(spool_id, added_native)
+                        logger.error(
+                            "Linked spool %s in Spoolman but failed to persist local slot assignment "
+                            "(printer=%s ams=%s tray=%s): %s",
+                            spool_id,
+                            p_id,
+                            a_id,
+                            t_id,
+                            e,
+                        )
+                        raise HTTPException(
+                            status_code=500,
+                            detail=(
+                                "Spool linked in Spoolman but the local slot assignment could not be saved. "
+                                "Please re-open the link dialog to retry."
+                            ),
+                        ) from e
 
-                logger.info(
-                    "Auto-configured AMS slot ams=%d tray=%d after linking Spoolman spool %d on printer %d",
-                    a_id,
-                    t_id,
+        # The spool is THIS reel now: the reel it was linked to before no longer
+        # resolves to it. A 16-character value names no physical tag here (nothing
+        # was added for it), so it takes nothing away. Last, once the slot row is
+        # saved: a link that failed half way keeps the spool's previous reel.
+        if before is not None:
+            await client.drop_previous_reel_tags(before, [spool_tag], bambu_reel=True)
+
+        logger.info("Linked Spoolman spool %s to tag %s", spool_id, spool_tag)
+        await spool_single_slot.announce(_vacated)
+
+        # #1457: clear stale tag links on OTHER spools still claiming this exact tag.
+        # A given AMS-slot tag (RFID or deterministic fallback) belongs to one
+        # physical spool; without this cleanup the previous holder's extra.tag
+        # keeps it visible in the hover card / fill-level lookup.
+        await _clear_stale_tag_links(
+            client,
+            tag=spool_tag,
+            keep_spool_id=spool_id,
+            log_context=(
+                f"printer={printer_context[0]} ams={printer_context[1]} tray={printer_context[2]}"
+                if printer_context
+                else "via /spools/{id}/link"
+            ),
+        )
+
+        # Auto-configure AMS slot via MQTT (best-effort; tag link and slot assignment already persisted)
+        if printer_context:
+            p_id, a_id, t_id = printer_context
+            try:
+                spool_data = await client.get_spool(spool_id)
+                mapped = _map_spoolman_spool(spool_data)
+
+                mqtt_client = printer_manager.get_client(p_id)
+                if mqtt_client:
+                    tray_type = mapped.get("material") or ""
+                    brand = mapped.get("brand") or ""
+                    subtype = mapped.get("subtype") or ""
+                    if brand:
+                        tray_sub_brands = f"{brand} {tray_type} {subtype}".strip()
+                    elif subtype:
+                        tray_sub_brands = f"{tray_type} {subtype}".strip()
+                    else:
+                        tray_sub_brands = tray_type
+
+                    tray_color = (mapped.get("rgba") or "808080FF").upper()
+                    if len(tray_color) == 6:
+                        tray_color = tray_color + "FF"
+
+                    # Pull printer state via printer_manager (mqtt_client.printer_state
+                    # was a non-existent attribute — the hasattr check silently
+                    # returned None, defeating every state-based lookup below).
+                    state = printer_manager.get_status(p_id)
+                    # The nozzle THIS slot feeds — diameter, hotend and flow type.
+                    nozzle = slot_nozzle(state, a_id, t_id)
+                    nozzle_diameter = nozzle.diameter
+                    slot_extruder = nozzle.extruder_or_default
+                    nozzle_dia_float = nozzle.diameter_float
+
+                    # Pick link by matching nozzle on the joined filament_calibration.
+                    matching_fc = await resolve_spoolman_slot_kprofile(
+                        db,
+                        printer_id=p_id,
+                        spoolman_spool_id=spool_id,
+                        nozzle_diameter=nozzle_dia_float,
+                        slot_extruder=nozzle.extruder,
+                        nozzle_flow=nozzle.flow,
+                    )
+
+                    # ONE identity path (spec A §5.2): the family catalog builds the
+                    # payload. The Spoolman spool's identity is the family of its
+                    # linked calibration when one exists; otherwise the preset
+                    # stored on the spool, otherwise a stand-in for the material —
+                    # resolved inside the builder, no hand-rolled realignment.
+                    from backend.app.services.ams_backup_compatibility import (  # noqa: PLC0415
+                        kprofile_allowed,
+                        live_tray_for,
+                    )
+                    from backend.app.services.slot_assignment import build_slot_assignment  # noqa: PLC0415
+                    from backend.app.services.slot_assignment_publish import (  # noqa: PLC0415
+                        publish_projected_slot,
+                    )
+
+                    supports_user_preset = bool(getattr(state, "support_user_preset", False))
+                    # Model cache, not PrinterInfo — see configure_ams_slot.
+                    printer_model = printer_manager.get_model(p_id)
+                    plan = await build_slot_assignment(
+                        db,
+                        family_id=matching_fc.filament_id if matching_fc else None,
+                        stored_preset=mapped.get("slicer_filament"),
+                        material_override=tray_type,
+                        color_rgba=tray_color,
+                        temp_overrides=(mapped.get("nozzle_temp_min"), None),
+                        printer_model=printer_model,
+                        nozzle_diameter=nozzle_diameter,
+                        supports_user_preset=supports_user_preset,
+                    )
+                    for note in plan.warnings:
+                        logger.info("Spoolman link: %s", note)
+                    # The K half below keys off the ACTUAL family, never the advertised one.
+                    effective_tray_info_idx = plan.tray_info_idx
+
+                    # Project under the printer's policy, publish, remember what was
+                    # masked — the one helper all three assignment paths share. The
+                    # actual plan stays the spool's truth; only what the printer is
+                    # told changes.
+                    printer_row = (await db.execute(select(Printer).where(Printer.id == p_id))).scalar_one_or_none()
+                    # A slot the firmware calls empty will not echo the filament back, so it is
+                    # published (this path has no replay on insert) but not verified; and a
+                    # publish that went out asks for a fresh report, so the verification has
+                    # current telemetry instead of an idle printer's next push (upstream 53ef17dc5).
+                    slot_live_tray = live_tray_for(state, a_id, t_id)
+                    sent, projection = await publish_projected_slot(
+                        db,
+                        mqtt_client,
+                        printer=printer_row,
+                        printer_id=p_id,
+                        ams_id=a_id,
+                        tray_id=t_id,
+                        actual_plan=plan,
+                        live_tray=slot_live_tray,
+                        spool_tag_uid=mapped.get("tag_uid"),
+                        spool_tray_uuid=mapped.get("tray_uuid"),
+                        material=tray_type,
+                        extra_colors=None,
+                        printer_model=printer_model,
+                        nozzle_diameter=nozzle_diameter,
+                        supports_user_preset=supports_user_preset,
+                        tray_sub_brands=tray_sub_brands,
+                        tray_type_fallback=tray_type,
+                        source="spoolman",
+                        verify=not tray_definitely_empty(slot_live_tray),
+                    )
+                    if sent:
+                        mqtt_client.request_status_update()
+
+                    from backend.app.services.calibration_service import (  # noqa: PLC0415
+                        apply_active_calibration_to_slot,
+                    )
+
+                    fired = False
+                    if matching_fc and kprofile_allowed(projection):
+                        fired, _ = await apply_active_calibration_to_slot(
+                            db=db,
+                            printer_id=p_id,
+                            ams_id=a_id,
+                            slot_id=t_id,
+                            filament_id=matching_fc.filament_id,
+                            nozzle_diameter=nozzle_dia_float,
+                            nozzle_volume_type=matching_fc.nozzle_volume_type,
+                            extruder_id=slot_extruder,
+                        )
+                    elif not matching_fc and effective_tray_info_idx and kprofile_allowed(projection):
+                        # As the assign route: no link made by hand, so the spool
+                        # gets its K by default through its filament — the ACTIVE
+                        # calibration of the slot's combo, through the same helper
+                        # the built-in inventory uses.
+                        fired, _ = await apply_active_calibration_to_slot(
+                            db=db,
+                            printer_id=p_id,
+                            ams_id=a_id,
+                            slot_id=t_id,
+                            filament_id=effective_tray_info_idx,
+                            nozzle_diameter=nozzle_dia_float,
+                            nozzle_volume_type=nozzle.flow_or_standard,
+                            extruder_id=nozzle.extruder_or_default,
+                        )
+                    if not fired:
+                        from backend.app.api.routes.inventory import _find_tray_in_ams_data  # noqa: PLC0415
+
+                        live_tray = None
+                        if state and state.raw_data:
+                            ams_raw = state.raw_data.get("ams", [])
+                            if isinstance(ams_raw, dict):
+                                ams_raw = ams_raw.get("ams", [])
+                            live_tray = _find_tray_in_ams_data(ams_raw, a_id, t_id)
+                        live_cali_idx = (live_tray or {}).get("cali_idx")
+                        # As the assign route: a family from the stored preset keeps
+                        # the slot's index only when the printer's own table files
+                        # that index under this filament.
+                        from backend.app.utils.kprofile_lookup import slot_profile_filament_ids  # noqa: PLC0415
+
+                        if plan.from_stored_preset and slot_profile_filament_ids(state, live_cali_idx, a_id, t_id) != {
+                            effective_tray_info_idx
+                        }:
+                            live_cali_idx = None
+                        if live_cali_idx is not None and live_cali_idx >= 0:
+                            mqtt_client.extrusion_cali_sel(
+                                ams_id=a_id,
+                                tray_id=t_id,
+                                cali_idx=live_cali_idx,
+                                filament_id=effective_tray_info_idx,
+                                nozzle_diameter=nozzle_diameter,
+                            )
+
+                    logger.info(
+                        "Auto-configured AMS slot ams=%d tray=%d after linking Spoolman spool %d on printer %d",
+                        a_id,
+                        t_id,
+                        spool_id,
+                        p_id,
+                    )
+            except (SpoolmanNotFoundError, SpoolmanUnavailableError) as e:
+                logger.warning(
+                    "Could not fetch Spoolman spool %d for MQTT configure after tag link: %s",
+                    spool_id,
+                    e,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to auto-configure AMS slot after linking Spoolman spool %d (printer=%d ams=%d tray=%d)",
                     spool_id,
                     p_id,
+                    a_id,
+                    t_id,
                 )
-        except (SpoolmanNotFoundError, SpoolmanUnavailableError) as e:
-            logger.warning(
-                "Could not fetch Spoolman spool %d for MQTT configure after tag link: %s",
-                spool_id,
-                e,
-            )
-        except Exception:
-            logger.exception(
-                "Failed to auto-configure AMS slot after linking Spoolman spool %d (printer=%d ams=%d tray=%d)",
-                spool_id,
-                p_id,
-                a_id,
-                t_id,
-            )
 
-    # Sent last, like the assign route: everything a refetch reads — the tag,
-    # the slot row, the stale tag links taken off other spools — is settled
-    # (upstream 6c2731a6d). The tag → spool map hangs on ``inventory_changed``.
-    await ws_manager.broadcast({"type": "inventory_changed"})
-    if printer_context:
-        await _announce_slot(*printer_context)
+        # Sent last, like the assign route: everything a refetch reads — the tag,
+        # the slot row, the stale tag links taken off other spools — is settled
+        # (upstream 6c2731a6d). The tag → spool map hangs on ``inventory_changed``.
+        await ws_manager.broadcast({"type": "inventory_changed"})
+        if printer_context:
+            await _announce_slot(*printer_context)
 
-    return {"success": True, "message": f"Spool {spool_id} linked to AMS tag"}
+        return {"success": True, "message": f"Spool {spool_id} linked to AMS tag"}
+
+
+async def _extra_tag_holders(client, tag: str, *, keep_spool_id: int) -> list[int]:
+    """Spools other than ``keep_spool_id`` whose ``extra.tag`` is ``tag`` — a read before any mutation."""
+    try:
+        spools = await client.get_spools()
+    except (SpoolmanClientError, SpoolmanUnavailableError):
+        return []
+    wanted = tag.upper()
+    holders = []
+    for spool in spools:
+        spool_id = spool.get("id")
+        if not isinstance(spool_id, int) or spool_id == keep_spool_id:
+            continue
+        raw = (spool.get("extra") or {}).get("tag", "")
+        if isinstance(raw, str) and raw.strip('"').upper() == wanted:
+            holders.append(spool_id)
+    return holders
 
 
 @router.post("/spools/{spool_id}/unlink")
@@ -1236,7 +1313,17 @@ async def unlink_spool(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
-    """Unlink a Spoolman spool from AMS by clearing Spoolman extra.tag."""
+    """Unlink a Spoolman spool from AMS by clearing Spoolman extra.tag.
+
+    One tag operation for all three steps — clearing ``extra.tag``, removing the
+    native tags, deleting the local slot rows (C047 S32): a spool being deleted
+    is 409 with nothing written.
+    """
+    with spoolman_binding_fence.tag_operation([spool_id], issued=spoolman_binding_fence.ticket()):
+        return await _unlink_spool(spool_id, db)
+
+
+async def _unlink_spool(spool_id: int, db: AsyncSession):
     sm = await get_spoolman_settings(db)
     enabled, url = sm["enabled"], sm["url"]
     if not enabled:
@@ -1320,6 +1407,12 @@ async def create_spool_from_slot(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
+    """One tag operation from ``sync_ams_tray`` to the UPSERT's commit (C047 S32, S37)."""
+    with spoolman_binding_fence.tag_operation(issued=spoolman_binding_fence.ticket()):
+        return await _create_spool_from_slot(req, db)
+
+
+async def _create_spool_from_slot(req: CreateSpoolFromSlotRequest, db: AsyncSession):
     """Explicit user action: create a Spoolman spool from an AMS slot's current tray data.
 
     Used by the "+ Add to inventory" affordance when auto_add_unknown_rfid is disabled —
@@ -1408,30 +1501,38 @@ async def create_spool_from_slot(
     # binding rolled back leaves the user thinking the spool was added,
     # then watching the modal re-fire on the next MQTT push.
     if sync_result.get("id"):
-        try:
-            await db.execute(
-                text(
-                    "INSERT INTO spoolman_slot_assignments"
-                    " (printer_id, ams_id, tray_id, spoolman_spool_id)"
-                    " VALUES (:printer_id, :ams_id, :tray_id, :spool_id)"
-                    " ON CONFLICT(printer_id, ams_id, tray_id)"
-                    " DO UPDATE SET spoolman_spool_id = excluded.spoolman_spool_id"
-                ),
-                {
-                    "printer_id": req.printer_id,
-                    "ams_id": req.ams_id,
-                    "tray_id": req.tray_id,
-                    "spool_id": sync_result["id"],
-                },
-            )
-            await db.commit()
-        except Exception as exc:
-            await db.rollback()
-            logger.exception("Failed to persist Spoolman slot assignment")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Spool created in Spoolman but slot assignment failed: {exc}",
-            ) from exc
+        # A write of the Spoolman slot ledger (C047 acceptance A08): the mode asked again under
+        # its record, which a switch to the built-in inventory waits for. Switched off since the
+        # check above: the spool stays in Spoolman, no slot row is saved.
+        async with spoolman_activity.slot_write("spoolman_from_slot"):
+            if not await spoolman_source_changes.mode_on(db):
+                raise spoolman_source_changes.source_changed()
+            # A binding writer (C047 §C3); the number is already owned by this operation.
+            with spoolman_binding_fence.enter([sync_result["id"]], spoolman_binding_fence.ticket()):
+                try:
+                    await db.execute(
+                        text(
+                            "INSERT INTO spoolman_slot_assignments"
+                            " (printer_id, ams_id, tray_id, spoolman_spool_id)"
+                            " VALUES (:printer_id, :ams_id, :tray_id, :spool_id)"
+                            " ON CONFLICT(printer_id, ams_id, tray_id)"
+                            " DO UPDATE SET spoolman_spool_id = excluded.spoolman_spool_id"
+                        ),
+                        {
+                            "printer_id": req.printer_id,
+                            "ams_id": req.ams_id,
+                            "tray_id": req.tray_id,
+                            "spool_id": sync_result["id"],
+                        },
+                    )
+                    await db.commit()
+                except Exception as exc:
+                    await db.rollback()
+                    logger.exception("Failed to persist Spoolman slot assignment")
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Spool created in Spoolman but slot assignment failed: {exc}",
+                    ) from exc
 
     # The caller's own tab refreshes itself; every other one needs to be told.
     await ws_manager.broadcast({"type": "inventory_changed"})
