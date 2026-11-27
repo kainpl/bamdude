@@ -2779,6 +2779,93 @@ class TestGotifyProvider:
         assert mock_send.call_args.kwargs["image_url"] == "https://bamdude.example/photo.jpg"
 
 
+class TestNotifyProvider:
+    """Notify! (upstream Bambuddy v1.3.0, #3265): what BamDude adds on top of upstream's sender."""
+
+    @pytest.fixture
+    def service(self):
+        return NotificationService()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("config", "printer_id", "group"),
+        [
+            ({"device_id": "IO12345678901234", "token": "t0ken-value"}, 7, "bamdude-printer-7"),
+            ({"device_id": "IO12345678901234", "token": "t0ken-value"}, None, "bamdude"),
+            ({"device_id": "IO12345678901234", "token": "t0ken-value", "group_type": "farm"}, 7, "farm"),
+        ],
+    )
+    async def test_the_thread_is_per_printer_under_our_name(self, service, config, printer_id, group):
+        from backend.app.services.notify_client import NotifyClient
+
+        with patch.object(NotifyClient, "send_notification", new_callable=AsyncMock) as send:
+            success, _ = await service._send_notify(config, "Title", "Body", printer_id=printer_id)
+
+        assert success is True
+        assert send.call_args.kwargs["group_type"] == group
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("link", "sent"),
+        [
+            ("https://farm.example/api/v1/notifications/photos/a.jpg", True),
+            ("http://192.168.1.5:8000/api/v1/notifications/photos/a.jpg", False),
+            (None, False),
+        ],
+    )
+    async def test_a_lan_only_install_still_sends_the_text(self, service, link, sent):
+        """Notify! takes only an HTTPS picture: without one the alert still goes, text only."""
+        provider = MagicMock()
+        provider.provider_type = "notify"
+        provider.config = json.dumps({"device_id": "IO12345678901234", "token": "t0ken-value"})
+        provider.quiet_hours_enabled = False
+        provider.attach_photo = True
+        transport = AsyncMock()
+        transport.request.return_value = MagicMock(status_code=200, json=lambda: {"success": True}, headers={})
+
+        with (
+            patch.object(service, "photo_link", new_callable=AsyncMock, return_value=link),
+            patch.object(service, "_get_client", new_callable=AsyncMock, return_value=transport),
+        ):
+            success, _ = await service._send_to_provider(
+                provider, "Title", "Body", db=AsyncMock(), image_data=b"jpeg", event_type="print_failed"
+            )
+
+        assert success is True
+        assert ("imageUrl" in transport.request.call_args.kwargs["json"]) is sent
+
+    @pytest.mark.asyncio
+    async def test_a_gateway_refusal_never_echoes_the_token(self, service):
+        transport = AsyncMock()
+        transport.request.return_value = MagicMock(
+            status_code=401, json=lambda: {"success": False, "message": "bad t0ken-value"}, headers={}
+        )
+        with patch.object(service, "_get_client", new_callable=AsyncMock, return_value=transport):
+            success, message = await service._send_notify(
+                {"device_id": "IO12345678901234", "token": "t0ken-value"}, "Title", "Body"
+            )
+
+        assert success is False
+        assert "t0ken-value" not in message
+
+    @pytest.mark.asyncio
+    async def test_both_dispatch_tables_know_notify(self, service):
+        provider = MagicMock()
+        provider.provider_type = "notify"
+        provider.config = json.dumps({"device_id": "IO12345678901234", "token": "t0ken-value"})
+        provider.quiet_hours_enabled = False
+
+        with patch.object(service, "_send_notify", new_callable=AsyncMock) as mock_send:
+            mock_send.return_value = (True, "OK")
+            live_ok, _ = await service._send_to_provider(provider, "Title", "Message", db=AsyncMock())
+            test_ok, _ = await service.send_test_notification(
+                "notify", {"device_id": "IO12345678901234", "token": "t0ken-value"}
+            )
+
+        assert live_ok is True and test_ok is True
+        assert mock_send.await_count == 2
+
+
 class TestSignalProvider:
     """Signal, via a self-hosted signal-cli-rest-api instance.
 

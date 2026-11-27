@@ -33,6 +33,7 @@ async def test_real_http_sender_error_redacts_before_its_body_limit(kind, monkey
         "webhook": "auth_header",
         "signal": "auth_header",
         "gotify": "app_token",
+        "notify": "token",
     }[kind]
     base = "CANARY_PRIVATE_" + "x" * 400
     value = {
@@ -46,10 +47,11 @@ async def test_real_http_sender_error_redacts_before_its_body_limit(kind, monkey
     client = AsyncMock()
     response = httpx.Response(400, text=echoed, request=httpx.Request("POST", "https://configured.example"))
     client.get.return_value = client.post.return_value = client.put.return_value = response
+    client.request.return_value = response  # Notify!'s Partner API client goes through request()
     monkeypatch.setattr(service, "_get_client", AsyncMock(return_value=client))
     success, error = await service.send_test_notification(kind, config)
     assert not success and "CANARY" not in error
-    assert client.get.await_count + client.post.await_count + client.put.await_count > 0
+    assert client.get.await_count + client.post.await_count + client.put.await_count + client.request.await_count > 0
 
 
 async def test_ha_driver_exception_uses_effective_global_secret_without_storing_it(monkeypatch):

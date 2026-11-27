@@ -216,10 +216,11 @@ async def test_notify_provider_dispatch_and_test_use_existing_photo_toggle():
     with patch.object(service, "_send_notify", new_callable=AsyncMock, return_value=(True, "sent")) as send:
         await service._send_to_provider(provider, "Title", "Body", image_data=b"image")
         send.assert_awaited_once_with(
-            json.loads(provider.config), "Title", "Body", image_url=None, event_type=None, printer_id=None
+            json.loads(provider.config), "Title", "Body", image_url=None, event_type="unknown", printer_id=None
         )
         send.reset_mock()
-        await service.send_test_notification("notify", json.loads(provider.config), attach_photo=False)
+        # Ours: the test notification never carries a photo, for any channel.
+        await service.send_test_notification("notify", json.loads(provider.config))
         assert send.await_count == 1
         assert send.call_args.kwargs["image_url"] is None
 
@@ -233,8 +234,7 @@ async def test_browser_and_group_error_alerts_never_publish_or_reuse_camera_phot
     )
     with (
         patch.object(service, "_send_notify", new_callable=AsyncMock, return_value=(True, "sent")) as send,
-        patch.object(service, "_get_or_build_photo_url", new_callable=AsyncMock) as photo,
-        patch("backend.app.services.notification_service._load_sample_notification_image") as sample,
+        patch.object(service, "photo_link", new_callable=AsyncMock) as photo,
     ):
         await service._send_to_provider(
             provider,
@@ -242,14 +242,12 @@ async def test_browser_and_group_error_alerts_never_publish_or_reuse_camera_phot
             "Filament runout",
             image_data=b"camera",
             event_type="printer_error",
-            photo_cache={"url": "https://example.com/camera.jpg"},
             printer_id=42,
         )
         assert send.call_args.kwargs["image_url"] is None
-        await service.send_test_notification("notify", config, attach_photo=True)
+        await service.send_test_notification("notify", config)
         assert send.call_args.kwargs["image_url"] is None
     photo.assert_not_awaited()
-    sample.assert_not_called()
 
 
 async def test_ios_error_alert_includes_camera_photo_when_enabled():
@@ -261,7 +259,7 @@ async def test_ios_error_alert_includes_camera_photo_when_enabled():
     with (
         patch.object(service, "_send_notify", new_callable=AsyncMock, return_value=(True, "sent")) as send,
         patch.object(
-            service, "_get_or_build_photo_url", new_callable=AsyncMock, return_value="https://example.com/camera.jpg"
+            service, "photo_link", new_callable=AsyncMock, return_value="https://example.com/camera.jpg"
         ) as photo,
     ):
         await service._send_to_provider(
@@ -315,4 +313,5 @@ async def test_problem_alert_priority_and_per_printer_thread(event, time_sensiti
             await service.close()
     assert success
     assert send.call_args.kwargs["time_sensitive"] is time_sensitive
-    assert send.call_args.kwargs["group_type"] == "bambuddy-printer-42"
+    # Ours: the thread carries our name (upstream: bambuddy-printer-42).
+    assert send.call_args.kwargs["group_type"] == "bamdude-printer-42"

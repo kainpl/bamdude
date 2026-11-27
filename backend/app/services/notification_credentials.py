@@ -26,6 +26,7 @@ SECRET_FIELDS = {
     "homeassistant": set(),
     "signal": {"auth_header"},
     "gotify": {"app_token"},
+    "notify": {"token"},
 }
 PUBLIC_FIELDS = {
     "callmebot": {"phone"},
@@ -39,6 +40,22 @@ PUBLIC_FIELDS = {
     "homeassistant": {"service", "data"},
     "signal": {"server", "sender_number", "recipient_type", "numbers", "group_id", "auth_mode"},
     "gotify": {"server", "event_priorities"},
+    # Notify!'s device id is an address, not a secret (upstream shows it on the card).
+    "notify": {
+        "device_id",
+        "icon_url",
+        "group_type",
+        "time_sensitive",
+        "live_activities",
+        "lock_screen_widgets",
+        "live_activity_privacy",
+        "live_activity_stage",
+        "live_activity_style",
+        "live_activity_metrics",
+        "live_activity_button_url",
+        "live_activity_symbol",
+        "live_activity_tint",
+    },
 }
 REQUIRED_SECRETS = {
     "callmebot": {"apikey"},
@@ -49,6 +66,7 @@ REQUIRED_SECRETS = {
     "discord": {"webhook_url"},
     "webhook": {"webhook_url"},
     "gotify": {"app_token"},
+    "notify": {"token"},
 }
 
 
@@ -148,6 +166,9 @@ def _scope(kind: str, field: str, config: dict):
         return kind, canonical_url(config.get("server"), default="https://api.day.app")
     if kind == "gotify":
         return kind, canonical_url(gotify_server(config))
+    if kind == "notify":
+        # The Partner API host is fixed: the token belongs to the device it was issued for.
+        return kind, text("device_id")
     if kind == "email":
         try:
             port = int(config.get("smtp_port", 587))

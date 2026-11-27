@@ -33,6 +33,7 @@ from backend.app.services.notification_credentials import (
     safe_provider_message,
 )
 from backend.app.services.notification_events import SENSOR_ALERT_FIELDS
+from backend.app.services.notify_client import NotifyClient, NotifyError, notify_credentials, notify_supports_photos
 
 logger = logging.getLogger(__name__)
 
@@ -398,6 +399,9 @@ class NotificationService:
                 return await self._send_signal(config, title, message)
             elif provider_type == "gotify":
                 return await self._send_gotify(config, title, message, event_type="test")
+            elif provider_type == "notify":
+                # The test notification carries no photo, for any channel.
+                return await self._send_notify(config, title, message, image_url=None)
             else:
                 return False, f"Unknown provider type: {provider_type}"
         except Exception as e:
@@ -645,6 +649,38 @@ class NotificationService:
                 "rule for this hostname or front it with Cloudflare Access."
             )
         return False, f"HTTP {response.status_code}: {safe_provider_message(response.text, 'bark', config)[:200]}"
+
+    @credential_safe_sender("notify")
+    async def _send_notify(
+        self,
+        config: dict,
+        title: str,
+        message: str,
+        image_url: str | None = None,
+        event_type: str | None = None,
+        printer_id: int | None = None,
+    ) -> tuple[bool, str]:
+        """Ordinary Notify! alerts use the existing event, digest and quiet-hours rules (upstream Bambuddy #3265)."""
+        try:
+            device_id, token = notify_credentials(config)
+            client = NotifyClient(await self._get_client())
+            group_type = str(config.get("group_type") or "").strip()
+            if not group_type:
+                group_type = f"bamdude-printer-{printer_id}" if printer_id is not None else "bamdude"
+            await client.send_notification(
+                device_id,
+                token,
+                title=title,
+                text=message,
+                group_type=group_type,
+                icon_url=config.get("icon_url"),
+                image_url=image_url,
+                time_sensitive=config.get("time_sensitive") is True
+                and event_type in {"print_failed", "print_stopped", "printer_error", "ai_failure_detection"},
+            )
+            return True, "Message sent successfully"
+        except NotifyError as exc:
+            return False, str(exc)
 
     @credential_safe_sender("gotify")
     async def _send_gotify(
@@ -1575,6 +1611,16 @@ class NotificationService:
                 )
             elif provider.provider_type == "signal":
                 return await self._send_signal(config, title, message, image_data=image_data)
+            elif provider.provider_type == "notify":
+                # Browser and group targets take no picture; Notify! takes only an HTTPS one.
+                photo_url = (
+                    await self.photo_link(db, image_data, event_type)
+                    if notify_supports_photos(config.get("device_id"))
+                    else None
+                )
+                return await self._send_notify(
+                    config, title, message, image_url=photo_url, event_type=event_type, printer_id=printer_id
+                )
             elif provider.provider_type == "gotify":
                 return await self._send_gotify(
                     config,
