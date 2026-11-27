@@ -40,6 +40,8 @@ export const ADMIN_SETTING_FIELDS = new Set<string>([
   'obico_enabled',
   'obico_ml_token',
   'obico_ml_url',
+  'octoeverywhere_api_key',
+  'octoeverywhere_enabled',
   'orcaslicer_api_url',
   'prometheus_enabled',
   'prometheus_token',

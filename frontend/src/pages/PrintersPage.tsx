@@ -1733,13 +1733,21 @@ const DRYING_PRESETS: Record<string, DryingPreset> = {
 function AiDetectionBadge({ printerId }: { printerId: number }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  // Shared query key: TanStack dedupes, so a farm of cards is one request.
-  const { data } = useQuery({
+  // Shared query keys: TanStack dedupes, so a farm of cards is one request each.
+  const { data: obico } = useQuery({
     queryKey: ['obicoPrinterStatus'],
     queryFn: api.getObicoPrinterStatus,
     staleTime: 10_000,
     retry: false,
   });
+  const { data: octoEverywhere } = useQuery({
+    queryKey: ['octoEverywherePrinterStatus'],
+    queryFn: api.getOctoEverywherePrinterStatus,
+    staleTime: 10_000,
+    retry: false,
+  });
+  // One provider runs at a time (upstream Bambuddy): the enabled one's state is the badge.
+  const data = octoEverywhere?.enabled ? octoEverywhere : obico;
 
   if (!data?.enabled) return null;
   // null = every printer is monitored.
@@ -1782,7 +1790,9 @@ function AiDetectionBadge({ printerId }: { printerId: number }) {
       : klass === 'unknown'
         ? t('printers.ai.unknownTitle')
         : live
-          ? t('printers.ai.scoreTitle', { score: live.score })
+          ? 'print_quality' in live
+            ? t('printers.ai.qualityTitle', { quality: live.print_quality ?? '—' })
+            : t('printers.ai.scoreTitle', { score: live.score })
           : t('printers.ai.idleTitle');
 
   return (
@@ -9673,6 +9683,16 @@ export function PrintersPage() {
     enabled: (printers?.length ?? 0) > 0,
     staleTime: 10_000,
     refetchInterval: 30_000,
+    retry: false,
+  });
+  // OctoEverywhere: ask once whether it is on, then poll only while it is (upstream Bambuddy);
+  // saving its settings invalidates this query.
+  useQuery({
+    queryKey: ['octoEverywherePrinterStatus'],
+    queryFn: api.getOctoEverywherePrinterStatus,
+    enabled: (printers?.length ?? 0) > 0,
+    staleTime: 10_000,
+    refetchInterval: (query) => (query.state.data?.enabled ? 30_000 : false),
     retry: false,
   });
 

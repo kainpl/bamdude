@@ -128,9 +128,20 @@ class StagedInboxBatch:
 
 
 async def stage_admin_event(
-    db: AsyncSession, *, event_type: str, episode_id: str, title: str, message: str, extra_data: dict | None = None
+    db: AsyncSession,
+    *,
+    event_type: str,
+    episode_id: str,
+    title: str,
+    message: str,
+    extra_data: dict | None = None,
+    mandatory: bool = False,
 ) -> StagedInboxBatch:
     """Stage an internal admin notice in the caller's episode transaction.
+
+    ``mandatory`` reaches every active administrator whatever their inbox subscriptions —
+    for a notice about something the system itself changed (OctoEverywhere turned off by
+    a restore).
 
     Caller locks its durable episode FIRST (SQLite writer / PG FOR UPDATE),
     then this operation locks accounts in the shared lifetime order. No commit,
@@ -171,8 +182,7 @@ async def stage_admin_event(
         if u.account_identity == identities[u.id]
         and u.is_active
         and u.is_admin
-        and u.has_permission("notifications:inbox")
-        and wants_inbox_event(u.inbox_events, event_type)
+        and (mandatory or (u.has_permission("notifications:inbox") and wants_inbox_event(u.inbox_events, event_type)))
     ]
     keys = {u.id: f"{event_type}:{episode_id}:{u.account_identity}" for u in eligible}
     with db.no_autoflush:

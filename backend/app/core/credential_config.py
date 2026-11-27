@@ -34,6 +34,7 @@ CREDENTIAL_SETTING_KEYS = frozenset(
         "ha_token",
         "obico_ml_url",
         "obico_ml_token",
+        "octoeverywhere_api_key",
         "manyfold_url",
         "manyfold_client_id",
         "manyfold_client_secret",

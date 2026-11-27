@@ -55,4 +55,17 @@ describe('PrintersPage — AI detection badge', () => {
     renderWith({ class: 'safe', frame_count: 5, score: 0.01, error: null });
     expect(await screen.findByText('AI Safe')).toBeInTheDocument();
   });
+
+  it("shows OctoEverywhere's verdict and print quality while it is the enabled provider", async () => {
+    server.use(
+      http.get('/api/v1/octoeverywhere/printer-status', () => HttpResponse.json({
+        enabled: true, monitored_printers: null, last_error: null, last_error_code: null,
+        per_printer: { 1: { class: 'warning', print_quality: 4, frame_count: 2, error: null, error_code: null } },
+      })),
+    );
+    renderWith({ class: 'safe', frame_count: 5, score: 0.01, error: null });
+    const badge = await screen.findByText('AI Warning');
+    expect(badge.closest('button')).toHaveAttribute('title', expect.stringContaining('print quality 4/10'));
+    expect(screen.queryByText('AI Safe')).toBeNull();
+  });
 });

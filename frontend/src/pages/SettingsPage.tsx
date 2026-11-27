@@ -129,7 +129,7 @@ registerSettingsSearch({ labelKey: 'settings.mcp.title', tab: 'apikeys', keyword
 registerSettingsSearch({ labelKey: 'settings.tabs.camera', tab: 'camera', keywords: 'camera cameras view mode window overlay embedded chamber light external video stream rtsp mjpeg usb snapshot rotation other standalone room', anchor: 'card-camera' });
 registerSettingsSearch({ labelKey: 'cameraTokens.title', tab: 'camera', keywords: 'camera token long-lived home assistant frigate kiosk stream bblt cam wall status monitor tv', anchor: 'card-camera-tokens' });
 registerSettingsSearch({ labelKey: 'streamOverlay.builder.title', labelFallback: 'Streaming Overlay', tab: 'camera', keywords: 'streaming overlay obs browser source stream url token logo', anchor: 'card-stream-overlay' });
-registerSettingsSearch({ labelKey: 'settings.tabs.failureDetection', labelFallback: 'Failure Detection', tab: 'failure-detection', keywords: 'failure detection ai ml obico spaghetti detect monitoring', anchor: 'card-fd-ml' });
+registerSettingsSearch({ labelKey: 'settings.tabs.failureDetection', labelFallback: 'Failure Detection', tab: 'failure-detection', keywords: 'failure detection ai ml obico octoeverywhere spaghetti detect monitoring', anchor: 'card-fd-ml' });
 registerSettingsSearch({ labelKey: 'failureDetection.perPrinterTitle', labelFallback: 'Per-Printer Settings', tab: 'failure-detection', keywords: 'failure detection per printer enable per-printer sensitivity', anchor: 'card-fd-perprinter' });
 registerSettingsSearch({ labelKey: 'failureDetection.statusTitle', labelFallback: 'Detection Status', tab: 'failure-detection', keywords: 'failure detection status running connection', anchor: 'card-fd-status' });
 registerSettingsSearch({ labelKey: 'failureDetection.historyTitle', labelFallback: 'Detection History', tab: 'failure-detection', keywords: 'failure detection history log events', anchor: 'card-fd-history' });
@@ -802,7 +802,12 @@ export function SettingsPage() {
     queryKey: ['obico-status'],
     queryFn: api.getObicoStatus,
   });
-  const obicoActive = !!(obicoStatus?.is_running && obicoStatus?.enabled);
+  const { data: octoEverywhereStatus } = useQuery({
+    queryKey: ['octoeverywhere-status'],
+    queryFn: api.getOctoEverywhereStatus,
+  });
+  const obicoActive = !!(obicoStatus?.is_running && obicoStatus?.enabled)
+    || !!(octoEverywhereStatus?.is_running && octoEverywhereStatus?.enabled && octoEverywhereStatus?.api_key_configured);
 
   // Advanced auth status for user creation
   const { data: advancedAuthStatus = { advanced_auth_enabled: false, smtp_configured: false, local_login_enabled: true, autologin_provider_id: null } } = useQuery({
@@ -5385,7 +5390,7 @@ export function SettingsPage() {
                 <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
                 </label>
               </div>
-              {localSettings.camera_light_auto && localSettings.obico_enabled && (
+              {localSettings.camera_light_auto && (localSettings.obico_enabled || localSettings.octoeverywhere_enabled) && (
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-white">{t('settings.cameraLightAutoObico')}</p>

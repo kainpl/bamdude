@@ -115,21 +115,23 @@ async def pop_frame(nonce: str) -> bytes | None:
 
 
 async def drop_printer_from_watch_list(db, printer_id: int) -> None:
-    """A deleted printer leaves the list of watched printers, in the deletion's transaction.
+    """A deleted printer leaves the lists of watched printers, in the deletion's transaction.
 
     SQLite gives its id to the next printer added, which would otherwise be watched --
-    its frames sent to the ML API and its prints paused -- without anybody choosing that.
-    An emptied list stays ``[]`` (no printers), never empty text (every printer).
+    its frames sent to a detector and its prints paused -- without anybody choosing that.
+    Obico's list and OctoEverywhere's (upstream Bambuddy). An emptied list stays ``[]``
+    (no printers), never empty text (every printer).
     """
-    row = (await db.execute(select(Settings).where(Settings.key == "obico_enabled_printers"))).scalar_one_or_none()
-    if row is None or not row.value:
-        return
-    try:
-        ids = json.loads(row.value)
-    except json.JSONDecodeError:
-        return
-    if isinstance(ids, list) and any(item == printer_id for item in ids):
-        row.value = json.dumps([item for item in ids if item != printer_id])
+    for key in ("obico_enabled_printers", "octoeverywhere_enabled_printers"):
+        row = (await db.execute(select(Settings).where(Settings.key == key))).scalar_one_or_none()
+        if row is None or not row.value:
+            continue
+        try:
+            ids = json.loads(row.value)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(ids, list) and any(item == printer_id for item in ids):
+            row.value = json.dumps([item for item in ids if item != printer_id])
 
 
 class ObicoDetectionService:
@@ -223,6 +225,7 @@ class ObicoDetectionService:
     async def _load_settings(self) -> dict:
         keys = [
             "obico_enabled",
+            "octoeverywhere_enabled",
             "obico_save_detections",
             "obico_ml_url",
             "obico_ml_token",
@@ -264,7 +267,10 @@ class ObicoDetectionService:
                 ml_url = ""
 
         return {
-            "enabled": rows.get("obico_enabled", "false").lower() == "true",
+            # One provider at a time (upstream Bambuddy): a restore can bypass the settings save and
+            # leave both flags on, so Obico also refuses to act while OctoEverywhere is enabled.
+            "enabled": rows.get("obico_enabled", "false").lower() == "true"
+            and rows.get("octoeverywhere_enabled", "false").lower() != "true",
             "save_detections": rows.get("obico_save_detections", "false").lower() == "true",
             "ml_url": ml_url,
             "ml_token": (rows.get("obico_ml_token") or "").strip(),

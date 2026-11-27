@@ -34,6 +34,7 @@ def _e(severity: str, group: str) -> EventMeta:
 
 EVENT_CATALOG: dict[str, EventMeta] = {
     "git_backup_not_admitted": _e("warning", "system"),
+    "octoeverywhere_restore_off": _e("warning", "system"),
     "credentials_reissue_required": _e("warning", "system"),
     # Another program of the farm speaking (spec external-app-messages-spec). ``warning`` so the inbox
     # shows it to everybody by default; each message's own level colours its row.
@@ -100,7 +101,12 @@ EVENT_CATALOG: dict[str, EventMeta] = {
 # providers. Grow it together with the sender that raises the event through
 # ``NotificationService.notify_in_app`` (spec §3.3).
 IN_APP_ONLY_EVENTS: frozenset[str] = frozenset(
-    {"plug_meter_stalled", "credentials_reissue_required", "git_backup_not_admitted"}
+    {
+        "plug_meter_stalled",
+        "credentials_reissue_required",
+        "git_backup_not_admitted",
+        "octoeverywhere_restore_off",
+    }
 )
 
 # Two provider flags each govern several catalog events. The service owns the

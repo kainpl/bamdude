@@ -138,6 +138,7 @@ build when the rule is broken. `Vault: inv-x` is the maintainer's note
 - **VP FTP needs the asyncio loop.** Every native launch path passes `--loop asyncio`; never drop it.
 - **The next slicer pause is read from the print's own file and compared with the proven run's layer** — never `state.layer_num` or an ACK; no guess. Vault: `inv-next-pause-from-the-file-and-proven-run`.
 - **Obico AI failure detection.** The verdict is Obico's own `is_failing` (`obico_smoothing.py`); never compare a raw EWM with the thresholds; each action runs once per print.
+- **One AI failure detector at a time, and a restore never turns OctoEverywhere on.** `obico_enabled` / `octoeverywhere_enabled`: the settings save switches the other off, and each detector also refuses while the other flag is on. OctoEverywhere (ported from upstream) acts on its API's suggestion, never a `PrintQuality` threshold; its frames come through the camera worker by Obico's rule; a full ZIP restore turns it off with an inbox notice (`services/failure_detection_restore.py`). Vault: `inv-one-failure-detector-at-a-time`.
 - **Obico evidence is an observation, not a new camera capture or print authority.** One store owns publication, quotas and deletion. Vault: `inv-obico-evidence-is-an-observation`.
 
 ### The print archive · [full text](docs/development/invariants/archive.md)

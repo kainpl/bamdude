@@ -14,13 +14,23 @@ logger = logging.getLogger(__name__)
 
 
 async def execute_action(
-    printer_id: int, action: str, task_name: str, score: float, frame: bytes | None = None
+    printer_id: int,
+    action: str,
+    task_name: str,
+    score: float | None,
+    frame: bytes | None = None,
+    *,
+    print_quality: int | None = None,
+    printer_name: str | None = None,
 ) -> None:
     """Run the configured action for a detected print failure.
 
     action: 'notify' | 'pause' | 'pause_and_off'
+    score: Obico's failure score; OctoEverywhere has none and passes print_quality (1-10).
     """
-    printer_name = await _get_printer_name(printer_id)
+    # OctoEverywhere resolves the name before committing an action (upstream Bambuddy).
+    if printer_name is None:
+        printer_name = await _get_printer_name(printer_id)
 
     if action in ("pause", "pause_and_off"):
         _pause_print(printer_id)
@@ -28,7 +38,7 @@ async def execute_action(
     if action == "pause_and_off" and not await _turn_off_linked_plugs(printer_id):
         action = "pause"
 
-    await _notify(printer_id, printer_name, task_name, score, action, frame)
+    await _notify(printer_id, printer_name, task_name, score, action, frame, print_quality=print_quality)
 
 
 async def _get_printer_name(printer_id: int) -> str:
@@ -77,7 +87,14 @@ async def _turn_off_linked_plugs(printer_id: int) -> bool:
 
 
 async def _notify(
-    printer_id: int, printer_name: str, task_name: str, score: float, action: str, frame: bytes | None = None
+    printer_id: int,
+    printer_name: str,
+    task_name: str,
+    score: float | None,
+    action: str,
+    frame: bytes | None = None,
+    *,
+    print_quality: int | None = None,
 ) -> None:
     """Fire the AI Failure Detection notification (#1794).
 
@@ -99,6 +116,7 @@ async def _notify(
                 # The frame the model flagged, not a fresh capture: the printer
                 # has moved on by the time this is sent.
                 image_data=frame,
+                print_quality=print_quality,
             )
         except Exception as e:
             logger.error("Obico notify failed for printer %s: %s", printer_id, e)

@@ -65,6 +65,8 @@ POLL_HOLD_MARGIN_SECONDS = 20.0
 POLICY_VALUES: tuple[str, ...] = ("inherit", "on", "off")
 FARM_SETTING = "camera_light_auto"
 OBICO_SETTING = "camera_light_auto_obico"
+#: The failure detectors' captures (Obico, OctoEverywhere): the light follows ``OBICO_SETTING`` for both.
+DETECTION_PURPOSES = frozenset({"obico", "octoeverywhere"})
 #: Purposes that never take the light, whatever the settings say. Both are
 #: captures that repeat all print long: lighting them switched the light on
 #: and off every few layers. ``finish_bank`` is the in-print frame banked for
@@ -193,7 +195,8 @@ async def allowed(printer_id: int, purpose: str) -> bool:
         ).scalar_one_or_none()
         if policy is None or policy == "off":
             return False
-        if purpose == "obico" and not _truthy(await get_setting(db, OBICO_SETTING)):
+        # Failure detection polls all print long, whichever detector the farm runs: one sub-switch.
+        if purpose in DETECTION_PURPOSES and not _truthy(await get_setting(db, OBICO_SETTING)):
             return False
     return True
 

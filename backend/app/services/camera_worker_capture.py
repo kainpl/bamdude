@@ -20,6 +20,7 @@ CapturePurpose = Literal[
     "finish_photo",
     "finish_bank",
     "obico",
+    "octoeverywhere",
     "plate_check",
     "layer_timelapse",
     "telegram",

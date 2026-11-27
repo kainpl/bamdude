@@ -95,6 +95,7 @@ async def _features(db) -> dict[str, bool]:
 
     await safe("spoolman", _setting_true(db, get_setting, "spoolman_enabled"))
     await safe("obico", _setting_true(db, get_setting, "obico_enabled"))
+    await safe("octoeverywhere", _setting_true(db, get_setting, "octoeverywhere_enabled"))
     await safe("slicer_api", _setting_true(db, get_setting, "use_slicer_api"))
     await safe(
         "telegram",
