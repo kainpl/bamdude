@@ -133,6 +133,9 @@ async def test_returned_first_wave_matches_actual_router(
     )
 
 
+ORDER_EDGES = ("most_hours", "priority", "least_recently_used")
+
+
 async def _parity_farm(db_session, printer_factory, tmp_path, *, compatible=False):
     """Printers in every state the router ranks or refuses, and pending jobs of every kind.
 
@@ -311,6 +314,25 @@ async def _first_wave_parity(
             )
             row.unsent_return_proof = {"version": 1, "printer_identity": second.connector_identity}
         await db_session.commit()
+    elif edge in ORDER_EDGES:
+        # C01 (consilium r1 R1-08): facts that rank the printers against their ids, so a forecast
+        # blind to the order deals the wave differently from the router.
+        db_session.add(Settings(key="model_dispatch_order", value=edge))
+        finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        for printer in (await db_session.execute(select(Printer))).scalars().all():
+            printer.runtime_seconds = printer.id * 3600
+            printer.dispatch_priority = 1000 - printer.id
+            db_session.add(
+                PrintArchive(
+                    filename=f"done-{printer.id}.gcode.3mf",
+                    file_path="",
+                    file_size=0,
+                    status="completed",
+                    printer_id=printer.id,
+                    completed_at=finished_at - timedelta(hours=printer.id),
+                )
+            )
+        await db_session.commit()
     elif edge is not None:
         # Codex r1 T-R2: a stored 0 sorts before every estimate; a row with no model sorts where
         # the database puts NULL (first on SQLite, last on PostgreSQL).
@@ -387,6 +409,15 @@ async def test_the_forecasts_first_wave_is_the_routers_placement(
 ):
     """T-A25 / T-A26 / T-A07 — see :func:`_first_wave_parity`."""
     await _first_wave_parity(db_session, tick_scheduler, printer_factory, tmp_path, monkeypatch, sjf, compatible)
+
+
+@pytest.mark.parametrize("edge", ORDER_EDGES)
+async def test_the_first_wave_follows_the_printer_order(
+    db_session, tick_scheduler, printer_factory, tmp_path, monkeypatch, edge
+):
+    """C01 / T-A25 (consilium r1 R1-08): under an order that ranks printers against their ids, the
+    forecast's first wave is still the router's placement."""
+    await _first_wave_parity(db_session, tick_scheduler, printer_factory, tmp_path, monkeypatch, False, True, edge=edge)
 
 
 @pytest.mark.parametrize("edge", ["zero_time", "null_model"])

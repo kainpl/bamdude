@@ -110,6 +110,13 @@ from backend.app.services.print_scheduler import scheduler
 from backend.app.services.printer_location_service import load_tree, subtree_ids
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.printer_occupancy import placement_rank
+from backend.app.services.printer_pick_order import (
+    DEFAULT as DEFAULT_ORDER,
+    PickFacts,
+    PickOrder,
+    pick_key,
+    read_pick_order,
+)
 from backend.app.services.product_composition import PlateRecipe, estimate_seconds, recipes_for_products
 from backend.app.services.queue_source_capture import (
     StagedSource,
@@ -321,6 +328,8 @@ class Machine:
     dispatchable: bool = True
     printer_identity: str | None = None
     has_staged_rows: bool = False
+    #: The operator's printer order's facts for this printer (C01) — read once for the pass.
+    pick: PickFacts | None = None
 
 
 class FitSource(Protocol):
@@ -363,6 +372,8 @@ class FarmView:
     max_position: int | None = None
     #: Replay work units for the whole pass (spec T20); None = unbounded.
     budget: int | None = None
+    #: The operator's printer order (C01): the receivers and the replay rank with it.
+    order: str = DEFAULT_ORDER
     #: Where the router's ``ORDER BY target_model`` puts NULL: first on SQLite, last on PostgreSQL.
     null_group_first: bool = True
 
@@ -429,6 +440,7 @@ def _lane(machine: Machine) -> Lane:
         interval=machine.interval,
         printer_identity=machine.printer_identity,
         has_staged_rows=machine.has_staged_rows,
+        pick=machine.pick,
     )
 
 
@@ -502,6 +514,7 @@ class _Projection:
                 budget=remaining,
                 watch=watch,
                 until=until,
+                order=self.farm.order,
             )
         except ReplayBudget:
             # What was left is spent: no later replay of this pass is tried, so an earlier
@@ -602,6 +615,7 @@ def _receivers(
                 fit.color_matches,
                 deferred,
                 machine.printer_id,
+                pick=pick_key(farm.order, machine.pick),
                 remaining_rank=fit.remaining_rank,
             )
             # The id and the fit beside the rank, never read back out of it by position: the rank's
@@ -1381,6 +1395,7 @@ def _machines(
     busy: set[int],
     interlocked: set[int],
     dispatching: dict[int, float | None] | None = None,
+    pick_order: PickOrder | None = None,
 ) -> dict[int, Machine]:
     """Every printer of the forecast's snapshot as the replay's lane — what it holds and what
     holds it, read as ``farm_forecast._initial_state`` reads them.
@@ -1440,7 +1455,9 @@ def _machines(
         if claimed and pid in dispatching and not any(h.started for h in held):
             seconds = dispatching[pid]
             head = None if seconds is None else float(snapshot.prep_seconds) + float(seconds)
-            held.insert(0, Held(head, started=True))
+            # The preparation stays folded into the head's time (a started run's ``prep`` counts as
+            # done); its printing time rides apart for the printer order's hours (C01, R1-02).
+            held.insert(0, Held(head, started=True, print_seconds=None if seconds is None else float(seconds)))
         if claimed and blocked:
             held.append(Held(None, blocked=True))
         hold_unknown = pid in interlocked
@@ -1468,6 +1485,7 @@ def _machines(
             dispatchable=dispatchable,
             printer_identity=passing.printer_identity if passing is not None else None,
             has_staged_rows=has_staged_rows,
+            pick=pick_order.facts.get(pid) if pick_order is not None else None,
         )
     return machines
 
@@ -1501,6 +1519,8 @@ class _PassContext:
     #: One read per distinct source for the whole pass (spec R14): 358 copies of one
     #: job are one stat, one parse and one family lookup, not 358 of each.
     read: dict[tuple, PrintRequirements] = field(default_factory=dict)
+    #: The operator's printer order (C01), read once for the pass with the printers.
+    pick_order: PickOrder | None = None
 
     async def requirements_of(self, db: AsyncSession, row: AutoQueueItem) -> PrintRequirements:
         source = _source_key(row)
@@ -1565,6 +1585,7 @@ async def _pass_context(
         prefer_lowest=await scheduler._get_bool_setting(db, "prefer_lowest_filament", default=True),
         sjf=await scheduler._get_bool_setting(db, SJF_SETTING_KEY),
         cache=cache if cache is not None else PrintRequirementsCache(),
+        pick_order=await read_pick_order(db, now=now),
     )
 
 
@@ -1860,8 +1881,9 @@ async def _load_forecast(
     if stagger is not None:
         stagger = replace_job(stagger, resolver=_PassGroups(stagger.resolver))
     farm = FarmView(
-        machines=_machines(snapshot, ctx.printers, ctx.busy, ctx.interlocked, dispatching),
+        machines=_machines(snapshot, ctx.printers, ctx.busy, ctx.interlocked, dispatching, ctx.pick_order),
         fits=oracle,
+        order=ctx.pick_order.order if ctx.pick_order is not None else DEFAULT_ORDER,
         allow_compatible=ctx.allow_compatible,
         tail=tuple(tail),
         sjf=ctx.sjf,
