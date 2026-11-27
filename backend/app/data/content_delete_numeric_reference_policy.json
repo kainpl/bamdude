@@ -210,5 +210,13 @@
   "user_notifications.printer_id": {
     "policy": "preserve historical filter and name snapshot; never command/auth authority",
     "nullable": true
+  },
+  "notification_live_activities.printer_id": {
+    "policy": "ownership row outlives the printer until the remote resource is closed; never command/auth authority",
+    "nullable": false
+  },
+  "notification_lock_screen_widgets.printer_id": {
+    "policy": "ownership row outlives the printer until the remote resource is closed; never command/auth authority",
+    "nullable": false
   }
 }

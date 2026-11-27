@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import delete, desc, func, select
+from sqlalchemy import delete, desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import RequirePermission, require_external_message_sender
@@ -13,6 +13,8 @@ from backend.app.core.credential_config import lock_credential_config
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.notification import PROVIDER_EVENT_DEFAULTS, NotificationLog, NotificationProvider
+from backend.app.models.notification_live_activity import NotificationLiveActivity
+from backend.app.models.notification_lock_screen_widget import NotificationLockScreenWidget
 from backend.app.models.user import User
 from backend.app.schemas.notification import (
     ExternalMessageIn,
@@ -34,6 +36,9 @@ from backend.app.services.notification_credentials import (
 )
 from backend.app.services.notification_events import EVENT_CATALOG, catalog_rows, events_of_flag
 from backend.app.services.notification_service import notification_service
+from backend.app.services.notify_client import NotifyError, notify_credentials
+from backend.app.services.notify_live_activities import notify_live_activities
+from backend.app.services.notify_widgets import notify_widgets
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +50,25 @@ router = APIRouter(prefix="/notifications", tags=["notifications"])
 # provider row only carries enabled + digest schedule. Events are coerced to
 # the FULL list so any legacy fallback path consulting ``wants_event`` for a
 # telegram provider stays dispatch-transparent.
+def _notify_providers_changed() -> None:
+    """Wake optional workers after a provider edit, without waiting for their HTTP work."""
+    for worker in (notify_live_activities, notify_widgets):
+        try:
+            worker.providers_changed()
+        except Exception:
+            logger.exception("Could not refresh Notify worker configuration")
+
+
+def _check_notify_config(config) -> None:
+    """Upstream's Notify! validation, on the resolved config (ours: the browser never sends the token)."""
+    try:
+        if not isinstance(config, dict):
+            raise NotifyError("Notify! configuration must be an object")
+        notify_credentials(config)
+    except NotifyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
 def _coerce_telegram_provider_fields(provider: NotificationProvider) -> None:
     if provider.provider_type != "telegram":
         return
@@ -229,6 +253,11 @@ async def create_notification_provider(
         creating=True,
         enabled=provider_data.enabled,
     )
+    # Ours (G01): only a disabled provider without its token skips the check; enabling it checks again.
+    if provider_data.provider_type.value == "notify" and (
+        provider_data.enabled or (isinstance(config, dict) and config.get("token"))
+    ):
+        _check_notify_config(config)
 
     # Asked BEFORE the write; compared again after the commit (see the helper).
     bot_providers_before = await current_bot_providers()
@@ -261,6 +290,8 @@ async def create_notification_provider(
     await db.refresh(provider)
 
     logger.info("Created notification provider: %s (%s)", provider.name, provider.provider_type)
+    if provider.provider_type == "notify":
+        _notify_providers_changed()
 
     # A new row is the bot's only if the reader now answers with it — a
     # disabled one, a non-telegram one, or a second enabled telegram row
@@ -640,6 +671,7 @@ async def update_notification_provider(
     # Capture its identity before applying the PATCH, so the exception below
     # cannot admit a new collision or turn the disabled duplicate back on.
     old_provider_type = provider.provider_type
+    old_config = config_dict(provider.config)
     old_bot_token = _telegram_bot_token(provider.config)
     old_enabled = bool(provider.enabled)
     old_token_owner = (
@@ -667,6 +699,13 @@ async def update_notification_provider(
             validate_required=update_data.enabled is True,
         )
         update_dict["config"] = resolved_config
+    # Ours (G01): only a disabled provider without its token skips the check; enabling it checks again.
+    notify_config = update_dict.get("config", old_config)
+    if kind == "notify" and (
+        (provider.enabled if update_data.enabled is None else update_data.enabled)
+        or (isinstance(notify_config, dict) and notify_config.get("token"))
+    ):
+        _check_notify_config(notify_config)
 
     for key, value in update_dict.items():
         if key == "config" and value is not None:
@@ -691,8 +730,40 @@ async def update_notification_provider(
     if not collision_was_already_present:
         await _refuse_a_second_row_behind_one_token(db, provider)
 
+    if old_provider_type == "notify":
+        effective_config = config_dict(provider.config)
+        remove_widgets = (
+            provider.provider_type != "notify"
+            or not provider.enabled
+            or effective_config.get("lock_screen_widgets") is not True
+        )
+        # Ours: a provider names its printers in a list (NULL: all of them).
+        if remove_widgets or provider.printer_ids is not None:
+            condition = NotificationLockScreenWidget.provider_id == provider_id
+            if not remove_widgets:
+                condition = condition & NotificationLockScreenWidget.printer_id.not_in(provider.printer_ids)
+            # Persist opt-out before returning, even if the user immediately
+            # opts back in. The worker finishes cleanup before creating anew.
+            await db.execute(
+                update(NotificationLockScreenWidget)
+                .where(condition)
+                .values(state="deleting", failures=0, next_attempt_at=None)
+            )
+
     await db.commit()
     await db.refresh(provider)
+
+    new_config = config_dict(provider.config)
+    notify_changed = old_provider_type != provider.provider_type or any(
+        old_config.get(key) != new_config.get(key) for key in ("device_id", "token")
+    )
+    # Refresh opened a new read transaction; close it before queueing remote cleanup.
+    await db.commit()
+    if old_provider_type == "notify" and notify_changed:
+        await notify_live_activities.schedule_cleanup(provider_id, old_config)
+        await notify_widgets.schedule_cleanup(provider_id, old_config)
+    if old_provider_type == "notify" or provider.provider_type == "notify":
+        _notify_providers_changed()
 
     logger.info("Updated notification provider: %s", provider.name)
 
@@ -740,8 +811,22 @@ async def delete_notification_provider(
         removed_chats = (
             await db.execute(delete(TelegramChat).where(TelegramChat.provider_id == provider.id))
         ).rowcount or 0
+    notify = provider.provider_type == "notify"
+    if notify:
+        # Capture the owned tiles and widgets for remote cleanup while the rows that name them
+        # still exist; HTTP never delays this request. Ours: no intermediate commit (upstream
+        # commits enabled=False first) -- it would release the credential anchor held above.
+        config = config_dict(provider.config)
+        await notify_live_activities.schedule_cleanup(provider.id, config)
+        await notify_widgets.schedule_cleanup(provider.id, config)
+        await db.execute(delete(NotificationLiveActivity).where(NotificationLiveActivity.provider_id == provider.id))
+        await db.execute(
+            delete(NotificationLockScreenWidget).where(NotificationLockScreenWidget.provider_id == provider.id)
+        )
     await db.delete(provider)
     await db.commit()
+    if notify:
+        _notify_providers_changed()
 
     logger.info("Deleted notification provider: %s (with %d Telegram chat(s))", name, removed_chats)
 

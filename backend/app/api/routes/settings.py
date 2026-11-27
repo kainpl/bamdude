@@ -1915,6 +1915,12 @@ async def _restore_backup(
 
                 measurement_buffer.retire()
                 notification_service.stop_digest_scheduler()
+                # Notify!'s two workers write ownership rows; close() cancels each and waits for its end.
+                from backend.app.services.notify_live_activities import notify_live_activities
+                from backend.app.services.notify_widgets import notify_widgets
+
+                await notify_live_activities.close()
+                await notify_widgets.close()
                 await background_dispatch.stop()
                 await zigbee_supervisor.stop()
                 await zigbee_poller.stop()

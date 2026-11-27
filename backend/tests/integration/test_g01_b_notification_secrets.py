@@ -40,6 +40,7 @@ CASES = {
         "auth_header": "Bearer CANARY_SIGNAL",
     },
     "gotify": {"server": "https://gotify.example/base", "app_token": "CANARY_GOTIFY"},
+    "notify": {"device_id": "IO12345678901234", "token": "CANARY_NOTIFY"},
 }
 
 
@@ -166,6 +167,7 @@ async def test_explicit_actions_conflicts_clear_and_replacement(
         ("signal", {"server": "https://evil.example"}),
         ("signal", {"sender_number": "+15550000000"}),
         ("gotify", {"server": "https://evil.example"}),
+        ("notify", {"device_id": "IO99999999999999"}),
     ],
 )
 async def test_scope_change_refused_before_save_or_draft_outbound(

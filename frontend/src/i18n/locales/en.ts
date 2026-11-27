@@ -5568,6 +5568,7 @@ export default {
     noSignal: 'No signal',
     progress: 'Progress',
     eta: 'ETA',
+    layer: 'Layer',
     printerIdle: 'Printer is idle',
     printerOffline: 'Printer offline',
     tokenRefused: 'This overlay\u2019s token is not accepted',
@@ -12483,6 +12484,35 @@ export default {
     authenticationMode: 'Authentication mode',
     authenticated: 'Authenticated',
     anonymous: 'Anonymous',
+    // Notify! (upstream Bambuddy #3265)
+    notifyLockScreenWidgets: 'Lock Screen Widgets (iOS)',
+    notifyLockScreenWidgetsHelp: 'Only active, non-archived printers receive widgets. Notify! allows 10 widgets per device in total. Add a Notify! widget from iOS Customize Lock Screen and select a printer. It shows status, progress and problems without a live countdown. iOS refreshes roughly every 15 minutes or longer.',
+    notifyPhotoUnavailable: 'Browser and group recipients support text notifications only; photo attachments are unavailable.',
+    notifyShowStage: 'Show print stage',
+    notifyTimeSensitive: 'Time Sensitive problem alerts',
+    notifyTimeSensitiveHelp: 'Mark failed or stopped prints and printer or AI problems as Time Sensitive. Other pushes stay normal.',
+    notifyPrivacy: 'Hide file name on tile',
+    notifyPrivacyHelp: 'Hides file names only in the Live Activity. Push text still uses notification templates.',
+    notifyStyle: 'Progress style',
+    notifyStyleBar: 'Progress bar',
+    notifyStyleSegments: 'Segments',
+    notifyStyleNone: 'No progress indicator',
+    notifyDashboardUrl: 'Dashboard URL (optional)',
+    notifySymbol: 'Symbol (optional)',
+    notifyTint: 'Tint (optional)',
+    notifyAppearance: 'Live Activity appearance',
+    notifyMetrics: 'Metrics',
+    notifyMetricsHelp: 'The timer is shown by default. Optional metrics replace the file-name line.',
+    notifyDeviceId: 'Device or group ID',
+    notifyToken: 'Notify! token',
+    notifyIconUrl: 'Icon URL (optional)',
+    notifyGroupType: 'Notification thread (optional)',
+    notifyGroupTypeHelp: 'Leave blank to group push notifications by printer. A custom value groups them in the same thread.',
+    notifyLiveActivities: 'Live Activities (iOS)',
+    notifyLiveActivitiesHelp: 'Track prints on your iOS Lock Screen and Dynamic Island. Use an iOS device ID; add a separate provider for group pushes.',
+    notifyLifecycleHelp: 'Live Activities follow each print automatically. Event toggles below control push alerts only. Quiet hours block new activities; existing activities still update and end. Daily digests do not delay activities.',
+    notifyIosFeaturesUnavailable: 'Live Activities and Lock Screen widgets require an iOS device ID. Group, browser and macOS IDs use push notifications only.',
+    notifyTestHelp: 'Testing sends a push notification. A Live Activity starts when a print starts.',
     // Provider types
     providerTypes: {
       callmebot: 'CallMeBot/WhatsApp',
@@ -12495,7 +12525,8 @@ export default {
       webhook: 'Webhook',
       homeassistant: 'Home Assistant',
       signal: 'Signal CLI API',
-      gotify: 'Gotify'
+      gotify: 'Gotify',
+      notify: 'Notify!'
     },
     // Provider descriptions
     providerDescriptions: {
@@ -12509,7 +12540,8 @@ export default {
       webhook: 'Generic HTTP POST to any URL',
       homeassistant: 'Persistent notifications in Home Assistant dashboard',
       signal: 'Signal messages via a self-hosted signal-cli-rest-api instance',
-      gotify: 'Push notifications via your own Gotify server'
+      gotify: 'Push notifications via your own Gotify server',
+      notify: 'Push notifications and iOS Live Activities via Notify!'
     },
     // Signal recipients
     signalRecipientType: 'Recipient Type',

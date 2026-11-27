@@ -133,6 +133,8 @@ from backend.app.services.location_ha_sensor_manager import location_ha_sensor_m
 from backend.app.services.mqtt_relay import mqtt_relay
 from backend.app.services.mqtt_smart_plug import mqtt_smart_plug_service
 from backend.app.services.notification_service import notification_service
+from backend.app.services.notify_live_activities import PrintSnapshot as NotifyPrintSnapshot, notify_live_activities
+from backend.app.services.notify_widgets import notify_widgets
 from backend.app.services.print_scheduler import scheduler as print_scheduler
 from backend.app.services.printer_manager import (
     init_printer_connections,
@@ -2841,16 +2843,30 @@ def on_printer_status_change(printer_id: int, state: PrinterState) -> Coroutine[
         reported=(getattr(state, "hms_array_reported", False), getattr(state, "hms_scalar_reported", False)),
         observed_at=time.time(),
     )
-    return _handle_printer_status_change(printer_id, state, hms)
+    # Notify!'s print snapshot is taken here too, for the same reason (upstream observes in the callback).
+    notify = None
+    if not notify_live_activities.dormant:
+        try:
+            notify = NotifyPrintSnapshot.from_state(state, printer_id)
+        except Exception:
+            logging.getLogger(__name__).exception("Notify Live Activity snapshot failed for printer %s", printer_id)
+    return _handle_printer_status_change(printer_id, state, hms, notify)
 
 
-async def _handle_printer_status_change(printer_id: int, state: PrinterState, hms: _HmsStatusObservation) -> None:
+async def _handle_printer_status_change(
+    printer_id: int, state: PrinterState, hms: _HmsStatusObservation, notify: NotifyPrintSnapshot | None = None
+) -> None:
     """Handle printer status changes - broadcast via WebSocket."""
     # Before the dedup below: a printer whose interrupted-dispatch recheck waits for a fresh
     # idle status gets it even when nothing on its card changes (post-rebuild I-R3).
     from backend.app.services import interrupted_dispatch
 
     interrupted_dispatch.on_status(printer_id, state)
+    if notify is not None:
+        try:
+            notify_live_activities.observe_snapshot(printer_id, notify)
+        except Exception:
+            logging.getLogger(__name__).exception("Notify Live Activity status hook failed for printer %s", printer_id)
 
     # Enter the per-printer HMS lock before this task can yield to the next
     # queued report. Notification delivery happens after releasing that lock.
@@ -5276,6 +5292,11 @@ async def on_print_start(printer_id: int, data: dict):
     from backend.app.services.octoeverywhere_detection import octoeverywhere_detection_service
 
     octoeverywhere_detection_service.reset_printer(printer_id)
+    # Notify! follows internal jobs too, as upstream does: before the internal-job return.
+    try:
+        notify_live_activities.print_started(printer_id, printer_manager.get_status(printer_id), data)
+    except Exception:
+        logging.getLogger(__name__).exception("Notify Live Activity start hook failed for printer %s", printer_id)
     if is_internal_printer_job(data.get("filename", ""), data.get("subtask_name", "")):
         logging.getLogger(__name__).info(
             "[CALLBACK] Skipping archive - internal printer job detected: filename=%s, subtask=%s",
@@ -11705,6 +11726,10 @@ async def _on_print_complete_windowed(printer_id: int, data: dict) -> None:
 
     # The print is over: OctoEverywhere drops its context and any inspection in flight (upstream Bambuddy).
     octoeverywhere_detection_service.reset_printer(printer_id)
+    try:
+        notify_live_activities.print_finished(printer_id, data)
+    except Exception:
+        logging.getLogger(__name__).exception("Notify Live Activity completion hook failed for printer %s", printer_id)
     scope = PrintCompletionTasks(printer_id)
     analysis_completion = {"archive_id": None, "tasks": scope}
     from backend.app.services.print_reconciliation import defer_queue_repair_during_completion
@@ -13430,6 +13455,9 @@ async def _application_lifespan(app: FastAPI):
 
     # Start the notification digest scheduler
     notification_service.start_digest_scheduler()
+    # Notify! Live Activities and Lock Screen widgets: dormant until a provider wants them.
+    notify_live_activities.start()
+    notify_widgets.start()
 
     # Start the Git backup scheduler
     await git_backup_service.start_scheduler()
@@ -13848,6 +13876,8 @@ async def _application_lifespan(app: FastAPI):
     except Exception:
         pass
     notification_service.stop_digest_scheduler()
+    await notify_live_activities.close()
+    await notify_widgets.close()
     if not await git_backup_service.quiesce_for_restore():
         logging.warning("Git backup shutdown work remains owned")
     local_backup_service.stop_scheduler()

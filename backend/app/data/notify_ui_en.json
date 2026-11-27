@@ -1,0 +1,43 @@
+{
+  "phase": {
+    "printing": "Printing",
+    "printer_offline": "Printer offline",
+    "paused": "Paused",
+    "preparing": "Preparing",
+    "complete": "Complete",
+    "failed": "Failed",
+    "stopped": "Stopped",
+    "finished": "Finished",
+    "filament_runout": "Filament runout",
+    "printer_error": "Printer error"
+  },
+  "print_in_progress": "Print in progress",
+  "print_default": "Print",
+  "layer": "Layer {current}/{total}",
+  "eta_hm": "{hours}h {minutes}m",
+  "metric": {
+    "progress": "Progress",
+    "remaining": "Remaining",
+    "layer": "Layer",
+    "nozzle": "Nozzle",
+    "bed": "Bed",
+    "chamber": "Chamber"
+  },
+  "open_button": "Open BamDude",
+  "fault_fallback": "Printer needs attention ({code})",
+  "eta_m": "{minutes}m",
+  "widget": {
+    "offline": "Offline",
+    "not_connected": "Printer is not connected",
+    "error": "Error",
+    "paused_at": "Print paused at {progress}%",
+    "time_left": "About {eta} left",
+    "print_completed": "Print completed",
+    "print_failed": "Print failed",
+    "print_stopped": "Print stopped",
+    "idle": "Idle",
+    "ready": "Ready to print",
+    "connecting": "Connecting",
+    "waiting": "Waiting for printer status"
+  }
+}

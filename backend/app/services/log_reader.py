@@ -592,6 +592,8 @@ PROVIDER_SECRET_FIELDS = frozenset(
         "user_key",
         "app_token",
         "device_key",
+        # Notify!'s device token.
+        "token",
     }
 )
 

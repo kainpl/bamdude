@@ -76,6 +76,7 @@ class ProviderType(StrEnum):
     HOMEASSISTANT = "homeassistant"
     SIGNAL = "signal"
     GOTIFY = "gotify"
+    NOTIFY = "notify"
 
 
 class NotificationProviderBase(BaseModel):

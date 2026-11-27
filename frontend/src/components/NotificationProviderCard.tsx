@@ -27,6 +27,7 @@ import {Card, CardContent} from './Card';
 import {Button} from './Button';
 import {ConfirmModal} from './ConfirmModal';
 import {Toggle} from './Toggle';
+import {isNotifyPushOnlyTarget, isNotifyPhotoUnsupported} from '../utils/notify';
 import {ProviderEventToggles} from './ProviderEventToggles';
 import {useEventLabel, useProviderEvents} from './providerEvents';
 import {TelegramChatCard} from './TelegramChatCard';
@@ -81,6 +82,7 @@ const SEVERITY_CHIP: Record<string, string> = {
 export function NotificationProviderCard({provider, onEdit}: NotificationProviderCardProps) {
     const {t} = useTranslation();
     const queryClient = useQueryClient();
+    const notifyPhotosUnsupported = provider.provider_type === 'notify' && isNotifyPhotoUnsupported(String(provider.config.device_id || ''));
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
     const [isExpanded, setIsExpanded] = useState(false);
     const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
@@ -237,6 +239,12 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                         here as 16 always-on badges would just add visual
                         noise — replace with a single hint chip. */}
                     <div className="mb-3 flex flex-wrap gap-1">
+                        {provider.provider_type === 'notify' && provider.config.live_activities === true && !isNotifyPushOnlyTarget(String(provider.config.device_id || '')) && (
+                            <span className="px-2 py-0.5 bg-sky-100 dark:bg-sky-500/20 text-sky-700 dark:text-sky-400 text-xs rounded">{t('notifications.notifyLiveActivities')}</span>
+                        )}
+                        {provider.provider_type === 'notify' && provider.config.lock_screen_widgets === true && !isNotifyPushOnlyTarget(String(provider.config.device_id || '')) && (
+                            <span className="px-2 py-0.5 bg-sky-100 dark:bg-sky-500/20 text-sky-700 dark:text-sky-400 text-xs rounded">{t('notifications.notifyLockScreenWidgets')}</span>
+                        )}
                         {isTelegram && (
                             <span className="px-2 py-0.5 bg-blue-500/15 text-blue-700 dark:text-blue-300 text-xs rounded inline-flex items-center gap-1">
                                 <MessageCircle className="w-3 h-3" />
@@ -429,10 +437,16 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                             <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-2">
                                     <Camera className="w-4 h-4 text-sky-600 dark:text-sky-400"/>
-                                    <p className="text-sm text-white">{t('notifications.attachPhoto')}</p>
+                                    <div>
+                                        <p className="text-sm text-white">{t('notifications.attachPhoto')}</p>
+                                        {notifyPhotosUnsupported && (
+                                            <p className="text-xs text-bambu-gray">{t('notifications.notifyPhotoUnavailable')}</p>
+                                        )}
+                                    </div>
                                 </div>
                                 <Toggle
-                                    checked={provider.attach_photo !== false}
+                                    checked={!notifyPhotosUnsupported && provider.attach_photo !== false}
+                                    disabled={notifyPhotosUnsupported}
                                     onChange={(checked) => updateMutation.mutate({attach_photo: checked})}
                                 />
                             </div>

@@ -1,0 +1,43 @@
+{
+  "phase": {
+    "printing": "Друкує",
+    "printer_offline": "Принтер не на зв'язку",
+    "paused": "Пауза",
+    "preparing": "Підготовка",
+    "complete": "Готово",
+    "failed": "Друк не вдався",
+    "stopped": "Зупинено",
+    "finished": "Завершено",
+    "filament_runout": "Закінчився філамент",
+    "printer_error": "Помилка принтера"
+  },
+  "print_in_progress": "Іде друк",
+  "print_default": "Друк",
+  "layer": "Шар {current}/{total}",
+  "eta_hm": "{hours} год {minutes} хв",
+  "metric": {
+    "progress": "Прогрес",
+    "remaining": "Лишилося",
+    "layer": "Шар",
+    "nozzle": "Сопло",
+    "bed": "Стіл",
+    "chamber": "Термокамера"
+  },
+  "open_button": "Відкрити BamDude",
+  "fault_fallback": "Принтер потребує уваги ({code})",
+  "eta_m": "{minutes} хв",
+  "widget": {
+    "offline": "Офлайн",
+    "not_connected": "Принтер не підключений",
+    "error": "Помилка",
+    "paused_at": "Друк на паузі на {progress}%",
+    "time_left": "Лишилося близько {eta}",
+    "print_completed": "Друк завершено",
+    "print_failed": "Друк не вдався",
+    "print_stopped": "Друк зупинено",
+    "idle": "Вільний",
+    "ready": "Готовий до друку",
+    "connecting": "Підключення",
+    "waiting": "Чекаю на статус принтера"
+  }
+}
