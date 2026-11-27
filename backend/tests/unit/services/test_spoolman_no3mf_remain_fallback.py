@@ -276,8 +276,8 @@ class TestReportUsageRemainDelta:
             ),
             patch("backend.app.services.spoolman_tracking._get_printer_serial", AsyncMock(return_value="serial")),
             patch(
-                "backend.app.services.spoolman_tracking._resolve_spool_id_via_slot_assignment",
-                AsyncMock(return_value=7),
+                "backend.app.services.spoolman_tracking._resolve_bound_spool",
+                AsyncMock(return_value=(7, None)),
             ),
             patch("backend.app.services.printer_manager.printer_manager", printer_manager),
         ):
@@ -324,8 +324,8 @@ class TestReportUsageRemainDelta:
             ),
             patch("backend.app.services.spoolman_tracking._get_printer_serial", AsyncMock(return_value="serial")),
             patch(
-                "backend.app.services.spoolman_tracking._resolve_spool_id_via_slot_assignment",
-                AsyncMock(return_value=7),
+                "backend.app.services.spoolman_tracking._resolve_bound_spool",
+                AsyncMock(return_value=(7, None)),
             ),
             patch("backend.app.services.printer_manager.printer_manager", printer_manager),
         ):
@@ -448,8 +448,8 @@ class TestPartialUsageRemainDelta:
                 AsyncMock(return_value="serial"),
             ),
             patch(
-                "backend.app.services.spoolman_tracking._resolve_spool_id_via_slot_assignment",
-                AsyncMock(return_value=7),
+                "backend.app.services.spoolman_tracking._resolve_bound_spool",
+                AsyncMock(return_value=(7, None)),
             ),
             patch("backend.app.services.printer_manager.printer_manager", printer_manager),
         ):

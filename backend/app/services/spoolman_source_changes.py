@@ -23,7 +23,12 @@ Git's settings category) owns it through :class:`SourceChange`:
    - a change of the **database** (a new non-empty address, ``rotate``) —
      the base-change flag is set in one synchronous step with the check of the
      open activity records, and only then a FRESH read of the durable
-     predicate runs (S44); a protected print → ``print_accounting``;
+     predicate runs (S44); a protected print → ``print_accounting``; then every
+     Spoolman slot binding and K link is removed in the door's transaction —
+     their numbers are the database's being left (owner decision 2026-11-27,
+     ``spoolman_spool_identity.clear_all``). It waits for no slot writer: one
+     that proved its spool against the old database commits a row carrying that
+     database's stamp, which the first confirming reader refutes;
    - the generation goes up (S18);
 3. its own writes and commit; the flags go after the commit or the rollback,
    still under the guard (``release``).
@@ -307,6 +312,10 @@ class SourceChange:
                 if await protected_print_exists(db):
                     raise spoolman_source.SourceRefused(spoolman_source.PRINT_ACCOUNTING)
                 spoolman_source.bump_base_generation()
+                # The numbers of every binding and K link are the database's being left.
+                from backend.app.services import spoolman_spool_identity  # noqa: PLC0415
+
+                await spoolman_spool_identity.clear_all(db)
             if mode_changes:
                 await clear_left_ledger(db, spoolman=_enabled(enabled))
                 # A print may have finished while this change waited: checked again, and the
@@ -314,9 +323,10 @@ class SourceChange:
                 spoolman_source.refuse_during_charge()
         except spoolman_source.SourceRefused as exc:
             raise refusal(exc) from exc
-        if mode_changes:
+        if mode_changes or (base and current_enabled):
             # After the last refusal (acceptance A11): a refused change rolls its rows back and
-            # keeps the overlay that describes them.
+            # keeps the overlay that describes them. A base change empties the Spoolman ledger,
+            # which the overlay describes only while Spoolman is the inventory.
             _forget_the_overlay()
         spoolman_source.bump_generation()
         return True

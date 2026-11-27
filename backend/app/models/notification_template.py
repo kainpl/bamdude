@@ -84,6 +84,15 @@ DEFAULT_TEMPLATES = [
         "body_template": "{printer}: the print finished, but this filament reached no spool — the slot had no spool assigned by the end\n{missing_slot_details}",
     },
     {
+        # The same EVENT again: a finished print's slot named a Spoolman spool that is
+        # another spool (or gone) in Spoolman now — not charged, and the binding removed
+        # (spec spoolman-binding-identity §8).
+        "event_type": "print_usage_spool_changed",
+        "name": "Spool Changed in Spoolman",
+        "title_template": "Filament not charged: spool changed",
+        "body_template": "{printer}: the print finished, but this filament was not charged — the Spoolman spool its slot was assigned to is another spool in Spoolman now, or was deleted there. The slot's assignment was removed; assign the slot again.\n{missing_slot_details}",
+    },
+    {
         "event_type": "printer_offline",
         "name": "Printer Offline",
         "title_template": "Printer Offline",

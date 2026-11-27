@@ -83,7 +83,7 @@ async def _apply_links(
     make_row: Callable[[FilamentCalibration], object],
 ) -> int:
     """Reconcile ``auto_linked`` rows against the calibrations that match
-    ``filament_id`` across all printers. Shared by the local + Spoolman paths.
+    ``filament_id`` across all printers.
 
     ``existing_rows`` are the current link rows for this spool (each exposing
     ``auto_linked``, ``printer_id``, ``extruder``, ``filament_calibration``,
@@ -160,35 +160,15 @@ async def autolink_spool(*, db: AsyncSession, spool) -> int:
     )
 
 
-async def autolink_spoolman_spool(*, db: AsyncSession, spoolman_spool_id: int, resolved_filament_id: str | None) -> int:
-    """Maintain ``auto_linked`` SpoolmanKProfile rows for one Spoolman spool."""
-    from backend.app.models.spoolman_k_profile import SpoolmanKProfile
-
-    existing = (
-        (await db.execute(select(SpoolmanKProfile).where(SpoolmanKProfile.spoolman_spool_id == spoolman_spool_id)))
-        .scalars()
-        .all()
-    )
-
-    def _make(fc: FilamentCalibration) -> SpoolmanKProfile:
-        return SpoolmanKProfile(
-            spoolman_spool_id=spoolman_spool_id,
-            printer_id=fc.printer_id,
-            extruder=fc.extruder_id,
-            filament_calibration_id=fc.id,
-            auto_linked=True,
-        )
-
-    return await _apply_links(db=db, existing_rows=list(existing), filament_id=resolved_filament_id, make_row=_make)
-
-
 async def propagate_calibration_to_spools(*, db: AsyncSession, printer_id: int, filament_ids: set[str]) -> None:
     """Re-link all local spools whose ``filament_family_id`` is in
     ``filament_ids`` (called after a printer's K-profiles sync).
 
     ``printer_id`` is accepted for symmetry / future scoping; matching already
-    spans all printers via :func:`autolink_spool`. Spoolman spools are handled
-    where their resolved id is stored (see the spool-save / Spoolman path).
+    spans all printers via :func:`autolink_spool`. Spoolman spools are not
+    auto-linked: their K links are written only by the K-profile route, which
+    stamps them with the spool's ``registered`` (m266). An unused Spoolman twin
+    of :func:`autolink_spool`, which wrote unstamped links, was removed.
     """
     from backend.app.models.spool import Spool
 

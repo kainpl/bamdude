@@ -159,6 +159,45 @@ async def notify_usage_not_recorded(
         logger.warning("Uncharged-usage notification failed: %s", e)
 
 
+async def notify_usage_spool_changed(
+    printer_id: int,
+    changed: list[tuple[int, float, int]],
+    db,
+    logger: logging.Logger,
+) -> None:
+    """Say so when a finished print's slot named a Spoolman spool that is another one now (m266).
+
+    ``changed`` is ``(global tray id, grams, Spoolman number)`` for every charge the
+    print's tail refused because the binding's number names another spool in Spoolman,
+    or none (``spoolman_spool_identity.ChargeCheck``) — one notification per print. A
+    slot's grams are 0 when no figure could be worked out for the bound spool. Never raises.
+    """
+    if not changed:
+        return
+    by_slot: dict[tuple[int, int], float] = {}
+    for global_tray_id, grams, number in changed:
+        by_slot[(global_tray_id, number)] = by_slot.get((global_tray_id, number), 0.0) + float(grams)
+    try:
+        printer = await db.get(Printer, printer_id)
+        printer_name = printer.name if printer else f"Printer {printer_id}"
+        changed_slots = [
+            {
+                "slot": _slot_label_from_global_tray(global_id),
+                "grams": f"{grams:.1f}" if grams > 0 else "",
+                "spool": str(number),
+            }
+            for (global_id, number), grams in by_slot.items()
+        ]
+        await notification_service.on_print_usage_spool_changed(
+            printer_id=printer_id,
+            printer_name=printer_name,
+            changed_slots=changed_slots,
+            db=db,
+        )
+    except Exception as e:
+        logger.warning("Spool-changed notification failed: %s", e)
+
+
 async def notify_missing_spool_assignments_on_print_start(
     printer_id: int,
     data: dict,

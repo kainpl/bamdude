@@ -607,9 +607,7 @@ class TestSpoolmanWriter:
             event(2, EVENT_RUNOUT, 0, 40, 11, kind=KIND_MANUAL),
             event(3, EVENT_SPOOL_LOADED, 0, 40, None),
         ]
-        with patch(
-            "backend.app.services.spoolman_tracking._resolve_spool_id_via_slot_assignment", AsyncMock(return_value=None)
-        ):
+        with patch("backend.app.services.spoolman_tracking._resolve_bound_spool", AsyncMock(return_value=None)):
             charged, notify = await run_spoolman(
                 failed_at(50),
                 usage=[{"slot_id": 1, "used_g": ESTIMATE_G}, {"slot_id": 2, "used_g": ESTIMATE_G}],

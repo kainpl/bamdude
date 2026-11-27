@@ -227,8 +227,8 @@ class TestReportUsageTraySplit:
                 # ``handled_global_tray_ids``. If the guard is broken, Path 2
                 # would successfully call ``use_spool`` two more times and this
                 # test would fail with 4 calls, not 2.
-                "backend.app.services.spoolman_tracking._resolve_spool_id_via_slot_assignment",
-                AsyncMock(side_effect=lambda pid, ams, tray: 999 if (ams, tray) == (0, 0) else 888),
+                "backend.app.services.spoolman_tracking._resolve_bound_spool",
+                AsyncMock(side_effect=lambda pid, ams, tray: (999 if (ams, tray) == (0, 0) else 888, None)),
             ),
             patch("backend.app.services.printer_manager.printer_manager", printer_manager),
         ):
@@ -737,8 +737,8 @@ async def test_an_explicit_unknown_feed_is_not_recorded_on_spoolman_and_no_fallb
         # The slot is bound and its reel has a reference weight: the 40 % remain drop would
         # be 400 g on reel 11 if the remain-delta fallback were let near the unknown feed.
         patch(
-            "backend.app.services.spoolman_tracking._resolve_spool_id_via_slot_assignment",
-            AsyncMock(return_value=11),
+            "backend.app.services.spoolman_tracking._resolve_bound_spool",
+            AsyncMock(return_value=(11, None)),
         ),
         patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
     ):

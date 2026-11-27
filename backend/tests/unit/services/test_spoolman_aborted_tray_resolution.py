@@ -72,7 +72,7 @@ async def cancelled(pm, *, usage=ONE_COLOUR, slot_to_tray=None, ams_trays=AMS_TR
         patch("backend.app.services.spoolman_tracking._get_printer_serial", AsyncMock(return_value="SERIAL")),
         patch("backend.app.services.spoolman_tracking._resolve_spool_tag", lambda tray, *_a: tray.get("tray_uuid")),
         patch(
-            "backend.app.services.spoolman_tracking._resolve_spool_id_via_slot_assignment",
+            "backend.app.services.spoolman_tracking._resolve_bound_spool",
             AsyncMock(return_value=None),
         ),
         patch("backend.app.services.spoolman_tracking._load_journal_events", AsyncMock(return_value=[])),

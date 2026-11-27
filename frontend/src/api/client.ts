@@ -13732,6 +13732,12 @@ export const api = {
     request<{ assignments: number; printing: string[] }>(
       `/settings/spoolman/mode-switch-preview?enable=${enable ? 'true' : 'false'}`,
     ),
+  // What saving this Spoolman address would take away — a new address is another
+  // Spoolman database, so the save removes every slot binding and K link.
+  getSpoolmanAddressChangePreview: (url: string) =>
+    request<{ base_change: boolean; slot_bindings: number; k_links: number; blocked: boolean; printing: string[] }>(
+      `/settings/spoolman/address-change-preview?url=${encodeURIComponent(url)}`,
+    ),
   updateSpoolmanSettings: (data: { spoolman_enabled?: string; spoolman_url?: string; spoolman_sync_mode?: string; spoolman_disable_weight_sync?: string; spoolman_report_partial_usage?: string; auto_add_unknown_rfid?: string; }) =>
     request<{ spoolman_enabled: string; spoolman_url: string; spoolman_sync_mode: string; spoolman_disable_weight_sync: string; spoolman_report_partial_usage: string; auto_add_unknown_rfid: string; }>('/settings/spoolman', {
       method: 'PUT',

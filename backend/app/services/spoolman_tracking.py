@@ -20,6 +20,7 @@ from backend.app.services.spoolman import (
     SpoolmanNotFoundError,
     SpoolmanUnavailableError,
 )
+from backend.app.services.spoolman_spool_identity import FROM_ROWS, ChargeCheck
 from backend.app.services.spoolman_weights import spool_net_weight, spool_price_per_gram
 from backend.app.utils.filament_remaining import usable_remain_percent
 from backend.app.utils.tray_split import CompletionSnapshot, PrintedBound, printed_bound, sole_owner, split_weight
@@ -868,8 +869,12 @@ async def _report_journal_splits(
     runout_purge_grams: float = 0.0,
     cost_out: _PrintCost | None = None,
     uncharged_out: list[tuple[int, float]] | None = None,
+    identity=None,
 ) -> tuple[int, set[int], list[tuple[int, float]]]:
     """Charge slots whose tray has journal (runout) boundaries per-segment.
+
+    ``identity`` (a ``spoolman_spool_identity.ChargeCheck``) confirms each frozen number
+    through the slot rows that name it now before it is charged (m266).
 
     Mirrors usage_tracker's journal split — same boundary reader, same layer
     math (``tray_split.split_weight`` up to ``bound``) — with ``use_spool`` on
@@ -947,6 +952,13 @@ async def _report_journal_splits(
                 if uncharged_out is not None:
                     uncharged_out.append((global_tray_id, round(float(grams), 2)))
                 continue
+            admitted = None
+            if identity is not None:
+                # The frozen number must still name the spool the binding meant (m266).
+                admission = await identity.admits(spoolman_id, tray=global_tray_id, grams=grams)
+                if not admission.ok:
+                    continue
+                admitted = admission.spool
             try:
                 await client.use_spool(spoolman_id, round(grams, 2))
                 updated += 1
@@ -955,7 +967,7 @@ async def _report_journal_splits(
                 if cost_out is not None:
                     cost_out.add(
                         round(grams, 2),
-                        await _spool_for_price(client, spoolman_id, method_label),
+                        admitted or await _spool_for_price(client, spoolman_id, method_label),
                         f"{method_label} journal slot {slot_id}",
                         spool_id=spoolman_id,
                     )
@@ -972,8 +984,11 @@ async def _report_journal_splits(
     return updated, handled, leftovers
 
 
-async def _apply_runout_zero_corrections_spoolman(client, journal_events: list, archive_id: int) -> int:
+async def _apply_runout_zero_corrections_spoolman(client, journal_events: list, archive_id: int, identity=None) -> int:
     """Close run-out Spoolman spools at exactly empty — after all print writes.
+
+    ``identity`` (a ``spoolman_spool_identity.ChargeCheck``): a frozen number that names
+    another spool now is neither drained, clamped nor archived (m266).
 
     Mirrors ``usage_tracker.apply_runout_zero_corrections``: only unambiguous
     runouts with a positively-known slot and a frozen spoolman id; positive
@@ -1037,6 +1052,10 @@ async def _apply_runout_zero_corrections_spoolman(client, journal_events: list, 
             spool = await client.get_spool(spool_id)
         except (SpoolmanNotFoundError, SpoolmanClientError, SpoolmanUnavailableError) as exc:
             logger.debug("[SPOOLMAN] Zero correction: get_spool(%s) failed: %s", spool_id, exc)
+            if identity is not None and isinstance(exc, SpoolmanNotFoundError):
+                await identity.judge(spool_id, None)
+            continue
+        if identity is not None and not await identity.judge(spool_id, spool):
             continue
         remaining = spool.get("remaining_weight")
         if remaining is not None:
@@ -1119,6 +1138,27 @@ async def _resolve_spool_id_via_slot_assignment(printer_id: int, ams_id: int, tr
         return result.scalar_one_or_none()
 
 
+async def _resolve_bound_spool(printer_id: int, ams_id: int, tray_id: int) -> tuple[int, str | None] | None:
+    """The Spoolman spool bound to (printer, ams, tray): its number and the row's stamp (m266).
+
+    What a charge reads from the slot ledger: the stamp says which spool the number named
+    when it was bound (``spoolman_spool_identity.ChargeCheck``).
+    """
+    from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+
+    async with async_session() as db:
+        row = (
+            await db.execute(
+                select(SpoolmanSlotAssignment.spoolman_spool_id, SpoolmanSlotAssignment.spool_registered).where(
+                    SpoolmanSlotAssignment.printer_id == printer_id,
+                    SpoolmanSlotAssignment.ams_id == ams_id,
+                    SpoolmanSlotAssignment.tray_id == tray_id,
+                )
+            )
+        ).first()
+    return (row.spoolman_spool_id, row.spool_registered) if row else None
+
+
 def _usage_by_tray(
     usage_items: list[tuple[int, float]], slot_to_tray: list | None, ams_trays: dict[int, dict]
 ) -> list[tuple[int, float]]:
@@ -1179,8 +1219,12 @@ async def _report_spool_usage_for_slots(
     slot_materials_out: dict[int, str] | None = None,
     uncharged_out: list[tuple[int, float]] | None = None,
     cost_out: _PrintCost | None = None,
+    identity=None,
 ) -> int:
     """Report usage to Spoolman for a list of (slot_id, grams) pairs.
+
+    ``identity`` (a ``spoolman_spool_identity.ChargeCheck``) confirms a number the slot
+    binding gave before it is charged (m266); the tag's spool is its own proof.
 
     Resolution order per slot: (1) Spoolman extra.tag match against the
     tray's RFID or deterministic fallback tag, (2) #1459 fallback —
@@ -1246,10 +1290,12 @@ async def _report_spool_usage_for_slots(
                 spool_color_hex = (spool.get("filament") or {}).get("color_hex")
                 spool_material = (spool.get("filament") or {}).get("material")
 
+        bound_stamp: str | None = None
         if spool_id_to_use is None and printer_id is not None:
             ams_id, tray_id = _global_tray_id_to_ams_slot(global_tray_id)
-            spool_id_to_use = await _resolve_spool_id_via_slot_assignment(printer_id, ams_id, tray_id)
-            if spool_id_to_use is not None:
+            bound_spool = await _resolve_bound_spool(printer_id, ams_id, tray_id)
+            if bound_spool is not None:
+                spool_id_to_use, bound_stamp = bound_spool
                 resolution_path = "slot-assignment"
 
         if spool_id_to_use is None:
@@ -1264,6 +1310,18 @@ async def _report_spool_usage_for_slots(
             if uncharged_out is not None:
                 uncharged_out.append((global_tray_id, round(float(grams_used), 2)))
             continue
+
+        if resolution_path == "slot-assignment" and identity is not None:
+            # The binding's number must still name the bound spool (m266).
+            admission = await identity.admits(
+                spool_id_to_use, slot_stamp=bound_stamp, tray=global_tray_id, grams=grams_used
+            )
+            if not admission.ok:
+                continue
+            if admission.spool is not None:
+                spool_obj = admission.spool
+                spool_color_hex = (spool_obj.get("filament") or {}).get("color_hex")
+                spool_material = (spool_obj.get("filament") or {}).get("material")
 
         # Record the spool's filament colour + material for the archive rewrites
         # (#1494 colour, #2563 type). The slot-assignment path resolved only an id,
@@ -1326,8 +1384,12 @@ async def _report_spool_usage_split_by_tray_changes(
     runout_purge_grams: float = 0.0,
     cost_out: _PrintCost | None = None,
     uncharged_out: list[tuple[int, float]] | None = None,
+    identity=None,
 ) -> tuple[int, set[int]]:
     """Split each slot's grams across ``tray_changes`` and charge per-segment.
+
+    ``identity`` (a ``spoolman_spool_identity.ChargeCheck``) confirms a number the
+    journal froze or the slot binding gave before it is charged (m266).
 
     Mirrors ``usage_tracker`` Path 1's tray-switch branch so Spoolman and the
     internal Spool inventory attribute mid-print AMS-backup switches identically
@@ -1414,6 +1476,8 @@ async def _report_spool_usage_split_by_tray_changes(
             spool_color_hex: str | None = None
             spool_material: str | None = None
             spool_obj: dict | None = None
+            # The slot row's stamp, for a number the binding gave (m266).
+            seg_bound_stamp: str | None = None
 
             if interval.frozen:
                 # The journal names this interval's reel; an unknown one stays
@@ -1446,8 +1510,9 @@ async def _report_spool_usage_split_by_tray_changes(
 
                 if spool_id_to_use is None:
                     seg_ams_id, seg_tray_id = _global_tray_id_to_ams_slot(tray_global)
-                    spool_id_to_use = await _resolve_spool_id_via_slot_assignment(printer_id, seg_ams_id, seg_tray_id)
-                    if spool_id_to_use is not None:
+                    bound_spool = await _resolve_bound_spool(printer_id, seg_ams_id, seg_tray_id)
+                    if bound_spool is not None:
+                        spool_id_to_use, seg_bound_stamp = bound_spool
                         resolution_path = "slot-assignment"
 
             if spool_id_to_use is None:
@@ -1461,6 +1526,21 @@ async def _report_spool_usage_split_by_tray_changes(
                 if uncharged_out is not None:
                     uncharged_out.append((tray_global, round(float(segment_grams), 2)))
                 continue
+
+            if identity is not None and resolution_path in ("journal", "slot-assignment"):
+                # The number must still name the bound spool (m266); a tag is its own proof.
+                admission = await identity.admits(
+                    spool_id_to_use,
+                    slot_stamp=seg_bound_stamp if resolution_path == "slot-assignment" else FROM_ROWS,
+                    tray=tray_global,
+                    grams=segment_grams,
+                )
+                if not admission.ok:
+                    continue
+                if admission.spool is not None:
+                    spool_obj = admission.spool
+                    spool_color_hex = (spool_obj.get("filament") or {}).get("color_hex")
+                    spool_material = (spool_obj.get("filament") or {}).get("material")
 
             # Colour (#1494) + material (#2563) rewrite — first segment for a slot
             # wins. The UI displays a single colour/type per slot, so later segments
@@ -1628,11 +1708,20 @@ async def _report_partial_usage(
             return
         async with async_session() as settle_db:
             await _settle_charges(settle_db, partial_archive_id, print_cost, status="failed")
-        if uncharged:
-            from backend.app.services import spool_assignment_notifications
+        from backend.app.services import spool_assignment_notifications
 
+        if uncharged:
             async with async_session() as notify_db:
                 await spool_assignment_notifications.notify_usage_not_recorded(printer_id, uncharged, notify_db, logger)
+        # Bindings the charges refuted (m266): removed now that this print's rows are no
+        # longer its evidence, and said once.
+        if identity is not None:
+            await identity.settle()
+            if identity.changed:
+                async with async_session() as notify_db:
+                    await spool_assignment_notifications.notify_usage_spool_changed(
+                        printer_id, identity.changed, notify_db, logger
+                    )
 
     # Get tracking data
     layer_usage = tracking.layer_usage
@@ -1645,6 +1734,8 @@ async def _report_partial_usage(
     # Not reachable: nothing can be charged, but what the print used is still worked out
     # below, so the loss can be named (``_say_usage_lost``) instead of dropped.
     client = await _get_spoolman_client_with_fallback(charge)
+    # A number a binding or the journal gave is charged only to the bound spool (m266).
+    identity = ChargeCheck(client, printer_id, async_session) if client is not None else None
 
     # The print's journal: runout boundaries on any slot's tray, and — for a one-slot print —
     # the tray chronology's unknown feeds and identities. Read whatever the slot count.
@@ -1713,6 +1804,7 @@ async def _report_partial_usage(
                 journal_events=partial_journal,
                 cost_out=print_cost,
                 uncharged_out=uncharged,
+                identity=identity,
             )
             return updated
         # A reel changed in a slot's own tray splits that slot as at completion; only the slots
@@ -1728,6 +1820,7 @@ async def _report_partial_usage(
             label,
             cost_out=print_cost,
             uncharged_out=uncharged,
+            identity=identity,
         )
         return updated + await _report_spool_usage_for_slots(
             client,
@@ -1739,6 +1832,7 @@ async def _report_partial_usage(
             printer_id=printer_id,
             uncharged_out=uncharged,
             cost_out=print_cost,
+            identity=identity,
         )
 
     # No-3MF aborted print (#1820 mirror of the completion path): no slicer
@@ -1763,6 +1857,7 @@ async def _report_partial_usage(
             handled_global_tray_ids=journal_handled,
             archive_id=getattr(tracking, "archive_id", -1),
             cost_out=print_cost,
+            identity=identity,
         )
         await _settle_archive()
         return
@@ -2083,6 +2178,8 @@ async def _report_usage(printer_id: int, archive_id: int, completion: Completion
 
         slot_colors: dict[int, str] = {}
         slot_materials: dict[int, str] = {}
+        # A number a binding or the journal gave is charged only to the bound spool (m266).
+        identity = ChargeCheck(client, printer_id, async_session)
         # Every charge that lands is recorded here — its weight, and its money
         # when the spool has a price — for the archive to settle on (#2591).
         print_cost = _PrintCost(
@@ -2147,6 +2244,7 @@ async def _report_usage(printer_id: int, archive_id: int, completion: Completion
                     runout_purge_grams=runout_purge_grams,
                     cost_out=print_cost,
                     uncharged_out=uncharged,
+                    identity=identity,
                 )
                 spools_updated += split_updated
                 handled_global_tray_ids |= split_handled
@@ -2172,6 +2270,7 @@ async def _report_usage(printer_id: int, archive_id: int, completion: Completion
                     runout_purge_grams=runout_purge_grams,
                     cost_out=print_cost,
                     uncharged_out=uncharged,
+                    identity=identity,
                 )
                 spools_updated += split_updated
                 handled_global_tray_ids |= split_handled
@@ -2187,6 +2286,7 @@ async def _report_usage(printer_id: int, archive_id: int, completion: Completion
                     slot_materials_out=slot_materials,
                     uncharged_out=uncharged,
                     cost_out=print_cost,
+                    identity=identity,
                 )
                 # Track which physical slots the 3MF path already covered so
                 # Path 2 doesn't double-charge them.
@@ -2220,12 +2320,15 @@ async def _report_usage(printer_id: int, archive_id: int, completion: Completion
                 slot_colors_out=slot_colors,
                 slot_materials_out=slot_materials,
                 cost_out=print_cost,
+                identity=identity,
             )
             spools_updated += fallback_updates
 
         # --- Runout zero corrections, AFTER every print write ------------
         try:
-            spools_updated += await _apply_runout_zero_corrections_spoolman(client, journal_events, archive_id)
+            spools_updated += await _apply_runout_zero_corrections_spoolman(
+                client, journal_events, archive_id, identity=identity
+            )
         except Exception as exc:
             logger.warning("[SPOOLMAN] Runout zero corrections failed for archive %s: %s", archive_id, exc)
 
@@ -2255,10 +2358,16 @@ async def _report_usage(printer_id: int, archive_id: int, completion: Completion
         await _settle_charges(db, archive_id, print_cost, status="completed")
 
         # One word for the print about filament no spool received (audit D4).
-        if uncharged:
-            from backend.app.services import spool_assignment_notifications
+        from backend.app.services import spool_assignment_notifications
 
+        if uncharged:
             await spool_assignment_notifications.notify_usage_not_recorded(printer_id, uncharged, db, logger)
+        # Bindings the charges refuted (m266): removed now that this print's rows are no
+        # longer its evidence, and said once. The removal writes in its own session.
+        await db.commit()
+        await identity.settle()
+        if identity.changed:
+            await spool_assignment_notifications.notify_usage_spool_changed(printer_id, identity.changed, db, logger)
 
 
 async def _report_remain_delta_for_slots(
@@ -2272,9 +2381,13 @@ async def _report_remain_delta_for_slots(
     slot_colors_out: dict[int, str] | None = None,
     slot_materials_out: dict[int, str] | None = None,
     cost_out: _PrintCost | None = None,
+    identity=None,
 ) -> int:
     """AMS remain%-delta path: write ``(start - current) * the spool's net weight``
     grams to Spoolman for slots the 3MF path didn't cover.
+
+    ``identity`` (a ``spoolman_spool_identity.ChargeCheck``): the binding's number must
+    still name the bound spool, or nothing is charged (m266).
 
     Mirrors ``usage_tracker.on_print_complete`` Path 2: per-slot, gated on a
     valid current ``remain%``, skipped on spool swap (``tray_uuid`` changed),
@@ -2320,10 +2433,11 @@ async def _report_remain_delta_for_slots(
         if delta_pct <= 0:
             continue  # No consumption captured at AMS granularity, or refilled
 
-        spool_id = await _resolve_spool_id_via_slot_assignment(printer_id, ams_id, tray_id)
-        if spool_id is None:
+        bound_spool = await _resolve_bound_spool(printer_id, ams_id, tray_id)
+        if bound_spool is None:
             logger.debug("[SPOOLMAN] AMS%d-T%d: no Spoolman slot assignment, skipping fallback", ams_id, tray_id)
             continue
+        spool_id, bound_stamp = bound_spool
 
         # Look up the spool's filament reference weight. Use a fresh GET so
         # we don't depend on a stale cached_spools list. Failure here is
@@ -2332,6 +2446,13 @@ async def _report_remain_delta_for_slots(
             spool = await client.get_spool(spool_id)
         except (SpoolmanNotFoundError, SpoolmanClientError, SpoolmanUnavailableError) as exc:
             logger.debug("[SPOOLMAN] AMS%d-T%d: get_spool(%s) failed: %s", ams_id, tray_id, spool_id, exc)
+            if identity is not None and isinstance(exc, SpoolmanNotFoundError):
+                await identity.judge(spool_id, None, slot_stamp=bound_stamp)
+            continue
+        if identity is not None and not await identity.judge(spool_id, spool, slot_stamp=bound_stamp):
+            # The grams are not worked out for a spool that is not the bound one: the
+            # notice names the slot without a figure it cannot know.
+            identity.changed.append((global_tray_id, 0.0, spool_id))
             continue
         filament = spool.get("filament") or {}
         # The spool's own net weight, else the catalogue's: the percentage is of

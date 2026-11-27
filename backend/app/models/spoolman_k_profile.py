@@ -8,7 +8,7 @@ backend. Actual K data lives on :class:`FilamentCalibration`.
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -24,6 +24,9 @@ class SpoolmanKProfile(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     spoolman_spool_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    # The spool's Spoolman ``registered`` stamp (m266): a link of an earlier holder of
+    # the number is not this spool's. NULL is a link from before m266.
+    spool_registered: Mapped[str | None] = mapped_column(String(40), nullable=True)
     printer_id: Mapped[int] = mapped_column(ForeignKey("printers.id", ondelete="CASCADE"))
     extruder: Mapped[int] = mapped_column(Integer, default=0)
     filament_calibration_id: Mapped[int] = mapped_column(

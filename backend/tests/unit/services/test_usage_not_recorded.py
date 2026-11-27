@@ -183,7 +183,7 @@ async def test_spoolman_reports_a_slot_it_could_not_resolve():
     ams_trays = {0: {"tray_type": "PLA", "tray_uuid": "", "tag_uid": ""}}
     uncharged: list = []
 
-    with patch.object(spoolman_tracking, "_resolve_spool_id_via_slot_assignment", new=AsyncMock(return_value=None)):
+    with patch.object(spoolman_tracking, "_resolve_bound_spool", new=AsyncMock(return_value=None)):
         updated = await spoolman_tracking._report_spool_usage_for_slots(
             client,
             [(1, 7.5)],

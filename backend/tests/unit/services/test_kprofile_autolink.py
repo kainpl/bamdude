@@ -9,10 +9,8 @@ from backend.app.models.filament_calibration import FilamentCalibration
 from backend.app.models.printer import Printer
 from backend.app.models.spool import Spool
 from backend.app.models.spool_k_profile import SpoolKProfile
-from backend.app.models.spoolman_k_profile import SpoolmanKProfile
 from backend.app.services.kprofile_autolink import (
     autolink_spool,
-    autolink_spoolman_spool,
     propagate_calibration_to_spools,
     select_matching_calibrations,
 )
@@ -141,26 +139,6 @@ async def test_autolink_spool_removes_stale_auto_row(db_session):
 
     links = (await db_session.execute(select(SpoolKProfile).where(SpoolKProfile.spool_id == spool.id))).scalars().all()
     assert links == []
-
-
-@pytest.mark.asyncio
-async def test_autolink_spoolman_spool(db_session):
-    p = await _make_printer(db_session)
-    fc = _cal(p.id, k=0.03, name="auto")
-    db_session.add(fc)
-    await db_session.commit()
-
-    await autolink_spoolman_spool(db=db_session, spoolman_spool_id=1234, resolved_filament_id="GFG99")
-    await db_session.commit()
-
-    links = (
-        (await db_session.execute(select(SpoolmanKProfile).where(SpoolmanKProfile.spoolman_spool_id == 1234)))
-        .scalars()
-        .all()
-    )
-    assert len(links) == 1
-    assert links[0].auto_linked is True
-    assert links[0].filament_calibration_id == fc.id
 
 
 @pytest.mark.asyncio

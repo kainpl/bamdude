@@ -47,7 +47,12 @@ async def _link(
 
 async def _resolve(db, printer: Printer, *, nozzle: float = 0.4, extruder: int | None = 0):
     return await resolve_spoolman_slot_kprofile(
-        db, printer_id=printer.id, spoolman_spool_id=SPOOL_ID, nozzle_diameter=nozzle, slot_extruder=extruder
+        db,
+        printer_id=printer.id,
+        spoolman_spool_id=SPOOL_ID,
+        spool_registered=None,
+        nozzle_diameter=nozzle,
+        slot_extruder=extruder,
     )
 
 
@@ -96,6 +101,7 @@ async def test_the_fitted_flow_type_picks_between_two_links_of_one_nozzle(db_ses
             db_session,
             printer_id=printer.id,
             spoolman_spool_id=SPOOL_ID,
+            spool_registered=None,
             nozzle_diameter=0.4,
             slot_extruder=0,
             nozzle_flow=flow,

@@ -54,7 +54,12 @@ from backend.app.schemas.spoolman import (
     SpoolmanFilamentPatch,
     SpoolmanSlotAssignmentEnriched,
 )
-from backend.app.services import spool_drying, spoolman_binding_fence, spoolman_source_changes
+from backend.app.services import (
+    spool_drying,
+    spoolman_binding_fence,
+    spoolman_source_changes,
+    spoolman_spool_identity,
+)
 from backend.app.services.ams_slot_presence import tray_definitely_empty
 from backend.app.services.location_service import (
     enrich_spool_dicts_with_location_id,
@@ -515,11 +520,13 @@ async def list_spools(
 
     mapped: list[dict] = []
     spool_ids: list[int] = []
+    raw_by_id: dict[int, dict] = {}
     for s in spools:
         try:
             m = _map_spoolman_spool(s)
             mapped.append(m)
             spool_ids.append(m["id"])
+            raw_by_id[m["id"]] = s
         except ValueError as exc:
             logger.warning("Skipping malformed Spoolman spool (id=%r): %s", s.get("id"), exc)
 
@@ -527,6 +534,12 @@ async def list_spools(
         kp_result = await db.execute(select(SpoolmanKProfile).where(SpoolmanKProfile.spoolman_spool_id.in_(spool_ids)))
         kp_by_spool: dict[int, list[dict]] = {}
         for kp in kp_result.scalars().all():
+            # A link stamped for an earlier holder of the number is not this spool's (m266).
+            if spoolman_spool_identity.verdict(kp.spool_registered, raw_by_id.get(kp.spoolman_spool_id)) in (
+                spoolman_spool_identity.OTHER,
+                spoolman_spool_identity.GONE,
+            ):
+                continue
             kp_by_spool.setdefault(kp.spoolman_spool_id, []).append(_k_profile_to_dict(kp))
         for m in mapped:
             m["k_profiles"] = kp_by_spool.get(m["id"], [])
@@ -634,7 +647,12 @@ async def get_spool(
         raise HTTPException(status_code=502, detail="Spoolman returned malformed spool data") from exc
 
     kp_result = await db.execute(select(SpoolmanKProfile).where(SpoolmanKProfile.spoolman_spool_id == spool_id))
-    mapped["k_profiles"] = [_k_profile_to_dict(kp) for kp in kp_result.scalars().all()]
+    # A link stamped for an earlier holder of the number is not this spool's (m266).
+    mapped["k_profiles"] = [
+        _k_profile_to_dict(kp)
+        for kp in kp_result.scalars().all()
+        if spoolman_spool_identity.verdict(kp.spool_registered, spool) != spoolman_spool_identity.OTHER
+    ]
     await enrich_spool_dicts_with_location_id(db, [mapped])
     return mapped
 
@@ -1626,6 +1644,10 @@ async def sync_spoolman_ams_weights(
     synced = 0
     skipped = 0
     printing_printers: set[int] = set()
+    # A row names its spool by stamp too (m266): what the stamps adopt, and what they refute
+    # (number → the current spool's stamp, None: Spoolman's own "no such spool").
+    adopted: dict[int, str | None] = {}
+    refuted: dict[int, str | None] = {}
 
     def _find_tray(ams_data: list, ams_id: int, tray_id: int) -> dict | None:
         if not ams_data:
@@ -1641,9 +1663,24 @@ async def sync_spoolman_ams_weights(
     for assignment in assignments:
         spool_dict = spool_lookup.get(assignment.spoolman_spool_id)
         if not spool_dict:
+            # Not among the active spools — possibly archived, so nothing is refuted.
             logger.debug("Spoolman AMS sync: spool %d not found in Spoolman, skipping", assignment.spoolman_spool_id)
             skipped += 1
             continue
+        judged = spoolman_spool_identity.verdict(assignment.spool_registered, spool_dict)
+        if judged == spoolman_spool_identity.OTHER:
+            logger.warning(
+                "Spoolman AMS sync: spool %d is another spool in Spoolman now (slot %d/%d/%d); weight not written",
+                assignment.spoolman_spool_id,
+                assignment.printer_id,
+                assignment.ams_id,
+                assignment.tray_id,
+            )
+            refuted[assignment.spoolman_spool_id] = spoolman_spool_identity.stamp_of(spool_dict)
+            skipped += 1
+            continue
+        if judged == spoolman_spool_identity.UNKNOWN:
+            adopted[assignment.spoolman_spool_id] = spoolman_spool_identity.stamp_of(spool_dict)
 
         label_weight = spoolman_label_weight(spool_dict)
         if label_weight <= 0:
@@ -1735,10 +1772,12 @@ async def sync_spoolman_ams_weights(
             synced += 1
         except HTTPException as exc:
             if exc.status_code == 404:
+                # Spoolman's own "no such spool" (a proxy's 404 is a 503 here, B06).
                 logger.warning(
                     "Spoolman AMS sync: spool %d not found in Spoolman (404), skipping",
                     assignment.spoolman_spool_id,
                 )
+                refuted[assignment.spoolman_spool_id] = None
             else:
                 logger.warning(
                     "Spoolman AMS sync: failed to update spool %d (HTTP %d)",
@@ -1747,10 +1786,22 @@ async def sync_spoolman_ams_weights(
                 )
             skipped += 1
 
+    # The route's read transaction ends before the stamps' own sessions.
+    await db.commit()
+    for number, stamp in adopted.items():
+        if number not in refuted:
+            await spoolman_spool_identity.adopt_now(number, stamp)
+    removed = 0
+    for number, stamp in refuted.items():
+        reason = "the spool is gone from Spoolman" if stamp is None else "the number names another spool in Spoolman"
+        removed += len(await spoolman_spool_identity.drop_stale(number, stamp, reason))
+
     if synced:
         # The Inventory page shows the weight this just changed.
         await ws_manager.broadcast({"type": "inventory_changed"})
     answer = {"synced": synced, "skipped": skipped}
+    if removed:
+        answer["removed"] = removed
     if printing_printers:
         answer["skipped_printers"] = len(printing_printers)
     return answer
@@ -1885,21 +1936,29 @@ async def assign_spoolman_slot(
             logger.exception("ensure_tail_recorded failed for printer %s", body.printer_id)
 
         # Spool confirmed in Spoolman — upsert into local slot-assignment table
-        # assigned_at is intentionally not refreshed on re-assign (original timestamp preserved)
+        # assigned_at is intentionally not refreshed on re-assign (original timestamp preserved).
+        # The row names the spool by its stamp as well as its number (m266).
+        proved_stamp = spoolman_spool_identity.stamp_of(spool)
         try:
+            # What the proof refutes goes, and the number's unstamped rows adopt it.
+            _refuted = await spoolman_spool_identity.writer_proved(
+                db, body.spoolman_spool_id, proved_stamp, own_slot=_keep
+            )
             await db.execute(
                 text(
                     "INSERT INTO spoolman_slot_assignments"
-                    " (printer_id, ams_id, tray_id, spoolman_spool_id)"
-                    " VALUES (:printer_id, :ams_id, :tray_id, :spool_id)"
+                    " (printer_id, ams_id, tray_id, spoolman_spool_id, spool_registered)"
+                    " VALUES (:printer_id, :ams_id, :tray_id, :spool_id, :stamp)"
                     " ON CONFLICT(printer_id, ams_id, tray_id)"
-                    " DO UPDATE SET spoolman_spool_id = excluded.spoolman_spool_id"
+                    " DO UPDATE SET spoolman_spool_id = excluded.spoolman_spool_id,"
+                    " spool_registered = excluded.spool_registered"
                 ),
                 {
                     "printer_id": body.printer_id,
                     "ams_id": body.ams_id,
                     "tray_id": body.tray_id,
                     "spool_id": body.spoolman_spool_id,
+                    "stamp": proved_stamp,
                 },
             )
             # Its other ledger rows go with the same commit. Rows only: nothing
@@ -1908,6 +1967,7 @@ async def assign_spoolman_slot(
                 db, spoolman_spool_id=body.spoolman_spool_id, keep=_keep, refuse=True
             )
             await db.commit()
+            spoolman_spool_identity.forget_overlay(_refuted)
         except spool_single_slot.SpoolFeedsPrint as feeding:
             await db.rollback()
             raise spool_single_slot.refusal(feeding) from feeding
@@ -1931,7 +1991,7 @@ async def assign_spoolman_slot(
         except Exception:
             logger.exception("note_assignment_change failed for printer %s", body.printer_id)
 
-    await spool_single_slot.announce(_released.vacated)
+    await spool_single_slot.announce(list(dict.fromkeys([*_refuted, *_released.vacated])))
 
     # #1457: clear stale fallback-tag links on OTHER spools still bound to this
     # slot. Without this, a non-RFID slot's deterministic fallback tag stays
@@ -1985,6 +2045,7 @@ async def assign_spoolman_slot(
                 db,
                 printer_id=body.printer_id,
                 spoolman_spool_id=body.spoolman_spool_id,
+                spool_registered=proved_stamp,
                 nozzle_diameter=nozzle_dia_float,
                 slot_extruder=slot_extruder,
                 nozzle_flow=nozzle.flow,
@@ -2263,6 +2324,21 @@ async def get_spoolman_slot_assignment(
     try:
         async with _translate_spoolman_errors():
             spool = await client.get_spool(slot.spoolman_spool_id)
+        # The row names its spool by stamp as well as number (m266): a spool the number
+        # names now is not the bound one when its stamp differs.
+        judged = spoolman_spool_identity.verdict(slot.spool_registered, spool)
+        if judged in (spoolman_spool_identity.UNKNOWN, spoolman_spool_identity.OTHER):
+            await db.commit()  # the route's read transaction ends before the write's own session
+        if judged == spoolman_spool_identity.UNKNOWN:
+            await spoolman_spool_identity.adopt_now(slot.spoolman_spool_id, spoolman_spool_identity.stamp_of(spool))
+        elif judged == spoolman_spool_identity.OTHER:
+            # Removed outside a print's accounting; shown as unassigned either way.
+            await spoolman_spool_identity.drop_stale(
+                slot.spoolman_spool_id,
+                spoolman_spool_identity.stamp_of(spool),
+                "the number names another spool in Spoolman",
+            )
+            return None
         return _map_spoolman_spool(spool)
     except HTTPException as exc:
         if exc.status_code != 404:
@@ -2476,10 +2552,11 @@ async def save_spoolman_k_profiles(
     client = await _get_client(db)
     issued = spoolman_binding_fence.ticket()
     async with _translate_spoolman_errors():
-        await client.get_spool(spool_id)
+        proved = await client.get_spool(spool_id)
 
     with spoolman_binding_fence.enter([spool_id], issued):
-        saved = await _replace_k_profiles(db, spool_id, profiles)
+        # The links name the spool by its stamp as well as its number (m266).
+        saved = await _replace_k_profiles(db, spool_id, profiles, spoolman_spool_identity.stamp_of(proved))
 
     for obj in saved:
         await db.refresh(obj)
@@ -2487,7 +2564,9 @@ async def save_spoolman_k_profiles(
     return [_k_profile_to_dict(p) for p in saved]
 
 
-async def _replace_k_profiles(db: AsyncSession, spool_id: int, profiles: list[SpoolKProfileBase]) -> list:
+async def _replace_k_profiles(
+    db: AsyncSession, spool_id: int, profiles: list[SpoolKProfileBase], stamp: str | None
+) -> list:
     saved: list[SpoolmanKProfile] = []
     try:
         await db.execute(delete(SpoolmanKProfile).where(SpoolmanKProfile.spoolman_spool_id == spool_id))
@@ -2503,6 +2582,7 @@ async def _replace_k_profiles(db: AsyncSession, spool_id: int, profiles: list[Sp
                 continue
             obj = SpoolmanKProfile(
                 spoolman_spool_id=spool_id,
+                spool_registered=stamp,
                 printer_id=profile.printer_id,
                 extruder=profile.extruder,
                 filament_calibration_id=fc.id,

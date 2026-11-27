@@ -2405,8 +2405,8 @@ async def test_spoolman_charges_no_reel_for_a_replay_the_completion_could_not_wr
         patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
         # The slot's binding now is B: what a writer without the replay would charge.
         patch(
-            "backend.app.services.spoolman_tracking._resolve_spool_id_via_slot_assignment",
-            AsyncMock(return_value=12),
+            "backend.app.services.spoolman_tracking._resolve_bound_spool",
+            AsyncMock(return_value=(12, None)),
         ),
     ):
         pm.get_status.return_value = status
@@ -2777,8 +2777,8 @@ async def test_an_unknown_feed_journaled_without_a_client_governs_the_spoolman_w
         patch("backend.app.services.printer_manager.printer_manager") as pm,
         patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
         patch(
-            "backend.app.services.spoolman_tracking._resolve_spool_id_via_slot_assignment",
-            AsyncMock(return_value=12),
+            "backend.app.services.spoolman_tracking._resolve_bound_spool",
+            AsyncMock(return_value=(12, None)),
         ),
     ):
         pm.get_status.return_value = status
@@ -2962,8 +2962,8 @@ async def test_spoolman_reads_the_journal_when_there_is_no_client_at_all(
         patch("backend.app.services.printer_manager.printer_manager") as pm,
         patch("backend.app.services.spool_assignment_notifications.notify_usage_not_recorded", notify),
         patch(
-            "backend.app.services.spoolman_tracking._resolve_spool_id_via_slot_assignment",
-            AsyncMock(return_value=12),
+            "backend.app.services.spoolman_tracking._resolve_bound_spool",
+            AsyncMock(return_value=(12, None)),
         ),
     ):
         pm.get_status.return_value = None

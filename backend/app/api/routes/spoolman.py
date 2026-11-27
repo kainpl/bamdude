@@ -22,7 +22,12 @@ from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.models.user import User
 from backend.app.schemas.spoolman import SlotAmsId, SlotTrayId
-from backend.app.services import spoolman_activity, spoolman_binding_fence, spoolman_source_changes
+from backend.app.services import (
+    spoolman_activity,
+    spoolman_binding_fence,
+    spoolman_source_changes,
+    spoolman_spool_identity,
+)
 from backend.app.services.ams_slot_presence import spool_present, tray_definitely_empty
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.spoolman import (
@@ -37,7 +42,7 @@ from backend.app.services.spoolman import (
     native_tag_uids,
 )
 from backend.app.services.spoolman_kprofile_link import resolve_spoolman_slot_kprofile
-from backend.app.services.spoolman_slot_ledger import write_sync_results
+from backend.app.services.spoolman_slot_ledger import SyncChange, write_sync_results
 from backend.app.services.spoolman_weights import spool_net_weight
 from backend.app.services.tag_conflict import native_tag_refused
 from backend.app.utils.slot_nozzle import slot_nozzle
@@ -238,7 +243,7 @@ def _being_deleted_text(refused, where: str) -> str:
 async def _write_and_announce_sync(
     db: AsyncSession,
     read: dict[tuple[int, int, int], int] | None,
-    changes: list[tuple[int, int, int, int]],
+    changes: list[tuple[int, SyncChange]],
     empties: list[tuple[int, int, int]],
     *,
     issued: int | None = None,
@@ -253,7 +258,8 @@ async def _write_and_announce_sync(
     a comparison with that snapshot, which a hand assignment made meanwhile has
     already left behind. A failed write stays silent.
 
-    ``read`` is keyed ``(printer_id, ams_id, tray_id)``; ``None`` = unreadable.
+    ``read`` is keyed ``(printer_id, ams_id, tray_id)``; ``None`` = unreadable;
+    ``changes`` are ``(printer_id, SyncChange)``.
     One printer at a time, each under its own assignment lock. Returns errors.
 
     The whole write is one write of the Spoolman slot ledger (C047 acceptance A08): the
@@ -273,7 +279,7 @@ async def _write_and_announce_sync(
                     db,
                     printer_id=printer_id,
                     read=None if read is None else {(a, t): s for (p, a, t), s in read.items() if p == printer_id},
-                    changes=[(a, t, s) for p, a, t, s in changes if p == printer_id],
+                    changes=[change for p, change in changes if p == printer_id],
                     empties=[(a, t) for p, a, t in empties if p == printer_id],
                     issued=issued,
                 )
@@ -413,7 +419,7 @@ async def _sync_printer_ams(printer_id: int, db: AsyncSession, _, *, issued: int
     ledger_read = await _read_slot_ledger(db, printer_id)
     spoolman_slot_map: dict[tuple[int, int], int] = {(a, t): s for (_p, a, t), s in (ledger_read or {}).items()}
 
-    slot_changes: list[tuple[int, int, int]] = []  # (ams_id, tray_id, spoolman_spool_id)
+    slot_changes: list[SyncChange] = []
     empty_slots: list[tuple[int, int]] = []  # (ams_id, tray_id) now empty
 
     # ⚠️ A slot that reports empty while the printer is RUNNING/PAUSE is a
@@ -472,7 +478,16 @@ async def _sync_printer_ams(printer_id: int, db: AsyncSession, _, *, issued: int
                 if sync_result:
                     synced += 1
                     if sync_result.get("id"):
-                        slot_changes.append((ams_id, tray.tray_id, sync_result["id"]))
+                        # Found by the tray's tag (or created for it) — or by the hint (r1 B01).
+                        slot_changes.append(
+                            SyncChange(
+                                ams_id,
+                                tray.tray_id,
+                                sync_result["id"],
+                                spoolman_spool_identity.stamp_of(sync_result),
+                                hint is None,
+                            )
+                        )
                         spool_exists = any(s.get("id") == sync_result["id"] for s in cached_spools)
                         if not spool_exists:
                             cached_spools.append(sync_result)
@@ -511,7 +526,7 @@ async def _sync_printer_ams(printer_id: int, db: AsyncSession, _, *, issued: int
     errors += await _write_and_announce_sync(
         db,
         ledger_read,
-        [(printer_id, a, t, s) for a, t, s in slot_changes],
+        [(printer_id, change) for change in slot_changes],
         [(printer_id, a, t) for a, t in empty_slots],
         issued=issued,
     )
@@ -603,7 +618,7 @@ async def _sync_all_printers(db: AsyncSession, _, *, issued: int):
     all_slot_map: dict[tuple[int, int, int], int] = ledger_read or {}
 
     # Collect slot changes across all printers for a single DB write at the end
-    all_slot_changes: list[tuple[int, int, int, int]] = []  # (printer_id, ams_id, tray_id, spool_id)
+    all_slot_changes: list[tuple[int, SyncChange]] = []  # (printer_id, change)
     all_empty_slots: list[tuple[int, int, int]] = []  # (printer_id, ams_id, tray_id)
 
     for printer in printers:
@@ -690,7 +705,19 @@ async def _sync_all_printers(db: AsyncSession, _, *, issued: int):
                     if sync_result:
                         total_synced += 1
                         if sync_result.get("id"):
-                            all_slot_changes.append((printer.id, ams_id, tray.tray_id, sync_result["id"]))
+                            # Found by the tray's tag (or created for it) — or by the hint (r1 B01).
+                            all_slot_changes.append(
+                                (
+                                    printer.id,
+                                    SyncChange(
+                                        ams_id,
+                                        tray.tray_id,
+                                        sync_result["id"],
+                                        spoolman_spool_identity.stamp_of(sync_result),
+                                        hint is None,
+                                    ),
+                                )
+                            )
                             spool_exists = any(s.get("id") == sync_result["id"] for s in cached_spools)
                             if not spool_exists:
                                 cached_spools.append(sync_result)
@@ -978,13 +1005,17 @@ async def link_spool(
     holders = await _extra_tag_holders(client, spool_tag, keep_spool_id=spool_id)
     with spoolman_binding_fence.tag_operation([spool_id, *holders], issued=issued):
         _vacated: list = []
+        # The spool a slot row will name, by its stamp as well as its number (m266).
+        proved_stamp: str | None = None
 
         try:
-            if printer_context and (await client.get_spool(spool_id)).get("archived"):
+            proved = await client.get_spool(spool_id) if printer_context else None
+            if proved is not None and proved.get("archived"):
                 # A link with a slot is an assignment: as the assign routes refuse,
                 # and before any tag — native or extra.tag — is written (upstream
                 # c2bc41a5e).
                 raise HTTPException(status_code=400, detail="Cannot assign an archived spool")
+            proved_stamp = spoolman_spool_identity.stamp_of(proved)
             # A tray UUID also becomes a native tag (Spoolman 0.27+), linked first:
             # it is the step Spoolman can refuse, so a refusal leaves extra.tag
             # untouched. The 16-character values this route takes — a slot's
@@ -1022,15 +1053,26 @@ async def link_spool(
                 # A binding writer (C047 §C3): the fence's guard around the slot's DML and commit.
                 with spoolman_binding_fence.enter([spool_id], issued):
                     try:
+                        # What the proof refutes goes, and the number's unstamped rows adopt it.
+                        _refuted = await spoolman_spool_identity.writer_proved(
+                            db, spool_id, proved_stamp, own_slot=printer_context
+                        )
                         await db.execute(
                             text(
                                 "INSERT INTO spoolman_slot_assignments"
-                                " (printer_id, ams_id, tray_id, spoolman_spool_id)"
-                                " VALUES (:printer_id, :ams_id, :tray_id, :spool_id)"
+                                " (printer_id, ams_id, tray_id, spoolman_spool_id, spool_registered)"
+                                " VALUES (:printer_id, :ams_id, :tray_id, :spool_id, :stamp)"
                                 " ON CONFLICT(printer_id, ams_id, tray_id)"
-                                " DO UPDATE SET spoolman_spool_id = excluded.spoolman_spool_id"
+                                " DO UPDATE SET spoolman_spool_id = excluded.spoolman_spool_id,"
+                                " spool_registered = excluded.spool_registered"
                             ),
-                            {"printer_id": p_id, "ams_id": a_id, "tray_id": t_id, "spool_id": spool_id},
+                            {
+                                "printer_id": p_id,
+                                "ams_id": a_id,
+                                "tray_id": t_id,
+                                "spool_id": spool_id,
+                                "stamp": proved_stamp,
+                            },
                         )
                         # Its other ledger rows go with the same commit (rows only). A slot
                         # that began feeding a print since the check above keeps its row.
@@ -1040,6 +1082,8 @@ async def link_spool(
                             )
                         ).vacated
                         await db.commit()
+                        spoolman_spool_identity.forget_overlay(_refuted)
+                        _vacated = list(dict.fromkeys([*_refuted, *_vacated]))
                     except Exception as e:
                         await db.rollback()
                         # The native tag goes back (the previous reel's are still there —
@@ -1126,6 +1170,7 @@ async def link_spool(
                         db,
                         printer_id=p_id,
                         spoolman_spool_id=spool_id,
+                        spool_registered=spoolman_spool_identity.stamp_of(spool_data),
                         nozzle_diameter=nozzle_dia_float,
                         slot_extruder=nozzle.extruder,
                         nozzle_flow=nozzle.flow,
@@ -1510,22 +1555,30 @@ async def _create_spool_from_slot(req: CreateSpoolFromSlotRequest, db: AsyncSess
             # A binding writer (C047 §C3); the number is already owned by this operation.
             with spoolman_binding_fence.enter([sync_result["id"]], spoolman_binding_fence.ticket()):
                 try:
+                    # The spool came by the slot's tag (or was created for it): a proof (m266).
+                    stamp = spoolman_spool_identity.stamp_of(sync_result)
+                    refuted = await spoolman_spool_identity.writer_proved(
+                        db, sync_result["id"], stamp, own_slot=(req.printer_id, req.ams_id, req.tray_id)
+                    )
                     await db.execute(
                         text(
                             "INSERT INTO spoolman_slot_assignments"
-                            " (printer_id, ams_id, tray_id, spoolman_spool_id)"
-                            " VALUES (:printer_id, :ams_id, :tray_id, :spool_id)"
+                            " (printer_id, ams_id, tray_id, spoolman_spool_id, spool_registered)"
+                            " VALUES (:printer_id, :ams_id, :tray_id, :spool_id, :stamp)"
                             " ON CONFLICT(printer_id, ams_id, tray_id)"
-                            " DO UPDATE SET spoolman_spool_id = excluded.spoolman_spool_id"
+                            " DO UPDATE SET spoolman_spool_id = excluded.spoolman_spool_id,"
+                            " spool_registered = excluded.spool_registered"
                         ),
                         {
                             "printer_id": req.printer_id,
                             "ams_id": req.ams_id,
                             "tray_id": req.tray_id,
                             "spool_id": sync_result["id"],
+                            "stamp": stamp,
                         },
                     )
                     await db.commit()
+                    spoolman_spool_identity.forget_overlay(refuted)
                 except Exception as exc:
                     await db.rollback()
                     logger.exception("Failed to persist Spoolman slot assignment")
@@ -1538,5 +1591,8 @@ async def _create_spool_from_slot(req: CreateSpoolFromSlotRequest, db: AsyncSess
     await ws_manager.broadcast({"type": "inventory_changed"})
     if sync_result.get("id"):
         await _announce_slot(req.printer_id, req.ams_id, req.tray_id)
+        from backend.app.services import spool_single_slot  # noqa: PLC0415
+
+        await spool_single_slot.announce(refuted)
 
     return {"success": True, "spool_id": sync_result.get("id")}

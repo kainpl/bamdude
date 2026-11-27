@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Check, X, RefreshCw, Link2, Database, Info, AlertTriangle, Package, ExternalLink, Tags } from 'lucide-react';
@@ -38,6 +38,15 @@ export function SpoolmanSettings() {
   // (audit D4, upstream #2812: a look at the page, four clicks, and a farm's
   // assignments were gone).
   const [pendingMode, setPendingMode] = useState<boolean | null>(null);
+  // What saving the address would take away, waiting for the confirmation. A new
+  // address is another Spoolman database to BamDude, and the save removes every slot
+  // assignment and K link (spec spoolman-binding-identity §9), so the address is
+  // never auto-saved either.
+  const [addressPreview, setAddressPreview] = useState<
+    Awaited<ReturnType<typeof api.getSpoolmanAddressChangePreview>> | null
+  >(null);
+  // The address as last saved: a refetch after another field's save keeps an edit in progress.
+  const savedUrlRef = useRef<string | null>(null);
 
   // Fetch Spoolman settings
   const { data: settings, isLoading: settingsLoading } = useQuery({
@@ -62,7 +71,11 @@ export function SpoolmanSettings() {
   useEffect(() => {
     if (settings) {
       setLocalEnabled(settings.spoolman_enabled === 'true');
-      setLocalUrl(settings.spoolman_url || '');
+      const savedUrl = settings.spoolman_url || '';
+      setLocalUrl((current) =>
+        savedUrlRef.current === null || current === savedUrlRef.current ? savedUrl : current,
+      );
+      savedUrlRef.current = savedUrl;
       setLocalSyncMode(settings.spoolman_sync_mode || 'auto');
       setLocalDisableWeightSync(settings.spoolman_disable_weight_sync === 'true');
       setLocalReportPartialUsage(settings.spoolman_report_partial_usage !== 'false');
@@ -76,9 +89,9 @@ export function SpoolmanSettings() {
   useEffect(() => {
     if (!canConfigure || !isInitialized || !settings) return;
 
-    // ⚠️ The mode is not here: it is saved only through the confirmation below.
+    // ⚠️ Neither the mode nor the address is here: each is saved only through its
+    // confirmation below — not even along with another field.
     const hasChanges =
-      (settings.spoolman_url || '') !== localUrl ||
       (settings.spoolman_sync_mode || 'auto') !== localSyncMode ||
       (settings.spoolman_disable_weight_sync === 'true') !== localDisableWeightSync ||
       (settings.spoolman_report_partial_usage !== 'false') !== localReportPartialUsage ||
@@ -91,13 +104,12 @@ export function SpoolmanSettings() {
       return () => clearTimeout(timeoutId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [localUrl, localSyncMode, localDisableWeightSync, localReportPartialUsage, localAutoAddUnknownRfid, isInitialized, canConfigure]);
+  }, [localSyncMode, localDisableWeightSync, localReportPartialUsage, localAutoAddUnknownRfid, isInitialized, canConfigure]);
 
   // Save mutation
   const saveMutation = useMutation({
     mutationFn: () =>
       api.updateSpoolmanSettings({
-        spoolman_url: localUrl,
         spoolman_sync_mode: localSyncMode,
         spoolman_disable_weight_sync: localDisableWeightSync ? 'true' : 'false',
         spoolman_report_partial_usage: localReportPartialUsage ? 'true' : 'false',
@@ -148,6 +160,37 @@ export function SpoolmanSettings() {
     if (enable === localEnabled) return;
     setPendingMode(enable);
   };
+
+  const urlEdited = isInitialized && localUrl.trim() !== (settings?.spoolman_url || '').trim();
+
+  const addressMutation = useMutation({
+    mutationFn: () => api.updateSpoolmanSettings({ spoolman_url: localUrl }),
+    onSuccess: () => {
+      setAddressPreview(null);
+      queryClient.invalidateQueries({ queryKey: ['spoolman-settings'] });
+      queryClient.invalidateQueries({ queryKey: ['spoolman-status'] });
+      queryClient.invalidateQueries({ queryKey: ['spool-assignments'] });
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: ['spoolman-inventory-filaments'] });
+      invalidateSpoolViews(queryClient);
+      showToast(t('settings.toast.settingsSaved'));
+    },
+    onError: (error: Error) => {
+      // A print accounting in Spoolman holds its address and database (C047 S38).
+      const refused = spoolmanSourceRefusalText(error, t);
+      showToast(refused ?? t('settings.toast.saveFailed'), refused ? 'warning' : 'error');
+    },
+  });
+
+  // Asked first: a change of database is confirmed, anything else is saved at once.
+  const addressPreviewMutation = useMutation({
+    mutationFn: () => api.getSpoolmanAddressChangePreview(localUrl),
+    onSuccess: (preview) => {
+      if (preview.base_change) setAddressPreview(preview);
+      else addressMutation.mutate();
+    },
+    onError: () => showToast(t('settings.toast.saveFailed'), 'error'),
+  });
 
   // Connect mutation
   const connectMutation = useMutation({
@@ -451,15 +494,30 @@ export function SpoolmanSettings() {
               <label className="block text-sm text-bambu-gray mb-1">
                 {t('settings.spoolmanUrl')}
               </label>
-              <input
-                type="text"
-                placeholder="http://192.168.1.100:7912"
-                value={localUrl}
-                disabled={!canConfigure} onChange={(e) => setLocalUrl(e.target.value)}
-                className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray/50 focus:border-bambu-green focus:outline-none"
-              />
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="http://192.168.1.100:7912"
+                  value={localUrl}
+                  disabled={!canConfigure} onChange={(e) => setLocalUrl(e.target.value)}
+                  className="min-w-0 flex-1 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray/50 focus:border-bambu-green focus:outline-none"
+                />
+                {canConfigure && (
+                  <Button
+                    onClick={() => addressPreviewMutation.mutate()}
+                    disabled={!urlEdited || addressPreviewMutation.isPending || addressMutation.isPending}
+                  >
+                    {addressPreviewMutation.isPending || addressMutation.isPending ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Check className="w-4 h-4" />
+                    )}
+                    {t('settings.spoolmanAddress.save')}
+                  </Button>
+                )}
+              </div>
               <p className="text-xs text-bambu-gray mt-1">
-                {t('settings.spoolmanUrlHint')}
+                {urlEdited ? t('settings.spoolmanAddress.unsaved') : t('settings.spoolmanUrlHint')}
               </p>
             </div>
 
@@ -865,6 +923,41 @@ export function SpoolmanSettings() {
                   </p>
                 )}
               </>
+            )}
+          </div>
+        </ConfirmModal>
+      )}
+
+      {addressPreview !== null && (
+        <ConfirmModal
+          title={t('settings.spoolmanAddress.title')}
+          message={t('settings.spoolmanAddress.message')}
+          confirmText={t('settings.spoolmanAddress.confirm')}
+          variant="warning"
+          isLoading={addressMutation.isPending}
+          onConfirm={() => addressMutation.mutate()}
+          onCancel={() => setAddressPreview(null)}
+        >
+          <div className="space-y-2 text-sm text-bambu-gray">
+            {addressPreview.slot_bindings > 0 || addressPreview.k_links > 0 ? (
+              <>
+                {addressPreview.slot_bindings > 0 && (
+                  <p>{t('settings.spoolmanAddress.slotBindings', { count: addressPreview.slot_bindings })}</p>
+                )}
+                {addressPreview.k_links > 0 && (
+                  <p>{t('settings.spoolmanAddress.kLinks', { count: addressPreview.k_links })}</p>
+                )}
+              </>
+            ) : (
+              <p>{t('settings.spoolmanAddress.nothing')}</p>
+            )}
+            {addressPreview.blocked && (
+              <p className="text-yellow-400">{t('settings.spoolmanAddress.blocked')}</p>
+            )}
+            {addressPreview.printing.length > 0 && (
+              <p className="text-yellow-400">
+                {t('settings.spoolmanAddress.printing', { printers: addressPreview.printing.join(', ') })}
+              </p>
             )}
           </div>
         </ConfirmModal>

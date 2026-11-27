@@ -41,6 +41,7 @@ vi.mock('../../api/client', () => ({
     syncPrinterAms: vi.fn(),
     getPrinters: vi.fn(),
     getSpoolmanModeSwitchPreview: vi.fn(),
+    getSpoolmanAddressChangePreview: vi.fn(),
     migrateSpoolmanTags: vi.fn(),
     getSpoolmanSizeMismatches: vi.fn().mockResolvedValue([]),
     applyFilamentSizeToSpoolmanSpool: vi.fn(),
@@ -348,6 +349,110 @@ describe('SpoolmanSettings', () => {
       });
 
       expect(screen.queryByText('Report Partial Usage for Failed Prints')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('spoolman address', () => {
+    // A new address is another Spoolman database to BamDude, and saving it removes
+    // every slot assignment and K link (spec spoolman-binding-identity §9). It used to
+    // be auto-saved 500 ms after typing stopped — every half-typed address a new base.
+    beforeEach(() => {
+      const saved = {
+        spoolman_enabled: 'true',
+        spoolman_url: 'http://localhost:7912',
+        spoolman_sync_mode: 'auto',
+        spoolman_disable_weight_sync: 'false',
+        spoolman_report_partial_usage: 'true',
+        auto_add_unknown_rfid: 'false',
+      };
+      vi.mocked(api.getSpoolmanSettings).mockResolvedValue(saved);
+      vi.mocked(api.updateSpoolmanSettings).mockResolvedValue(saved);
+      vi.mocked(api.getSpoolmanAddressChangePreview).mockResolvedValue({
+        base_change: true,
+        slot_bindings: 4,
+        k_links: 2,
+        blocked: false,
+        printing: [],
+      });
+    });
+
+    async function editAddress(user: ReturnType<typeof userEvent.setup>) {
+      const input = await screen.findByPlaceholderText('http://192.168.1.100:7912');
+      await user.clear(input);
+      await user.type(input, 'http://spoolman.lan:7912');
+      return input;
+    }
+
+    it('an edited address is not saved by itself', async () => {
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+      await editAddress(user);
+
+      await new Promise((resolve) => setTimeout(resolve, 700)); // past the autosave debounce
+      expect(api.updateSpoolmanSettings).not.toHaveBeenCalled();
+      expect(screen.getByText(/The address is not saved yet/)).toBeInTheDocument();
+    });
+
+    it('another field saved meanwhile does not carry the edited address', async () => {
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+      await editAddress(user);
+
+      await user.click(screen.getAllByRole('checkbox')[0]);
+      await waitFor(() => expect(api.updateSpoolmanSettings).toHaveBeenCalled());
+      for (const [body] of vi.mocked(api.updateSpoolmanSettings).mock.calls) {
+        expect(body).not.toHaveProperty('spoolman_url');
+      }
+      // The edit in progress survives the refetch after that save.
+      expect(screen.getByPlaceholderText('http://192.168.1.100:7912')).toHaveValue('http://spoolman.lan:7912');
+    });
+
+    it('asks first, naming what goes, and saves the address on the answer', async () => {
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+      await editAddress(user);
+
+      await user.click(screen.getByRole('button', { name: 'Save address' }));
+      expect(await screen.findByText('Save the Spoolman address?')).toBeInTheDocument();
+      expect(screen.getByText('4 slot assignments will be removed.')).toBeInTheDocument();
+      expect(screen.getByText('2 K-profile links will be removed.')).toBeInTheDocument();
+      expect(api.getSpoolmanAddressChangePreview).toHaveBeenCalledWith('http://spoolman.lan:7912');
+      expect(api.updateSpoolmanSettings).not.toHaveBeenCalled();
+
+      await user.click(screen.getByRole('button', { name: 'Save and remove' }));
+      await waitFor(() =>
+        expect(api.updateSpoolmanSettings).toHaveBeenCalledWith({ spoolman_url: 'http://spoolman.lan:7912' }),
+      );
+    });
+
+    it('cancel sends nothing', async () => {
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+      await editAddress(user);
+
+      await user.click(screen.getByRole('button', { name: 'Save address' }));
+      await user.click(await screen.findByRole('button', { name: 'Cancel' }));
+
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      expect(api.updateSpoolmanSettings).not.toHaveBeenCalled();
+    });
+
+    it('an address that changes no database is saved at once', async () => {
+      vi.mocked(api.getSpoolmanAddressChangePreview).mockResolvedValue({
+        base_change: false,
+        slot_bindings: 0,
+        k_links: 0,
+        blocked: false,
+        printing: [],
+      });
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+      const input = await screen.findByPlaceholderText('http://192.168.1.100:7912');
+      await user.clear(input);
+
+      await user.click(screen.getByRole('button', { name: 'Save address' }));
+      await waitFor(() => expect(api.updateSpoolmanSettings).toHaveBeenCalledWith({ spoolman_url: '' }));
+      expect(screen.queryByText('Save the Spoolman address?')).not.toBeInTheDocument();
     });
   });
 

@@ -309,7 +309,7 @@ class TestMinusOneWithNoExternalHolderLoaded:
             ),
             patch("backend.app.services.spoolman_tracking._get_printer_serial", AsyncMock(return_value="")),
             patch(
-                "backend.app.services.spoolman_tracking._resolve_spool_id_via_slot_assignment",
+                "backend.app.services.spoolman_tracking._resolve_bound_spool",
                 AsyncMock(return_value=None),
             ),
             patch("backend.app.services.spoolman_tracking._load_journal_events", AsyncMock(return_value=[])),
@@ -335,9 +335,9 @@ class TestMinusOneWithNoExternalHolderLoaded:
         client.use_spool = AsyncMock()
 
         async def bound(_printer_id, ams_id, tray_id):
-            return 77 if (ams_id, tray_id) == (255, 0) else None
+            return (77, None) if (ams_id, tray_id) == (255, 0) else None
 
-        with patch("backend.app.services.spoolman_tracking._resolve_spool_id_via_slot_assignment", bound):
+        with patch("backend.app.services.spoolman_tracking._resolve_bound_spool", bound):
             updated = await _report_spool_usage_for_slots(
                 client, [(1, 12.0)], {0: {"tray_uuid": "TRAY0"}}, [-1], "Archive 144", "", printer_id=1
             )

@@ -2523,6 +2523,49 @@ class NotificationService:
             variables=variables,
         )
 
+    async def on_print_usage_spool_changed(
+        self,
+        printer_id: int,
+        printer_name: str,
+        changed_slots: list[dict[str, str]],
+        db: AsyncSession,
+    ):
+        """A finished print's slot named a Spoolman spool that is another one now (m266).
+
+        Not charged, and the slot's binding removed (spec ``spoolman-binding-identity`` §8).
+        The missing-spool-assignment EVENT — same toggle, subscription and inbox entry —
+        with its own template. ``changed_slots`` carry ``slot``, ``grams`` (empty when no
+        figure could be worked out for the bound spool) and ``spool`` (the Spoolman number).
+        """
+        if not changed_slots:
+            return
+
+        providers = await self._get_providers_for_event(db, "on_print_missing_spool_assignment", printer_id)
+        if not providers:
+            return
+
+        def _line(slot: dict[str, str]) -> str:
+            grams = f"{slot['grams']} g, " if slot.get("grams") else ""
+            return f"- {slot.get('slot', 'Unknown')}: {grams}Spoolman #{slot.get('spool', '?')}"
+
+        variables = {
+            "printer": printer_name,
+            "missing_slots": ", ".join(slot.get("slot", "Unknown") for slot in changed_slots),
+            "missing_slot_details": "\n".join(_line(slot) for slot in changed_slots),
+        }
+
+        title, message = await self._build_message_from_template(db, "print_usage_spool_changed", variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            "print_missing_spool_assignment",
+            printer_id,
+            printer_name,
+            variables=variables,
+        )
+
     async def on_printer_offline(self, printer_id: int, printer_name: str, db: AsyncSession):
         """Handle printer offline event."""
         providers = await self._get_providers_for_event(db, "on_printer_offline", printer_id)
