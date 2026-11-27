@@ -16,41 +16,48 @@ each function that writes a ``settings`` row whose key is ``spoolman_enabled`` o
   handed on as a value (acceptance A15, A17, A19). The helper is found by its name, an import
   alias (a relative import too), a module path (``cloud_credentials.write``,
   ``backend.app.services.cloud_credentials.write``, a package's ``services.cloud_credentials``),
-  a star import of its module, or a name bound to it or to its module; a name bound to two
-  helpers has no readable key;
+  a star import of its module, or a name the module binds to it or to its module (below); a
+  name bound to two helpers has no readable key;
 - the ``Settings`` constructor (any alias) with such a key, or with no readable key;
 - a SQLAlchemy ``delete`` / ``update`` / ``insert`` (or a name bound to one) of the model or its
   table — ``Settings``, ``Settings.__table__``, a name bound to either,
   ``metadata.tables["settings"]`` — a dialect's insert through its module too; ``.delete()`` /
   ``.update()`` / ``.insert()`` called on the table; a legacy ``query(Settings)…`` bulk
-  ``.delete()`` / ``.update(…)``; a bulk ``*_mappings`` / ``bulk_save_objects`` of the model; a
-  lightweight ``Table("settings", …)``;
-- SQL text that writes the table, its comments aside, with or without a schema:
-  ``INSERT [OR …] INTO``, ``REPLACE INTO``, ``MERGE INTO``, ``UPDATE [OR …]``, ``DELETE FROM``,
+  ``.delete()`` / ``.update(…)``; a bulk ``*_mappings`` of the model; a lightweight
+  ``Table("settings", …)``;
+- SQL text that writes the table, searched as written and with its comments dropped, with or
+  without a schema (spaces around its dot too): ``INSERT [OR …] INTO``, ``REPLACE INTO``, ``MERGE INTO``, ``UPDATE [OR …]``, ``DELETE FROM``,
   ``TRUNCATE`` and ``DROP TABLE`` (the table anywhere in their list), ``ALTER TABLE``, ``COPY``;
 - in a function that names the model: any ``.delete(…)`` (an ORM row, a query, a table bound
   any way), a ``.update()`` / ``.insert()`` without arguments, a ``row.value =``, a
   ``setattr(row, "value", …)``.
 
-A name is bound to a helper, a module, a statement, the model or its table by ``=`` (element by
-element into a tuple or list), an annotated assignment or ``:=``, anywhere in the module. A
-string the scan can read is a literal, a constant of the module or one imported (by name or
-through its module), read the way Python binds the name where it is read: a name the
-function, or one around it, binds itself (a parameter, an assignment, a loop, ``with``,
+The scan follows what the module's own statements bind, and reads an alias only as a bare name
+in that module (acceptance A23, A24). A name is taken for a helper, a module, a statement, the
+model or its table when a statement anywhere in the module binds it to one by ``=`` (element by
+element into a tuple or list), an annotated assignment or ``:=``; an attribute (``C.put``,
+``self.model``) or another module's name for it is not followed. A string the scan can read is a
+literal, or a constant of the module or one imported (by name or through its module). A name a
+function, or one around it, binds in its body (a parameter, an assignment, a loop, ``with``,
 ``except``, a comprehension, a lambda's parameter, a ``match`` capture, ``global`` /
-``nonlocal``) is its own, and its own import is read through its module. A module-level name
-is a constant only when every binding of it at module level is a top-level ``NAME = "…"``, and
-an import only when every one is an import of the same thing; any other binding — an assignment
-after the import, one in a block, a loop, a ``match`` capture, a parameter of a module-level
-lambda, ``del``, ``global`` in a function — or a star import in the module leaves it unread.
+``nonlocal``) is its own, and its own import is read through its module. A module-level name is
+a constant only when every statement of the module that binds it at module level is a
+top-level ``NAME = "…"``, and an import only when each such statement imports the same thing;
+any other — an assignment after the import, one in a block, a loop, a ``match`` capture, a
+parameter of a module-level lambda, ``del``, ``global`` in a function — or a star import in the
+module leaves it unread. A binding no such statement makes is not seen.
 
 Each is a MODE writer, whose door names the mode, a keyed helper (its callers are scanned), or
 is listed in NOT_THE_MODE with the keys it writes; a new writer fails here until it is
 classified. SEEN pins the forms above and NOT_SEEN the resolution. The scan cannot prove that
 no other form exists; BLIND pins examples of what it cannot see: the model, its table or a row
 carried through variables into a function that does not name the model (a parameter, a
-helper's return value), SQL or a table name assembled at run time (an f-string, a sum of
-strings), a helper reached through a name built at run time (``getattr``). The whole-database
+helper's return value); the table under another spelling (``tables[__tablename__]``, the
+mapper, an alias, a DML or DDL class or call); another column of the row (``row.key =``); SQL or
+a table name assembled at run time (an f-string, a sum of strings); a helper reached through a
+name built at run time (``getattr``), through a class attribute, or under another module's name
+for it; a binding the module's statements do not make (an imported module's attribute set from
+outside, a walrus in a definition's header). The whole-database
 restore is outside the scan that way: it replaces the database below it — on SQLite the file,
 through the backup API; on PostgreSQL every table, by names read at run time — and asks for a
 restart.
@@ -65,8 +72,9 @@ from pathlib import Path
 
 APP = Path(__file__).resolve().parents[2] / "app"
 MODEL_MODULE = "backend.app.models.settings"
-_NAME = r"(?:[\"`\[]?\w+[\"`\]]?\.)?[\"`\[]?\w+[\"`\]]?"  # a table, with or without a schema
-_SETTINGS = r"(?:[\"`\[]?\w+[\"`\]]?\.)?[\"`\[]?settings[\"`\]]?\b"
+_SCHEMA = r"(?:[\"`\[]?\w+[\"`\]]?\s*\.\s*)?"  # ``main.``, ``"public" . ``
+_NAME = rf"{_SCHEMA}[\"`\[]?\w+[\"`\]]?"  # a table, with or without a schema
+_SETTINGS = rf"{_SCHEMA}[\"`\[]?settings[\"`\]]?\b"
 _CONFLICT = r"(?:OR\s+(?:ROLLBACK|ABORT|REPLACE|FAIL|IGNORE)\s+)?"  # SQLite's ``INSERT OR …`` / ``UPDATE OR …``
 SQL_WRITE = re.compile(
     rf"\b(?:INSERT\s+{_CONFLICT}INTO\s+|REPLACE\s+INTO\s+|MERGE\s+INTO\s+|UPDATE\s+{_CONFLICT}(?:ONLY\s+)?"
@@ -77,7 +85,7 @@ SQL_WRITE = re.compile(
 )
 SQL_COMMENT = re.compile(r"/\*.*?\*/|--[^\n]*", re.DOTALL)
 STATEMENTS = {"delete", "update", "insert"}
-BULK = {"bulk_insert_mappings", "bulk_update_mappings", "bulk_save_objects"}
+BULK = {"bulk_insert_mappings", "bulk_update_mappings"}  # their first argument is the model
 AMBIGUOUS = "<a name bound to two keyed helpers>"
 
 # A helper whose key comes from its caller: name → (its definition, the key's position in a
@@ -635,6 +643,15 @@ def _helper_keys(call: ast.Call, helper: str):
     return None
 
 
+def _sql_writes(text: str) -> bool:
+    """SQL that writes the table, as written or with its comments dropped (acceptance A22).
+
+    Dropping comments does not know quotes: a ``'--'`` in a literal would cut a real write that
+    follows it, so the text as written is searched too.
+    """
+    return bool(SQL_WRITE.search(text) or SQL_WRITE.search(SQL_COMMENT.sub(" ", text)))
+
+
 def _replaceable_key(partial: ast.Call, helper: str) -> bool:
     """Whether a ``partial`` binds a helper's key by keyword (or ``**``), which its caller can replace."""
     if helper not in KEYED_HELPERS:
@@ -723,11 +740,7 @@ def _writes(names: _Names, nodes, view=None) -> bool:
             if names_model and _called(node) == "setattr" and len(node.args) >= 2:
                 if names.literal(node.args[1], view) in {"value", None}:
                     return True
-        if (
-            isinstance(node, ast.Constant)
-            and isinstance(node.value, str)
-            and SQL_WRITE.search(SQL_COMMENT.sub(" ", node.value))
-        ):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and _sql_writes(node.value):
             return True
         if names_model and isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
@@ -949,6 +962,47 @@ SEEN = {
     "TRUNCATE of two tables": "async def f(db):\n    await db.execute(text('TRUNCATE spools, ONLY public.settings'))\n",
     "DROP TABLE of two tables": "async def f(db):\n    await db.execute(text('DROP TABLE IF EXISTS spools, settings'))\n",
     "ALTER TABLE": "async def f(db):\n    await db.execute(text('ALTER TABLE settings RENAME TO settings_old'))\n",
+    # Acceptance A22: a comment marker inside a literal does not hide the write after it.
+    "a line-comment marker in a literal": (
+        "async def f(db):\n    await db.execute(text(\"WITH x AS (SELECT '--') DELETE FROM settings\"))\n"
+    ),
+    "a line-comment marker before a second statement": (
+        "async def f(conn):\n    await conn.exec_driver_sql(\"UPDATE log SET note = '--'; DELETE FROM settings\")\n"
+    ),
+    "block-comment markers in literals": (
+        "async def f(conn):\n    await conn.exec_driver_sql(\"SELECT '/*'; DELETE FROM settings; SELECT '*/'\")\n"
+    ),
+    "spaces around the schema's dot": "async def f(db):\n    await db.execute(text('UPDATE public . settings SET value = 1'))\n",
+    # Acceptance A26: the rules the reviewer's mutants removed unnoticed.
+    "UPDATE ONLY": "async def f(db):\n    await db.execute(text('UPDATE ONLY settings SET value = 1'))\n",
+    "DELETE FROM ONLY": "async def f(db):\n    await db.execute(text('DELETE FROM ONLY settings'))\n",
+    "ALTER TABLE IF EXISTS ONLY": "async def f(db):\n    await db.execute(text('ALTER TABLE IF EXISTS ONLY settings ADD x int'))\n",
+    "COPY": "async def f(db):\n    await db.execute(text('COPY settings FROM STDIN'))\n",
+    "a table after a starred target": "*_, T8 = None, Settings.__table__\nasync def f(db):\n    await db.execute(T8.delete())\n",
+    "a constant shadowed by except ... as": (
+        "async def f(db, v):\n    try:\n        pass\n    except Exception as KEY:\n        pass\n"
+        "    await set_setting(db, KEY, v)\n"
+    ),
+    "a constant shadowed by a match capture": (
+        "async def f(db, v, x):\n    match x:\n        case str() as KEY:\n            await set_setting(db, KEY, v)\n"
+    ),
+    "a constant shadowed by a mapping pattern's rest": (
+        "async def f(db, v, x):\n    match x:\n        case {**KEY}:\n            await set_setting(db, KEY, v)\n"
+    ),
+    "a constant rebound by a module-level except ... as": (
+        "try:\n    pass\nexcept Exception as KEY:\n    pass\nasync def f(db, v):\n    await set_setting(db, KEY, v)\n"
+    ),
+    "a constant rebound by a module-level star pattern": (
+        "match ['spoolman_enabled']:\n    case [*KEY]:\n        pass\n"
+        "async def f(db, v):\n    await set_setting(db, KEY, v)\n"
+    ),
+    "a constant rebound by a module-level mapping pattern's rest": (
+        "match {}:\n    case {**KEY}:\n        pass\nasync def f(db, v):\n    await set_setting(db, KEY, v)\n"
+    ),
+    "a constant rebound through global in an except handler": (
+        "def g():\n    try:\n        pass\n    except Exception:\n        global KEY\n        KEY = 'spoolman_enabled'\n"
+        "async def f(db, v):\n    await set_setting(db, KEY, v)\n"
+    ),
 }
 
 # What the scan reads as a key that is not the mode: a constant stays a constant.
@@ -1005,6 +1059,29 @@ BLIND = {
     "SQL summed from strings": "async def f(db):\n    await db.execute(text('DELETE FROM ' + 'settings'))\n",
     "a helper reached through a name at run time": (
         "async def f(db, module, v):\n    await getattr(module, 'set_setting')(db, 'spoolman_enabled', v)\n"
+    ),
+    # Acceptance A23-A25: what the module's own statements do not bind, an alias not read as a bare
+    # name, the table spelled otherwise, another column of the row.
+    "an imported module's attribute set from outside": (
+        "from backend.app.services import energy_price\nenergy_price.SETTING_KEY = 'spoolman_enabled'\n"
+        "async def f(db, v):\n    await set_setting(db, energy_price.SETTING_KEY, v)\n"
+    ),
+    "a walrus in a definition's header": (
+        "def g(x=(KEY := 'spoolman_enabled')):\n    return x\nasync def f(db, v):\n    await set_setting(db, KEY, v)\n"
+    ),
+    "a helper through a class attribute": (
+        "class H:\n    put = set_setting\nasync def f(db, key, v):\n    await H.put(db, key, v)\n"
+    ),
+    "a helper under another module's name for it": (
+        "from backend.app.synthetic_a import put_a\nasync def f(db, key, v):\n    await put_a(db, key, v)\n"
+    ),
+    "the table under another spelling": (
+        "async def f(db):\n"
+        "    await db.execute(insert(Settings.metadata.tables[Settings.__tablename__]).values(key='k', value='v'))\n"
+    ),
+    "a DDL call": "async def f(conn):\n    await conn.run_sync(Settings.__table__.drop)\n",
+    "another column of the row": (
+        "async def f(db, k):\n    row = await db.get(Settings, k)\n    row.key = 'spoolman_enabled'\n"
     ),
 }
 
