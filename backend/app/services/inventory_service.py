@@ -141,7 +141,15 @@ def _display_name_columns() -> dict[str, Any]:
     }
 
 
-def display_name_expr(template: str | None):
+def _padded_id_text():
+    """The spool number as ten digits (2³¹ − 1 has ten): the last ten characters
+    of ``'0000000000' || id``. ``substr`` and ``length`` read the same on SQLite
+    and PostgreSQL, which share neither ``lpad`` nor ``printf``."""
+    digits = cast(Spool.id, String)
+    return func.substr(literal("0000000000") + digits, func.length(digits) + 1)
+
+
+def display_name_expr(template: str | None, *, padded_id: bool = False):
     """The naming template as one concatenated TEXT expression, or ``None`` when
     there is nothing to compose.
 
@@ -149,9 +157,15 @@ def display_name_expr(template: str | None):
     ``label_template.resolve`` and the frontend both make, so a typo shows up as
     ``{colour_name}`` in the name AND is findable by searching for it, rather
     than being a silent gap in two places that disagree.
+
+    ``padded_id`` writes ``{id}`` as ten digits, for ordering only (see
+    :func:`spool_tiebreak`): a name that carries the number then puts #2 before
+    #10. What a person sees and searches keeps the plain number.
     """
     text = (template or "").strip() or DEFAULT_SPOOL_DISPLAY_TEMPLATE
     columns = _display_name_columns()
+    if padded_id:
+        columns["id"] = _padded_id_text()
 
     parts: list[Any] = []
     # One capturing group, so split() alternates literal, key, literal, key…
@@ -168,6 +182,24 @@ def display_name_expr(template: str | None):
     for part in parts[1:]:
         composed = composed + part
     return composed
+
+
+def template_shows_spool_id(template: str | None) -> bool:
+    """Does the naming template carry the spool number (``{id}``)?"""
+    return "id" in _TEMPLATE_TOKEN.findall((template or "").strip() or DEFAULT_SPOOL_DISPLAY_TEMPLATE)
+
+
+def spool_tiebreak(template: str | None) -> list:
+    """What a spool order leaves equal, always ascending (owner, 2026-11-27).
+
+    By the name the template composes when it carries the spool number,
+    otherwise by the number; ``Spool.id`` closes it either way, because a paged
+    list needs one place for every row. The Filaments page's comparator
+    (``InventoryPage.compareSpools``) breaks ties the same way.
+    """
+    if template_shows_spool_id(template):
+        return [func.lower(display_name_expr(template, padded_id=True)).asc(), Spool.id.asc()]
+    return [Spool.id.asc()]
 
 
 # ``#123`` — the number on a spool's label — names that spool exactly.
@@ -357,7 +389,9 @@ def _spool_sort_columns() -> dict[str, Any]:
     }
 
 
-def _spool_order_by(sort_by: str | None, condition_values: dict[int, float] | None = None) -> tuple[list, bool]:
+def _spool_order_by(
+    sort_by: str | None, condition_values: dict[int, float] | None = None, template: str | None = None
+) -> tuple[list, bool]:
     """Resolve ``sort_by`` (``<column>_asc``/``<column>_desc``) into ORDER BY
     clauses, plus whether the assignment/printer join is needed (``location``
     sort only).
@@ -367,19 +401,18 @@ def _spool_order_by(sort_by: str | None, condition_values: dict[int, float] | No
     ``ArchiveService.list_archives`` / the library file list (a stale
     bookmark should still open the page, not 400).
 
-    ⚠️ ALWAYS appends ``Spool.id DESC`` as the tiebreak, regardless of the
-    primary direction (same convention as ``ArchiveService``/the library file
-    list) — this list PAGES, and rows sharing a sort key have no defined order
-    between two queries otherwise.
+    ⚠️ ALWAYS ends in :func:`spool_tiebreak`, ascending whatever the primary
+    direction (owner, 2026-11-27) — this list PAGES, and rows sharing a sort
+    key have no defined order between two queries otherwise.
     """
-    tiebreak = Spool.id.desc()
+    tiebreak = spool_tiebreak(template)
 
     if not sort_by:
-        return [*_DEFAULT_ORDER, tiebreak], False
+        return [*_DEFAULT_ORDER, *tiebreak], False
 
     sort_key, _, sort_dir = sort_by.rpartition("_")
     if sort_dir not in ("asc", "desc"):
-        return [*_DEFAULT_ORDER, tiebreak], False
+        return [*_DEFAULT_ORDER, *tiebreak], False
 
     if sort_key in {"temperature", "humidity", "battery"} and condition_values is not None:
         # Values are one live snapshot for this request, keyed by the spool's
@@ -387,7 +420,7 @@ def _spool_order_by(sort_by: str | None, condition_values: dict[int, float] | No
         # OFFSET, so spools on later pages can move to page one correctly.
         value = case(condition_values, value=Spool.location_id, else_=None) if condition_values else literal(None)
         clause = value.asc().nulls_last() if sort_dir == "asc" else value.desc().nulls_last()
-        return [clause, tiebreak], False
+        return [clause, *tiebreak], False
 
     if sort_key == "location":
         # OPERATOR RULING 2026-08-29: implemented server-side (the operator
@@ -407,18 +440,18 @@ def _spool_order_by(sort_by: str | None, condition_values: dict[int, float] | No
                 SpoolAssignment.ams_id.desc().nulls_last(),
                 SpoolAssignment.tray_id.desc(),
             ]
-        return [*clauses, tiebreak], True
+        return [*clauses, *tiebreak], True
 
     if sort_key == "display_name":
         # Composite (material, brand, color_name) — the template sort
         # approximates the client's formatted display name (spec-accepted).
         cols = (Spool.material, Spool.brand, Spool.color_name)
         clauses = [c.asc() for c in cols] if sort_dir == "asc" else [c.desc() for c in cols]
-        return [*clauses, tiebreak], False
+        return [*clauses, *tiebreak], False
 
     column = _spool_sort_columns().get(sort_key)
     if column is None:
-        return [*_DEFAULT_ORDER, tiebreak], False
+        return [*_DEFAULT_ORDER, *tiebreak], False
 
     if sort_key in _DATETIME_NULLABLE_SORT_KEYS:
         # These 3 can't be coalesced to "" like the TEXT columns (a
@@ -429,7 +462,7 @@ def _spool_order_by(sort_by: str | None, condition_values: dict[int, float] | No
         clause = column.asc().nulls_first() if sort_dir == "asc" else column.desc().nulls_last()
     else:
         clause = column.asc() if sort_dir == "asc" else column.desc()
-    return [clause, tiebreak], False
+    return [clause, *tiebreak], False
 
 
 # ── The operator's spool order (Settings → Filament) ────────────────────────
@@ -484,8 +517,8 @@ def parse_spool_sort_order(text: str | None) -> list[tuple[str, str]]:
 
 
 def spool_order_clauses(levels: list[tuple[str, str]], template: str | None) -> list:
-    """ORDER BY for a chain, ending in the ``Spool.id DESC`` tiebreak every paged spool list carries (unless
-    the chain orders by id itself)."""
+    """ORDER BY for a chain, ending in a ``Spool.id DESC`` tiebreak (unless the chain orders by id itself) so
+    every row of a paged list has one place."""
     columns = _spool_sort_columns()
     clauses = []
     for key, direction in levels:
@@ -732,7 +765,9 @@ async def list_spools(
         # No column asked for: the operator's own order (see ``spool_default_order``).
         query = query.where(*filters).order_by(*default_order)
     else:
-        order_clauses, needs_location_join = _spool_order_by(sort_by, condition_values)
+        order_clauses, needs_location_join = _spool_order_by(
+            sort_by, condition_values, await spool_display_template(db)
+        )
         if needs_location_join:
             query = _join_first_assignment(query)
         query = query.where(*filters).order_by(*order_clauses)
@@ -1129,12 +1164,13 @@ def _parse_member_ids(raw) -> list[int]:
     return sorted(int(member_id) for member_id in raw)  # PostgreSQL array_agg
 
 
-def _spool_group_order_by(sub, sort_by: str | None) -> list:
+def _spool_group_order_by(sub, sort_by: str | None, template: str | None = None) -> list:
     """ORDER BY over the grouped subquery's output columns (so PostgreSQL
-    never has to match grouping expressions), ALWAYS ending in the
-    ``rep_id DESC`` tiebreak — min member ids are unique across groups
-    (every spool belongs to exactly one), so grouped pages are stable the
-    same way the flat list's ``Spool.id`` tiebreak makes its pages stable.
+    never has to match grouping expressions), ALWAYS ending in the flat
+    list's :func:`spool_tiebreak` over the representative — the joined
+    ``Spool`` is the group's min-id member (``rep_id``), and min member ids
+    are unique across groups (every spool belongs to exactly one), so grouped
+    pages are stable the same way flat pages are.
 
     Omitted ``sort_by`` mirrors the flat default (material, brand,
     color_name) over the key columns — which are coalesced, so a NULL
@@ -1143,20 +1179,20 @@ def _spool_group_order_by(sub, sort_by: str | None) -> list:
     pre-existing client extractor fold, not a stage-C addition — applied
     OUTSIDE the subquery where no GROUP BY constraint applies."""
     assert_group_sort_supported(sort_by)
-    tiebreak = sub.c.rep_id.desc()
+    tiebreak = spool_tiebreak(template)
 
     if not sort_by:
-        return [sub.c.material.asc(), sub.c.brand.asc(), sub.c.color_name.asc(), tiebreak]
+        return [sub.c.material.asc(), sub.c.brand.asc(), sub.c.color_name.asc(), *tiebreak]
 
     key, _, direction = sort_by.rpartition("_")
     if key == "display_name":
         # Same composite the flat mode's display_name resolves to.
         cols = (sub.c.material, sub.c.brand, sub.c.color_name)
         clauses = [c.asc() for c in cols] if direction == "asc" else [c.desc() for c in cols]
-        return [*clauses, tiebreak]
+        return [*clauses, *tiebreak]
 
     if key in {"id", "lot", "purchase_date", "location"}:
-        clauses, _ = _spool_order_by(sort_by)
+        clauses, _ = _spool_order_by(sort_by, template=template)
         return clauses
 
     label_total = sub.c.label_weight * sub.c.group_count
@@ -1168,7 +1204,7 @@ def _spool_group_order_by(sub, sort_by: str | None) -> list:
         "net": sub.c.remaining_total,
         "remaining": func.coalesce(sub.c.remaining_total / func.nullif(label_total, 0), 0),
     }[key]
-    return [expr.asc() if direction == "asc" else expr.desc(), tiebreak]
+    return [expr.asc() if direction == "asc" else expr.desc(), *tiebreak]
 
 
 async def list_spool_groups(
@@ -1197,7 +1233,7 @@ async def list_spool_groups(
     concurrently-deleted spool can never leave a group row without its
     representative."""
     sub = _spool_groups_subquery(filters)
-    order_clauses = _spool_group_order_by(sub, sort_by)
+    order_clauses = _spool_group_order_by(sub, sort_by, await spool_display_template(db))
     query = (
         select(
             Spool,

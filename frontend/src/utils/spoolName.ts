@@ -201,6 +201,16 @@ export const SPOOL_PLACEHOLDERS: SpoolPlaceholder[] = [
 // AppSettings) — the template stays the operator's to change.
 export const DEFAULT_SPOOL_DISPLAY_TEMPLATE = '{brand} {material} {subtype} {color_name}';
 
+/**
+ * Does the naming template show the spool number (`{id}`)? Spools a sorted
+ * column leaves equal then follow their name, otherwise their number — the
+ * server's `inventory_service.spool_tiebreak`.
+ */
+export function templateShowsSpoolId(template: string | undefined | null): boolean {
+  const effective = template && template.trim() ? template : DEFAULT_SPOOL_DISPLAY_TEMPLATE;
+  return /\{id\}/.test(effective);
+}
+
 const placeholderMap = new Map(SPOOL_PLACEHOLDERS.map((p) => [p.key, p]));
 
 /**

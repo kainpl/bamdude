@@ -67,6 +67,7 @@ import {
   DEFAULT_SPOOL_DISPLAY_TEMPLATE,
   formatSpoolDisplayName,
   spoolDisplayNameMatches,
+  templateShowsSpoolId,
 } from '../utils/spoolName';
 import { compareByOrder, parseSpoolSortOrder } from '../utils/spoolSort';
 import { bulkResetOutcome } from '../utils/bulkResetOutcome';
@@ -2055,6 +2056,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
     [spoolSortLevels, spoolDisplayTemplate],
   );
 
+  const nameShowsSpoolId = useMemo(() => templateShowsSpoolId(spoolDisplayTemplate), [spoolDisplayTemplate]);
+
   // Shared by the flat client list, group headers and expanded group members.
   const compareSpools = useCallback((a: InventorySpool, b: InventorySpool): number => {
     if (!sortState) {
@@ -2064,11 +2067,16 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
     // rather than any raw column — locale-aware so "Ясен" sorts cyrillically
     // and digits within a name (e.g. "100% PLA") compare numerically where
     // numeric flag is available.
+    const nameFor = (s: InventorySpool) =>
+      formatSpoolDisplayName(s, spoolDisplayTemplate).toLowerCase();
+    const byName = () => nameFor(a).localeCompare(nameFor(b), undefined, { numeric: true });
+    // What the column leaves equal goes ascending: by the name when it shows
+    // the spool number, otherwise by the number — the server's
+    // `inventory_service.spool_tiebreak` (owner, 2026-11-27).
+    const tieBreak = () => (nameShowsSpoolId && byName()) || a.id - b.id;
     if (sortState.column === 'display_name') {
-      const nameFor = (s: InventorySpool) =>
-        formatSpoolDisplayName(s, spoolDisplayTemplate).toLowerCase();
-      const cmp = nameFor(a).localeCompare(nameFor(b), undefined, { numeric: true });
-      return (sortState.direction === 'asc' ? cmp : -cmp) || b.id - a.id;
+      const cmp = byName();
+      return (sortState.direction === 'asc' ? cmp : -cmp) || tieBreak();
     }
     const extractor = columnSortValues[sortState.column];
     if (!extractor) return 0;
@@ -2076,8 +2084,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
     const vb = extractor(b, assignmentMap);
     if (va < vb) return sortState.direction === 'asc' ? -1 : 1;
     if (va > vb) return sortState.direction === 'asc' ? 1 : -1;
-    return b.id - a.id;
-  }, [sortState, assignmentMap, spoolDisplayTemplate, usesSettingsOrder, settingsOrderCompare]);
+    return tieBreak();
+  }, [sortState, assignmentMap, spoolDisplayTemplate, nameShowsSpoolId, usesSettingsOrder, settingsOrderCompare]);
   const sortedSpools = useMemo(() => [...filteredSpools].sort(compareSpools), [filteredSpools, compareSpools]);
 
   // Group similar spools when toggle is active — Spoolman's CLIENT-side

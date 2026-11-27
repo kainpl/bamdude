@@ -558,6 +558,34 @@ class TestPagingTiebreak:
         assert sorted(all_ids) == sorted(s.id for s in spools)
         assert len(set(all_ids)) == 4
 
+    @pytest.mark.parametrize("direction", ["asc", "desc"])
+    async def test_ties_follow_the_number_ascending_whatever_the_direction(self, db_session, direction):
+        """Owner 2026-11-27: what the column leaves equal goes by spool number,
+        ascending, while the naming template does not show it (the default
+        does not). The brands run against the numbers, so a name order fails."""
+        spools = [await _spool(db_session, brand=f"Brand{9 - i}") for i in range(3)]  # all full: a tie
+        filters = await inventory_service.build_spool_filters(db_session)
+        rows = await inventory_service.list_spools(db_session, filters=filters, sort_by=f"remaining_{direction}")
+        assert [s.id for s in rows] == sorted(s.id for s in spools)
+
+    @pytest.mark.parametrize("direction", ["asc", "desc"])
+    async def test_ties_follow_the_name_when_the_template_shows_the_number(self, db_session, direction):
+        """…and by the name, ascending, when the template shows the number —
+        the number compared as a number, so #2 comes before #10."""
+        db_session.add(Settings(key="spool_display_template", value="{material} #{id}"))
+        await db_session.commit()
+        await _spool(db_session, id=30, material="ABS")
+        await _spool(db_session, id=2, material="PLA")
+        await _spool(db_session, id=10, material="PLA")
+        filters = await inventory_service.build_spool_filters(db_session)
+        rows = await inventory_service.list_spools(db_session, filters=filters, sort_by=f"remaining_{direction}")
+        assert [s.id for s in rows] == [30, 2, 10]
+
+    async def test_grouped_ties_follow_the_representative_number(self, db_session):
+        spools = [await _spool(db_session, color_name=f"C{9 - n}") for n in range(3)]
+        groups = await _groups(db_session, sort_by="material_desc")
+        assert [g["representative"].id for g in groups] == sorted(s.id for s in spools)
+
 
 class TestNullableSortColumnsMatchClientCoalescing:
     """Review finding 5: the sort matrix fixture never exercised a bare NULL

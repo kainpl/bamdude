@@ -215,6 +215,7 @@ The configuration editor preserves the quantities and descriptions of other save
 
 ### Changed
 
+- **Spools that tie on the sorted column come in ascending order.** Sorted by a column — remaining, for example — spools with the same value used to come newest first. They now come by spool ID, lowest first, in either direction of the column. If your spool name template shows the ID (`{id}`), they follow their name instead, with the ID compared as a number (#2 before #10). Grouped mode orders tied groups the same way.
 - **Notification providers are listed alphabetically.** The provider type list in the Add Notification Provider dialog is sorted by name in the interface language, instead of a fixed order.
 - **The AI failure notification names its detector.** The default text adds *Provider* and *Print quality* (OctoEverywhere's; Obico shows its confidence as before). A template you changed keeps its text.
 - **A full backup restore never turns OctoEverywhere on by itself.** If the restored backup had OctoEverywhere on, it is off after the restore, and every administrator gets an inbox notice to turn it on again if this is the same farm; the key and the other settings are kept. Obico restores as it was.

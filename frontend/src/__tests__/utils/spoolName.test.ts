@@ -8,6 +8,7 @@ import {
   formatSpoolDisplayName,
   spoolDisplayNameMatches,
   SPOOL_PLACEHOLDERS,
+  templateShowsSpoolId,
 } from '../../utils/spoolName';
 
 function makeSpool(overrides: Partial<InventorySpool> = {}): InventorySpool {
@@ -107,6 +108,20 @@ describe('formatSpoolDisplayName', () => {
         '{brand} {material} {subtype} {color_name}',
       ),
     ).toBe('PETG Black');
+  });
+});
+
+describe('templateShowsSpoolId (sort ties follow the name only then)', () => {
+  it('is true only for a template with the {id} placeholder', () => {
+    expect(templateShowsSpoolId('{material} #{id}')).toBe(true);
+    expect(templateShowsSpoolId('{id}')).toBe(true);
+    expect(templateShowsSpoolId('{material} {lot}')).toBe(false);
+    expect(templateShowsSpoolId('{material} id')).toBe(false);
+  });
+
+  it('reads the default for an empty template, and the default has no number', () => {
+    expect(templateShowsSpoolId('')).toBe(templateShowsSpoolId(DEFAULT_SPOOL_DISPLAY_TEMPLATE));
+    expect(templateShowsSpoolId(null)).toBe(false);
   });
 });
 
