@@ -318,6 +318,30 @@ async def test_a_product_import_never_reuses_a_private_folder_named_like_the_pro
     assert again.id == destination.id, "the shared product folder is reused"
 
 
+async def test_a_product_import_reuses_the_importers_own_folder_of_that_name(db_session, world):
+    """Acceptance A01: a product folder imported before m268 became its importer's own; the
+    same importer's next import finds it again instead of making a second "Lamp" beside it."""
+    from backend.app.models.user import User
+    from backend.app.services.library_folder_access import FolderActor
+    from backend.app.services.product_card import _import_destination
+
+    theirs = LibraryFolder(name="Lamp", created_by_id=world.bob_id)
+    own = LibraryFolder(name="Lamp", created_by_id=world.alice_id)
+    db_session.add_all([theirs, own])
+    await db_session.commit()
+
+    for sees_all in (False, True):  # an admin-like importer never takes bob's either
+        alice = FolderActor(await db_session.get(User, world.alice_id), sees_all)
+        destination = await _import_destination(db_session, None, "Lamp", alice)
+        assert destination.id == own.id
+
+    shared = LibraryFolder(name="Lamp", shared=True)
+    db_session.add(shared)
+    await db_session.commit()
+    alice = FolderActor(await db_session.get(User, world.alice_id), False)
+    assert (await _import_destination(db_session, None, "Lamp", alice)).id == shared.id, "a shared one first"
+
+
 async def test_an_importers_root_folder_is_the_shared_one(db_session, world):
     from backend.app.models.user import User
     from backend.app.services.library_folder_access import FolderActor, writable_folder_named

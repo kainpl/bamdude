@@ -240,9 +240,11 @@ async def writable_folder_named(
     Two folders of one name under one parent are normal now (mine and someone's private
     one), so a lookup by name takes the first, by id, the actor may write — never
     ``scalar_one_or_none``. A ``system`` folder (MakerWorld, Manyfold, Telegram, a
-    product's folder) is everyone's: only a shared one answers, so every importer —
-    whoever it acts for — lands in the same folder and never in someone's private folder
-    that happens to carry the name. None → a new folder: shared and ownerless for a
+    product's folder) is everyone's: a shared one answers first, so every importer —
+    whoever it acts for — lands in the same folder; then one of the actor's OWN (a product
+    folder imported before m268 became its importer's, and must be found again — acceptance
+    A01); never someone else's private folder that happens to carry the name, even for an
+    actor who may write anywhere. None → a new folder: shared and ownerless for a
     system folder or under an external parent, else the actor's own. ``managed_only``:
     an external folder never answers (the importers'); a ZIP's path segments keep finding
     the share's own subfolders. ``products`` is loaded. Flushes, never commits.
@@ -260,9 +262,13 @@ async def writable_folder_named(
     )
     if managed_only:
         query = query.where(LibraryFolder.is_external.is_(False))
+    candidates = (await db.execute(query)).scalars().all()
     if system:
-        query = query.where(LibraryFolder.shared.is_(True))
-    for folder in (await db.execute(query)).scalars().all():
+        # Shared first, then the actor's own; another user's private folder never.
+        candidates = [f for f in candidates if f.shared] + [
+            f for f in candidates if not f.shared and owns(f, actor.user)
+        ]
+    for folder in candidates:
         if can_write_folder(folder, actor):
             return folder, False
     if system:
