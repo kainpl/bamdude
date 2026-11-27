@@ -128,3 +128,23 @@ async def test_the_usage_counts_a_dispatch_error_apart_from_a_failed_print(db_se
     payload = await telemetry._build_payload(db_session)
 
     assert payload["usage"] == {"prints_completed": 1, "prints_failed": 3, "dispatch_errors": 2}
+
+
+@pytest.mark.parametrize(
+    "obico,octoeverywhere",
+    [(None, None), ("true", "false"), ("false", "true"), ("true", None)],
+)
+async def test_the_features_report_each_failure_detector_by_its_own_flag(db_session, obico, octoeverywhere):
+    """The cloud stores ``features.obico`` and ``features.octoeverywhere`` as two columns
+    (bamdude-cloud Migration010). Each follows its own setting, and an unset one reads false."""
+    from backend.app.models.settings import Settings
+
+    for key, value in (("obico_enabled", obico), ("octoeverywhere_enabled", octoeverywhere)):
+        if value is not None:
+            db_session.add(Settings(key=key, value=value))
+    await db_session.commit()
+
+    features = await telemetry._features(db_session)
+
+    assert features["obico"] is (obico == "true")
+    assert features["octoeverywhere"] is (octoeverywhere == "true")
