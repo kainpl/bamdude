@@ -83,6 +83,29 @@ async def test_invalid_notify_configuration_cannot_be_created(async_client, conf
     assert response.status_code == 422
 
 
+async def test_disabled_provider_with_a_token_is_still_validated(async_client):
+    """Ours (G01) skips the check only for a disabled provider without its token; upstream checks every save."""
+    bad = {**CONFIG, "live_activity_tint": "green"}
+    response = await async_client.post(
+        "/api/v1/notifications/", json={"name": "Notify", "provider_type": "notify", "enabled": False, "config": bad}
+    )
+    assert response.status_code == 422
+    provider_id = await create_provider(async_client)
+    response = await async_client.patch(
+        f"/api/v1/notifications/{provider_id}",
+        json={"enabled": False, "config": {**SHOWN, "live_activity_tint": "green"}, **KEEP},
+    )
+    assert response.status_code == 422
+
+
+async def test_disabled_provider_without_a_token_is_saved(async_client):
+    config = {"device_id": CONFIG["device_id"]}
+    response = await async_client.post(
+        "/api/v1/notifications/", json={"name": "Notify", "provider_type": "notify", "enabled": False, "config": config}
+    )
+    assert response.status_code == 200
+
+
 async def test_empty_config_update_is_rejected_and_keeps_previous_credentials(async_client):
     provider_id = await create_provider(async_client)
     response = await async_client.patch(f"/api/v1/notifications/{provider_id}", json={"config": {}, **KEEP})

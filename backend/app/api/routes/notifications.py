@@ -253,8 +253,10 @@ async def create_notification_provider(
         creating=True,
         enabled=provider_data.enabled,
     )
-    # Ours (G01): a disabled provider may be saved without its secret; enabling it checks again.
-    if provider_data.provider_type.value == "notify" and provider_data.enabled:
+    # Ours (G01): only a disabled provider without its token skips the check; enabling it checks again.
+    if provider_data.provider_type.value == "notify" and (
+        provider_data.enabled or (isinstance(config, dict) and config.get("token"))
+    ):
         _check_notify_config(config)
 
     # Asked BEFORE the write; compared again after the commit (see the helper).
@@ -697,9 +699,13 @@ async def update_notification_provider(
             validate_required=update_data.enabled is True,
         )
         update_dict["config"] = resolved_config
-    # Ours (G01): a disabled provider may be saved without its secret; enabling it checks again.
-    if kind == "notify" and (provider.enabled if update_data.enabled is None else update_data.enabled):
-        _check_notify_config(update_dict.get("config", old_config))
+    # Ours (G01): only a disabled provider without its token skips the check; enabling it checks again.
+    notify_config = update_dict.get("config", old_config)
+    if kind == "notify" and (
+        (provider.enabled if update_data.enabled is None else update_data.enabled)
+        or (isinstance(notify_config, dict) and notify_config.get("token"))
+    ):
+        _check_notify_config(notify_config)
 
     for key, value in update_dict.items():
         if key == "config" and value is not None:
