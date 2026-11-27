@@ -1,10 +1,10 @@
 """Retained relay state must reflect the canonical plate gate and live fans."""
 
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
+from backend.app.services.bambu_mqtt import PrinterState
 from backend.app.services.mqtt_relay import MQTTRelayService
 
 
@@ -13,26 +13,8 @@ async def test_plate_clear_edge_updates_dedicated_topic_and_retained_status():
     relay = MQTTRelayService()
     relay.enabled = relay.connected = True
     relay._publish = MagicMock()
-    state = SimpleNamespace(
-        connected=True,
-        state="IDLE",
-        progress=0,
-        remaining_time=0,
-        layer_num=0,
-        total_layers=0,
-        current_print=None,
-        subtask_name=None,
-        gcode_file=None,
-        temperatures={},
-        wifi_signal=None,
-        chamber_light=None,
-        speed_level=None,
-        cooling_fan_speed=None,
-        big_fan1_speed=None,
-        big_fan2_speed=None,
-        heatbreak_fan_speed=None,
-        airduct_parts={10: {"state": 63}, 3: {"state": 1}},
-    )
+    # A real PrinterState: the status payload is shaped by printer_state_to_dict too (upstream #3401).
+    state = PrinterState(connected=True, state="IDLE", airduct_parts={10: {"state": 63}, 3: {"state": 1}})
 
     await relay.on_printer_status(1, state, "P1", "SN1")
     first = relay._publish.call_args.args[1]
