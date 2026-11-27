@@ -784,7 +784,9 @@ async def add_next_block_to_queue(
     if any(item.project_id is not None or item.project_line_id is not None for item in data.items):
         await ensure_may_file_future(creds)
     await _ensure_may_queue_archives(db, creds, current_user, [item.archive_id for item in data.items])
-    items, queue = await add_next_block_to_printer_queue(db, data.items, current_user, authority=await creds.capture())
+    items, queue = await add_next_block_to_printer_queue(
+        db, data.items, current_user, authority=await creds.capture(), after_item_ids=data.after_item_ids
+    )
     result = await db.execute(
         select(PrintQueueItem)
         .options(

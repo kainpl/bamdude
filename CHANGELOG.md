@@ -80,6 +80,7 @@ The configuration editor preserves the quantities and descriptions of other save
 
 ### Added
 
+- **Schedule points files of several printer models at Calculate.** Upstream offers "alternatives" — one job printed by whichever matching printer is free — when the selected files are sliced for different models. BamDude does that through **Calculate**, which works out the parts the files print and can split them between the models; the scheduling window now says so when a selection spans several printer models, with a button that ends the run and opens Calculate on the files still to go.
 - **The MQTT relay's printer status carries the door, the extruder, the filaments and HMS errors (upstream #3401).** Besides temperatures, fans and progress, the retained `printers/{serial}/status` topic now has `door_open`, `active_extruder`, `tray_now`, the AMS units (`ams`), the external spool (`vt_tray`) and the active HMS errors (`hms_errors`), in the same shape as the web interface's live updates — a Home Assistant or Node-RED automation no longer has to poll the REST API for them. A printer going offline or coming back is published at once instead of waiting out the one-per-second throttle.
 - **Notify! notification provider, with iOS Live Activities and Lock Screen widgets.** Notifications can go to the Notify! app: add a provider of type Notify! with the device or group ID and the token the app shows. The token is kept like every other provider secret, bound to its device.
   - **Alerts:** the usual events, printer filter, quiet hours and daily digest apply as for every provider, with the camera photo attached (it needs an HTTPS *External URL*). Each printer gets its own notification thread. **Time Sensitive problem alerts** sends failures, stops, printer errors and failure detection as time-sensitive notifications.
@@ -386,6 +387,7 @@ The configuration editor preserves the quantities and descriptions of other save
 
 ### Fixed
 
+- **Several files scheduled with Run next keep the order you chose them in (upstream #3471).** Run next put every new block in front of all pending work — so in a run of several selected files, or several files of one group, each file went in front of the one before and the printer ran them backwards. Each block now names the jobs the run already placed, and goes right behind them, still ahead of the printer's other pending work. Pending work placed by Run next also starts at position 1, like every other pending job, leaving position 0 to the printer's claimed direct print.
 - **A failed OIDC sign-in shows why.** The callback sent its errors to the start page, which passed a guest on to the login page without the error, so nothing was shown; they now land on the login page itself. An OIDC sign-in that came back from the identity provider no longer starts the automatic SSO redirect again — not during 2FA and not after an error.
 - **A deleted group's number is never given to a new group.** On SQLite the next group took the number of the newest deleted one, so an OIDC provider's default group or a Telegram chat's group that still named it pointed at the new group.
 

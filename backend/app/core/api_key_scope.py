@@ -59,8 +59,10 @@ _QUEUE_ITEM_KEYS = frozenset({"source_queue_item_id", "queue_item_ids"})
 # ``cancelled_item_ids`` (bulk-retry) is read here itself rather than left to its body validator
 # (cancelled ⊆ confirmed): the gate runs before the body is validated, and a guard that depends on a
 # schema rule elsewhere stops guarding the day that rule is relaxed.
+# ``after_item_ids`` (next-block, N03) only orders the new block behind a run's own rows, but a
+# job list is a printer list once removed, so the gate reads it like the others.
 _QUEUE_ROUTER = "/api/v1/queue/"
-_QUEUE_ROUTER_ITEM_KEYS = frozenset({"item_ids", "cancelled_item_ids"})
+_QUEUE_ROUTER_ITEM_KEYS = frozenset({"item_ids", "cancelled_item_ids", "after_item_ids"})
 _FARM_WIDE_ROUTERS = ("/api/v1/auto-queue",)
 # The Workshop's doors onto the same distributor (WS-13 E13 O14): a line's rebalance always,
 # an order plan sent to the auto-queue (``target.kind == "auto"``) — the distributor picks the printer.

@@ -2367,6 +2367,7 @@ export default {
     // group's size. The numbers left as plain placeholders are phrased so they
     // read for any value in both locales.
     applyToRest: 'Apply to the rest of this group',
+    crossModelHint: 'These files are sliced for different printer models. Calculate can split the same parts between the models instead of queuing each file on its own.',
     applyToRestHint_one: 'The other file goes in with these settings, without asking again. Plates and filament are matched per file.',
     applyToRestHint_other: 'The other {{count}} files go in with these settings, without asking again. Plates and filament are matched per file.',
     groupBadge_one: 'group {{current}} of {{total}} · {{count}} item',

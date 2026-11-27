@@ -124,6 +124,8 @@ export function PrintModal({
   applyToRest,
   onApplyToRestChange,
   onQueued,
+  nextBlockAfterItemIds,
+  onComputeOrderInstead,
   autoSubmitWhenUnambiguous,
   seededAnswer,
   initialRouting,
@@ -1569,7 +1571,7 @@ export function PrintModal({
     mutationFn: (data: PrintQueueItemCreate) => api.addToQueue(data),
   });
   const addNextQueueBlockMutation = useMutation({
-    mutationFn: (items: PrintQueueItemCreate[]) => api.addNextQueueBlock(items),
+    mutationFn: (items: PrintQueueItemCreate[]) => api.addNextQueueBlock(items, nextBlockAfterItemIds),
   });
 
   // Update queue item mutation. ⚠️ No onSuccess / onError of its own: the submit
@@ -2882,6 +2884,21 @@ export function PrintModal({
       >
         <div className="p-4">
           <form onSubmit={handleSubmit} className={mode === 'reprint' ? '' : 'space-y-4'}>
+            {/* N03: upstream offers "alternatives" when the selected files are sliced for
+                different models. Ours is Calculate — the order planner splits the same
+                parts between models — so the run says where it is. */}
+            {mode === 'add-to-queue' && onComputeOrderInstead && (
+              <div className="flex flex-wrap items-center gap-2 rounded border border-bambu-dark-tertiary p-3 text-sm text-bambu-gray">
+                <p className="flex-1 min-w-0">{t('queue.crossModelHint')}</p>
+                <button
+                  type="button"
+                  onClick={onComputeOrderInstead}
+                  className="px-3 py-1 rounded bg-bambu-dark text-white hover:bg-bambu-dark-tertiary"
+                >
+                  {t('fileManager.computeOrder')}
+                </button>
+              </div>
+            )}
             {/* Dispatch mode toggle — only for add-to-queue.
                 Reprint is always specific; edit is bound to an existing per-printer row.
                 Hidden via lockDispatchMode when the modal was opened from a drop

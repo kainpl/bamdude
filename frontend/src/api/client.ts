@@ -13231,10 +13231,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  addNextQueueBlock: (items: PrintQueueItemCreate[]) =>
+  /** ``afterItemIds``: rows an earlier block of the same run created — the block goes behind
+   *  the last of them still pending, so a multi-file «Run next» keeps its order (N03). */
+  addNextQueueBlock: (items: PrintQueueItemCreate[], afterItemIds?: number[]) =>
     request<PrintQueueItem[]>('/queue/next-block', {
       method: 'POST',
-      body: JSON.stringify({ items }),
+      body: JSON.stringify(afterItemIds && afterItemIds.length > 0 ? { items, after_item_ids: afterItemIds } : { items }),
     }),
   getQueueCopySource: (itemId: number) => request<QueueCopySourceProfile>(`/queue/${itemId}/copy-source`),
   updateQueueItem: (id: number, data: PrintQueueItemUpdate) =>

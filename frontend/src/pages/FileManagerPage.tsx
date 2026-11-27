@@ -4860,6 +4860,17 @@ export function FileManagerPage() {
             invalidateQueueViews(queryClient);
             queryClient.invalidateQueries({ queryKey: ['archives'] });
           }}
+          // N03: files of several printer models can go to Calculate instead, which
+          // splits the same parts between the models. Its own door's rule: orders:create,
+          // and only the 3MF containers it can read.
+          onComputeOrder={
+            hasPermission('orders:create')
+              ? (fileIds) => {
+                  const plannable = (files ?? []).filter((f) => fileIds.includes(f.id) && is3mf(f)).map((f) => f.id);
+                  if (plannable.length > 0) setPlanFiles(plannable);
+                }
+              : undefined
+          }
         />
       )}
 

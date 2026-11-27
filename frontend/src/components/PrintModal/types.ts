@@ -154,6 +154,14 @@ export interface PrintModalProps {
    *  answer can produce many. Reported so a copy run can re-form the blocks the
    *  source queue had; nothing else needs it. */
   onQueued?: (createdItemIds: number[]) => void;
+  /** Rows earlier dialogs of the same run created. A «Run next» submit names them, and
+   *  the server puts this block behind the last one still pending — without it each
+   *  file of a multi-file run went IN FRONT of the one before (N03, upstream #3471). */
+  nextBlockAfterItemIds?: number[];
+  /** The run's files are sliced for several printer models: offer Calculate (the order
+   *  planner splits the same parts between models — our answer to upstream's
+   *  "alternatives"). Called when the operator takes it; the caller ends the run. */
+  onComputeOrderInstead?: () => void;
   /** Submit without rendering once the dialog is ready and nothing is
    *  ambiguous. The modal still owns the payload — this only removes the
    *  click. Falls back to rendering on a settled unknown or refusal from the
