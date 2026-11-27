@@ -14,6 +14,7 @@ import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
 import { AddNotificationModal } from '../../components/AddNotificationModal';
+import { NotificationProviderCard } from '../../components/NotificationProviderCard';
 import { NOTIFICATION_SECRET_FIELDS } from '../../components/notificationCredentials';
 import { PROVIDER_EVENTS } from '../fixtures/providerEvents';
 import type { NotificationProvider } from '../../api/client';
@@ -164,6 +165,7 @@ describe('AddNotificationModal — provider type list', () => {
       'Email',
       'Gotify',
       'Home Assistant',
+      'Notify!',
       'ntfy',
       'Pushover',
       'Signal CLI API',
@@ -452,5 +454,327 @@ describe('AddNotificationModal - event subscriptions', () => {
     render(<AddNotificationModal onClose={() => undefined} />);
 
     await waitFor(() => expect(screen.getByRole('button', { name: /^add$/i })).toBeDisabled());
+  });
+});
+
+/**
+ * Notify! (upstream Bambuddy v1.3.0, #3265): push alerts, iOS Live Activities and Lock Screen
+ * widgets. Upstream's tests, on our secret contract: the token is never shown, an edit keeps
+ * it through ``secret_actions``, a test request carries no photo flag, and a provider names
+ * its printers in a list.
+ */
+describe('AddNotificationModal — Notify!', () => {
+  const notifyProvider = (config: Record<string, unknown> = {}) =>
+    buildProvider('notify', 'My Notify!', { device_id: 'IO12345678901234', token: 'notify-secret', ...config });
+
+  const liveActivitiesSwitch = () => within(
+    screen.getByRole('group', { name: 'Live Activities (iOS)' }),
+  ).getByRole('switch');
+
+  const widgetsSwitch = () => within(
+    screen.getByRole('group', { name: 'Lock Screen Widgets (iOS)' }),
+  ).getByRole('switch');
+
+  const photoSwitch = () => screen.getAllByRole('switch').find(
+    (toggle) => toggle.parentElement?.textContent?.includes('Attach photos'),
+  )!;
+
+  it('offers Notify! with masked credentials and Live Activities disabled by default', async () => {
+    const user = userEvent.setup();
+    render(<AddNotificationModal onClose={() => undefined} />);
+    await screen.findByRole('switch', { name: 'Print Started' });
+    await user.selectOptions(screen.getAllByRole('combobox')[0], 'notify');
+
+    expect(screen.getByLabelText(/device or group id/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/notify! token/i)).toHaveAttribute('type', 'password');
+    expect(liveActivitiesSwitch()).toHaveAttribute('aria-checked', 'false');
+    expect(widgetsSwitch()).toHaveAttribute('aria-checked', 'false');
+    expect(screen.queryByText('Live Activity appearance')).not.toBeInTheDocument();
+    expect(screen.getByText(/Use an iOS device ID; add a separate provider for group pushes/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /test configuration/i })).toBeDisabled();
+    await user.type(screen.getByLabelText(/device or group id/i), 'GRP12345678901234');
+    expect(screen.getByRole('button', { name: /test configuration/i })).toBeDisabled();
+  });
+
+  it('creates a group push provider with Live Activities explicitly disabled', async () => {
+    let captured: Record<string, unknown> | null = null;
+    server.use(http.post('*/api/v1/notifications/', async ({ request }) => {
+      captured = await request.json() as Record<string, unknown>;
+      return HttpResponse.json({ id: 2 });
+    }));
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AddNotificationModal onClose={onClose} />);
+    await screen.findByRole('switch', { name: 'Print Started' });
+    await user.selectOptions(screen.getAllByRole('combobox')[0], 'notify');
+    await user.type(screen.getByPlaceholderText(/My Notifications/i), 'Notify! group');
+    await user.type(screen.getByLabelText(/device or group id/i), 'GRP12345678901234');
+    await user.type(screen.getByLabelText(/notify! token/i), 'secret');
+    await user.click(screen.getByRole('button', { name: /^add$/i }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(captured).toMatchObject({
+      provider_type: 'notify',
+      config: { device_id: 'GRP12345678901234', token: 'secret', live_activities: false },
+      secret_actions: { token: 'replace' },
+    });
+  });
+
+  it('saves tile customization with boolean and array types without enabling push events', async () => {
+    let captured: Record<string, unknown> | null = null;
+    server.use(http.patch('*/api/v1/notifications/1', async ({ request }) => {
+      captured = await request.json() as Record<string, unknown>;
+      return HttpResponse.json({ id: 1 });
+    }));
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={notifyProvider()} onClose={onClose} />);
+    await screen.findByDisplayValue('My Notify!');
+    await user.click(liveActivitiesSwitch());
+    expect(screen.getByText(/Event toggles below control push alerts only/)).toBeInTheDocument();
+    expect(screen.getByText(/Quiet hours block new activities; existing activities still update and end/)).toBeInTheDocument();
+    await user.click(screen.getByText('Live Activity appearance'));
+    await user.selectOptions(screen.getByLabelText('Hide file name on tile'), 'true');
+    await user.selectOptions(screen.getByLabelText('Show print stage'), 'true');
+    await user.selectOptions(screen.getByLabelText('Progress style'), 'segments');
+    await user.selectOptions(screen.getByLabelText('Time Sensitive problem alerts'), 'true');
+    await user.click(screen.getByRole('checkbox', { name: 'ETA' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Bed' }));
+    await user.type(screen.getByLabelText('Dashboard URL (optional)'), 'https://bamdude.example.com');
+    await user.type(screen.getByLabelText('Tint (optional)'), '#123456');
+    await user.type(screen.getByLabelText('Symbol (optional)'), 'printer');
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(captured).toMatchObject({
+      on_print_start: false,
+      on_print_progress: false,
+      secret_actions: { token: 'keep' },
+      config: {
+        live_activities: true,
+        live_activity_privacy: true,
+        live_activity_stage: true,
+        live_activity_style: 'segments',
+        live_activity_metrics: ['eta', 'bed'],
+        live_activity_button_url: 'https://bamdude.example.com',
+        live_activity_tint: '#123456',
+        live_activity_symbol: 'printer',
+        time_sensitive: true,
+      },
+    });
+    expect((captured as unknown as { config: Record<string, unknown> }).config).not.toHaveProperty('token');
+  });
+
+  it('preserves existing customization while disabling Live Activities', async () => {
+    let captured: Record<string, unknown> | null = null;
+    server.use(http.patch('*/api/v1/notifications/1', async ({ request }) => {
+      captured = await request.json() as Record<string, unknown>;
+      return HttpResponse.json({ id: 1 });
+    }));
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={notifyProvider({
+      live_activities: true,
+      live_activity_privacy: true,
+      live_activity_style: 'none',
+      live_activity_metrics: ['layers', 'nozzle'],
+      time_sensitive: false,
+    })} onClose={onClose} />);
+    await screen.findByDisplayValue('My Notify!');
+    expect(liveActivitiesSwitch()).toHaveAttribute('aria-checked', 'true');
+    await user.click(screen.getByText('Live Activity appearance'));
+    expect(screen.getByLabelText('Hide file name on tile')).toHaveValue('true');
+    expect(screen.getByLabelText('Progress style')).toHaveValue('none');
+    expect(screen.getByRole('checkbox', { name: 'Layer' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Nozzle' })).toBeChecked();
+    await user.click(liveActivitiesSwitch());
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(captured).toMatchObject({ config: {
+      live_activities: false,
+      live_activity_privacy: true,
+      live_activity_style: 'none',
+      live_activity_metrics: ['layers', 'nozzle'],
+      time_sensitive: false,
+    } });
+  });
+
+  it.each(['GRP12345678901234', 'wb12345678901234', 'MC12345678901234'])('keeps %s eligible for pushes with Live Activities disabled', async (deviceId) => {
+    let captured: Record<string, unknown> | null = null;
+    server.use(http.patch('*/api/v1/notifications/1', async ({ request }) => {
+      captured = await request.json() as Record<string, unknown>;
+      return HttpResponse.json({ id: 1 });
+    }));
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={notifyProvider({ device_id: deviceId, live_activities: true, lock_screen_widgets: true })} onClose={onClose} />);
+    await screen.findByDisplayValue('My Notify!');
+    expect(liveActivitiesSwitch()).toBeDisabled();
+    expect(liveActivitiesSwitch()).toHaveAttribute('aria-checked', 'false');
+    expect(widgetsSwitch()).toBeDisabled();
+    expect(widgetsSwitch()).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByText(/Group, browser and macOS IDs use push notifications only/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /test configuration/i })).toBeEnabled();
+    expect(screen.queryByText('Live Activity appearance')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(captured).toMatchObject({
+      config: { device_id: deviceId, live_activities: false, lock_screen_widgets: false },
+      secret_actions: { token: 'keep' },
+    });
+  });
+
+  it.each(['GRP12345678901234', 'WB12345678901234'])('turns off Live Activities when changing an iOS ID to %s', async (deviceId) => {
+    let captured: Record<string, unknown> | null = null;
+    server.use(http.post('*/api/v1/notifications/1/test-config', async ({ request }) => {
+      captured = await request.json() as Record<string, unknown>;
+      return HttpResponse.json({ success: true, message: 'Push delivered' });
+    }));
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={notifyProvider({ live_activities: true, lock_screen_widgets: true })} onClose={() => undefined} />);
+    await screen.findByDisplayValue('My Notify!');
+    expect(liveActivitiesSwitch()).toHaveAttribute('aria-checked', 'true');
+    expect(widgetsSwitch()).toHaveAttribute('aria-checked', 'true');
+    const target = screen.getByLabelText(/device or group id/i);
+    await user.clear(target);
+    await user.type(target, deviceId);
+    expect(liveActivitiesSwitch()).toBeDisabled();
+    expect(liveActivitiesSwitch()).toHaveAttribute('aria-checked', 'false');
+    expect(widgetsSwitch()).toBeDisabled();
+    expect(widgetsSwitch()).toHaveAttribute('aria-checked', 'false');
+    expect(photoSwitch()).toBeDisabled();
+    expect(photoSwitch()).toHaveAttribute('aria-checked', 'false');
+    await user.click(screen.getByRole('button', { name: /test configuration/i }));
+    expect(await screen.findByText('Push delivered')).toBeInTheDocument();
+    // Ours: a test request never carries a photo flag (the test notification has no photo).
+    expect(captured).not.toHaveProperty('attach_photo');
+    expect(captured).toMatchObject({ config: {
+      device_id: deviceId,
+      live_activities: false,
+      lock_screen_widgets: false,
+    } });
+    await user.clear(target);
+    await user.type(target, 'IO12345678901234');
+    expect(liveActivitiesSwitch()).toBeEnabled();
+    expect(liveActivitiesSwitch()).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('sends setup tests through the push test endpoint with typed config', async () => {
+    let captured: Record<string, unknown> | null = null;
+    server.use(http.post('*/api/v1/notifications/1/test-config', async ({ request }) => {
+      captured = await request.json() as Record<string, unknown>;
+      return HttpResponse.json({ success: true, message: 'Push delivered' });
+    }));
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={notifyProvider({ live_activities: true })} onClose={() => undefined} />);
+    await screen.findByDisplayValue('My Notify!');
+    expect(screen.getByText(/Testing sends a push notification/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /test configuration/i }));
+    expect(await screen.findByText('Push delivered')).toBeInTheDocument();
+    expect(captured).toMatchObject({
+      provider_type: 'notify',
+      config: { device_id: 'IO12345678901234', live_activities: true, live_activity_metrics: [] },
+      secret_actions: { token: 'keep' },
+    });
+  });
+
+  it('clears Notify customization when changing provider type', async () => {
+    const user = userEvent.setup();
+    render(<AddNotificationModal onClose={() => undefined} />);
+    await screen.findByRole('switch', { name: 'Print Started' });
+    const providerSelect = screen.getAllByRole('combobox')[0];
+    await user.selectOptions(providerSelect, 'notify');
+    await user.click(liveActivitiesSwitch());
+    await user.click(screen.getByText('Live Activity appearance'));
+    await user.click(screen.getByRole('checkbox', { name: 'ETA' }));
+    await user.selectOptions(providerSelect, 'ntfy');
+    await user.selectOptions(providerSelect, 'notify');
+    expect(liveActivitiesSwitch()).toHaveAttribute('aria-checked', 'false');
+    await user.click(liveActivitiesSwitch());
+    await user.click(screen.getByText('Live Activity appearance'));
+    expect(screen.getByRole('checkbox', { name: 'ETA' })).not.toBeChecked();
+  });
+
+  it('defaults to the timer with optional metrics unchecked', async () => {
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={notifyProvider({ live_activities: true })} onClose={() => undefined} />);
+    await screen.findByDisplayValue('My Notify!');
+    await user.click(screen.getByText('Live Activity appearance'));
+    expect(screen.getByText(/The timer is shown by default/)).toBeInTheDocument();
+    for (const metric of ['Progress', 'ETA', 'Layer', 'Nozzle', 'Bed', 'Chamber']) {
+      expect(screen.getByRole('checkbox', { name: metric })).not.toBeChecked();
+    }
+  });
+
+  it('enables Lock Screen widgets independently of Live Activities and push events', async () => {
+    let captured: Record<string, unknown> | null = null;
+    server.use(http.patch('*/api/v1/notifications/1', async ({ request }) => {
+      captured = await request.json() as Record<string, unknown>;
+      return HttpResponse.json({ id: 1 });
+    }));
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={notifyProvider()} onClose={onClose} />);
+    await screen.findByDisplayValue('My Notify!');
+    expect(screen.getByText(/iOS refreshes roughly every 15 minutes or longer/)).toBeInTheDocument();
+    // Ours (A3): a widget is for an available printer -- active and not archived.
+    expect(screen.getByText(/Only active, non-archived printers receive widgets/)).toBeInTheDocument();
+    expect(screen.getByText(/Notify! allows 10 widgets per device in total/)).toBeInTheDocument();
+    await user.click(widgetsSwitch());
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(captured).toMatchObject({
+      on_print_start: false,
+      on_print_progress: false,
+      printer_ids: null,
+      config: { live_activities: false, lock_screen_widgets: true },
+      secret_actions: { token: 'keep' },
+    });
+  });
+
+  it.each(['GRP12345678901234', 'WB12345678901234'])('saves %s with photo attachments disabled', async (deviceId) => {
+    let captured: Record<string, unknown> | null = null;
+    server.use(http.patch('*/api/v1/notifications/1', async ({ request }) => {
+      captured = await request.json() as Record<string, unknown>;
+      return HttpResponse.json({ id: 1 });
+    }));
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={notifyProvider({ device_id: deviceId })} onClose={onClose} />);
+    await screen.findByDisplayValue('My Notify!');
+    expect(photoSwitch()).toBeDisabled();
+    expect(photoSwitch()).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByText(/Browser and group recipients support text notifications only/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(captured).toMatchObject({ attach_photo: false, config: { device_id: deviceId } });
+  });
+
+  it.each(['GRP12345678901234', 'WB12345678901234'])('disables photo attachments in the %s provider card', async (deviceId) => {
+    const user = userEvent.setup();
+    render(<NotificationProviderCard provider={notifyProvider({ device_id: deviceId, live_activities: true, lock_screen_widgets: true })} onEdit={() => undefined} />);
+    expect(screen.queryByText('Live Activities (iOS)')).not.toBeInTheDocument();
+    expect(screen.queryByText('Lock Screen Widgets (iOS)')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /event settings/i }));
+    expect(photoSwitch()).toBeDisabled();
+    expect(photoSwitch()).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('shows a separate badge when Lock Screen widgets are enabled', () => {
+    render(<NotificationProviderCard provider={notifyProvider({ lock_screen_widgets: true })} onEdit={() => undefined} />);
+    expect(screen.getByText('Lock Screen Widgets (iOS)')).toBeInTheDocument();
+    expect(screen.queryByText('Live Activities (iOS)')).not.toBeInTheDocument();
+  });
+
+  it('shows the Live Activities badge on enabled Notify! provider cards', () => {
+    render(<NotificationProviderCard provider={notifyProvider({ live_activities: true })} onEdit={() => undefined} />);
+    expect(screen.getByText('Notify!')).toBeInTheDocument();
+    expect(screen.getByText('Live Activities (iOS)')).toBeInTheDocument();
+  });
+
+  it('does not show the Live Activities badge for push-only providers', () => {
+    render(<NotificationProviderCard provider={notifyProvider({ live_activities: false })} onEdit={() => undefined} />);
+    expect(screen.queryByText('Live Activities (iOS)')).not.toBeInTheDocument();
   });
 });

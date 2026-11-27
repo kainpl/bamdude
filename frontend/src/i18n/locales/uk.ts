@@ -5620,6 +5620,7 @@ export default {
     noSignal: 'Немає сигналу',
     progress: 'Прогрес',
     eta: 'Залишилось',
+    layer: 'Шар',
     printerIdle: 'Принтер простоює',
     printerOffline: 'Принтер офлайн',
     tokenRefused: 'Токен цього оверлея не прийнято',
@@ -12716,6 +12717,35 @@ export default {
     authenticationMode: 'Режим автентифікації',
     authenticated: 'З автентифікацією',
     anonymous: 'Анонімний',
+    // Notify! (upstream Bambuddy #3265)
+    notifyLockScreenWidgets: 'Віджети замкненого екрана (iOS)',
+    notifyLockScreenWidgetsHelp: 'Віджети отримують лише активні неархівні принтери. Notify! дозволяє загалом до 10 віджетів на пристрій. Додайте віджет Notify! у налаштуваннях замкненого екрана iOS і виберіть принтер. Він показує стан, прогрес і проблеми без зворотного відліку в реальному часі. iOS оновлює дані приблизно раз на 15 хвилин або рідше.',
+    notifyPhotoUnavailable: 'Одержувачі в браузері та групи підтримують лише текстові сповіщення; вкладення з фотографіями недоступні.',
+    notifyShowStage: 'Показувати етап друку',
+    notifyTimeSensitive: 'Термінові сповіщення про проблеми',
+    notifyTimeSensitiveHelp: 'Позначати невдалі або зупинені друки та проблеми принтера чи ШІ як термінові. Інші push-сповіщення залишаються звичайними.',
+    notifyPrivacy: 'Приховати назву файлу на плитці',
+    notifyPrivacyHelp: 'Приховує назви файлів лише в живій дії. Текст push-сповіщень і далі використовує шаблони сповіщень.',
+    notifyStyle: 'Вигляд індикатора прогресу',
+    notifyStyleBar: 'Смуга прогресу',
+    notifyStyleSegments: 'Сегменти',
+    notifyStyleNone: 'Без індикатора прогресу',
+    notifyDashboardUrl: 'URL панелі керування (необов’язково)',
+    notifySymbol: 'Символ (необов’язково)',
+    notifyTint: 'Колір (необов’язково)',
+    notifyAppearance: 'Вигляд живої дії',
+    notifyMetrics: 'Показники',
+    notifyMetricsHelp: 'Таймер відображається за замовчуванням. Додаткові показники замінюють рядок із назвою файлу.',
+    notifyDeviceId: 'ID пристрою або групи',
+    notifyToken: 'Токен Notify!',
+    notifyIconUrl: 'URL значка (необов’язково)',
+    notifyGroupType: 'Група сповіщень (необов’язково)',
+    notifyGroupTypeHelp: 'Залиште порожнім, щоб групувати push-сповіщення за принтером. Власне значення об’єднує їх в одну групу.',
+    notifyLiveActivities: 'Живі дії (iOS)',
+    notifyLiveActivitiesHelp: 'Стежте за друком на замкненому екрані iOS та в Dynamic Island. Використовуйте ID пристрою iOS; для групових сповіщень додайте окремого постачальника.',
+    notifyLifecycleHelp: 'Живі дії автоматично відстежують кожен друк. Перемикачі нижче керують лише push-сповіщеннями. Тихі години блокують нові дії; наявні продовжують оновлюватися й завершуватися. Щоденні зведення не затримують дії.',
+    notifyIosFeaturesUnavailable: 'Для живих дій і віджетів замкненого екрана потрібен ID пристрою iOS. ID груп, браузерів і macOS використовують лише push-сповіщення.',
+    notifyTestHelp: 'Тест надсилає push-сповіщення. Жива дія починається на початку друку.',
     // Provider types
     providerTypes: {
       callmebot: 'CallMeBot/WhatsApp',
@@ -12728,7 +12758,8 @@ export default {
       webhook: 'Webhook',
       homeassistant: 'Home Assistant',
       signal: 'Signal CLI API',
-      gotify: 'Gotify'
+      gotify: 'Gotify',
+      notify: 'Notify!'
     },
     // Provider descriptions
     providerDescriptions: {
@@ -12742,7 +12773,8 @@ export default {
       webhook: 'Загальний HTTP POST на будь-який URL',
       homeassistant: 'Постійні сповіщення у панелі Home Assistant',
       signal: 'Повідомлення Signal через власний сервер signal-cli-rest-api',
-      gotify: 'Push-сповіщення через ваш власний сервер Gotify'
+      gotify: 'Push-сповіщення через ваш власний сервер Gotify',
+      notify: 'Push-сповіщення та Live Activities для iOS через Notify!'
     },
     // Signal recipients
     signalRecipientType: 'Тип отримувача',

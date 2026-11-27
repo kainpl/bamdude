@@ -12,13 +12,30 @@ import { ProviderEventToggles } from './ProviderEventToggles';
 import { useEventLabel, useProviderEvents } from './providerEvents';
 import { Select } from './Select';
 import { notificationSecretFields } from './notificationCredentials';
+import { isNotifyPushOnlyTarget, isNotifyPhotoUnsupported } from '../utils/notify';
+
+interface ConfigField {
+  key: string;
+  label: string;
+  type: string;
+  required: boolean;
+  placeholder?: string;
+  help?: string;
+  options?: { value: string; label: string }[];
+  showIf?: (config: Record<string, string>) => boolean;
+  advanced?: boolean;
+  pattern?: string;
+}
+
+const NOTIFY_METRICS = ['progress', 'eta', 'layers', 'nozzle', 'bed', 'chamber'] as const;
+type NotifyMetric = (typeof NOTIFY_METRICS)[number];
 
 interface AddNotificationModalProps {
   provider?: NotificationProvider | null;
   onClose: () => void;
 }
 
-const PROVIDER_VALUES: ProviderType[] = ['email', 'telegram', 'discord', 'ntfy', 'pushover', 'bark', 'gotify', 'callmebot', 'webhook', 'homeassistant', 'signal'];
+const PROVIDER_VALUES: ProviderType[] = ['email', 'telegram', 'discord', 'ntfy', 'pushover', 'bark', 'gotify', 'callmebot', 'webhook', 'homeassistant', 'signal', 'notify'];
 
 export function AddNotificationModal({ provider, onClose }: AddNotificationModalProps) {
   const { t, i18n } = useTranslation();
@@ -36,7 +53,23 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   const [quietHoursEnd, setQuietHoursEnd] = useState(provider?.quiet_hours_end || '07:00');
 
   // Camera frames: on unless the channel opted out
-  const [attachPhoto, setAttachPhoto] = useState(provider?.attach_photo ?? true);
+  const [attachPhoto, setAttachPhoto] = useState(
+    provider?.provider_type === 'notify' && isNotifyPhotoUnsupported(String(provider.config?.device_id || ''))
+      ? false
+      : provider?.attach_photo ?? true
+  );
+
+  // Notify! (upstream Bambuddy #3265): Live Activities, Lock Screen widgets and the tile's metrics.
+  const [notifyLiveActivities, setNotifyLiveActivities] = useState(
+    provider?.config?.live_activities === true && !isNotifyPushOnlyTarget(String(provider?.config?.device_id || ''))
+  );
+  const [notifyLockScreenWidgets, setNotifyLockScreenWidgets] = useState(
+    provider?.config?.lock_screen_widgets === true && !isNotifyPushOnlyTarget(String(provider?.config?.device_id || ''))
+  );
+  const [notifyMetrics, setNotifyMetrics] = useState<NotifyMetric[]>(() => {
+    const metrics = provider?.config?.live_activity_metrics;
+    return Array.isArray(metrics) ? NOTIFY_METRICS.filter((metric) => metrics.includes(metric)) : [];
+  });
 
   // Daily digest
   const [dailyDigestEnabled, setDailyDigestEnabled] = useState(provider?.daily_digest_enabled || false);
@@ -79,7 +112,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
     provider?.config
       ? Object.fromEntries(
           Object.entries(provider.config)
-            .filter(([k]) => k !== 'event_priorities' && !secretFields.includes(k))
+            .filter(([k]) => k !== 'event_priorities' && k !== 'live_activities' && k !== 'live_activity_metrics' && k !== 'lock_screen_widgets' && !secretFields.includes(k))
             .map(([k, v]) => [k, String(v)]),
         )
       : {},
@@ -115,6 +148,9 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   const [signalNumbers, setSignalNumbers] = useState<string[]>(initialSignalNumbers);
   const [signalGroupId, setSignalGroupId] = useState(String(provider?.config?.group_id || ''));
 
+  const notifyPushOnlyTarget = providerType === 'notify' && isNotifyPushOnlyTarget(config.device_id || '');
+  const notifyPhotosUnsupported = providerType === 'notify' && isNotifyPhotoUnsupported(config.device_id || '');
+
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -129,6 +165,18 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
     }
     for (const key of notificationSecretFields(providerType, provider)) {
       if (!safeConfig[key]?.trim() || secretActions[key] === 'clear') delete safeConfig[key];
+    }
+    if (providerType === 'notify') {
+      // Upstream's configForRequest: typed booleans and the metric list, iOS features off for push-only IDs.
+      return {
+        ...safeConfig,
+        live_activities: notifyLiveActivities && !notifyPushOnlyTarget,
+        lock_screen_widgets: notifyLockScreenWidgets && !notifyPushOnlyTarget,
+        live_activity_privacy: config.live_activity_privacy === 'true',
+        live_activity_stage: config.live_activity_stage === 'true',
+        live_activity_metrics: notifyMetrics,
+        time_sensitive: config.time_sensitive === 'true',
+      };
     }
     if ((providerType === 'ntfy' || providerType === 'gotify') && Object.keys(eventPriorities).length > 0) {
       return { ...safeConfig, event_priorities: eventPriorities };
@@ -261,7 +309,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       quiet_hours_enabled: quietHoursEnabled,
       quiet_hours_start: quietHoursEnabled ? quietHoursStart : null,
       quiet_hours_end: quietHoursEnabled ? quietHoursEnd : null,
-      attach_photo: attachPhoto,
+      attach_photo: attachPhoto && !notifyPhotosUnsupported,
       // Daily digest
       daily_digest_enabled: dailyDigestEnabled,
       daily_digest_time: dailyDigestEnabled ? dailyDigestTime : null,
@@ -280,7 +328,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   const isPending = createMutation.isPending || updateMutation.isPending;
 
   // Get config fields for each provider type
-  const getConfigFields = (type: ProviderType) => {
+  const getConfigFields = (type: ProviderType): ConfigField[] => {
     switch (type) {
       case 'callmebot':
         return [
@@ -336,6 +384,38 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
         return [
           { key: 'server', label: 'Server URL', placeholder: 'https://gotify.example.com', type: 'text', required: true },
           { key: 'app_token', label: 'App Token', placeholder: 'Token of a Gotify application', type: 'password', required: true },
+        ];
+      case 'notify':
+        return [
+          { key: 'device_id', label: t('notifications.notifyDeviceId'), type: 'text', required: true },
+          { key: 'token', label: t('notifications.notifyToken'), type: 'password', required: true },
+          { key: 'icon_url', label: t('notifications.notifyIconUrl'), placeholder: 'https://example.com/icon.png', type: 'url', pattern: 'https://.*', required: false },
+          { key: 'group_type', label: t('notifications.notifyGroupType'), type: 'text', required: false, help: t('notifications.notifyGroupTypeHelp') },
+          {
+            key: 'time_sensitive', label: t('notifications.notifyTimeSensitive'), type: 'select', required: false,
+            options: [{ value: 'false', label: t('common.no') }, { value: 'true', label: t('common.yes') }],
+            help: t('notifications.notifyTimeSensitiveHelp'),
+          },
+          {
+            key: 'live_activity_privacy', label: t('notifications.notifyPrivacy'), type: 'select', required: false, advanced: true,
+            options: [{ value: 'false', label: t('common.no') }, { value: 'true', label: t('common.yes') }],
+            help: t('notifications.notifyPrivacyHelp'),
+          },
+          {
+            key: 'live_activity_stage', label: t('notifications.notifyShowStage'), type: 'select', required: false, advanced: true,
+            options: [{ value: 'false', label: t('common.no') }, { value: 'true', label: t('common.yes') }],
+          },
+          {
+            key: 'live_activity_style', label: t('notifications.notifyStyle'), type: 'select', required: false, advanced: true,
+            options: [
+              { value: 'bar', label: t('notifications.notifyStyleBar') },
+              { value: 'segments', label: t('notifications.notifyStyleSegments') },
+              { value: 'none', label: t('notifications.notifyStyleNone') },
+            ],
+          },
+          { key: 'live_activity_button_url', label: t('notifications.notifyDashboardUrl'), type: 'url', pattern: 'https://.*', placeholder: 'https://bamdude.example.com', required: false, advanced: true },
+          { key: 'live_activity_symbol', label: t('notifications.notifySymbol'), type: 'text', placeholder: 'printer.fill', required: false, advanced: true },
+          { key: 'live_activity_tint', label: t('notifications.notifyTint'), type: 'text', placeholder: '#00AE42', pattern: '#[0-9a-fA-F]{6}', required: false, advanced: true },
         ];
       case 'telegram':
         return [
@@ -398,6 +478,80 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
 
   const configFields = getConfigFields(providerType);
 
+  const renderConfigFields = (fields: ConfigField[]) =>
+    fields
+      .filter((field) => field.showIf?.(config) !== false)
+      .map((field) => (
+            <div key={field.key}>
+              <label htmlFor={`notification-config-${field.key}`} className="block text-sm text-bambu-gray mb-1">
+                {field.label} {field.required && '*'}
+              </label>
+              {field.type === 'select' && field.options ? (
+                <Select
+                  id={`notification-config-${field.key}`}
+                  className="w-full"
+                  value={config[field.key] || (field.key === 'auth_mode' ? ((config.auth_token || config.auth_header || configured('auth_token') || configured('auth_header')) ? 'authenticated' : 'anonymous') : field.options[0]?.value) || ''}
+                  onChange={(e) => {
+                    setConfig({ ...config, [field.key]: e.target.value });
+                    if (notificationSecretFields(providerType, provider).includes(field.key)) setSecretActions({ ...secretActions, [field.key]: e.target.value ? 'replace' : 'keep' });
+                    setTestResult(null);
+                  }}
+                >
+                  {field.options.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </Select>
+              ) : field.type === 'textarea' ? (
+                <textarea
+                  id={`notification-config-${field.key}`}
+                  value={config[field.key] || ''}
+                  onChange={(e) => {
+                    setConfig({ ...config, [field.key]: e.target.value });
+                    setTestResult(null);
+                  }}
+                  placeholder={field.placeholder}
+                  rows={3}
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none font-mono text-sm"
+                />
+              ) : (
+                <input
+                  id={`notification-config-${field.key}`}
+                  pattern={field.pattern}
+                  type={notificationSecretFields(providerType, provider).includes(field.key) ? 'password' : field.type}
+                  value={config[field.key] || ''}
+                  onChange={(e) => {
+                    setConfig({ ...config, [field.key]: e.target.value });
+                    if (notificationSecretFields(providerType, provider).includes(field.key)) setSecretActions({ ...secretActions, [field.key]: e.target.value ? 'replace' : 'keep' });
+                    if (providerType === 'notify' && field.key === 'device_id' && isNotifyPushOnlyTarget(e.target.value)) {
+                      setNotifyLiveActivities(false);
+                      setNotifyLockScreenWidgets(false);
+                    }
+                    if (providerType === 'notify' && field.key === 'device_id' && isNotifyPhotoUnsupported(e.target.value)) {
+                      setAttachPhoto(false);
+                    }
+                    setTestResult(null);
+                  }}
+                  placeholder={configured(field.key) ? t('notifications.secretConfigured') : field.placeholder}
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                />
+              )}
+              {configured(field.key) && (
+                <div className="flex items-center justify-between gap-2 mt-1 text-xs text-bambu-gray">
+                  <span>{secretActions[field.key] === 'clear' ? t('notifications.secretWillClear') : t('notifications.secretConfigured')}</span>
+                  <button type="button" className="text-bambu-green" onClick={() => {
+                    setSecretActions({ ...secretActions, [field.key]: secretActions[field.key] === 'clear' ? 'keep' : 'clear' });
+                    setConfig({ ...config, [field.key]: '' });
+                    setTestResult(null);
+                  }}>{secretActions[field.key] === 'clear' ? t('notifications.secretKeep') : t('notifications.secretClear')}</button>
+                </div>
+              )}
+              {field.help && <p className="text-xs text-bambu-gray mt-1">{field.help}</p>}
+            </div>
+      ));
+
+
   return (
     <Modal
       onClose={onClose}
@@ -437,6 +591,9 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
               setSignalRecipientType('numbers');
               setSignalNumbers(['']);
               setSignalGroupId('');
+              setNotifyLiveActivities(false);
+              setNotifyLockScreenWidgets(false);
+              setNotifyMetrics([]);
               setTestResult(null);
             }}
             disabled={isEditing}
@@ -458,65 +615,81 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
         {/* Provider-specific configuration */}
         <div className="space-y-3">
           <p className="text-sm text-bambu-gray">{t('notifications.configuration')}</p>
-          {configFields
-            .filter((field) => !('showIf' in field) || (field as { showIf?: (cfg: Record<string, string>) => boolean }).showIf?.(config) !== false)
-            .map((field) => (
-            <div key={field.key}>
-              <label className="block text-sm text-bambu-gray mb-1">
-                {field.label} {field.required && '*'}
-              </label>
-              {field.type === 'select' && 'options' in field && field.options ? (
-                <Select
-                  className="w-full"
-                  value={config[field.key] || (field.key === 'auth_mode' ? ((config.auth_token || config.auth_header || configured('auth_token') || configured('auth_header')) ? 'authenticated' : 'anonymous') : field.options[0]?.value) || ''}
-                  onChange={(e) => {
-                    setConfig({ ...config, [field.key]: e.target.value });
-                    if (notificationSecretFields(providerType, provider).includes(field.key)) setSecretActions({ ...secretActions, [field.key]: e.target.value ? 'replace' : 'keep' });
-                    setTestResult(null);
-                  }}
-                >
-                  {field.options.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </Select>
-              ) : field.type === 'textarea' ? (
-                <textarea
-                  value={config[field.key] || ''}
-                  onChange={(e) => {
-                    setConfig({ ...config, [field.key]: e.target.value });
-                    setTestResult(null);
-                  }}
-                  placeholder={field.placeholder}
-                  rows={3}
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none font-mono text-sm"
-                />
-              ) : (
-                <input
-                  type={notificationSecretFields(providerType, provider).includes(field.key) ? 'password' : field.type}
-                  value={config[field.key] || ''}
-                  onChange={(e) => {
-                    setConfig({ ...config, [field.key]: e.target.value });
-                    if (notificationSecretFields(providerType, provider).includes(field.key)) setSecretActions({ ...secretActions, [field.key]: e.target.value ? 'replace' : 'keep' });
-                    setTestResult(null);
-                  }}
-                  placeholder={configured(field.key) ? t('notifications.secretConfigured') : field.placeholder}
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                />
-              )}
-              {configured(field.key) && (
-                <div className="flex items-center justify-between gap-2 mt-1 text-xs text-bambu-gray">
-                  <span>{secretActions[field.key] === 'clear' ? t('notifications.secretWillClear') : t('notifications.secretConfigured')}</span>
-                  <button type="button" className="text-bambu-green" onClick={() => {
-                    setSecretActions({ ...secretActions, [field.key]: secretActions[field.key] === 'clear' ? 'keep' : 'clear' });
-                    setConfig({ ...config, [field.key]: '' });
-                    setTestResult(null);
-                  }}>{secretActions[field.key] === 'clear' ? t('notifications.secretKeep') : t('notifications.secretClear')}</button>
+          {renderConfigFields(configFields.filter((field) => !field.advanced))}
+          {providerType === 'notify' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-3" role="group" aria-label={t('notifications.notifyLiveActivities')}>
+                <div>
+                  <label className="text-sm text-white">{t('notifications.notifyLiveActivities')}</label>
+                  <p className="text-xs text-bambu-gray">{t('notifications.notifyLiveActivitiesHelp')}</p>
                 </div>
+                <Toggle
+                  checked={notifyLiveActivities && !notifyPushOnlyTarget}
+                  disabled={notifyPushOnlyTarget}
+                  onChange={(checked) => {
+                    setNotifyLiveActivities(checked);
+                    setTestResult(null);
+                    setError(null);
+                  }}
+                />
+              </div>
+              {notifyLiveActivities && !notifyPushOnlyTarget && (
+                <>
+                  <p className="text-xs text-bambu-gray">{t('notifications.notifyLifecycleHelp')}</p>
+                  <details className="rounded-lg border border-bambu-dark-tertiary p-3">
+                    <summary className="cursor-pointer text-sm text-white">{t('notifications.notifyAppearance')}</summary>
+                    <div className="mt-3 space-y-3">
+                      {renderConfigFields(configFields.filter((field) => field.advanced))}
+                      <fieldset>
+                        <legend className="text-sm text-bambu-gray mb-1">{t('notifications.notifyMetrics')}</legend>
+                        <p className="text-xs text-bambu-gray mb-2">{t('notifications.notifyMetricsHelp')}</p>
+                        <div className="flex flex-wrap gap-3">
+                          {NOTIFY_METRICS.map((metric) => (
+                            <label key={metric} className="flex items-center gap-1 text-sm text-white">
+                              <input
+                                type="checkbox"
+                                checked={notifyMetrics.includes(metric)}
+                                onChange={(e) => {
+                                  setNotifyMetrics(e.target.checked
+                                    ? [...notifyMetrics, metric]
+                                    : notifyMetrics.filter((selected) => selected !== metric));
+                                  setTestResult(null);
+                                }}
+                                className="accent-bambu-green"
+                              />
+                              {t(metric === 'progress' ? 'notifications.progress'
+                                : metric === 'eta' ? 'streamOverlay.eta'
+                                : metric === 'layers' ? 'streamOverlay.layer'
+                                : `printers.temperatures.${metric}`)}
+                            </label>
+                          ))}
+                        </div>
+                      </fieldset>
+                    </div>
+                  </details>
+                </>
               )}
+              <div className="flex items-center justify-between gap-3" role="group" aria-label={t('notifications.notifyLockScreenWidgets')}>
+                <div>
+                  <label className="text-sm text-white">{t('notifications.notifyLockScreenWidgets')}</label>
+                  <p className="text-xs text-bambu-gray">{t('notifications.notifyLockScreenWidgetsHelp')}</p>
+                </div>
+                <Toggle
+                  checked={notifyLockScreenWidgets && !notifyPushOnlyTarget}
+                  disabled={notifyPushOnlyTarget}
+                  onChange={(checked) => {
+                    setNotifyLockScreenWidgets(checked);
+                    setTestResult(null);
+                    setError(null);
+                  }}
+                />
+              </div>
+              {notifyPushOnlyTarget && (
+                <p className="text-xs text-bambu-gray">{t('notifications.notifyIosFeaturesUnavailable')}</p>
+              )}
+              <p className="text-xs text-bambu-gray">{t('notifications.notifyTestHelp')}</p>
             </div>
-          ))}
+          )}
         </div>
 
         {/* Signal recipients - signal-cli-rest-api can't mix individual
@@ -743,10 +916,11 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
         <div className="flex items-center justify-between">
           <div>
             <label className="text-sm text-white">{t('notifications.attachPhoto')}</label>
-            <p className="text-xs text-bambu-gray">{t('notifications.attachPhotoHint')}</p>
+            <p className="text-xs text-bambu-gray">{t(notifyPhotosUnsupported ? 'notifications.notifyPhotoUnavailable' : 'notifications.attachPhotoHint')}</p>
           </div>
           <Toggle
-            checked={attachPhoto}
+            checked={attachPhoto && !notifyPhotosUnsupported}
+            disabled={notifyPhotosUnsupported}
             onChange={setAttachPhoto}
           />
         </div>

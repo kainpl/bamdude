@@ -26,6 +26,7 @@ describe('Notification secret editing', () => {
     ['homeassistant', {service:'notify.phone'}, []],
     ['signal', {server:'https://signal.example', sender_number:'+15551234567', numbers:'+15559876543'}, ['auth_header']],
     ['gotify', {server:'https://gotify.example'}, ['app_token']],
+    ['notify', {device_id:'IO12345678901234'}, ['token']],
   ] as const)('preserves configured credentials for %s without a readable value', async (kind, config, fields) => {
     let captured: Record<string, unknown> | undefined;
     server.use(http.patch('*/api/v1/notifications/17', async ({request}) => {
