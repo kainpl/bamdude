@@ -373,6 +373,45 @@ class TestPrintQueueAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_run_next_after_an_earlier_block_of_the_run(
+        self, async_client: AsyncClient, printer_factory, archive_factory, queue_item_factory, db_session
+    ):
+        """N03 (upstream #3471): two files of one «run next» selection keep the order they were chosen in."""
+        _printer, queue = await printer_factory()
+        existing_archive = await archive_factory()
+        old = await queue_item_factory(queue_id=queue.id, archive_id=existing_archive.id, position=1)
+        first_file = await archive_factory()
+        second_file = await archive_factory()
+
+        first = await async_client.post(
+            "/api/v1/queue/next-block",
+            json={"items": [{"queue_id": queue.id, "archive_id": first_file.id, "enqueue_position": "next"}]},
+        )
+        assert first.status_code == 200, first.text
+        first_ids = [item["id"] for item in first.json()]
+        second = await async_client.post(
+            "/api/v1/queue/next-block",
+            json={
+                "items": [{"queue_id": queue.id, "archive_id": second_file.id, "enqueue_position": "next"}],
+                "after_item_ids": first_ids,
+            },
+        )
+
+        assert second.status_code == 200, second.text
+        ordered = list(
+            (
+                await db_session.execute(
+                    select(PrintQueueItem.id)
+                    .where(PrintQueueItem.queue_id == queue.id)
+                    .where(PrintQueueItem.status == "pending")
+                    .order_by(PrintQueueItem.position, PrintQueueItem.id)
+                )
+            ).scalars()
+        )
+        assert ordered == [*first_ids, second.json()[0]["id"], old.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_run_next_captures_auto_eject_like_the_queue_add(
         self, async_client: AsyncClient, printer_factory, archive_factory, db_session
     ):

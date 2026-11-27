@@ -790,8 +790,12 @@ async def add_next_block_to_printer_queue(
     current_user: User | None,
     *,
     authority=None,
+    after_item_ids: list[int] | None = None,
 ) -> tuple[list[PrintQueueItem], PrinterQueue]:
     """Capture one source and put its requested plates before pending work atomically.
+
+    ``after_item_ids``: rows an earlier block of the same run created — see
+    ``queue_ops.place_pending_block``.
 
     The modal sends one call per target printer. All parsing/copying happens
     before the queue lock; the final insert, reindex and counter update share a
@@ -828,7 +832,9 @@ async def add_next_block_to_printer_queue(
         raise HTTPException(404, "Printer not found")
 
     if first.source_queue_item_id:
-        return await _add_next_block_from_queue_source(db, queue, data_items, current_user, authority=authority)
+        return await _add_next_block_from_queue_source(
+            db, queue, data_items, current_user, authority=authority, after_item_ids=after_item_ids
+        )
 
     archive = None
     library_file = None
@@ -935,7 +941,9 @@ async def add_next_block_to_printer_queue(
                             eject=eject,
                         )
                     )
-                await place_pending_block(session, first.queue_id, rows, enqueue_position="next")
+                await place_pending_block(
+                    session, first.queue_id, rows, enqueue_position="next", after_item_ids=after_item_ids or ()
+                )
                 session.add_all(rows)
                 await session.flush()
                 created_ids.extend(row.id for row in rows)
@@ -979,6 +987,7 @@ async def _add_next_block_from_queue_source(
     current_user: User | None,
     *,
     authority=None,
+    after_item_ids: list[int] | None = None,
 ) -> tuple[list[PrintQueueItem], PrinterQueue]:
     """The same atomic placement for a saved queue-source copy."""
     first = data_items[0]
@@ -1107,7 +1116,9 @@ async def _add_next_block_from_queue_source(
                             eject=eject,
                         )
                     )
-                await place_pending_block(db, first.queue_id, rows, enqueue_position="next")
+                await place_pending_block(
+                    db, first.queue_id, rows, enqueue_position="next", after_item_ids=after_item_ids or ()
+                )
                 db.add_all(rows)
                 await db.flush()
                 created_ids.extend(row.id for row in rows)

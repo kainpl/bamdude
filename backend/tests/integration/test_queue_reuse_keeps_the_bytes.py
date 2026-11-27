@@ -238,7 +238,8 @@ async def test_copy_queue_run_next_keeps_two_plates_as_one_saved_source_block(
 
     assert touched == []
     assert [copy.plate_id for copy in copies] == [PLATE, SECOND_PLATE]
-    assert [copy.position for copy in copies] == [0, 1]
+    # From 1: position 0 is the printer's direct-print claim, for «next» as for «end» (N03).
+    assert [copy.position for copy in copies] == [1, 2]
     assert all(copy.queue_source_id == blob_id for copy in copies)
     assert await blob_count(db_session) == 1
 

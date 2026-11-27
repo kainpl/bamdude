@@ -16,6 +16,7 @@ import asyncio
 import logging
 import uuid
 from collections import Counter, defaultdict
+from collections.abc import Collection
 from contextlib import asynccontextmanager, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
@@ -181,6 +182,7 @@ async def place_pending_block(
     new_items: list[PrintQueueItem],
     *,
     enqueue_position: str = "end",
+    after_item_ids: Collection[int] = (),
 ) -> None:
     """Assign one new pending block at the end or before existing pending work.
 
@@ -188,6 +190,12 @@ async def place_pending_block(
     row to make its block deterministic; ``end`` preserves legacy positions
     and only assigns positions to the new rows. Terminal and printing rows are
     never read or moved.
+
+    ``after_item_ids`` (``next`` only) names rows an earlier block of the same run
+    created: the new block goes right behind the last of them that is still
+    pending in this queue, so a run of several files keeps the order it was
+    chosen in (N03, upstream #3471). None of them pending here — started, gone,
+    another queue's — and the block goes before all pending work, as before.
     """
     if enqueue_position not in {"end", "next"}:
         raise ValueError(f"Unsupported enqueue position: {enqueue_position}")
@@ -205,8 +213,11 @@ async def place_pending_block(
             item.position = next_position + offset
         return
 
-    ordered = [*new_items, *existing]
-    for position, item in enumerate(ordered):
+    anchors = set(after_item_ids)
+    cut = max((index for index, item in enumerate(existing) if item.id in anchors), default=-1) + 1
+    ordered = [*existing[:cut], *new_items, *existing[cut:]]
+    # From 1, as ``end`` numbers since 42634ea27: position 0 is the direct-print claim's slot.
+    for position, item in enumerate(ordered, start=1):
         item.position = position
 
 

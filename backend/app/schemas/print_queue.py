@@ -106,6 +106,10 @@ class PrintQueueNextBatchCreate(BaseModel):
     """Several ASAP queue entries inserted as one contiguous next block."""
 
     items: list[PrintQueueItemCreate] = Field(min_length=1, max_length=100)
+    # Rows an earlier block of the same run created (N03, upstream #3471): this block goes
+    # right behind the last of them still pending, so a run keeps its order. Queue item ids,
+    # not printers — the queue is ``items[0].queue_id``; ids of another queue are ignored.
+    after_item_ids: list[int] = Field(default_factory=list, max_length=1000)
 
     @model_validator(mode="after")
     def _validate_next_block(self) -> "PrintQueueNextBatchCreate":

@@ -439,3 +439,42 @@ class TestBulkRetryOfCancelledJobs:
         )
 
         assert response.status_code != 403, response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestNextBlockAnchor:
+    """``/queue/next-block`` names a run's earlier rows in ``after_item_ids`` (N03). It only orders the block,
+    but a job list on the queue router is a printer list once removed, so the gate reads it."""
+
+    async def _queue_key(self, async_client, printer_ids):
+        response = await async_client.post(
+            "/api/v1/api-keys/",
+            json={"name": "next", "can_queue": True, "can_read_status": True, "printer_ids": printer_ids},
+        )
+        assert response.status_code == 200, response.text
+        return response.json()["key"]
+
+    def _body(self, queue_id, archive_id, after):
+        item = {"queue_id": queue_id, "archive_id": archive_id, "enqueue_position": "next"}
+        return {"items": [item], "after_item_ids": after}
+
+    async def test_an_anchor_on_another_printer_is_refused_by_the_gate(self, async_client, farm):
+        a, b, items, archive, _keys = farm
+        key = await self._queue_key(async_client, [a.id])
+
+        response = await async_client.post(
+            "/api/v1/queue/next-block", json=self._body(a.id, archive.id, [items[b.id].id]), headers=_as(key)
+        )
+
+        assert response.status_code == 403, response.text
+
+    async def test_its_own_anchor_passes_the_gate(self, async_client, farm):
+        a, _b, items, archive, _keys = farm
+        key = await self._queue_key(async_client, [a.id])
+
+        response = await async_client.post(
+            "/api/v1/queue/next-block", json=self._body(a.id, archive.id, [items[a.id].id]), headers=_as(key)
+        )
+
+        assert response.status_code != 403, response.text

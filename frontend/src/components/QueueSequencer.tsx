@@ -59,10 +59,20 @@ interface QueueSequencerProps {
   initialDispatchMode?: 'specific' | 'auto';
   /** Hide the specific/auto toggle when the drop target already implies it. */
   lockDispatchMode?: boolean;
+  /** Offered when a selection's files are sliced for several printer models: the
+   *  run ends and these library files go to Calculate instead (N03 — upstream's
+   *  "alternatives" is ours through the order planner). Pass it only where the
+   *  operator may plan. */
+  onComputeOrder?: (fileIds: number[]) => void;
   /** Pin each file's auto-queue target to its own ``sliced_for_model``. Per
    *  file, not per run — two dropped files can be sliced for two machines. */
   lockAutoTarget?: boolean;
 }
+
+/** At most this many anchors per «Run next» request — the server's own cap on
+ *  ``after_item_ids`` (``PrintQueueNextBatchCreate``). The newest are the ones that matter:
+ *  the block goes behind the last still-pending one. */
+const RUN_NEXT_ANCHORS = 1000;
 
 /** One PrintModal mount: a file, and which of its plates this group holds. */
 interface RunMember {
@@ -243,6 +253,7 @@ export function QueueSequencer({
   lockDispatchMode,
   lockPrinterSelection,
   lockAutoTarget,
+  onComputeOrder,
 }: QueueSequencerProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -282,6 +293,15 @@ export function QueueSequencer({
   // when the run ends — the source's own ids mean nothing here, so the target
   // batch can only be made after its rows exist.
   const cohortsRef = useRef(new Map<string, number[]>());
+
+  // The «Run next» rows the run has put on each printer. A later «Run next» block on
+  // that printer names them, so the server puts it behind the last one still pending —
+  // without that each later file went IN FRONT of the earlier ones (N03, upstream #3471).
+  // ⚠️ «Run next» rows only: anchored on a row the run queued at the END, the block would
+  // land behind all other work — the opposite of its label (N03 acceptance A1-01).
+  // ⚠️ Per printer, and the newest RUN_NEXT_ANCHORS only: the server takes at most that
+  // many, and a long run would otherwise refuse every later «Run next» (A1-02).
+  const runNextByPrinterRef = useRef(new Map<number, number[]>());
 
   const ids = useMemo(() => files.map((file) => file.id), [files]);
 
@@ -334,6 +354,17 @@ export function QueueSequencer({
   }, [groups]);
 
   const totalUnits = useMemo(() => groups.reduce((sum, group) => sum + group.units, 0), [groups]);
+
+  // A selection (not a copy) of files sliced for two or more printer models.
+  const severalModels = useMemo(() => {
+    if (files.some((file) => file.source !== undefined)) return false;
+    const models = new Set(
+      (grouping.data ?? [])
+        .map((row) => row.sliced_for_model?.trim().toLowerCase())
+        .filter((model): model is string => Boolean(model)),
+    );
+    return models.size > 1;
+  }, [files, grouping.data]);
 
   // ⚠️ The toggle belongs to the GROUP, not the run: each leader offers it,
   // and the next group opens with it on again. Reset lives in the group
@@ -456,6 +487,21 @@ export function QueueSequencer({
       onAutoSubmitRefused={() => {
         askedRef.current += 1;
       }}
+      nextBlockAnchors={(printerId) => (runNextByPrinterRef.current.get(printerId) ?? []).slice(-RUN_NEXT_ANCHORS)}
+      onNextBlockQueued={(printerId, createdItemIds) => {
+        const rows = runNextByPrinterRef.current.get(printerId) ?? [];
+        rows.push(...createdItemIds);
+        runNextByPrinterRef.current.set(printerId, rows.slice(-RUN_NEXT_ANCHORS));
+      }}
+      onComputeOrderInstead={
+        severalModels && onComputeOrder
+          ? () => {
+              const remaining = stillOwed();
+              finish(remaining);
+              onComputeOrder(remaining.map((file) => file.id));
+            }
+          : undefined
+      }
       onQueued={(createdItemIds) => {
         // Only a copy carries a source batch; a selection has none to reproduce.
         const batchId = member.file.batchId;

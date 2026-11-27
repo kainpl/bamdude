@@ -107,14 +107,78 @@ class TestPlacePendingBlock:
             db_session.add_all([urgent_a, urgent_b])
             await db_session.commit()
 
+        # Pending work starts at 1 for «next» too: 0 is the printer's claim (42634ea27 fixed only «end»).
         assert await _positions(db_session, queue.id) == [
-            (urgent_a.id, 0),
-            (urgent_b.id, 1),
-            (old_a.id, 2),
-            (old_b.id, 3),
+            (urgent_a.id, 1),
+            (urgent_b.id, 2),
+            (old_a.id, 3),
+            (old_b.id, 4),
         ]
         await db_session.refresh(printing)
         assert printing.position == 0
+
+    async def test_next_after_the_runs_own_rows_keeps_the_run_in_order(self, db_session, queue):
+        """N03 (upstream #3471): the second block of one run goes behind the first, not in front of it."""
+        old = await _add_item(db_session, queue.id, position=1)
+        first = PrintQueueItem(queue_id=queue.id, status="pending")
+        async with queue_ops.queue_scope_lock(db_session, queue.id):
+            await queue_ops.place_pending_block(db_session, queue.id, [first], enqueue_position="next")
+            db_session.add(first)
+            await db_session.commit()
+        second_a = PrintQueueItem(queue_id=queue.id, status="pending")
+        second_b = PrintQueueItem(queue_id=queue.id, status="pending")
+
+        async with queue_ops.queue_scope_lock(db_session, queue.id):
+            await queue_ops.place_pending_block(
+                db_session, queue.id, [second_a, second_b], enqueue_position="next", after_item_ids=[first.id]
+            )
+            db_session.add_all([second_a, second_b])
+            await db_session.commit()
+
+        assert await _positions(db_session, queue.id) == [
+            (first.id, 1),
+            (second_a.id, 2),
+            (second_b.id, 3),
+            (old.id, 4),
+        ]
+
+    async def test_next_after_goes_behind_the_last_of_several_anchors(self, db_session, queue):
+        old = await _add_item(db_session, queue.id, position=1)
+        run_a = await _add_item(db_session, queue.id, position=2)
+        run_b = await _add_item(db_session, queue.id, position=3)
+        tail = await _add_item(db_session, queue.id, position=4)
+        new = PrintQueueItem(queue_id=queue.id, status="pending")
+
+        async with queue_ops.queue_scope_lock(db_session, queue.id):
+            await queue_ops.place_pending_block(
+                db_session, queue.id, [new], enqueue_position="next", after_item_ids=[run_b.id, run_a.id]
+            )
+            db_session.add(new)
+            await db_session.commit()
+
+        assert [item_id for item_id, _ in await _positions(db_session, queue.id)] == [
+            old.id,
+            run_a.id,
+            run_b.id,
+            new.id,
+            tail.id,
+        ]
+
+    async def test_next_after_rows_no_longer_pending_goes_first(self, db_session, queue, queue_b):
+        """An anchor that started printing, or sits in another queue, does not hold the block back."""
+        old = await _add_item(db_session, queue.id, position=1)
+        started = await _add_item(db_session, queue.id, position=0, status="printing")
+        elsewhere = await _add_item(db_session, queue_b.id, position=1)
+        new = PrintQueueItem(queue_id=queue.id, status="pending")
+
+        async with queue_ops.queue_scope_lock(db_session, queue.id):
+            await queue_ops.place_pending_block(
+                db_session, queue.id, [new], enqueue_position="next", after_item_ids=[started.id, elsewhere.id]
+            )
+            db_session.add(new)
+            await db_session.commit()
+
+        assert await _positions(db_session, queue.id) == [(new.id, 1), (old.id, 2)]
 
     async def test_end_preserves_existing_positions(self, db_session, queue):
         old = await _add_item(db_session, queue.id, position=9)
