@@ -20,6 +20,11 @@ from backend.app.utils.paho_teardown import retire_paho_client
 logger = logging.getLogger(__name__)
 
 
+# Fields the printer status topic takes from the same dict the REST status and the
+# WebSocket send, so a subscriber reads them in the shape it already knows (#3401).
+_STATUS_FIELDS_FROM_STATE = ("door_open", "active_extruder", "tray_now", "ams", "vt_tray", "hms_errors")
+
+
 def configure_broker_tls(client: mqtt.Client, *, verify: bool) -> None:
     """TLS for a connection to the operator's own broker (the relay and the MQTT smart plugs).
 
@@ -52,6 +57,7 @@ class MQTTRelayService:
         self._broker = ""
         self._port = 1883
         self._last_printer_status: dict[int, float] = {}  # printer_id -> last publish timestamp
+        self._last_printer_connected: dict[int, bool] = {}  # printer_id -> `connected` in the last publish
         self._last_status_payload: dict[int, dict] = {}
         self._smart_plug_service = None  # Lazy import to avoid circular dependency
         self._settings: dict = {}  # Store settings for smart plug service
@@ -279,16 +285,28 @@ class MQTTRelayService:
         awaiting_plate_clear: bool = False,
         force: bool = False,
     ):
-        """Publish printer status change (throttled to 1 update/sec per printer)."""
+        """Publish printer status change (throttled to 1 update/sec per printer).
+
+        A change of ``connected`` is never throttled: the update that says a printer
+        dropped is retained, and held back it would leave the previous status
+        standing for as long as the printer stays quiet (#3401).
+        """
         if not self.enabled or not self.connected:
             return
 
         # Throttle status updates to avoid flooding MQTT broker
         now = time.time()
         last_publish = self._last_printer_status.get(printer_id, 0)
-        if not force and now - last_publish < self.STATUS_THROTTLE_SECONDS:
+        last_connected = self._last_printer_connected.get(printer_id)
+        connected_changed = last_connected is not None and last_connected != state.connected
+        if not force and not connected_changed and now - last_publish < self.STATUS_THROTTLE_SECONDS:
             return  # Skip this update, too soon since last publish
         self._last_printer_status[printer_id] = now
+        self._last_printer_connected[printer_id] = state.connected
+
+        from backend.app.services.printer_manager import printer_state_to_dict
+
+        snapshot = printer_state_to_dict(state, printer_id)
 
         # Build status payload from PrinterState
         payload = {
@@ -315,6 +333,7 @@ class MQTTRelayService:
             "heatbreak_fan_speed": state.heatbreak_fan_speed,
             "left_aux_fan_speed": (getattr(state, "airduct_parts", {}) or {}).get(10, {}).get("state"),
             "exhaust_fan_present": (3 in state.airduct_parts) if getattr(state, "airduct_parts", None) else None,
+            **{field: snapshot[field] for field in _STATUS_FIELDS_FROM_STATE},
             "awaiting_plate_clear": awaiting_plate_clear,
         }
 
