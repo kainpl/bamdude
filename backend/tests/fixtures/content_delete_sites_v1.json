@@ -1170,6 +1170,54 @@
     },
     {
       "site": [
+        "core/printer_scope.py::forget_group_access",
+        "sqlalchemy.delete",
+        "backend.app.models.group.group_locations"
+      ],
+      "owner_policy": "Outside C parent purge: core/printer_scope.py::forget_group_access removes a deleted group's printer and location grants (N62) inside the group deletion's own transaction; SQLite keeps foreign keys off, so the rows go explicitly; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "core/printer_scope.py::forget_group_access",
+        "sqlalchemy.delete",
+        "backend.app.models.group.group_printers"
+      ],
+      "owner_policy": "Outside C parent purge: core/printer_scope.py::forget_group_access removes a deleted group's printer and location grants (N62) inside the group deletion's own transaction; SQLite keeps foreign keys off, so the rows go explicitly; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "core/printer_scope.py::forget_location_access",
+        "sqlalchemy.delete",
+        "backend.app.models.group.group_locations"
+      ],
+      "owner_policy": "Outside C parent purge: core/printer_scope.py::forget_location_access removes a deleted (empty) printer location from every group it was given to (N62) inside the location deletion's own transaction; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "core/printer_scope.py::forget_printer_access",
+        "sqlalchemy.delete",
+        "backend.app.models.group.group_printers"
+      ],
+      "owner_policy": "Outside C parent purge: core/printer_scope.py::forget_printer_access removes a deleted printer from every group that picked it (N62) inside the printer deletion's own transaction; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "core/printer_scope.py::set_group_access",
+        "sqlalchemy.delete",
+        "backend.app.models.group.group_locations"
+      ],
+      "owner_policy": "Outside C parent purge: core/printer_scope.py::set_group_access replaces a group's printer/location grants (N62) in the administrator's group edit transaction; flushes, never commits; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "core/printer_scope.py::set_group_access",
+        "sqlalchemy.delete",
+        "backend.app.models.group.group_printers"
+      ],
+      "owner_policy": "Outside C parent purge: core/printer_scope.py::set_group_access replaces a group's printer/location grants (N62) in the administrator's group edit transaction; flushes, never commits; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
         "core/rate_limit.py::clear_failed_attempts",
         "sqlalchemy.delete",
         "backend.app.models.auth_ephemeral.AuthRateLimitEvent"

@@ -250,7 +250,9 @@ async def printer_routing_preview(db, data, user):
     return {"targets": results}
 
 
-async def routing_preview(db, data, user):
+async def routing_preview(db, data, user, *, printer_scope: frozenset[int] | None = None):
+    """``printer_scope`` (N62): the printers the job's author, the caller, reaches; the
+    distributor routes over exactly those (``auto_queue_eligibility.printers_for_item``)."""
     archive, library = await visible_source(db, data, user)
     query = (
         select(Printer, PrinterQueue)
@@ -260,6 +262,8 @@ async def routing_preview(db, data, user):
             Printer.archived.is_(False),
         )
     )
+    if printer_scope is not None:
+        query = query.where(Printer.id.in_(printer_scope))
     if data.target_location_id:
         tree = await load_tree(db)
         query = query.where(Printer.location_id.in_(subtree_ids(tree, data.target_location_id)))

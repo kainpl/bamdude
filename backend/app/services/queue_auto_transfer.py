@@ -101,7 +101,12 @@ async def _rights(db, actor, item):
         from backend.app.core.auth import authorize_api_key
 
         key = await fresh_api_key(db, actor)
-        if key.printer_ids is not None:
+        # The Auto Queue is farm-wide: closed to a key limited to printers — by its own list or its
+        # owner's groups (N62 D5).
+        from backend.app.core.printer_scope import key_scope
+
+        owner = await db.get(User, key.user_id) if key.user_id is not None else None
+        if await key_scope(db, key, owner) is not None:
             raise refusal("transfer_forbidden", 403)
         await authorize_api_key(
             db,

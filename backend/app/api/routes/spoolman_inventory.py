@@ -15,7 +15,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import delete, select, text
@@ -1532,6 +1532,7 @@ async def copy_tags_to_native(
 
 @router.get("/slot-assignments/all", response_model=list[SpoolmanSlotAssignmentEnriched])
 async def get_all_spoolman_slot_assignments(
+    request: Request,
     printer_id: int | None = Query(None, gt=0),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
@@ -1543,9 +1544,14 @@ async def get_all_spoolman_slot_assignments(
     matches the slot's MQTT serial (or the synthetic ``f"p{pid}a{ams_id}"``
     fallback key).
     """
+    from backend.app.core.printer_scope import request_printer_scope, where_strict
+
     query = select(SpoolmanSlotAssignment).options(selectinload(SpoolmanSlotAssignment.printer))
     if printer_id is not None:
         query = query.where(SpoolmanSlotAssignment.printer_id == printer_id)
+    # N62: the slots of the printers the caller reaches.
+    if (in_scope := where_strict(request_printer_scope(request), SpoolmanSlotAssignment.printer_id)) is not None:
+        query = query.where(in_scope)
     result = await db.execute(query)
     slots = list(result.scalars().all())
 
@@ -1623,6 +1629,7 @@ async def get_all_spoolman_slot_assignments(
 
 @router.post("/sync-ams-weights")
 async def sync_spoolman_ams_weights(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
@@ -1638,7 +1645,11 @@ async def sync_spoolman_ams_weights(
         raw_spools = await client.get_all_spools(allow_archived=False)
     spool_lookup: dict[int, dict] = {s["id"]: s for s in raw_spools if s.get("id") is not None}
 
-    result = await db.execute(select(SpoolmanSlotAssignment))
+    from backend.app.core.printer_scope import request_printer_scope, where_strict
+
+    # N62: the slots of the printers the caller reaches.
+    in_scope = where_strict(request_printer_scope(request), SpoolmanSlotAssignment.printer_id)
+    result = await db.execute(select(SpoolmanSlotAssignment).where(*([in_scope] if in_scope is not None else [])))
     assignments = list(result.scalars().all())
 
     synced = 0

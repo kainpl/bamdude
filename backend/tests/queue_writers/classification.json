@@ -515,6 +515,9 @@
  "backend/app/api/routes/users.py::delete_user": {
   "class": "lane (library_delete_scope plan)",
   "lock": "lane",
+  "outside": {
+   "helper-call:printer_scope.hold_departing_author": "N62 r1 B03: the account-only path (no content plan, so no lane scope) — the helper locks the author's AutoQueue rows ascending itself (A20) and only sets manual_start"
+  },
   "owner": "user_content_delete",
   "r3": "missing",
   "rule": "unchanged (its plan holds every lane its rows name)",
@@ -522,15 +525,24 @@
    "user_content_delete.delete_content"
   ]
  },
- "backend/app/core/api_key_scope.py::enforce_printer_scope": {
+ "backend/app/core/printer_scope.py::hold_departing_author": {
+  "class": "shared (A20: rows locked ascending and re-read, written one by one)",
+  "lock": "shared",
+  "owner": "the user deletion's request session",
+  "r3": "missing",
+  "rule": "N62 r1 B03: a deleted limited author's pending AutoQueue jobs get manual_start; no row changes queue or position, so no lane"
+ },
+ "backend/app/core/printer_scope.py::set_request_scope": {
   "candidates": {
-   "setattr:?[_STATE_ATTR]@request.state": "other: the request state"
+   "setattr:?[_STATE_ATTR]@request.state": "other: the request state",
+   "setattr:?[_KIND_ATTR]@request.state": "other: the request state",
+   "setattr:?[_LISTED_ATTR]@request.state": "other: the request state"
   },
   "class": "n/a",
   "lock": "n/a",
   "owner": "-",
   "r3": "n/a",
-  "rule": "request.state attribute (candidate)"
+  "rule": "request.state attribute (candidate) — the request's printer scope (N62), moved here from api_key_scope.enforce_printer_scope"
  },
  "backend/app/main.py::_accept_bound_terminal_run": {
   "class": "L2d",

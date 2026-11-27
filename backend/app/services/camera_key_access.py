@@ -56,7 +56,10 @@ class CameraKeyStreamGuard:
                 or key.user_id != identity.owner_id
             ):
                 return False
-            if key.printer_ids is not None and self.printer_id not in key.printer_ids:
+            # N62 D5: the key's list ∩ its owner's scope.
+            from backend.app.core.printer_scope import allows, key_scope
+
+            if not allows(await key_scope(db, key, principal.user), self.printer_id):
                 return False
             printer_identity = await db.scalar(select(Printer.connector_identity).where(Printer.id == self.printer_id))
             return printer_identity == self.printer_identity and await read_server_identity(db) == self.namespace

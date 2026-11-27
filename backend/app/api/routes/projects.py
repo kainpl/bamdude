@@ -35,7 +35,6 @@ from backend.app.api.routes._workshop_rights import (
 from backend.app.api.routes.auto_queue import _to_response as auto_queue_row_response, auto_queue_item_load_options
 from backend.app.api.routes.library import file_name_visible
 from backend.app.api.routes.print_queue import _enrich_response as queue_row_response, queue_item_load_options
-from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import (
     RequestCredentials,
     RequireAnyPermission,
@@ -50,6 +49,7 @@ from backend.app.core.auth import (
 from backend.app.core.config import settings
 from backend.app.core.database import LOCK_NOT_AVAILABLE, get_db, sqlstate
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import request_key_listed, request_printer_scope
 from backend.app.i18n.api_errors import json_error
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
@@ -2801,7 +2801,9 @@ async def read_line_recount(
 ):
     from backend.app.services import order_recount
 
-    if key_printer_scope(request) is not None:
+    # An order's recount is a fact of the order, not of a printer (N62 §5.2): only a key bound to
+    # printers of its own is refused, as before.
+    if request_key_listed(request):
         raise HTTPException(403, "Whole-order access required")
     return (await order_recount.state(db, project_id, line_id))[0]
 
@@ -2936,7 +2938,7 @@ async def list_project_archives(
         .limit(limit)
         .offset(offset)
     )
-    printer_scope = key_printer_scope(request)
+    printer_scope = request_printer_scope(request)
     if printer_scope is not None:
         query = query.where(PrintArchive.printer_id.in_(printer_scope))
     result = await db.execute(query)
@@ -3754,7 +3756,7 @@ async def get_project_timeline(
 
     actor = await acting_user(request, db, user)
     reads_all, reads_own = await _owner_reads(creds, _archives_read_all, _archives_read_own)
-    printer_scope = key_printer_scope(request)
+    printer_scope = request_printer_scope(request)
 
     def archive_visible(archive):
         return (printer_scope is None or archive.printer_id in printer_scope) and (
@@ -4239,7 +4241,7 @@ async def preview_order_draft(
         _utc_now(),
         inputs_token=data.inputs_token,
         visible=lambda file: file_name_visible(file, user, scope),
-        printer_scope=key_printer_scope(request),
+        printer_scope=request_printer_scope(request),
         saved_revision=data.saved_revision,
         comparison_epoch=data.comparison_epoch,
     )
@@ -4354,10 +4356,10 @@ async def read_order_printer_resources(
     user: User | None = RequirePermission(Permission.ORDERS_READ),
     _printers: User | None = RequirePermission(Permission.PRINTERS_READ),
 ):
-    from backend.app.core.api_key_scope import key_printer_scope
+    from backend.app.core.printer_scope import request_printer_scope
     from backend.app.services import order_resources
 
-    return await order_resources.read(db, project_id, key_printer_scope(request))
+    return await order_resources.read(db, project_id, request_printer_scope(request))
 
 
 @router.put("/{project_id}/printer-resources")
@@ -4559,10 +4561,11 @@ async def get_order_queue(
     the distributor has not handed out — through the SAME conditions the order's
     tiles count (``services/order_queue``). Rows are built by the queue page's own
     builders. A key limited to some printers sees its printers only and no
-    auto-queue, which is closed to it (as ``/auto-queue`` is)."""
+    auto-queue, which is closed to it (as ``/auto-queue`` is). A person limited to printers
+    sees the auto-queue rows still waiting, which belong to no printer (N62 12.3)."""
     if await db.get(Project, project_id) is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    scope = key_printer_scope(request)
+    scope = request_printer_scope(request)
     printing_q = (
         select(PrintArchive, Printer.name)
         .outerjoin(Printer, Printer.id == PrintArchive.printer_id)
@@ -4606,7 +4609,9 @@ async def get_order_queue(
 
     pending = [projected(item, queue_row_response(item)) for item in (await db.execute(pending_q)).scalars().all()]
     awaiting = []
-    if scope is None:
+    from backend.app.core.printer_scope import request_scope_kind
+
+    if scope is None or request_scope_kind(request) == "person":
         awaiting_q = (
             select(AutoQueueItem)
             .options(*auto_queue_item_load_options())

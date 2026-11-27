@@ -9937,6 +9937,10 @@ export interface Group {
   permissions: Permission[];
   is_system: boolean;
   user_count: number;
+  /** N62: the group limits its members to these printers and locations (with every location below). */
+  restrict_printers: boolean;
+  printer_ids: number[];
+  location_ids: number[];
   created_at: string;
   updated_at: string;
 }
@@ -9949,12 +9953,26 @@ export interface GroupCreate {
   name: string;
   description?: string;
   permissions: Permission[];
+  restrict_printers?: boolean;
+  printer_ids?: number[];
+  location_ids?: number[];
 }
 
 export interface GroupUpdate {
   name?: string;
   description?: string;
   permissions?: Permission[];
+  /** N62. Leave out to keep; a list replaces the whole set. */
+  restrict_printers?: boolean;
+  printer_ids?: number[];
+  location_ids?: number[];
+}
+
+/** N62: who reaches one printer — every limited group that reaches it, and how. */
+export interface PrinterAccess {
+  printer_id: number;
+  /** Groups without a limit — every group of permissions — reach every printer. */
+  groups: Array<{ id: number; name: string; picked: boolean; location_ids: number[] }>;
 }
 
 export interface PermissionInfo {
@@ -10229,6 +10247,8 @@ export interface UserResponse {
   auth_source: string;  // "local" or "ldap"
   groups: GroupBrief[];
   permissions: Permission[];  // All permissions from groups
+  /** N62: limited to some printers by a group (a key: by its list or its owner). */
+  printers_restricted?: boolean;
   created_at: string;
 }
 
@@ -11163,6 +11183,7 @@ export const api = {
   getPermissions: () => request<PermissionsListResponse>('/groups/permissions'),
   getGroups: () => request<Group[]>('/groups/'),
   getGroup: (id: number) => request<GroupDetail>(`/groups/${id}`),
+  getPrinterAccess: (printerId: number) => request<PrinterAccess>(`/printers/${printerId}/access`),
   createGroup: (data: GroupCreate) =>
     request<Group>('/groups/', {
       method: 'POST',

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 
 from backend.app.core import database
-from backend.app.core.api_key_scope import key_printer_scope, narrowed_scope
+from backend.app.core.api_key_scope import narrowed_scope
 from backend.app.core.auth import (
     RequestCredentials,
     authorize_api_key,
@@ -17,6 +17,7 @@ from backend.app.core.auth import (
     resolve_api_key_authority,
 )
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import request_printer_scope
 from backend.app.models.api_key import APIKey
 from backend.app.models.print_state_recovery_action import PrintStateRecoveryAction
 from backend.app.schemas.print_state_recovery import RecoveryApplyRequest, RecoveryKind, RecoveryPreviewRequest
@@ -121,7 +122,7 @@ async def issues(
         async with database.async_session() as db:
             result = await store.list_issues(
                 db,
-                key_printer_scope(request),
+                request_printer_scope(request),
                 printer_id=printer_id,
                 cursor=cursor,
                 target=(kind, target_id) if kind is not None else None,
@@ -170,7 +171,7 @@ async def apply(printer_id: int, data: RecoveryApplyRequest, creds: RequestCrede
     if credential:
         key = (await resolve_api_key_authority(creds.request, credential)).key
         initial_key = key.id, key.key_hash, key.user_id
-    granted_scope = key_printer_scope(creds.request)
+    granted_scope = request_printer_scope(creds.request)
     try:
         payload = tokens.verify(data.preview_token)
         if payload.get("printer_id") != printer_id or payload.get("actor") != actor:

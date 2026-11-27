@@ -1,4 +1,13 @@
-"""An API key's printer allowlist, held on every route that names a printer.
+"""The caller's printer scope, held on every route that names a printer.
+
+N62 (spec vault ``60-specs/n62-printer-scoped-groups-spec.md``): this began as an API key's
+allowlist and now holds EVERY caller — a person limited by their groups, an API key by its
+list ∩ its owner's scope (``core/printer_scope``). The gates call :func:`enforce_person_scope`
+or :func:`enforce_key_scope`; a person is refused with the 404 of the thing named (as if it
+did not exist), a key with its 403 (the connector plugin and webhooks read it, spec §12.1).
+When the caller reaches every printer nothing here runs.
+
+The history below is the key's:
 
 ``APIKey.printer_ids`` — ``None`` is every printer, ``[]`` is none — was taken,
 stored and shown, and honoured by the ``/webhook/*`` routes alone, so a key
@@ -25,9 +34,12 @@ or ``2.0`` to printer 2, so anything this reader cannot interpret must not pass.
 The auto-queue is farm-wide — its distributor may hand work to any printer — so
 it is closed to a restricted key as a whole.
 
-Lists are the routes' own business: :func:`key_printer_scope` says which
-printers the caller may see (``None`` = no restriction), and the printers,
-statuses, queues, queue items and monitor lists narrow to it.
+Lists are the routes' own business: ``core/printer_scope.request_printer_scope``
+says which printers the caller may see (``None`` = no restriction), and every list
+narrows to it.
+
+⚠️ Only a JSON body is read. No route takes a printer in a form field today; the
+coverage guard fails one that does.
 """
 
 from __future__ import annotations
@@ -39,13 +51,25 @@ from fastapi import HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.printer_scope import (
+    Scope,
+    key_list,
+    key_scope,
+    request_key_listed,
+    request_printer_scope,
+    request_scope_kind,
+    set_request_scope,
+    user_scope,
+)
+from backend.app.models.archive import PrintArchive
+from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.calibration_session import CalibrationSession
+from backend.app.models.filament_calibration import FilamentCalibration
 from backend.app.models.maintenance import PrinterMaintenance
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.scheduled_drying import DryingSchedule, ScheduledDrying
 from backend.app.models.smart_plug import SmartPlug
-
-_STATE_ATTR = "api_key_printer_ids"
+from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 
 # Names that are a printer (or its queue) wherever they appear.
 _PRINTER_KEYS = frozenset({"printer_id", "printer_ids", "queue_id"})
@@ -55,6 +79,10 @@ _PRINTER_KEYS = frozenset({"printer_id", "printer_ids", "queue_id"})
 _PRINTER_CSV_QUERY = frozenset({"mqtt_printer_ids"})
 # Names that are a print-queue job wherever they appear.
 _QUEUE_ITEM_KEYS = frozenset({"source_queue_item_id", "queue_item_ids"})
+# Names that are print archives wherever they appear in a request body (an order's add / remove
+# archives, N62 r1 B04; the archive a queue / Auto Queue job or a routing preview prints from,
+# acceptance A01): an archive belongs to the printer that printed it.
+_ARCHIVE_KEYS = frozenset({"archive_ids", "archive_id"})
 # Only on the queue router are these print-queue jobs; elsewhere they are other tables' ids.
 # ``cancelled_item_ids`` (bulk-retry) is read here itself rather than left to its body validator
 # (cancelled ⊆ confirmed): the gate runs before the body is validated, and a guard that depends on a
@@ -100,54 +128,131 @@ def printer_refusal(printer_id: int) -> HTTPException:
     )
 
 
-def key_printer_scope(request: Request | None) -> frozenset[int] | None:
-    """The printers an API-key caller may reach; ``None`` for a user or an unrestricted key.
+# What a person is told about a printer outside their scope, by what named it: the thing's own
+# 404, so another team's number is never confirmed (N62 spec §5.1).
+_PRINTER = "Printer not found"
+_NOT_FOUND = {
+    "printer": _PRINTER,
+    "queue_item": "Queue item not found",
+    "batch": "Batch not found",
+    "smart_plug": "Smart plug not found",
+    "maintenance_item": "Maintenance item not found",
+    "calibration_session": "Calibration session not found",
+    "dispatch_job": "Job not found",
+    "drying_run": "Scheduled drying not found",
+    "drying_schedule": "Drying schedule not found",
+    "archive": "Archive not found",
+    "calibration": "Calibration not found",
+    "spoolman_spool": "Spool assignment not found",
+    "auto_queue_item": "Auto-queue item not found",
+}
 
-    ``request`` is None only when a route function is called directly from
-    Python — FastAPI always injects it — and such a call carries no key.
+
+def person_refusal(source: str) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND.get(source, _PRINTER))
+
+
+async def _place_printers(db: AsyncSession, printer_location_id: int, cache: dict | None) -> set[int]:
+    """The printers standing in a printer location or in one below it."""
+    if cache is not None and printer_location_id in cache:
+        return cache[printer_location_id]
+    from backend.app.core.printer_scope import _location_subtree
+    from backend.app.models.printer import Printer
+
+    places = await _location_subtree(db, [printer_location_id])
+    printers = set((await db.execute(select(Printer.id).where(Printer.location_id.in_(places)))).scalars())
+    if cache is not None:
+        cache[printer_location_id] = printers
+    return printers
+
+
+async def target_in_request_scope(
+    request: Request,
+    db: AsyncSession,
+    *,
+    printer_id: int | None = None,
+    printer_location_id: int | None = None,
+    write: bool = False,
+    cache: dict | None = None,
+) -> bool:
+    """May this request see (``write`` — change) a sensor target? One rule (spec §5.2, §12.2):
+
+    * bound to a printer — that printer is in scope;
+    * bound to a printer location — reading needs a printer of the place (or a place below it)
+      in scope; changing needs every printer there in scope, and at least one;
+    * a storage place, or no target — nobody's printer: visible, like the spools (r1 B06);
+    * a key with a printer list of its OWN keeps its older rule — a sensor only through a
+      printer target.
     """
-    if request is None:
-        return None
-    return getattr(request.state, _STATE_ATTR, None)
-
-
-def in_key_scope(request: Request | None, printer_id: int | None) -> bool:
-    scope = key_printer_scope(request)
-    return scope is None or printer_id in scope
-
-
-async def sensor_in_key_scope(request: Request, db: AsyncSession, sensor_id: int) -> bool:
-    """A restricted key may read a sensor only through an allowed printer target."""
-    scope = key_printer_scope(request)
+    scope = request_printer_scope(request)
     if scope is None:
         return True
-    if not scope:
+    if printer_id is not None:
+        return printer_id in scope
+    if request_key_listed(request):
         return False
+    if printer_location_id is not None:
+        printers = await _place_printers(db, printer_location_id, cache)
+        return bool(printers) and printers <= scope if write else bool(printers & scope)
+    return True
+
+
+async def sensor_in_request_scope(request: Request, db: AsyncSession, sensor_id: int, *, write: bool = False) -> bool:
+    """A sensor as a whole: seen through any of its targets; changed only when every one of them
+    may be changed — a sensor shared with another team's printers is theirs too."""
+    if request_printer_scope(request) is None:
+        return True
     from backend.app.models.smart_sensor import SmartSensor
     from backend.app.models.smart_sensor_binding import SmartSensorBinding
 
-    bound = await db.scalar(select(SmartSensorBinding.id).where(SmartSensorBinding.sensor_id == sensor_id).limit(1))
-    if bound is not None:
-        allowed = await db.scalar(
-            select(SmartSensorBinding.id)
-            .where(SmartSensorBinding.sensor_id == sensor_id, SmartSensorBinding.printer_id.in_(scope))
-            .limit(1)
+    targets = (
+        await db.execute(
+            select(SmartSensorBinding.printer_id, SmartSensorBinding.printer_location_id).where(
+                SmartSensorBinding.sensor_id == sensor_id
+            )
         )
-        return allowed is not None
-    legacy_printer = await db.scalar(select(SmartSensor.printer_id).where(SmartSensor.id == sensor_id))
-    return legacy_printer in scope
+    ).all()
+    if not targets:
+        targets = (
+            await db.execute(select(SmartSensor.printer_id, SmartSensor.location_id).where(SmartSensor.id == sensor_id))
+        ).all()
+    cache: dict = {}
+    answers = [
+        await target_in_request_scope(
+            request, db, printer_id=printer_id, printer_location_id=place_id, write=write, cache=cache
+        )
+        for printer_id, place_id in targets
+    ]
+    if not answers:
+        return await target_in_request_scope(request, db, write=write)
+    return all(answers) if write else any(answers)
 
 
-def _allowed(api_key: Any) -> frozenset[int] | None:
-    if api_key.printer_ids is None:
-        return None
-    return frozenset(int(pid) for pid in api_key.printer_ids)
+def sensor_refusal(request: Request, what: str = "sensor") -> HTTPException:
+    """A person is told the sensor (``what``: ``sensor`` / ``binding`` / ``target``) is not there —
+    404, as for anything outside their printers; a key that it may not reach it — 403, as before."""
+    person = request_scope_kind(request) == "person"
+    if what == "binding":
+        if person:
+            return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such sensor binding.")
+        return HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="API key does not have access to this sensor binding."
+        )
+    if what == "target":
+        if person:
+            return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such binding target.")
+        return HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="API key does not have access to that target."
+        )
+    if person:
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such sensor.")
+    return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API key does not have access to this sensor.")
 
 
 def narrowed_scope(granted: frozenset[int] | None, api_key: Any) -> frozenset[int] | None:
     """The request's printer scope narrowed by the key's printer list as it stands NOW -- for a writer that reads
     the key again inside its transaction. Only ever narrower than what the gate granted, never wider."""
-    current = _allowed(api_key)
+    current = key_list(api_key)
     if granted is None:
         return current
     return granted if current is None else granted & current
@@ -263,46 +368,119 @@ async def _dispatch_job(_db: AsyncSession, raw: str) -> set[int]:
     return {printer_id} if printer_id is not None else set()
 
 
-# (route template prefix, path parameter) → the printers that id belongs to.
-_PATH_RESOLVERS: tuple[tuple[str, str, Callable[[AsyncSession, str], Awaitable[set[int]]]], ...] = (
-    (_QUEUE_ROUTER, "item_id", _queue_item),
-    (_QUEUE_ROUTER, "batch_id", _queue_batch),
-    ("/api/v1/smart-plugs/", "plug_id", _smart_plug),
-    ("/api/v1/maintenance/items/", "item_id", _maintenance_item),
-    ("/api/v1/calibration/sessions/", "session_id", _calibration_session),
-    ("/api/v1/background-dispatch/", "job_id", _dispatch_job),
-    ("/api/v1/scheduled-dryings/", "run_id", _scheduled_drying_run),
-    ("/api/v1/drying-schedules/", "schedule_id", _drying_schedule),
+async def _archives(db: AsyncSession, archive_ids: set[int]) -> set[int]:
+    """The printers of these archives; an archive bound to no printer names none (N62 D1)."""
+    if not archive_ids:
+        return set()
+    rows = await db.execute(select(PrintArchive.printer_id).where(PrintArchive.id.in_(archive_ids)))
+    return {printer_id for printer_id in rows.scalars() if printer_id is not None}
+
+
+async def _archive(db: AsyncSession, raw: str) -> set[int]:
+    return await _archives(db, {_as_id(raw)})
+
+
+async def _calibration(db: AsyncSession, raw: str) -> set[int]:
+    return await _printer_of(db, FilamentCalibration, raw)
+
+
+async def _spoolman_spool(db: AsyncSession, raw: str) -> set[int]:
+    """Every printer whose slot holds this Spoolman spool — an unassign by the spool's number acts on them."""
+    rows = await db.execute(
+        select(SpoolmanSlotAssignment.printer_id).where(SpoolmanSlotAssignment.spoolman_spool_id == _as_id(raw))
+    )
+    return set(rows.scalars())
+
+
+async def _auto_queue_item(db: AsyncSession, raw: str) -> set[int]:
+    """The printer an Auto Queue row was handed to (its copy's queue IS that printer's number);
+    a row still waiting names none (N62 12.3, acceptance A03)."""
+    queue_id = await db.scalar(
+        select(PrintQueueItem.queue_id)
+        .join(AutoQueueItem, AutoQueueItem.assigned_to_item_id == PrintQueueItem.id)
+        .where(AutoQueueItem.id == _as_id(raw))
+    )
+    return {queue_id} if queue_id is not None else set()
+
+
+async def _auto_queue_batch(db: AsyncSession, raw: str) -> set[int]:
+    """Every printer the copies of an Auto Queue batch were handed to."""
+    rows = await db.execute(
+        select(PrintQueueItem.queue_id)
+        .join(AutoQueueItem, AutoQueueItem.assigned_to_item_id == PrintQueueItem.id)
+        .where(AutoQueueItem.batch_id == raw)
+    )
+    return {queue_id for queue_id in rows.scalars() if queue_id is not None}
+
+
+# (route template prefix, path parameter, what it is) → the printers that id belongs to.
+_PATH_RESOLVERS: tuple[tuple[str, str, Callable[[AsyncSession, str], Awaitable[set[int]]], str], ...] = (
+    (_QUEUE_ROUTER, "item_id", _queue_item, "queue_item"),
+    (_QUEUE_ROUTER, "batch_id", _queue_batch, "batch"),
+    ("/api/v1/smart-plugs/", "plug_id", _smart_plug, "smart_plug"),
+    ("/api/v1/maintenance/items/", "item_id", _maintenance_item, "maintenance_item"),
+    ("/api/v1/calibration/sessions/", "session_id", _calibration_session, "calibration_session"),
+    ("/api/v1/background-dispatch/", "job_id", _dispatch_job, "dispatch_job"),
+    ("/api/v1/scheduled-dryings/", "run_id", _scheduled_drying_run, "drying_run"),
+    ("/api/v1/drying-schedules/", "schedule_id", _drying_schedule, "drying_schedule"),
+    # N62 (D1, D5): history belongs to the printer that made it, so an archive named in a path is
+    # asked of its printer — under the archive routes and everywhere else that names one.
+    ("/api/v1/", "archive_id", _archive, "archive"),
+    ("/api/v1/filament-calibrations/", "cali_id", _calibration, "calibration"),
+    ("/api/v1/spoolman/inventory/slot-assignments/", "spoolman_spool_id", _spoolman_spool, "spoolman_spool"),
+    ("/api/v1/auto-queue/", "item_id", _auto_queue_item, "auto_queue_item"),
+    ("/api/v1/auto-queue/", "batch_id", _auto_queue_batch, "batch"),
 )
 
 
-async def printers_named_by(db: AsyncSession, request: Request, template: str) -> set[int]:
-    """Every printer id the request names, directly or through something that belongs to one."""
+async def printers_named_by(
+    db: AsyncSession, request: Request, template: str, sources: dict[int, str] | None = None
+) -> set[int]:
+    """Every printer id the request names, directly or through something that belongs to one.
+
+    ``sources`` (when given) learns, for each printer, what named it first — the person's 404
+    names that thing.
+    """
     printers: set[int] = set()
     items: set[int] = set()
+
+    def named(found: set[int] | Iterator[int], source: str) -> None:
+        for printer_id in found:
+            printers.add(printer_id)
+            if sources is not None:
+                sources.setdefault(printer_id, source)
+
     for key in _PRINTER_KEYS:
         if key in request.path_params:
-            printers.update(_ids(request.path_params[key]))
+            named(_ids(request.path_params[key]), "printer")
         for value in request.query_params.getlist(key):
-            printers.update(_ids(value))
+            named(_ids(value), "printer")
     for key in _PRINTER_CSV_QUERY:
         for value in request.query_params.getlist(key):
-            printers.update(int(token.strip()) for token in value.split(",") if token.strip().isdigit())
+            named({int(token.strip()) for token in value.split(",") if token.strip().isdigit()}, "printer")
     # The queue a batch route is told to act on (``?queue_id=``, G03 D1), already checked above as a printer.
     named_queues = {one for value in request.query_params.getlist("queue_id") for one in _ids(value)}
 
-    for prefix, param, resolve in _PATH_RESOLVERS:
+    for prefix, param, resolve, source in _PATH_RESOLVERS:
         if template.startswith(prefix) and param in request.path_params:
             if resolve is _queue_batch and named_queues:
-                printers |= await _queue_batch(db, request.path_params[param], within=named_queues)
+                named(await _queue_batch(db, request.path_params[param], within=named_queues), source)
             else:
-                printers |= await resolve(db, request.path_params[param])
+                named(await resolve(db, request.path_params[param]), source)
 
     body = await _json_body(request)
     for value in _find(body, _PRINTER_KEYS):
-        printers.update(_ids(value))
+        named(_ids(value), "printer")
     for value in _find(body, _QUEUE_ITEM_KEYS):
         items.update(_ids(value))
+    archives: set[int] = set()
+    for value in _find(body, _ARCHIVE_KEYS):
+        archives.update(_ids(value))
+    # ``/archives/compare?archive_ids=1,2,3``: a token that is not a number names nothing — the
+    # route answers the malformed list itself (400).
+    for key in _ARCHIVE_KEYS:
+        for value in request.query_params.getlist(key):
+            archives.update(int(token.strip()) for token in value.split(",") if token.strip().isdigit())
     if template.startswith(_QUEUE_ROUTER):
         for value in _find(body, _QUEUE_ROUTER_ITEM_KEYS):
             items.update(_ids(value))
@@ -312,19 +490,45 @@ async def printers_named_by(db: AsyncSession, request: Request, template: str) -
                 if isinstance(entry, dict) and "id" in entry:
                     items.update(_ids(entry["id"]))
 
-    return printers | await _queues_of_items(db, items)
+    named(await _queues_of_items(db, items), "queue_item")
+    named(await _archives(db, archives), "archive")
+    return printers
 
 
-async def enforce_printer_scope(db: AsyncSession, request: Request, api_key: Any) -> None:
-    """Refuse a restricted key any request that names a printer outside its list.
+async def enforce_person_scope(db: AsyncSession, request: Request, user: Any) -> Scope:
+    """Refuse a restricted person any request that names a printer outside their scope — with the
+    404 of the thing named, as if it did not exist (N62 spec §5.1).
 
-    Also records the key's list on the request for the routes that narrow a
-    list to it (:func:`key_printer_scope`).
+    Also records the scope on the request for the routes that narrow a list to it
+    (``core/printer_scope.request_printer_scope``). The Auto Queue is open to a person (D2): the
+    distributor holds the job to its author's scope.
     """
-    allowed = _allowed(api_key)
-    setattr(request.state, _STATE_ATTR, allowed)
+    scope = await user_scope(db, user)
+    set_request_scope(request, scope, "person")
+    if scope is None:
+        return None
+    template = getattr(request.scope.get("route"), "path", request.url.path)
+    sources: dict[int, str] = {}
+    try:
+        named = await printers_named_by(db, request, template, sources)
+    except _Unreadable:
+        raise person_refusal("printer") from None
+    for printer_id in sorted(named):
+        if printer_id not in scope:
+            raise person_refusal(sources.get(printer_id, "printer"))
+    return scope
+
+
+async def enforce_key_scope(db: AsyncSession, request: Request, api_key: Any, owner: Any) -> Scope:
+    """Refuse a restricted key any request that names a printer outside its scope — its own list ∩
+    its owner's scope (D5).
+
+    Also records the scope on the request for the routes that narrow a list to it.
+    """
+    allowed = await key_scope(db, api_key, owner)
+    set_request_scope(request, allowed, "key", key_listed=key_list(api_key) is not None)
     if allowed is None:
-        return
+        return None
 
     template = getattr(request.scope.get("route"), "path", request.url.path)
     farm_wide = template in _FARM_WIDE_ROUTES or any(
@@ -352,6 +556,7 @@ async def enforce_printer_scope(db: AsyncSession, request: Request, api_key: Any
     for printer_id in sorted(named):
         if printer_id not in allowed:
             raise printer_refusal(printer_id)
+    return allowed
 
 
 async def _enforce_connector_scope(

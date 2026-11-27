@@ -8,10 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import request_printer_scope
 from backend.app.core.timezones import server_timezone
 from backend.app.models.scheduled_drying import DryingSchedule, ScheduledDrying
 from backend.app.models.user import User
@@ -43,7 +43,7 @@ async def list_runs(
     query = select(ScheduledDrying).where(ScheduledDrying.status.in_(sd.RUN_LISTED))
     if printer_id is not None:
         query = query.where(ScheduledDrying.printer_id == printer_id)
-    scope = key_printer_scope(request)
+    scope = request_printer_scope(request)
     if scope is not None:
         query = query.where(ScheduledDrying.printer_id.in_(scope))
     query = query.order_by(ScheduledDrying.start_after.asc().nullsfirst(), ScheduledDrying.id.asc())
@@ -84,7 +84,7 @@ async def list_schedules(
     query = select(DryingSchedule)
     if printer_id is not None:
         query = query.where(DryingSchedule.printer_id == printer_id)
-    scope = key_printer_scope(request)
+    scope = request_printer_scope(request)
     if scope is not None:
         query = query.where(DryingSchedule.printer_id.in_(scope))
     rows = (await db.execute(query.order_by(DryingSchedule.printer_id, DryingSchedule.start_time))).scalars().all()

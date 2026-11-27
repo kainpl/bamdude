@@ -1791,9 +1791,15 @@ async def _load_forecast(
     oracle = _FitOracle(ctx.printers, prefer_lowest=ctx.prefer_lowest, previous_ok=previous_ok)
     tree = await load_tree(db) if any(row.target_location_id for row in tail_rows) else {}
     line_orders = ctx.line_orders
+    # N62 D2: the third gate — the author's printers, read once per pass and author.
+    from backend.app.core.printer_scope import author_scope
+
+    authors = {row.created_by_id for row in tail_rows} | {row.created_by_id for row, _home in candidates}
+    author_scopes = {uid: await author_scope(db, uid) for uid in authors}
 
     def allowed(row: AutoQueueItem) -> frozenset[int] | None:
-        """``printers_for_item``'s two gates: the location subtree and the order's resources."""
+        """``printers_for_item``'s gates: the location subtree, the order's resources and the
+        author's printers."""
         gate: set[int] | None = None
         if row.target_location_id:
             places = set(subtree_ids(tree, row.target_location_id))
@@ -1802,7 +1808,14 @@ async def _load_forecast(
         if constrained(policy):
             permitted = {pid for pid, p in ctx.printers.items() if permits(policy, pid, p.model_name)}
             gate = permitted if gate is None else gate & permitted
+        scope = author_scopes.get(row.created_by_id)
+        if scope is not None:
+            gate = set(scope) if gate is None else gate & scope
         return None if gate is None else frozenset(gate)
+
+    def author_allowed(row) -> frozenset[int] | None:
+        """Printer-queue line work moves only within its author's printers."""
+        return author_scopes.get(row.created_by_id)
 
     from backend.app.services.farm_forecast import _load_gates
 
@@ -1837,7 +1850,7 @@ async def _load_forecast(
     preps: dict[int, float] = {}
     for row, _home in candidates:
         key, preps[row.id] = await assignment(row, requirements_by_row[row.id])
-        oracle.add_job(row, requirements_by_row[row.id], auto_policy(row), assign_key=key)
+        oracle.add_job(row, requirements_by_row[row.id], auto_policy(row), author_allowed(row), assign_key=key)
         evaluated[row.id] = _row_identity(row)
     max_position = await db.scalar(
         select(func.coalesce(func.max(AutoQueueItem.position), 0)).where(AutoQueueItem.status == "pending")

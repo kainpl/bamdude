@@ -6151,7 +6151,7 @@ async def swap_declaration_jobs(
 ):
     """The pending and failed jobs linked to this source the caller may see, each with its revision and whether the
     current declaration may be applied to it. None is selected: a refresh names its jobs."""
-    from backend.app.core.api_key_scope import key_printer_scope
+    from backend.app.core.printer_scope import request_printer_scope
     from backend.app.services import swap_job_refresh
 
     actor, rights = await _swap_declaration_caller(request, db, read, update)
@@ -6161,7 +6161,7 @@ async def swap_declaration_jobs(
         actor=actor,
         rights=rights,
         job_rights=swap_job_refresh.JobRights(read_all=queue_read[1], update_all=queue_update[1]),
-        printer_scope=key_printer_scope(request),
+        printer_scope=request_printer_scope(request),
     )
 
 
@@ -6178,7 +6178,7 @@ async def refresh_swap_declaration_jobs(
 ):
     """Write the source's current declaration into the named jobs' snapshots -- every one, or none. Not a Retry: a
     failed job stays failed."""
-    from backend.app.core.api_key_scope import key_printer_scope
+    from backend.app.core.printer_scope import request_printer_scope
     from backend.app.services import swap_job_refresh
 
     actor, rights = await _swap_declaration_caller(request, db, read, update)
@@ -6192,7 +6192,7 @@ async def refresh_swap_declaration_jobs(
         actor=actor,
         rights=rights,
         job_rights=swap_job_refresh.JobRights(read_all=queue_read[1], update_all=queue_update[1]),
-        printer_scope=key_printer_scope(request),
+        printer_scope=request_printer_scope(request),
     )
 
 

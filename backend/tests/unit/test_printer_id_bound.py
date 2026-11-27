@@ -12,7 +12,6 @@ from types import SimpleNamespace
 import pytest
 
 from backend.app.core import printer_id_bound
-from backend.app.core.api_key_scope import _allowed
 from backend.app.core.printer_id_bound import (
     CARRIERS,
     MAX_PRINTER_ID,
@@ -28,6 +27,7 @@ from backend.app.core.printer_id_bound import (
     sqlite_allocator,
     sqlite_bound,
 )
+from backend.app.core.printer_scope import key_list
 
 # Integer carriers without a foreign key — the registry's own list.
 WITHOUT_FK = {
@@ -42,8 +42,10 @@ WITHOUT_FK = {
 # The two primary keys that ARE printer numbers (a printer's queue has the printer's own number).
 PRIMARY_KEYS = {("printers", "id"), ("printer_queues", "id")}
 # FK carriers the models gained after P-ID would go here: their numbers already come from
-# an AUTOINCREMENT counter, so they never need to raise it (spec §B). None so far.
-ADDED_AFTER_PID: set[tuple[str, str]] = set()
+# an AUTOINCREMENT counter, so they never need to raise it (spec §B).
+ADDED_AFTER_PID: set[tuple[str, str]] = {
+    ("group_printers", "printer_id"),  # N62: a group's picked printers (m270)
+}
 
 
 def _models():
@@ -61,7 +63,7 @@ def test_the_registry_names_every_model_column_that_references_a_printer_or_its_
         for fk in table.foreign_keys
         if fk.column.table.name in ("printers", "printer_queues") and fk.column.name == "id"
     }
-    assert len(referencing) == 35  # 33 on printers.id, 2 on printer_queues.id
+    assert len(referencing) == 36  # 34 on printers.id (group_printers since m270), 2 on printer_queues.id
     current = {(c.table, c.column) for c in CARRIERS if c.kind == "int" and c.removed is None}
     assert current - WITHOUT_FK - PRIMARY_KEYS == referencing - ADDED_AFTER_PID
 
@@ -96,7 +98,7 @@ def test_the_notification_scopes_stay_outside_the_registry():
     [[120, 3], {"120": True, "7": False}, "8", "123", [3.9, True], [], ["7", " 9 "]],
 )
 def test_a_readable_api_key_scope_is_exactly_what_the_gate_allows(decoded):
-    gate = _allowed(SimpleNamespace(printer_ids=decoded))
+    gate = key_list(SimpleNamespace(printer_ids=decoded))
     assert sorted(api_key_scope_ids(json.dumps(decoded))) == sorted(v for v in gate if 1 <= v <= MAX_PRINTER_ID)
 
 

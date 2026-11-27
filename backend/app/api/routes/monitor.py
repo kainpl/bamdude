@@ -8,10 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import _auth_database_errors, require_ownership_permission, require_permission, security
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import request_printer_scope
 from backend.app.models.user import User
 from backend.app.schemas.farm_forecast import FarmForecastOut
 from backend.app.schemas.monitor import MonitorSnapshot, MonitorView
@@ -54,7 +54,7 @@ async def monitor_access(
         user_id=user.id if user else None,
         open_printer=bool(user and user.has_permission(Permission.PRINTERS_READ.value)),
         open_queue=bool(user and queue_read),
-        printer_ids=key_printer_scope(request),
+        printer_ids=request_printer_scope(request),
     )
 
 
@@ -84,7 +84,10 @@ async def kiosk_access(
         )
     ):
         raise HTTPException(401, detail="monitor_token_invalid")
-    return MonitorAccess(queue_read=True, kiosk=True)
+    # N62 (r1 B01): a kiosk screen shows its owner's printers.
+    from backend.app.core.printer_scope import user_scope
+
+    return MonitorAccess(queue_read=True, kiosk=True, printer_ids=await user_scope(db, owner))
 
 
 def private_response(response: Response):
@@ -116,8 +119,9 @@ async def kiosk_snapshot(
 
 @router.get("/kiosk/forecast", response_model=FarmForecastOut)
 async def kiosk_forecast(
-    response: Response, _: MonitorAccess = Depends(kiosk_access), db: AsyncSession = Depends(get_db)
+    response: Response, access: MonitorAccess = Depends(kiosk_access), db: AsyncSession = Depends(get_db)
 ):
     private_response(response)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    return FarmForecastOut.of(now, farm_forecast.simulate_farm(await farm_forecast.load_snapshot(db, now)))
+    farm = farm_forecast.simulate_farm(await farm_forecast.load_snapshot(db, now))
+    return FarmForecastOut.of(now, farm, printer_scope=access.printer_ids)

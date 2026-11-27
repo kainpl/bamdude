@@ -18,6 +18,14 @@ from backend.app.migrations._sqlite_autoincrement import SelfManagedFailure
 
 MAX = id_allocator.MAX_ID
 
+# FK carriers the models gained after m263: they appear only together with the AUTOINCREMENT
+# counter, so a number they name is already behind it and the frozen registry never needs them
+# (the reasoning ``group_id_bound`` gives for ``oidc_providers.group_mapping``).
+ADDED_AFTER_COUNTER: set[tuple[str, str]] = {
+    ("group_printers", "group_id"),  # N62: a group's picked printers (m270)
+    ("group_locations", "group_id"),  # N62: a group's locations (m270)
+}
+
 
 def test_the_registry_names_every_model_column_that_references_a_group():
     from backend.app.core.database import Base, import_all_models
@@ -29,7 +37,7 @@ def test_the_registry_names_every_model_column_that_references_a_group():
         for fk in table.foreign_keys
         if fk.column.table.name == "groups" and fk.column.name == "id"
     }
-    assert referencing | {("groups", "id")} == {(c.table, c.column) for c in CARRIERS}
+    assert (referencing - ADDED_AFTER_COUNTER) | {("groups", "id")} == {(c.table, c.column) for c in CARRIERS}
 
 
 def test_the_model_is_autoincrement():

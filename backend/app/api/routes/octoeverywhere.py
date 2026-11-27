@@ -6,10 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import RequireAdmin, RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import request_printer_scope
 from backend.app.models.user import User
 from backend.app.services.octoeverywhere_detection import octoeverywhere_detection_service
 
@@ -32,7 +32,7 @@ async def get_status(
     """Scheduler status, print quality, and recent detection history."""
     settings = await octoeverywhere_detection_service._load_settings()
     status = octoeverywhere_detection_service.get_status()
-    scope = key_printer_scope(request)
+    scope = request_printer_scope(request)
     history = [entry for entry in status["history"] if scope is None or entry["printer_id"] in scope]
     if _ is not None and not _.has_permission(Permission.PRINTERS_READ.value):
         history = []
@@ -62,7 +62,7 @@ async def get_printer_status(
     per_printer = octoeverywhere_detection_service.get_per_printer()
     if not can_see_error:
         per_printer = {pid: {**entry, "error": None, "error_code": None} for pid, entry in per_printer.items()}
-    scope = key_printer_scope(request)
+    scope = request_printer_scope(request)
     if scope is not None:
         per_printer = {pid: entry for pid, entry in per_printer.items() if pid in scope}
         enabled_printers = scope if enabled_printers is None else scope.intersection(enabled_printers)

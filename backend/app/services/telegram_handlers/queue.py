@@ -48,8 +48,9 @@ async def render_queue(target, tg_chat: TelegramChat | None = None, offset: int 
     # the printer id (the 1:1 queue-per-printer construction, see the
     # printer-name lookup below), so the scope filters on queue_id.
     def _scoped(query):
-        if tg_chat is not None and tg_chat.printer_ids is not None:
-            return query.where(PrintQueueItem.queue_id.in_(tg_chat.printer_ids))
+        scope = tg_chat.printer_scope() if tg_chat is not None else None  # N62 D4
+        if scope is not None:
+            return query.where(PrintQueueItem.queue_id.in_(scope))
         return query
 
     async with async_session() as db:

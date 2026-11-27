@@ -10,11 +10,11 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.api_key_scope import in_key_scope
 from backend.app.core.auth import RequestCredentials, RequirePermission, request_credentials, require_permission
 from backend.app.core.credential_config import canonical_url, lock_credential_config, merge_secret_fields
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import in_request_scope, request_printer_scope, where as printer_scope_where
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.printer import Printer
 from backend.app.models.smart_plug import SmartPlug
@@ -131,6 +131,7 @@ def _resolve_plug(plug: SmartPlug | None, changes: dict, actions: dict | None = 
 
 @router.get("/", response_model=list[SmartPlugResponse])
 async def list_smart_plugs(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
 ):
@@ -140,8 +141,13 @@ async def list_smart_plugs(
     that switches a printer's power — the card's Power row, the "power on the
     offline ones" list — has to name the SAME plug, and a ranking re-implemented
     client-side is a second answer waiting to disagree with this one.
+
+    N62: a printer's plug is listed with its printer; a plug bound to no printer stays visible.
     """
-    result = await db.execute(select(SmartPlug).order_by(SmartPlug.name))
+    query = select(SmartPlug).order_by(SmartPlug.name)
+    if (in_scope := printer_scope_where(request_printer_scope(request), SmartPlug.printer_id)) is not None:
+        query = query.where(in_scope)
+    result = await db.execute(query)
     plugs = list(result.scalars().all())
 
     by_printer: dict[int, list[SmartPlug]] = {}
@@ -386,7 +392,7 @@ async def get_card_plugs_batch(
     ``main`` and ``scripts`` are exactly what the two single-printer routes below answer; a
     printer with no plug answers the empty pair, one outside an API key's list is left out.
     """
-    wanted = sorted({pid for pid in ids if in_key_scope(request, pid)})
+    wanted = sorted({pid for pid in ids if in_request_scope(request, pid)})
     by_printer: dict[int, list[SmartPlug]] = {pid: [] for pid in wanted}
     if wanted:
         rows = await db.execute(select(SmartPlug).where(SmartPlug.printer_id.in_(wanted)).order_by(SmartPlug.id))
@@ -732,6 +738,7 @@ async def list_ha_sensor_entities(
 
 @router.get("/meter-incidents", response_model=list[MeterIncidentOut])
 async def list_meter_incidents(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
 ):
@@ -742,6 +749,8 @@ async def list_meter_incidents(
     from backend.app.models.smart_plug_meter_incident import SmartPlugMeterIncident
 
     # Only the plug's current source: an episode of a discarded configuration is never shown (MW-R6).
+    # N62: of the plugs the caller sees (their printers' and those bound to none).
+    in_scope = printer_scope_where(request_printer_scope(request), SmartPlug.printer_id)
     rows = (
         await db.execute(
             select(SmartPlugMeterIncident)
@@ -749,6 +758,7 @@ async def list_meter_incidents(
             .where(
                 SmartPlugMeterIncident.status == "active",
                 SmartPlugMeterIncident.source_id == SmartPlug.measurement_source_id,
+                *([in_scope] if in_scope is not None else []),
             )
             .order_by(SmartPlugMeterIncident.plug_id)
         )

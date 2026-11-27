@@ -98,6 +98,10 @@ ALL_NOTIFY_EVENTS = [
 ]
 
 
+# ``TelegramChat.printer_scope`` before ``core/printer_scope.load_chat_scope`` ran.
+_UNLOADED = object()
+
+
 class TelegramChat(Base):
     """Telegram chat authorized to use the bot.
 
@@ -183,17 +187,30 @@ class TelegramChat(Base):
         """Check if this chat has a specific permission."""
         return permission in self.get_permissions()
 
-    def allows_printer(self, printer_id: int | None) -> bool:
-        """Is this printer inside the chat's scope?
+    def printer_scope(self) -> frozenset[int] | None:
+        """The chat's printer scope: its own list ∩ its group's reach when the group is restricted
+        (N62 D4) — worked out by ``core/printer_scope.load_chat_scope`` where the chat is loaded.
 
-        ``printer_ids is None`` = the chat watches everything. An event with
-        no printer attribution (a test message, farm-wide news) passes for
-        every chat — filtering happens only where there is a printer to
-        filter by.
+        ⚠️ Not loaded and the group restricted → no printer: the group's reach needs the database
+        and this is synchronous, so an unloaded scope fails closed rather than open.
         """
-        if self.printer_ids is None or printer_id is None:
+        loaded = self.__dict__.get("_loaded_printer_scope", _UNLOADED)
+        if loaded is not _UNLOADED:
+            return loaded
+        if self.group is not None and self.group.restrict_printers:
+            return frozenset()
+        return None if self.printer_ids is None else frozenset(int(pid) for pid in self.printer_ids)
+
+    def allows_printer(self, printer_id: int | None) -> bool:
+        """Is this printer inside the chat's scope (:meth:`printer_scope`)?
+
+        An event with no printer attribution (a test message, farm-wide news) passes for
+        every chat — filtering happens only where there is a printer to filter by.
+        """
+        if printer_id is None:
             return True
-        return printer_id in self.printer_ids
+        scope = self.printer_scope()
+        return scope is None or printer_id in scope
 
     def should_notify(self, event_type: str) -> bool:
         """Check if this chat should receive a notification for the given event."""

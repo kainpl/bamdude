@@ -328,6 +328,17 @@ async def printers_for_item(
                 path=path_of(tree, item.target_location_id),
             )
 
+    # N62 D2: the job's AUTHOR'S printers — a team's job stays on the team's printers. A gate like
+    # the location, not a rank; asked at every decision, so a changed group moves nothing already
+    # placed but holds what is still waiting. No author (a Virtual Printer, a chat without a user)
+    # is no person: every printer.
+    from backend.app.core.printer_scope import author_scope
+
+    scope = await author_scope(db, item.created_by_id)
+    if scope is not None:
+        query = query.where(Printer.id.in_(scope))
+        location_suffix += t(current_language(), "filament_routing", "autoqueue_author_scope_suffix")
+
     result = await db.execute(query)
     from backend.app.services.order_resources import permits, policy_for
 

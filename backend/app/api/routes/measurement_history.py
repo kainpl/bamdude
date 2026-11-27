@@ -16,7 +16,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
-from backend.app.core.api_key_scope import sensor_in_key_scope
+from backend.app.core.api_key_scope import sensor_in_request_scope, sensor_refusal
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -184,8 +184,8 @@ async def get_sensor_history(
         raise HTTPException(status_code=400, detail=f"Unknown quantity: {kind}.")
     if await db.get(SmartSensor, sensor_id) is None:
         raise HTTPException(status_code=404, detail="No such sensor.")
-    if not await sensor_in_key_scope(request, db, sensor_id):
-        raise HTTPException(status_code=403, detail="API key does not have access to this sensor.")
+    if not await sensor_in_request_scope(request, db, sensor_id):
+        raise sensor_refusal(request, "sensor")
 
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
     bucket = bucket_seconds_for(hours)

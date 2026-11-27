@@ -13,9 +13,11 @@ PNG = bytes.fromhex(
 )
 
 
-async def test_archive_media_uses_history_visibility_not_key_printer_ceiling(
+async def test_archive_media_follows_the_keys_printers(
     async_client, printer_factory, archive_factory, db_session, monkeypatch, tmp_path
 ):
+    """N62 D5: print history belongs to the printer that made it — a key limited to other printers
+    reads neither the archive nor its pictures (the old boundary №7 let it)."""
     from backend.app.api.routes import archives
 
     (tmp_path / "thumb.png").write_bytes(PNG)
@@ -33,11 +35,12 @@ async def test_archive_media_uses_history_visibility_not_key_printer_ceiling(
     async with AsyncClient(transport=async_client._transport, base_url=async_client.base_url) as client:
         for suffix in ("", "/thumbnail", "/timelapse"):
             response = await client.get(f"/api/v1/archives/{archive.id}{suffix}", headers=headers)
-            assert response.status_code == 200, (suffix, response.text)
-        assert (await client.get(f"/api/v1/archives/{archive.id}/thumbnail", headers=headers)).content == PNG
-        assert (await client.get(f"/api/v1/archives/{archive.id}/timelapse", headers=headers)).content == b"v" * 4096
-        # The archive route's exception never grants physical-printer access.
+            assert response.status_code == 403, (suffix, response.text)
         assert (await client.get(f"/api/v1/printers/{other.id}", headers=headers)).status_code == 403
+        # An unlimited key still reads it.
+        everyone = await async_client.post("/api/v1/api-keys/", json={"name": "all", "can_read_status": True})
+        all_headers = {"X-API-Key": everyone.json()["key"]}
+        assert (await client.get(f"/api/v1/archives/{archive.id}/thumbnail", headers=all_headers)).content == PNG
 
 
 async def test_library_trash_thumbnail_keeps_route_preview_but_hard_delete_refuses(async_client, db_session, tmp_path):

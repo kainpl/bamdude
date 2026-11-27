@@ -40,6 +40,7 @@ export type SettingsSearchSubTab =
   | 'twofa'
   | 'oidc'
   | 'security'
+  | 'printer-access'
   | 'marking';
 
 export interface SettingsSearchEntry {

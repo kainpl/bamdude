@@ -1511,5 +1511,9 @@
   "Notify! updates and ends require a precise activity ID": "Оновлення й завершення в Notify! потребують точного ID активності",
   "Notify! widget reads, updates and deletes require a precise widget ID": "Читання, оновлення й видалення віджетів Notify! потребують точного ID віджета",
   "Notify! {} must be a boolean": "Notify! {} має бути булевим значенням",
-  "Notify! {} must be an HTTPS URL without embedded credentials": "Notify! {} має бути HTTPS-адресою без вбудованих облікових даних"
+  "Notify! {} must be an HTTPS URL without embedded credentials": "Notify! {} має бути HTTPS-адресою без вбудованих облікових даних",
+  "API key does not have access to that target.": "API-ключ не має доступу до цієї цілі.",
+  "Only an administrator can add a printer to a limited group": "Лише адміністратор може додати принтер, коли ви в обмеженій групі",
+  "The Administrators group cannot be limited to printers": "Групу Administrators не можна обмежити принтерами",
+  "This changes which printers a limited group reaches; ask an administrator": "Це змінює, які принтери бачить обмежена група; зверніться до адміністратора"
 }

@@ -247,6 +247,14 @@
     "ondelete": "CASCADE",
     "policy": "Existing project deletion owner: active-work/C1 checks and guarded unfiling before removal; preserve stock/usage through their owners. This named edge is not a generic C cascade: project_procurement.project_id"
   },
+  "group_printers.printer_id": {
+    "table": "group_printers",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "N62: a group's picked printer; the printer delete removes the rows explicitly (core/printer_scope.forget_printer_access) - a group's access is no content of the printer"
+  },
   "printer_queues.printer_id": {
     "table": "printer_queues",
     "column": "printer_id",

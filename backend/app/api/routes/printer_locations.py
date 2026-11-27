@@ -10,7 +10,7 @@ creating or deleting printers, so reads ride ``PRINTERS_READ`` and writes ride
 ``PRINTERS_UPDATE``.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,7 +46,9 @@ router = APIRouter(prefix="/printer-locations", tags=["printer-locations"])
 _NAME_TAKEN = "A location with this name already exists."
 
 
-async def _holders(db, location_id: int, *, count_archived_printers: bool = True) -> tuple[int, int, int, int]:
+async def _holders(
+    db, location_id: int, *, count_archived_printers: bool = True, printer_scope: frozenset[int] | None = None
+) -> tuple[int, int, int, int]:
     """How many printers, sensors and queued items point at this place.
 
     ⚠️ **Two callers, two different questions, and the difference is archived
@@ -65,6 +67,9 @@ async def _holders(db, location_id: int, *, count_archived_printers: bool = True
     printers = select(func.count()).select_from(Printer).where(Printer.location_id == location_id)
     if not count_archived_printers:
         printers = printers.where(Printer.archived.is_(False))
+    if printer_scope is not None:
+        # N62: the row counts the printers the caller sees; deleting still counts them all.
+        printers = printers.where(Printer.id.in_(printer_scope))
 
     counts = [(await db.execute(printers)).scalar_one()]
     for model, column in (
@@ -130,15 +135,22 @@ async def _check_placement(db, location_id: int | None, parent_id: int | None) -
 
 @router.get("")
 async def list_locations(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PRINTERS_READ),
 ):
-    """Every place, with how many things hold it — the manager needs both."""
+    """Every place, with how many things hold it — the manager needs both. The tree is everyone's
+    (N62 §11); the printers counted are those the caller reaches."""
+    from backend.app.core.printer_scope import request_printer_scope
+
+    printer_scope = request_printer_scope(request)
     rows = (await db.execute(select(PrinterLocation))).scalars().all()
     tree = await load_tree(db)
     locations = []
     for row in rows:
-        printers, sensors, queued, cameras = await _holders(db, row.id, count_archived_printers=False)
+        printers, sensors, queued, cameras = await _holders(
+            db, row.id, count_archived_printers=False, printer_scope=printer_scope
+        )
         locations.append(
             PrinterLocationListItem(
                 id=row.id,
@@ -179,7 +191,7 @@ async def rename_location(
     location_id: int,
     payload: PrinterLocationUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.PRINTERS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.PRINTERS_UPDATE),
 ):
     """Rename in place — every reference is by id, so it lands everywhere.
 
@@ -196,6 +208,12 @@ async def rename_location(
     parent_id = payload.parent_id if moving else row.parent_id
     if moving:
         await _check_placement(db, location_id, payload.parent_id)
+        if payload.parent_id != row.parent_id:
+            # N62 §5.6: the branch leaves its old ancestors and joins its new ones — a limited group
+            # given one of them loses or gains its printers. Administrators only.
+            from backend.app.core.printer_scope import ensure_reach_unchanged
+
+            await ensure_reach_unchanged(db, current_user, [row.parent_id, payload.parent_id])
 
     name = normalize_location(payload.name) if payload.name is not None else row.name
     if await _name_is_taken(db, name, parent_id, exclude_id=location_id):
@@ -254,6 +272,11 @@ async def delete_location(
                 f"{queued} queued item(s), {cameras} camera(s). Move them first."
             ),
         )
+    # N62: an empty location reaches no printer, so leaving a group's grant changes nobody's
+    # access; SQLite keeps foreign keys off, so the grant rows go explicitly.
+    from backend.app.core.printer_scope import forget_location_access
+
+    await forget_location_access(db, [location_id])
     await db.delete(row)
     await db.commit()
     return {"deleted": location_id}

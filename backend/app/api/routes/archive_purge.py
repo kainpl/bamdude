@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +33,7 @@ from backend.app.core.auth import (
 )
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import request_printer_scope, where as printer_scope_where
 from backend.app.models.archive import PrintArchive
 from backend.app.models.user import User
 from backend.app.schemas.archive_purge import (
@@ -57,6 +58,7 @@ router = APIRouter(prefix="/archives", tags=["archives-purge"])
 
 @router.get("/trash", response_model=ArchiveTrashListResponse)
 async def list_archive_trash(
+    request: Request,
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -70,7 +72,8 @@ async def list_archive_trash(
     """List trashed archives.
 
     Admins see everyone's trashed archives; regular users see only those they
-    created.
+    created. Either way only the prints of the printers the caller reaches, and those bound to
+    no printer (N62).
     """
     user, can_modify_all = auth_result
     retention_days = await archive_purge_service.get_retention_days(db)
@@ -80,6 +83,8 @@ async def list_archive_trash(
         if user is None:
             raise HTTPException(status_code=403, detail="Authentication required")
         base_conditions.append(PrintArchive.created_by_id == user.id)
+    if (in_scope := printer_scope_where(request_printer_scope(request), PrintArchive.printer_id)) is not None:
+        base_conditions.append(in_scope)
 
     total_result = await db.execute(select(func.count(PrintArchive.id)).where(*base_conditions))
     total = int(total_result.scalar() or 0)
@@ -192,6 +197,7 @@ async def hard_delete_archive_from_trash(
 
 @router.delete("/trash", response_model=ArchiveEmptyTrashResponse)
 async def empty_archive_trash(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
@@ -200,13 +206,16 @@ async def empty_archive_trash(
         )
     ),
 ):
-    """Permanently delete every trashed archive in the caller's scope."""
+    """Permanently delete every trashed archive in the caller's scope — their own (or everyone's)
+    of the printers they reach (N62)."""
     user, can_modify_all = auth_result
     conditions = [PrintArchive.deleted_at.isnot(None)]
     if not can_modify_all:
         if user is None:
             raise HTTPException(status_code=403, detail="Authentication required")
         conditions.append(PrintArchive.created_by_id == user.id)
+    if (in_scope := printer_scope_where(request_printer_scope(request), PrintArchive.printer_id)) is not None:
+        conditions.append(in_scope)
 
     rows_result = await db.execute(select(PrintArchive.id).where(*conditions).order_by(PrintArchive.id))
     ids = [row[0] for row in rows_result.all()]

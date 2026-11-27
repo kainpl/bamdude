@@ -46,12 +46,18 @@ async def authenticate(scope) -> DiagnosticAccess:
     if epoch != current_epoch():
         raise HTTPException(503)
     key, owner = authority.key, authority.owner
+    # N62 D5: the key's printers are its own list ∩ its owner's scope, frozen with the access.
+    from backend.app.core.database import async_session
+    from backend.app.core.printer_scope import key_scope
+
+    async with async_session() as db:
+        printers = await key_scope(db, key, owner)
     return DiagnosticAccess(
         key_id=key.id,
         owner_id=owner.id,
         permissions=authority.owner_permissions,
         is_admin=authority.owner_is_admin,
-        printer_ids=None if key.printer_ids is None else frozenset(key.printer_ids),
+        printer_ids=printers,
         logs_allowed=authority.mcp_logs_allowed,
         epoch=epoch,
         key_identity=key.connector_identity,

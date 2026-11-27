@@ -16,7 +16,7 @@ from fastapi import HTTPException
 from sqlalchemy import event, select, tuple_
 from sqlalchemy.orm import Session, selectinload
 
-from backend.app.core import database
+from backend.app.core import database, printer_scope
 from backend.app.core.auth_lifetime import FrozenAuthority, utc_naive, utcnow, validate_loaded
 from backend.app.core.auth_runtime import auth_runtime
 from backend.app.models.api_key import APIKey
@@ -486,8 +486,7 @@ class LiveAuthority:
             metadata = await self._metadata(db, references)
             printer_ids = [h.descriptor.printer_id for h in batch]
             for key in keys.values():
-                if key.printer_ids is not None:
-                    printer_ids.extend(key.printer_ids)
+                printer_ids.extend(printer_scope.key_list(key) or ())
             printers = await rows(Printer, Printer.id, printer_ids)
             jtis = [h.descriptor.jti for h in batch if h.descriptor.jti]
             revoked = set()
@@ -519,6 +518,7 @@ class LiveAuthority:
                     namespace = (config.get("connector_server_id"), config.get("connector_storage_epoch"))
             outcomes = {}
             permission_cache = {}
+            scope_cache = {}
             for handle in batch:
                 d, c = handle.descriptor, handle.descriptor.capture
                 try:
@@ -563,9 +563,24 @@ class LiveAuthority:
                             if allowed:
                                 permissions.add(permission.value)
                         permission_cache[permission_key] = permissions
-                    scope = None if principal.api_key is None else principal.api_key.printer_ids
+                    # N62: the viewer's printer scope — a person's groups, a key's list ∩ its owner's —
+                    # worked out once per pass and principal, from the rows loaded above.
+                    if permission_key not in scope_cache:
+                        scope_cache[permission_key] = (
+                            await printer_scope.user_scope(db, principal.user)
+                            if principal.api_key is None
+                            else await printer_scope.key_scope(db, principal.api_key, principal.user)
+                        )
+                    scope = scope_cache[permission_key]
                     if d.any_permissions and not permissions.intersection(d.any_permissions):
                         raise HTTPException(403)
+                    # A stream or picture of one printer (a camera) stops when that printer leaves the scope.
+                    if d.printer_id is not None and not printer_scope.allows(scope, d.printer_id):
+                        raise HTTPException(403)
+                    if scope is not None and principal.api_key is not None:
+                        missing = [pid for pid in scope if pid not in printers]
+                        if missing:
+                            printers.update(await rows(Printer, Printer.id, missing))
                     entitlement = Entitlements(
                         frozenset(permissions),
                         None if scope is None else frozenset(scope),
@@ -713,6 +728,7 @@ def _before_flush(session, _context, _instances):
 
     from backend.app.models.camera import Camera
     from backend.app.models.group import Group
+    from backend.app.models.printer_location import PrinterLocation
 
     for row in session.new | session.dirty | session.deleted:
         if isinstance(row, User):
@@ -741,6 +757,10 @@ def _before_flush(session, _context, _instances):
             _mark(session, "all")
         elif isinstance(row, Printer):
             _mark(session, "printer", row.id)
+            if row in session.dirty and inspect(row).attrs.location_id.history.has_changes():
+                _mark(session, "all")  # N62: a printer changing place changes which groups reach it
+        elif isinstance(row, PrinterLocation):
+            _mark(session, "all")  # N62: a location's parent decides which groups reach its printers
         elif isinstance(row, Camera):
             _mark(session, "camera", row.id)
 
@@ -759,6 +779,10 @@ def _bulk_mutation(state):
         "long_lived_tokens",
         "printers",
         "cameras",
+        # N62: who reaches which printer — a group's picks and locations, and the location tree.
+        "group_printers",
+        "group_locations",
+        "printer_locations",
     }:
         return
     values = getattr(state.statement, "_values", None)

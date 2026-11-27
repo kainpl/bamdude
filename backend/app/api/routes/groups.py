@@ -61,6 +61,46 @@ async def list_permissions(
     )
 
 
+async def _apply_printer_access(
+    db: AsyncSession,
+    group: Group,
+    restrict_printers: bool | None,
+    printer_ids: list[int] | None,
+    location_ids: list[int] | None,
+) -> None:
+    """Write the group's printer access (N62 spec §6): its flag, its printers, its locations.
+
+    Every check before the first write. Administrators is never restricted — its members are
+    administrators and reach every printer anyway. Writes go through ``core/printer_scope``.
+    """
+    from backend.app.core.printer_scope import set_group_access
+
+    if restrict_printers and group.name == ADMIN_GROUP_NAME:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="The Administrators group cannot be limited to printers"
+        )
+    await set_group_access(db, group, restrict=restrict_printers, printer_ids=printer_ids, location_ids=location_ids)
+
+
+async def _response(db: AsyncSession, group: Group, user_count: int) -> GroupResponse:
+    from backend.app.core.printer_scope import group_access
+
+    printer_ids, location_ids = await group_access(db, group.id)
+    return GroupResponse(
+        id=group.id,
+        name=group.name,
+        description=group.description,
+        permissions=group.permissions or [],
+        is_system=group.is_system,
+        user_count=user_count,
+        restrict_printers=bool(group.restrict_printers),
+        printer_ids=printer_ids,
+        location_ids=location_ids,
+        created_at=group.created_at,
+        updated_at=group.updated_at,
+    )
+
+
 @router.get("", response_model=list[GroupResponse])
 @router.get("/", response_model=list[GroupResponse])
 async def list_groups(
@@ -70,19 +110,7 @@ async def list_groups(
     """List all groups."""
     result = await db.execute(select(Group).options(selectinload(Group.users)).order_by(Group.name))
     groups = result.scalars().all()
-    return [
-        GroupResponse(
-            id=group.id,
-            name=group.name,
-            description=group.description,
-            permissions=group.permissions or [],
-            is_system=group.is_system,
-            user_count=len(group.users),
-            created_at=group.created_at,
-            updated_at=group.updated_at,
-        )
-        for group in groups
-    ]
+    return [await _response(db, group, len(group.users)) for group in groups]
 
 
 @router.post("", response_model=GroupResponse, status_code=status.HTTP_201_CREATED)
@@ -115,21 +143,17 @@ async def create_group(
         description=group_data.description,
         permissions=group_data.permissions,
         is_system=False,  # User-created groups are not system groups
+        restrict_printers=False,
     )
     db.add(group)
+    await db.flush()
+    await _apply_printer_access(
+        db, group, group_data.restrict_printers, group_data.printer_ids, group_data.location_ids
+    )
     await db.commit()
     await db.refresh(group)
 
-    return GroupResponse(
-        id=group.id,
-        name=group.name,
-        description=group.description,
-        permissions=group.permissions or [],
-        is_system=group.is_system,
-        user_count=0,
-        created_at=group.created_at,
-        updated_at=group.updated_at,
-    )
+    return await _response(db, group, 0)
 
 
 @router.get("/{group_id}", response_model=GroupDetailResponse)
@@ -148,14 +172,7 @@ async def get_group(
         )
 
     return GroupDetailResponse(
-        id=group.id,
-        name=group.name,
-        description=group.description,
-        permissions=group.permissions or [],
-        is_system=group.is_system,
-        user_count=len(group.users),
-        created_at=group.created_at,
-        updated_at=group.updated_at,
+        **(await _response(db, group, len(group.users))).model_dump(),
         users=[UserBrief(id=u.id, username=u.username, is_active=u.is_active) for u in group.users],
     )
 
@@ -216,19 +233,14 @@ async def update_group(
             )
         group.permissions = group_data.permissions
 
+    await _apply_printer_access(
+        db, group, group_data.restrict_printers, group_data.printer_ids, group_data.location_ids
+    )
+
     await db.commit()
     await db.refresh(group)
 
-    return GroupResponse(
-        id=group.id,
-        name=group.name,
-        description=group.description,
-        permissions=group.permissions or [],
-        is_system=group.is_system,
-        user_count=len(group.users),
-        created_at=group.created_at,
-        updated_at=group.updated_at,
-    )
+    return await _response(db, group, len(group.users))
 
 
 @router.delete("/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -260,6 +272,10 @@ async def delete_group(
             detail="Cannot delete system groups",
         )
 
+    # SQLite keeps foreign keys off: the group's printer access goes with it explicitly (N62).
+    from backend.app.core.printer_scope import forget_group_access
+
+    await forget_group_access(db, group.id)
     await db.delete(group)
     await db.commit()
 

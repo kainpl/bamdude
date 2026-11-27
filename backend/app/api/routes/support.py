@@ -1082,14 +1082,14 @@ async def _print_state_access(request: Request | None, creds) -> tuple[bool, fro
     Without request credentials (an internal call) nobody is authorised, so nothing is included.
     """
     from backend.app.api.routes.print_state_recovery import READ
-    from backend.app.core.api_key_scope import key_printer_scope
+    from backend.app.core.printer_scope import request_printer_scope
 
     if not isinstance(creds, RequestCredentials):
         return False, None
     for gate in READ:
         if not await creds.allows(gate):
             return False, None
-    return True, key_printer_scope(request) if request is not None else None
+    return True, request_printer_scope(request) if request is not None else None
 
 
 @dataclass(frozen=True)

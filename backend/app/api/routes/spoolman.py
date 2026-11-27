@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -542,16 +542,20 @@ async def _sync_printer_ams(printer_id: int, db: AsyncSession, _, *, issued: int
 
 @router.post("/sync-all", response_model=SyncResult)
 async def sync_all_printers(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
-    """A manual AMS sync of every printer owns every number it proves, to its batch commit (C047 S32)."""
+    """A manual AMS sync of every printer owns every number it proves, to its batch commit (C047 S32).
+    Every printer the caller reaches (N62)."""
+    from backend.app.core.printer_scope import request_printer_scope
+
     issued = spoolman_binding_fence.ticket()
     with spoolman_binding_fence.tag_operation(issued=issued):
-        return await _sync_all_printers(db, _, issued=issued)
+        return await _sync_all_printers(db, _, issued=issued, printer_scope=request_printer_scope(request))
 
 
-async def _sync_all_printers(db: AsyncSession, _, *, issued: int):
+async def _sync_all_printers(db: AsyncSession, _, *, issued: int, printer_scope: frozenset[int] | None = None):
     """Sync AMS data from all connected printers to Spoolman."""
     # Check if Spoolman is enabled.
     # ``disable_weight_sync`` is deprecated (#1119): weight is now always
@@ -572,8 +576,11 @@ async def _sync_all_printers(db: AsyncSession, _, *, issued: int):
     if not await client.health_check():
         raise HTTPException(status_code=503, detail="Spoolman is not reachable")
 
-    # Get all active printers
-    result = await db.execute(select(Printer).where(Printer.is_active.is_(True)).where(Printer.archived.is_(False)))
+    # Get all active printers — those the caller reaches (N62)
+    query = select(Printer).where(Printer.is_active.is_(True)).where(Printer.archived.is_(False))
+    if printer_scope is not None:
+        query = query.where(Printer.id.in_(printer_scope))
+    result = await db.execute(query)
     printers = result.scalars().all()
 
     total_synced = 0

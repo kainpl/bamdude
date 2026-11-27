@@ -4,7 +4,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import delete, desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -479,8 +479,15 @@ async def list_provider_events(
     return [info for _rank, info in rows]
 
 
+def _log_scope(request: Request):
+    from backend.app.core.printer_scope import request_printer_scope, where as printer_scope_where
+
+    return printer_scope_where(request_printer_scope(request), NotificationLog.printer_id)
+
+
 @router.get("/logs", response_model=list[NotificationLogResponse])
 async def get_notification_logs(
+    request: Request,
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     provider_id: int | None = Query(default=None),
@@ -490,8 +497,11 @@ async def get_notification_logs(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.NOTIFICATIONS_READ),
 ):
-    """Get notification logs with optional filters."""
+    """Get notification logs with optional filters — of the printers the caller reaches, and the
+    entries of no printer (N62)."""
     query = select(NotificationLog).order_by(desc(NotificationLog.created_at))
+    if (in_scope := _log_scope(request)) is not None:
+        query = query.where(in_scope)
 
     # Apply filters
     if provider_id is not None:
@@ -557,20 +567,25 @@ async def get_notification_logs(
 
 @router.get("/logs/stats", response_model=NotificationLogStats)
 async def get_notification_log_stats(
+    request: Request,
     days: int = Query(default=7, ge=1, le=90, description="Statistics for the last N days"),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.NOTIFICATIONS_READ),
 ):
-    """Get notification log statistics."""
+    """Get notification log statistics — counted over the entries the caller sees (N62)."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    in_scope = _log_scope(request)
+    visible = [in_scope] if in_scope is not None else []
 
     # Total counts
-    total_result = await db.execute(select(func.count(NotificationLog.id)).where(NotificationLog.created_at >= cutoff))
+    total_result = await db.execute(
+        select(func.count(NotificationLog.id)).where(NotificationLog.created_at >= cutoff, *visible)
+    )
     total = total_result.scalar() or 0
 
     success_result = await db.execute(
         select(func.count(NotificationLog.id)).where(
-            NotificationLog.created_at >= cutoff, NotificationLog.success.is_(True)
+            NotificationLog.created_at >= cutoff, NotificationLog.success.is_(True), *visible
         )
     )
     success_count = success_result.scalar() or 0
@@ -578,7 +593,7 @@ async def get_notification_log_stats(
     # By event type
     event_result = await db.execute(
         select(NotificationLog.event_type, func.count(NotificationLog.id))
-        .where(NotificationLog.created_at >= cutoff)
+        .where(NotificationLog.created_at >= cutoff, *visible)
         .group_by(NotificationLog.event_type)
     )
     by_event_type = {row[0]: row[1] for row in event_result.fetchall()}
@@ -587,7 +602,7 @@ async def get_notification_log_stats(
     provider_result = await db.execute(
         select(NotificationProvider.name, func.count(NotificationLog.id))
         .join(NotificationProvider, NotificationLog.provider_id == NotificationProvider.id)
-        .where(NotificationLog.created_at >= cutoff)
+        .where(NotificationLog.created_at >= cutoff, *visible)
         .group_by(NotificationProvider.name)
     )
     by_provider = {row[0]: row[1] for row in provider_result.fetchall()}

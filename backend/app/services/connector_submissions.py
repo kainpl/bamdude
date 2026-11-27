@@ -223,9 +223,21 @@ async def fresh_key(db: AsyncSession, actor: ConnectorActor, permissions) -> API
     return key
 
 
+async def _scope_of(db: AsyncSession, key: APIKey):
+    """The key's printer scope — its own list ∩ its owner's (N62 D5)."""
+    from backend.app.core.printer_scope import key_scope
+    from backend.app.models.user import User
+
+    owner = await db.get(User, key.user_id) if key.user_id is not None else None
+    return await key_scope(db, key, owner)
+
+
 async def _check_target(db: AsyncSession, key: APIKey, target: dict) -> None:
+    from backend.app.core.printer_scope import allows
+
+    scope = await _scope_of(db, key)
     if target["kind"] == "auto":
-        if key.printer_ids is not None:
+        if scope is not None:
             raise ConnectorRefusal(403, "auto_requires_unrestricted_key", AUTO_RESTRICTED)
         return
     printer = await db.get(Printer, target["printer_id"], populate_existing=True)
@@ -236,7 +248,7 @@ async def _check_target(db: AsyncSession, key: APIKey, target: dict) -> None:
         or printer.connector_identity != target["printer_identity"]
     ):
         raise ConnectorRefusal(404, "printer_not_found", PRINTER_GONE)
-    if key.printer_ids is not None and printer.id not in key.printer_ids:
+    if not allows(scope, printer.id):
         raise ConnectorRefusal(403, "printer_scope", PRINTER_SCOPE)
 
 
@@ -1091,7 +1103,7 @@ async def observations(actor: ConnectorActor, proof: OwnProof, *, cursor: str | 
             await db.execute(text("BEGIN"))
         submission = await _verified(db, proof)
         key = await fresh_key(db, actor, (Permission.QUEUE_CREATE.value,))
-        scope = set(key.printer_ids) if key.printer_ids is not None else None
+        scope = await _scope_of(db, key)
         rows = {
             row.entry_id: row
             for row in (
@@ -1290,7 +1302,7 @@ async def observations(actor: ConnectorActor, proof: OwnProof, *, cursor: str | 
     async with database.async_session() as db:
         await _verified(db, proof)
         key = await fresh_key(db, actor, (Permission.QUEUE_CREATE.value,))
-        current_scope = set(key.printer_ids) if key.printer_ids is not None else None
+        current_scope = await _scope_of(db, key)
         if current_scope != scope:
             raise ConnectorRefusal(409, "context_changed", CONTEXT_CHANGED)
     return {"jobs": jobs, "next_cursor": next_cursor}

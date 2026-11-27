@@ -51,7 +51,7 @@ def _unscoped_chat(chat: Any) -> bool:
     limited provider is. The chat stays the authority; nothing is added to the
     provider.
     """
-    return chat.printer_ids is None
+    return chat.printer_scope() is None
 
 
 def begin_internal_template_reconcile() -> None:
@@ -779,6 +779,13 @@ class NotificationService:
                     )
                 )
                 chats = result.scalars().all()
+                if event_type != "test":
+                    # N62 D4: each chat's printers — its list ∩ its group's reach. A test goes to
+                    # every chat (below) and asks no scope.
+                    from backend.app.core.printer_scope import load_chat_scope
+
+                    for chat in chats:
+                        await load_chat_scope(session, chat)
         except Exception as e:
             return False, f"Failed to query Telegram chats: {e}"
 
@@ -831,6 +838,26 @@ class NotificationService:
         else:
             return False, f"Failed to send to all chats: {'; '.join(errors)}"
 
+    @staticmethod
+    def _digest_message(entries: list, now: datetime) -> tuple[str, str]:
+        """``(title, body)`` of a digest of these queued events, grouped by event type."""
+        title = f"Daily Digest - {len(entries)} Events"
+        events_by_type: dict[str, list] = {}
+        for entry in entries:
+            events_by_type.setdefault(entry.event_type, []).append(entry)
+        body_parts = []
+        for event_type, rows in events_by_type.items():
+            event_label = event_type.replace("_", " ").title()
+            body_parts.append(f"== {event_label} ({len(rows)}) ==")
+            for entry in rows:
+                # An event a failed digest carried over says which day it is from.
+                carried = entry.created_at.date() != now.date()
+                time_str = entry.created_at.strftime("%d.%m %H:%M" if carried else "%H:%M")
+                printer_info = f"[{entry.printer_name}] " if entry.printer_name else ""
+                body_parts.append(f"  {time_str} {printer_info}{entry.title}")
+            body_parts.append("")
+        return title, "\n".join(body_parts)
+
     @credential_safe_sender("telegram")
     async def _send_telegram_digest_to_chats(
         self,
@@ -839,6 +866,8 @@ class NotificationService:
         body: str,
         *,
         provider_id: int,
+        entries: list | None = None,
+        now: datetime | None = None,
     ) -> tuple[bool, str]:
         """Fan-out a daily digest body to every active TelegramChat of this
         provider (the bot it wrote to, m180) that opted into
@@ -852,6 +881,11 @@ class NotificationService:
         per-event filter rejected for every chat — meaning the digest
         queue filled up but no chat ever received the digest. This
         method fixes that.
+
+        ``entries`` (N62 acceptance A04): the queued events themselves — then each chat gets the
+        digest of the events of the printers it reaches (its list ∩ its group's reach) and the
+        events of no printer; a chat left with nothing is not written to. Without ``entries`` every
+        chat gets ``title`` / ``body`` as given.
         """
         bot_token = config.get("bot_token", "").strip()
         if not bot_token:
@@ -872,16 +906,36 @@ class NotificationService:
                     )
                 )
                 chats = result.scalars().all()
+                if entries is not None:
+                    from backend.app.core.printer_scope import load_chat_scope
+
+                    for chat in chats:
+                        await load_chat_scope(session, chat)
         except Exception as e:
             return False, f"Failed to query Telegram chats: {e}"
 
         if not chats:
             return True, "No chats opted into daily digest"
 
-        full = f"*{title}*\n{body}"
+        messages: dict[int, str] = {}
+        for chat in chats:
+            if entries is None:
+                messages[chat.id] = f"*{title}*\n{body}"
+                continue
+            own = [entry for entry in entries if chat.allows_printer(entry.printer_id)]
+            if own:
+                chat_title, chat_body = self._digest_message(
+                    own, now or datetime.now(timezone.utc).replace(tzinfo=None)
+                )
+                messages[chat.id] = f"*{chat_title}*\n{chat_body}"
+        chats = [chat for chat in chats if chat.id in messages]
+        if not chats:
+            return True, "No digest events for the chats' printers"
+
         sent = 0
         errors: list[str] = []
         for chat in chats:
+            full = messages[chat.id]
             ok, err = await self._send_telegram(config, full, chat_id=str(chat.chat_id), provider_id=provider_id)
             if ok:
                 sent += 1
@@ -1721,6 +1775,9 @@ class NotificationService:
                 tg_chat = result.scalar_one_or_none()
                 if not tg_chat:
                     return None
+                from backend.app.core.printer_scope import load_chat_scope  # N62 D4
+
+                await load_chat_scope(db, tg_chat)
 
                 # Print complete/failed → clear plate button
                 if event_type in ("print_complete", "print_failed"):
@@ -2510,10 +2567,15 @@ class NotificationService:
             # same filter per chat at send time.
             from sqlalchemy import select as _select
 
+            from backend.app.core.printer_scope import load_chat_scope  # N62 D4
             from backend.app.models.telegram_chat import TelegramChat
 
-            result = await db.execute(_select(TelegramChat).where(TelegramChat.is_active == True))  # noqa: E712
-            any_recipients = any(c.should_notify("print_progress") and _chat_passes(c) for c in result.scalars())
+            active_chats = list(
+                (await db.execute(_select(TelegramChat).where(TelegramChat.is_active.is_(True)))).scalars()
+            )
+            for chat in active_chats:
+                await load_chat_scope(db, chat)
+            any_recipients = any(c.should_notify("print_progress") and _chat_passes(c) for c in active_chats)
 
         if not any_recipients and any(p.provider_type == "inbox" for p in kept):
             # The same question the telegram block above asks, for the in-app
@@ -4058,38 +4120,18 @@ class NotificationService:
                 logger.debug("No queued notifications for provider %s", provider.name)
                 return
 
-            # Build digest message
-            title = f"Daily Digest - {len(queue_entries)} Events"
-
-            # Group by event type
-            events_by_type: dict[str, list] = {}
-            for entry in queue_entries:
-                if entry.event_type not in events_by_type:
-                    events_by_type[entry.event_type] = []
-                events_by_type[entry.event_type].append(entry)
-
-            # Format the digest body
-            body_parts = []
-            for event_type, entries in events_by_type.items():
-                event_label = event_type.replace("_", " ").title()
-                body_parts.append(f"== {event_label} ({len(entries)}) ==")
-                for entry in entries:
-                    # An event a failed digest carried over says which day it is from.
-                    carried = entry.created_at.date() != now.date()
-                    time_str = entry.created_at.strftime("%d.%m %H:%M" if carried else "%H:%M")
-                    printer_info = f"[{entry.printer_name}] " if entry.printer_name else ""
-                    body_parts.append(f"  {time_str} {printer_info}{entry.title}")
-                body_parts.append("")
-
-            body = "\n".join(body_parts)
+            title, body = self._digest_message(queue_entries, now)
 
             # Send the digest. Telegram has its own dedicated path that fans
             # out only to chats with daily_digest=True (see method docstring
             # for context — the legacy path used should_notify("unknown")
-            # which rejected every chat).
+            # which rejected every chat). Each chat gets the events of the
+            # printers it reaches (N62 acceptance A04).
             if provider.provider_type == "telegram":
                 config = json.loads(provider.config) if isinstance(provider.config, str) else provider.config
-                success, error = await self._send_telegram_digest_to_chats(config, title, body, provider_id=provider.id)
+                success, error = await self._send_telegram_digest_to_chats(
+                    config, title, body, provider_id=provider.id, entries=queue_entries, now=now
+                )
             else:
                 success, error = await self._send_to_provider(provider, title, body, db, bypass_quiet_hours=True)
 

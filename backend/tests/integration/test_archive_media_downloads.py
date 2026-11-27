@@ -194,26 +194,19 @@ class TestChooser:
         )
         assert answer["printer_id"] is None
 
-    async def test_a_key_without_the_printer_reads_the_local_video_only(
+    async def test_a_key_without_the_printer_reads_none_of_its_media(
         self, async_client, archive_media, db_session, printer_factory
     ):
+        """N62 D5: the archive is its printer's history — a key limited to another printer reads
+        neither its local video nor a recording on the printer (the old boundary №7 let the
+        local video through)."""
         other = await printer_factory(name="Other", serial_number="OTHER0002")
         owner = await _user(db_session, "ch_key", ["archives:read_all", "printers:files", "printers:read"])
         raw = await _key(db_session, owner, can_manage_archives=True, can_control_printer=True, printer_ids=[other.id])
         key = {"X-API-Key": raw, "Authorization": ""}
-        answer = await async_client.get(archive_media.sources, headers=key)
-        assert answer.status_code == 200, answer.text
-        assert answer.json()["local"]["status"] == "ok"
-        assert answer.json()["timelapse"]["status"] == "forbidden"
-
-        # The local video downloads without the printer…
+        assert (await async_client.get(archive_media.sources, headers=key)).status_code == 403
         created = await async_client.post(archive_media.base, json={"assets": [archive_media.asset]}, headers=key)
-        assert created.status_code == 202, created.text
-        job_id = created.json()["job_id"]
-        await _until(async_client, f"{archive_media.base}/{job_id}", headers=key)
-        artifact = await async_client.get(f"{archive_media.base}/{job_id}/artifact", headers=key)
-        assert artifact.status_code == 200 and artifact.content == b"local-video" * 300
-        # …and a recording on that printer is refused by the key's printer list.
+        assert created.status_code == 403, created.text
         remote = {"printer_id": archive_media.printer.id, "storage": "external", "path": "/timelapse/a.mp4"}
         refused = await async_client.post(archive_media.base, json={"remote": [remote]}, headers=key)
         assert refused.status_code == 403
@@ -521,7 +514,8 @@ class TestJobRequirements:
         assert (local.status_code, remote.status_code) == (202, 202)
         own = media_download_runtime.jobs[local.json()["job_id"]].scope.descriptor
         assert own.permissions == ("archives:read_all",)
-        assert (own.printer_id, own.printer_identity, own.resource_printer_scope) == (None, None, False)
+        # N62 D5: the archive's printer stays in the caller's scope while the job runs.
+        assert (own.printer_id, own.printer_identity, own.resource_printer_scope) == (None, None, True)
         assert (own.resource_kind, own.resource_id) == ("archive", archive_media.archive.id)
         reads = media_download_runtime.jobs[remote.json()["job_id"]].scope.descriptor
         assert set(reads.permissions) == {"archives:read_all", "printers:files"}

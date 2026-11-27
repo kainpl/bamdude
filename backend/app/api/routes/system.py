@@ -14,12 +14,12 @@ from sqlalchemy import func, select, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core import install_kind
-from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import RequestCredentials, RequirePermission, request_credentials
 from backend.app.core.config import APP_VERSION, settings
 from backend.app.core.database import get_db
 from backend.app.core.db_dialect import is_postgres
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import request_printer_scope
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
 from backend.app.models.project import Project
@@ -519,28 +519,48 @@ async def step_preview_state() -> dict:
 async def get_system_info(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SYSTEM_READ),
+    request: Request = None,
 ):
-    """Get comprehensive system information."""
+    """Get comprehensive system information.
+
+    N62 (acceptance A02): ``system:read`` is an Operator's and a Viewer's right, so the printers,
+    plugs and print figures here are those of the printers the caller reaches (prints and plugs of
+    no printer included). Disk, database, workers and versions stay the installation's.
+    """
+    from backend.app.core.printer_scope import allows, where, where_strict
+
+    scope = request_printer_scope(request)
+    in_archives = [c] if (c := where(scope, PrintArchive.printer_id)) is not None else []
+    in_printers = [c] if (c := where_strict(scope, Printer.id)) is not None else []
+    in_plugs = [c] if (c := where(scope, SmartPlug.printer_id)) is not None else []
 
     # Database stats
-    archive_count = await db.scalar(select(func.count(PrintArchive.id)))
-    printer_count = await db.scalar(select(func.count(Printer.id)))
+    archive_count = await db.scalar(select(func.count(PrintArchive.id)).where(*in_archives))
+    printer_count = await db.scalar(select(func.count(Printer.id)).where(*in_printers))
     # Count only active spools — archived ones aren't shown in the inventory
     # UI either, so the Information-page "Filaments" stat should match what
     # the user actually sees in the spool list.
     spool_count = await db.scalar(select(func.count(Spool.id)).where(Spool.archived_at.is_(None)))
     project_count = await db.scalar(select(func.count(Project.id)))
-    smart_plug_count = await db.scalar(select(func.count(SmartPlug.id)))
+    smart_plug_count = await db.scalar(select(func.count(SmartPlug.id)).where(*in_plugs))
 
     # Archive stats by status
-    completed_count = await db.scalar(select(func.count(PrintArchive.id)).where(PrintArchive.status == "completed"))
-    failed_count = await db.scalar(select(func.count(PrintArchive.id)).where(PrintArchive.status == "failed"))
-    printing_count = await db.scalar(select(func.count(PrintArchive.id)).where(PrintArchive.status == "printing"))
+    completed_count = await db.scalar(
+        select(func.count(PrintArchive.id)).where(PrintArchive.status == "completed", *in_archives)
+    )
+    failed_count = await db.scalar(
+        select(func.count(PrintArchive.id)).where(PrintArchive.status == "failed", *in_archives)
+    )
+    printing_count = await db.scalar(
+        select(func.count(PrintArchive.id)).where(PrintArchive.status == "printing", *in_archives)
+    )
 
     # Total print time
     total_print_time = (
         await db.scalar(
-            select(func.sum(PrintArchive.print_time_seconds)).where(PrintArchive.print_time_seconds.isnot(None))
+            select(func.sum(PrintArchive.print_time_seconds)).where(
+                PrintArchive.print_time_seconds.isnot(None), *in_archives
+            )
         )
         or 0
     )
@@ -548,7 +568,9 @@ async def get_system_info(
     # Total filament used
     total_filament = (
         await db.scalar(
-            select(func.sum(PrintArchive.filament_used_grams)).where(PrintArchive.filament_used_grams.isnot(None))
+            select(func.sum(PrintArchive.filament_used_grams)).where(
+                PrintArchive.filament_used_grams.isnot(None), *in_archives
+            )
         )
         or 0
     )
@@ -558,7 +580,7 @@ async def get_system_info(
     connected = [
         (printer_id, client.state)
         for printer_id, client in list(printer_manager._clients.items())
-        if client.state and client.state.connected
+        if client.state and client.state.connected and allows(scope, printer_id)
     ]
     names: dict[int, tuple[str, str | None]] = {}
     if connected:
@@ -748,7 +770,7 @@ async def _print_state_mention(request: Request, creds: RequestCredentials) -> d
     for gate in READ:
         if not await creds.allows(gate):
             return None
-    return print_state_observer.public_summary(key_printer_scope(request))
+    return print_state_observer.public_summary(request_printer_scope(request))
 
 
 @router.get("/health", response_model=SystemHealthResult)

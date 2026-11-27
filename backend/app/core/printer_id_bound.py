@@ -204,7 +204,7 @@ def list_ids(value) -> list[int]:
 def api_key_scope_ids(raw) -> list[int]:
     """What the API-key gate would allow for one stored ``printer_ids`` value.
 
-    ``core/api_key_scope._allowed`` does ``int(pid) for pid in api_key.printer_ids``:
+    ``core/printer_scope.key_list`` does ``int(pid) for pid in api_key.printer_ids``:
     a list gives its elements, an object its keys, a string its characters. Every
     element ``int()`` takes is reserved — even where another element makes the gate
     refuse the whole scope (a conservative superset). NULL is "every printer": none.

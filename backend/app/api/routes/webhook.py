@@ -57,7 +57,7 @@ async def webhook_start_print(
     hold the queue's own start. The answer says whether the print was started.
     """
     await check_webhook_permission(db, api_key, "control_printer")
-    check_printer_access(api_key, printer_id)
+    await check_printer_access(db, api_key, printer_id)
 
     # Get printer
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
@@ -139,7 +139,7 @@ async def webhook_stop_print(
     Requires 'can_control_printer' permission.
     """
     await check_webhook_permission(db, api_key, "control_printer")
-    check_printer_access(api_key, printer_id)
+    await check_printer_access(db, api_key, printer_id)
 
     status = printer_manager.get_status(printer_id)
     if not status or not status.connected:
@@ -176,7 +176,7 @@ async def webhook_cancel_print(
     Requires 'can_control_printer' permission.
     """
     await check_webhook_permission(db, api_key, "control_printer")
-    check_printer_access(api_key, printer_id)
+    await check_printer_access(db, api_key, printer_id)
 
     status = printer_manager.get_status(printer_id)
     if not status or not status.connected:
@@ -213,7 +213,7 @@ async def webhook_get_printer_status(
     Requires 'can_read_status' permission.
     """
     await check_webhook_permission(db, api_key, "read_status")
-    check_printer_access(api_key, printer_id)
+    await check_printer_access(db, api_key, printer_id)
 
     # Get printer
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
@@ -248,16 +248,19 @@ async def webhook_get_queue_status(
 
     # Get printers
     if printer_id:
-        check_printer_access(api_key, printer_id)
+        await check_printer_access(db, api_key, printer_id)
         result = await db.execute(select(Printer).where(Printer.id == printer_id))
         printers = result.scalars().all()
     else:
         # A retired printer is hidden everywhere; naming it by id above still answers.
         result = await db.execute(select(Printer).where(Printer.archived.is_(False)).order_by(Printer.id))
         printers = result.scalars().all()
-        # Filter by allowed printers if limited
-        if api_key.printer_ids is not None:
-            printers = [p for p in printers if p.id in api_key.printer_ids]
+        # The key's scope: its own list ∩ its owner's (N62 D5).
+        from backend.app.core.auth import resolve_apikey_owner
+        from backend.app.core.printer_scope import allows, key_scope
+
+        scope = await key_scope(db, api_key, await resolve_apikey_owner(db, api_key))
+        printers = [p for p in printers if allows(scope, p.id)]
 
     response = []
     for printer in printers:

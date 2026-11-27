@@ -104,6 +104,8 @@ from backend.app.services.email_service import (
 
 def _user_to_response(user: User) -> UserResponse:
     """Convert a User model to UserResponse schema."""
+    from backend.app.core.printer_scope import user_restricted
+
     return UserResponse(
         id=user.id,
         username=user.username,
@@ -114,6 +116,7 @@ def _user_to_response(user: User) -> UserResponse:
         auth_source=getattr(user, "auth_source", "local"),
         groups=[GroupBrief(id=g.id, name=g.name) for g in user.groups],
         permissions=sorted(user.get_permissions()),
+        printers_restricted=user_restricted(user),
         created_at=user.created_at.isoformat(),
     )
 
@@ -175,6 +178,8 @@ async def _api_key_to_user_response(db: AsyncSession, api_key) -> UserResponse:
     # owner has been deactivated, which makes the key dead rather than
     # anonymous.
     owner = await resolve_apikey_owner(db, api_key)
+    from backend.app.core.printer_scope import key_list, user_restricted
+
     return UserResponse(
         id=owner.id if owner else 0,
         username=owner.username if owner else f"api-key:{api_key.key_prefix}",
@@ -192,6 +197,7 @@ async def _api_key_to_user_response(db: AsyncSession, api_key) -> UserResponse:
         # imply capabilities the key does not inherit.
         groups=[],
         permissions=apikey_effective_permissions(api_key, owner),
+        printers_restricted=key_list(api_key) is not None or user_restricted(owner),
         created_at=api_key.created_at.isoformat(),
     )
 

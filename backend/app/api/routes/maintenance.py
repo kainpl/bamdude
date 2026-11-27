@@ -10,10 +10,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import request_printer_scope
 from backend.app.models.maintenance import MaintenanceHistory, MaintenanceType, PrinterMaintenance
 from backend.app.models.printer import Printer
 from backend.app.models.user import User
@@ -145,12 +145,12 @@ def _should_apply_to_printer(type_code: str | None, printer_model: str | None) -
 
 
 def _scope_printers(query, request):
-    scope = key_printer_scope(request)
+    scope = request_printer_scope(request)
     return query if scope is None else query.where(Printer.id.in_(scope))
 
 
 def _scope_history(query, request):
-    scope = key_printer_scope(request)
+    scope = request_printer_scope(request)
     if scope is None:
         return query
     return query.where(

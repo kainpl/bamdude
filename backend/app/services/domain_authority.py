@@ -87,6 +87,10 @@ async def fresh(db, authority, *, permissions=(), printer_id=None, proof=None):
             .execution_options(populate_existing=True)
         )
         provider = await db.get(NotificationProvider, authority.provider_id, populate_existing=True)
+        if chat is not None:
+            from backend.app.core.printer_scope import load_chat_scope  # N62 D4
+
+            await load_chat_scope(db, chat)
         if (
             chat is None
             or not chat.is_active

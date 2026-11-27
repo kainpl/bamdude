@@ -128,6 +128,8 @@ class StagedJob:
     target_model: str | None
     seconds: int | None
     auto_eject: bool = False
+    #: N62: the printers its author may use (``core/printer_scope.author_scope``); None = every one.
+    printers: frozenset[int] | None = None
 
 
 @dataclass
@@ -489,7 +491,12 @@ def _initial_state(snapshot: FarmSnapshot, *, assume_queues_resumed: bool = Fals
             continue
         from backend.app.services.order_resources import permits
 
-        machines = [m for m in state.machines if permits(state.order_resources.get(job.order_id), m.printer_id, m.key)]
+        machines = [
+            m
+            for m in state.machines
+            if permits(state.order_resources.get(job.order_id), m.printer_id, m.key)
+            and (job.printers is None or m.printer_id in job.printers)
+        ]
         target = _earliest(machines, model_key(job.target_model), allow_compatible=state.allow_compatible)
         if target is None:
             if job.order_id is not None:
@@ -1173,15 +1180,19 @@ async def _staged(db: AsyncSession, *, exclude_auto_ids: tuple[int, ...] = ()) -
                 AutoQueueItem.target_model,
                 AutoQueueItem.print_time_seconds,
                 AutoQueueItem.auto_eject,
+                AutoQueueItem.created_by_id,
             ).where(
                 *awaiting_auto_row_conditions(),
                 *([AutoQueueItem.id.not_in(exclude_auto_ids)] if exclude_auto_ids else []),
             )
         )
     ).all()
+    from backend.app.core.printer_scope import author_scope
+
+    scopes = {uid: await author_scope(db, uid) for uid in {row[4] for row in rows}}
     return [
-        StagedJob(order_id=pid, target_model=model, seconds=secs, auto_eject=bool(auto))
-        for pid, model, secs, auto in rows
+        StagedJob(order_id=pid, target_model=model, seconds=secs, auto_eject=bool(auto), printers=scopes[author])
+        for pid, model, secs, auto, author in rows
     ]
 
 

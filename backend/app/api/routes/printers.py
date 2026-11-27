@@ -15,7 +15,6 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes._workshop_rights import may_file_future
 from backend.app.core import database
-from backend.app.core.api_key_scope import in_key_scope
 from backend.app.core.auth import (
     RequestCredentials,
     RequireOverlayToken,
@@ -28,6 +27,7 @@ from backend.app.core.config import settings
 from backend.app.core.credential_config import lock_credential_config
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import in_request_scope
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.ams_label import AmsLabel
 from backend.app.models.archive import PrintArchive
@@ -193,7 +193,7 @@ async def list_printers(
     if not include_archived:
         stmt = stmt.where(Printer.archived.is_(False))
     result = await db.execute(stmt)
-    printers = [p for p in result.scalars().all() if in_key_scope(request, p.id)]
+    printers = [p for p in result.scalars().all() if in_request_scope(request, p.id)]
     include_secret = _caller_can_view_printer_secrets(user)
     return [_serialize_printer(p, include_secret=include_secret) for p in printers]
 
@@ -225,11 +225,24 @@ async def _require_known_tags(db, tag_ids: list[int]) -> None:
 @router.post("/", response_model=PrinterResponse)
 async def create_printer(
     printer_data: PrinterCreate,
-    _=RequirePermission(Permission.PRINTERS_CREATE),
+    current_user=RequirePermission(Permission.PRINTERS_CREATE),
     db: AsyncSession = Depends(get_db),
     creds: RequestCredentials = Depends(request_credentials),
 ):
     """Add a new printer."""
+    # N62 §12.4: a caller limited to printers would create one they cannot see — or need an
+    # administrator anyway to place it where their group reaches.
+    from backend.app.core.printer_scope import ensure_reach_unchanged, request_printer_scope
+
+    if request_printer_scope(creds.request) is not None:
+        raise HTTPException(
+            403,
+            {
+                "error": "printer_create_restricted",
+                "message": "Only an administrator can add a printer to a limited group",
+            },
+        )
+    await ensure_reach_unchanged(db, current_user, [printer_data.location_id])
     # Bootstrap/restore must publish the anchor before any configuration probe.
     # Release this transaction before MQTT and reacquire before INSERT.
     await lock_credential_config(db)
@@ -360,7 +373,7 @@ async def list_usb_cameras(
         )
         configured = {}
         for printer_id, url in result.all():
-            if url and in_key_scope(request, printer_id):
+            if url and in_request_scope(request, printer_id):
                 device = external_camera._safe_usb_device_path(url)
                 configured[printer_id] = device in devices
         response["configured_devices_found"] = configured
@@ -369,6 +382,7 @@ async def list_usb_cameras(
 
 @router.get("/available-filaments")
 async def get_available_filaments(
+    request: Request,
     model: str = Query(..., description="Target printer model"),
     location_id: int | None = Query(None, description="Optional location filter"),
     _=RequirePermission(Permission.QUEUE_CREATE),
@@ -392,6 +406,11 @@ async def get_available_filaments(
         .where(Printer.is_active == True)  # noqa: E712
         .where(Printer.archived.is_(False))
     )
+    # N62 D2: a model-based job routes over its author's printers, so it is offered what THEY hold.
+    from backend.app.core.printer_scope import request_printer_scope, where_strict
+
+    if (in_scope := where_strict(request_printer_scope(request), Printer.id)) is not None:
+        query = query.where(in_scope)
     if location_id:
         # The subtree, so "the workshop" means the same thing here as it does
         # in the auto-queue and on screen.
@@ -495,11 +514,17 @@ async def get_available_filaments(
 
 @router.get("/developer-mode-warnings")
 async def get_developer_mode_warnings(
+    request: Request,
     _=RequirePermission(Permission.PRINTERS_READ),
     db: AsyncSession = Depends(get_db),
 ):
-    """Check if any connected printer lacks developer LAN mode."""
-    result = await db.execute(select(Printer).where(Printer.is_active == True).where(Printer.archived.is_(False)))  # noqa: E712
+    """Check if any connected printer the caller reaches (N62) lacks developer LAN mode."""
+    from backend.app.core.printer_scope import request_printer_scope, where_strict
+
+    query = select(Printer).where(Printer.is_active == True).where(Printer.archived.is_(False))  # noqa: E712
+    if (in_scope := where_strict(request_printer_scope(request), Printer.id)) is not None:
+        query = query.where(in_scope)
+    result = await db.execute(query)
     printers = result.scalars().all()
     statuses = printer_manager.get_all_statuses()
 
@@ -520,6 +545,23 @@ async def get_developer_mode_warnings(
 async def get_model_compatibility(_=RequirePermission(Permission.PRINTERS_READ)) -> ModelCompatibilityResponse:
     """Directed file-model lists from the mirrored Bambu Studio configs."""
     return ModelCompatibilityResponse(models=compatibility_matrix())
+
+
+@router.get("/{printer_id}/access")
+async def get_printer_access(
+    printer_id: int,
+    _: User | None = RequirePermission(Permission.GROUPS_READ),
+    db: AsyncSession = Depends(get_db),
+):
+    """Who reaches this printer among the groups limited to printers (N62 §6): picked for it, or
+    given a location that holds it. A group without a limit reaches every printer and is not
+    listed — the printer card's "Who has access" reads exactly this."""
+    from backend.app.core.printer_scope import printer_grantees
+
+    printer = await db.get(Printer, printer_id)
+    if printer is None:
+        raise HTTPException(404, "Printer not found")
+    return {"printer_id": printer_id, "groups": await printer_grantees(db, printer_id, printer.location_id)}
 
 
 @router.get("/{printer_id}")
@@ -555,7 +597,7 @@ async def _retire_camera_stream(printer_id: int) -> None:
 async def update_printer(
     printer_id: int,
     printer_data: PrinterUpdate,
-    _=RequirePermission(Permission.PRINTERS_UPDATE),
+    current_user=RequirePermission(Permission.PRINTERS_UPDATE),
     db: AsyncSession = Depends(get_db),
     creds: RequestCredentials = Depends(request_credentials),
 ):
@@ -588,6 +630,11 @@ async def update_printer(
         await replace_links(db, printer_id, tag_ids)
     if "location_id" in update_data:
         await _require_known_location(db, update_data["location_id"])
+        if update_data["location_id"] != printer.location_id:
+            # N62 §5.6: into or out of a location a limited group is given — administrators only.
+            from backend.app.core.printer_scope import ensure_reach_unchanged
+
+            await ensure_reach_unchanged(db, current_user, [printer.location_id, update_data["location_id"]])
 
     # Handle nested ROI object - flatten to individual columns
     if "plate_detection_roi" in update_data:
@@ -693,7 +740,7 @@ async def update_printer(
 @router.post("/placement")
 async def place_printers(
     body: PrinterPlacementRequest,
-    _=RequirePermission(Permission.PRINTERS_UPDATE),
+    current_user=RequirePermission(Permission.PRINTERS_UPDATE),
     db: AsyncSession = Depends(get_db),
 ):
     """Give several printers a location and / or tags in one transaction.
@@ -726,6 +773,12 @@ async def place_printers(
         raise HTTPException(409, f"Archived printers cannot be placed: {', '.join(archived)}.")
 
     if body.set_location:
+        moved = [p.location_id for p in printers if p.location_id != body.location_id]
+        if moved:
+            # N62 §5.6: into or out of a location a limited group is given — administrators only.
+            from backend.app.core.printer_scope import ensure_reach_unchanged
+
+            await ensure_reach_unchanged(db, current_user, [*moved, body.location_id])
         for printer in printers:
             printer.location_id = body.location_id
     await remove_links(db, printer_ids, remove_ids)
@@ -1259,6 +1312,11 @@ async def _delete_printer_queue_rows(printer_id: int, delete_archives: bool, bin
             )
             await db.execute(sql_delete(PrinterMaintenance).where(PrinterMaintenance.printer_id == printer_id))
 
+        # N62: the printer leaves every group that picked it (SQLite keeps foreign keys off).
+        from backend.app.core.printer_scope import forget_printer_access
+
+        await forget_printer_access(db, [printer_id])
+
         # ⚠️ The queue's ITEMS, before the queue itself. ``Printer.queue`` cascades
         # to the ``printer_queues`` row, but ``PrinterQueue.items`` does not cascade
         # — so on commit the ORM tries to de-associate them by nulling
@@ -1494,7 +1552,7 @@ async def get_ams_labels_batch(
     Each value is exactly what the single-printer route answers. A printer outside an API
     key's list is left out.
     """
-    return {pid: await _ams_labels_for(pid, db) for pid in sorted({p for p in ids if in_key_scope(request, p)})}
+    return {pid: await _ams_labels_for(pid, db) for pid in sorted({p for p in ids if in_request_scope(request, p)})}
 
 
 @router.get("/status/batch", response_model=dict[int, PrinterStatus])
@@ -1511,7 +1569,7 @@ async def get_printer_status_batch(
     A printer outside an API key's list is omitted the same way.
     """
     started = time.monotonic()
-    wanted = {pid for pid in ids if in_key_scope(request, pid)}
+    wanted = {pid for pid in ids if in_request_scope(request, pid)}
     printers = list((await db.scalars(select(Printer).where(Printer.id.in_(wanted)))).all())
     subtasks = {}
     held = []
