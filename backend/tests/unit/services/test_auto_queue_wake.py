@@ -98,3 +98,81 @@ class TestTheCandidateSetIsTheMatchersOwn:
             await offline_candidates_for(None, SimpleNamespace(id=1), set())
 
         assert spy.called
+
+
+class _ModelPM(_FakePM):
+    """Also answers the effective model, so the exact group can be told from the compatible one."""
+
+    def effective_model_for(self, pid: int, model):
+        return model
+
+
+def _modelled(pid: int, model: str = "P1S"):
+    return SimpleNamespace(id=pid, name=f"P{pid}", model=model)
+
+
+async def _ordered(printers, pick_order):
+    with (
+        patch(
+            "backend.app.services.auto_queue_eligibility.printers_for_item",
+            return_value=(printers, "P1S", ""),
+        ),
+        patch("backend.app.services.printer_manager.printer_manager", _ModelPM(set())),
+        patch("backend.app.services.auto_queue_eligibility.printer_manager", _ModelPM(set())),
+    ):
+        return await offline_candidates_for(None, SimpleNamespace(id=1), set(), pick_order=pick_order)
+
+
+@pytest.mark.asyncio
+class TestTheWakeOrderIsThePickOrder:
+    """C01 (upstream #3480 / #2915): the printer switched on is the one the order names."""
+
+    async def test_the_wake_step_follows_the_pick_order(self):
+        from backend.app.services.printer_pick_order import PickFacts, PickOrder
+
+        printers = [_modelled(1), _modelled(2), _modelled(3)]
+        hours = {1: 50.0, 2: 10.0, 3: 30.0}
+        pick_order = PickOrder("fewest_hours", {pid: PickFacts(h, None, None) for pid, h in hours.items()})
+
+        got = await _ordered(printers, pick_order)
+
+        assert [p.id for p in got] == [2, 3, 1]
+
+    async def test_an_exact_printer_still_comes_before_a_compatible_one(self):
+        from backend.app.services.printer_pick_order import PickFacts, PickOrder
+
+        printers = [_modelled(1, "P1S"), _modelled(2, "P1P")]
+        pick_order = PickOrder("fewest_hours", {1: PickFacts(90.0, None, None), 2: PickFacts(1.0, None, None)})
+
+        got = await _ordered(printers, pick_order)
+
+        assert [p.id for p in got] == [1, 2]
+
+    async def test_equal_places_go_by_the_lower_id(self):
+        from backend.app.services.printer_pick_order import PickFacts, PickOrder
+
+        printers = [_modelled(3), _modelled(1), _modelled(2)]
+        pick_order = PickOrder("priority", {pid: PickFacts(0.0, None, None) for pid in (1, 2, 3)})
+
+        got = await _ordered(printers, pick_order)
+
+        assert [p.id for p in got] == [1, 2, 3]
+
+    async def test_the_pass_hands_its_order_to_the_wake_step(self):
+        from backend.app.services.auto_queue_scheduler import AutoQueueScheduler
+        from backend.app.services.printer_pick_order import PickOrder
+
+        pick_order = PickOrder("most_hours", {})
+        seen = {}
+
+        async def fake(db, item, busy, *, pick_order=None):
+            seen["pick_order"] = pick_order
+            return []
+
+        with patch("backend.app.services.auto_queue_scheduler.offline_candidates_for", fake):
+            woke = await AutoQueueScheduler()._wake_offline_printer(
+                None, SimpleNamespace(id=1), set(), pick_order=pick_order
+            )
+
+        assert woke is False
+        assert seen["pick_order"] is pick_order

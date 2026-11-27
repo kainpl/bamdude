@@ -94,6 +94,7 @@ from backend.app.services.printer_occupancy import (
     read_queue_occupancy,
     require_auto_placement,
 )
+from backend.app.services.printer_pick_order import read_pick_order
 from backend.app.services.queue_counters import lock_auto_rows, update_queue_counters
 from backend.app.services.queue_ops import lane_held_in_process, queue_claim_scope
 from backend.app.services.queue_rebalance import REBALANCE_SETTING_KEY
@@ -255,6 +256,9 @@ class AutoQueueScheduler:
             pending = await self._fetch_pending(db, sjf)
             items = list(pending)
             deferred_printers = await deferred_printer_ids(db, now) if items else set()
+            # The operator's printer order (C01), read once for the pass: the matcher and the wake
+            # step rank every item's candidates by the same facts.
+            pick_order = await read_pick_order(db, now=now) if items else None
             # What the pass decides about, taken now -- before any back-fill -- as plain values (G03 B, A17 step 3):
             # every write of the pass is addressed by one. The pass is a sequence of short transactions; this read
             # one ends here, and none of them holds a lock across a placement (step 1).
@@ -308,6 +312,7 @@ class AutoQueueScheduler:
                         offline_feeds=offline_feeds,
                         interlocked_printers=interlocked_printers,
                         deferred_printers=deferred_printers,
+                        pick_order=pick_order,
                     )
                     printer, reason = eligible
                     if (
@@ -321,6 +326,7 @@ class AutoQueueScheduler:
                             prefer_lowest=prefer_lowest,
                             offline_feeds=offline_feeds,
                             interlocked_printers=interlocked_printers,
+                            pick_order=pick_order,
                         )
                     ):
                         # Every candidate refused the unknown source's request and no printer
@@ -350,6 +356,7 @@ class AutoQueueScheduler:
                                 requirements=eligible.requirements,
                                 offline_feeds=offline_feeds,
                                 woken_printer_ids=woken_printer_ids,
+                                pick_order=pick_order,
                             )
                         facts = self._waiting_facts(eligible.facts)
                         if facts != eligible.facts:
@@ -696,7 +703,15 @@ class AutoQueueScheduler:
         )
 
     async def _wake_offline_printer(
-        self, db, item, busy_printers: set[int], *, requirements=None, offline_feeds=None, woken_printer_ids=None
+        self,
+        db,
+        item,
+        busy_printers: set[int],
+        *,
+        requirements=None,
+        offline_feeds=None,
+        woken_printer_ids=None,
+        pick_order=None,
     ) -> bool:
         """Switch on one printer this item could run on, if they are all off.
 
@@ -731,7 +746,8 @@ class AutoQueueScheduler:
         from backend.app.models.smart_plug import SmartPlug
         from backend.app.services.smart_plug_manager import is_monitor_only, smart_plug_manager
 
-        candidates = await offline_candidates_for(db, item, busy_printers)
+        # In the operator's printer order (C01): the first one that can be switched on is woken.
+        candidates = await offline_candidates_for(db, item, busy_printers, pick_order=pick_order)
         if not candidates:
             return False
 

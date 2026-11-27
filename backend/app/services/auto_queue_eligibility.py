@@ -32,6 +32,11 @@ prompt renders off the printer's own queue, which auto-queue was declining to
 fill. Readiness now only ranks candidates (see the sort in
 ``find_eligible_printer``); a ready printer wins, a busy one still gets work.
 
+**The rank is one tuple, written once** in ``printer_occupancy.placement_rank``:
+readiness, exact model, colour matches, no deferred rows, the operator's printer
+order (``services/printer_pick_order.py``, C01), the remaining-filament level,
+the lower id. The wake step orders the switched-off candidates by the same order.
+
 This diverges from upstream ``PrintScheduler._find_idle_printer_for_model``,
 which has one flat queue and therefore no "place it and let the owner decide"
 option. PrinterQueue also carries the ``auto_distribute_eligible`` opt-out flag.
@@ -76,6 +81,7 @@ from backend.app.services.print_scheduler import scheduler
 from backend.app.services.printer_location_service import load_tree, path_of, subtree_ids
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.printer_occupancy import active_claim_printer_ids, holding_condition, placement_rank
+from backend.app.services.printer_pick_order import PickOrder, read_pick_order
 from backend.app.utils.model_compatibility import model_compatibility
 from backend.app.utils.printer_models import normalize_model_name
 
@@ -366,7 +372,9 @@ async def printers_for_item(
     return printers, normalized_model, location_suffix
 
 
-async def offline_candidates_for(db: AsyncSession, item: AutoQueueItem, busy_printers: set[int]) -> list[Printer]:
+async def offline_candidates_for(
+    db: AsyncSession, item: AutoQueueItem, busy_printers: set[int], *, pick_order: PickOrder | None = None
+) -> list[Printer]:
     """Printers this item could run on that are simply switched off.
 
     ⚠️ **Being disconnected is the one readiness question the matcher uses as a
@@ -379,15 +387,30 @@ async def offline_candidates_for(db: AsyncSession, item: AutoQueueItem, busy_pri
     ⚠️ A printer **awaiting plate-clear acknowledgement is excluded**. Waking it
     buys nothing: it boots into IDLE and is held by that gate anyway. The flag
     is ours and persisted, so it is readable while the printer is still off.
+
+    **In the printer order** (C01, upstream #3480 / #2915): exact-model printers before compatible
+    ones, as ``printers_for_item`` lists them, and inside each group by ``pick_order``, then the
+    lower id — the printer switched on is the one the router would have picked had it been on.
+    The pass hands its order in; without one it is read when there is a choice to make.
     """
-    printers, _model, _suffix = await printers_for_item(db, item)
+    printers, normalized_model, _suffix = await printers_for_item(db, item)
     from backend.app.services.printer_manager import printer_manager as _pm
 
-    return [
+    candidates = [
         p
         for p in printers
         if p.id not in busy_printers and not _pm.is_connected(p.id) and not _pm.is_awaiting_plate_clear(p.id)
     ]
+    if len(candidates) > 1:
+        if pick_order is None:
+            pick_order = await read_pick_order(db, now=datetime.now(timezone.utc))
+        exact = {
+            p.id
+            for p in candidates
+            if model_compatibility(normalized_model, _pm.effective_model_for(p.id, p.model)) == "exact"
+        }
+        candidates.sort(key=lambda p: (p.id in exact, pick_order.key(p.id), -p.id), reverse=True)
+    return candidates
 
 
 @dataclass(frozen=True)
@@ -426,6 +449,7 @@ async def find_eligible_printer(
     interlocked_printers: set[int] | None = None,
     exclusion_reasons: dict[int, str] | None = None,
     deferred_printers: set[int] | None = None,
+    pick_order: PickOrder | None = None,
 ) -> EligiblePrinter:
     """The best printer for ``item`` now, or why there is none.
 
@@ -433,6 +457,10 @@ async def find_eligible_printer(
     printer be described by what it lacks instead of as "offline": it is the
     same answer the wake step acts on, so the reason says why nothing was
     switched on (upstream #2876). Without it an off printer reads as offline.
+
+    ``pick_order`` is the operator's printer order (C01): the AutoQueue pass reads it once and
+    hands it in; without one it is read here when more than one candidate is left. It ranks in
+    ``placement_rank`` only — never a filter.
     """
     if item.target_model:
         stopped: list[Printer] = []
@@ -568,6 +596,8 @@ async def find_eligible_printer(
                 await deferred_printer_ids(db, datetime.now(timezone.utc)) if len(candidates) > 1 else set()
             )
         failed_identities = last_failed_printers(item)
+        if pick_order is None and len(candidates) > 1:
+            pick_order = await read_pick_order(db, now=datetime.now(timezone.utc))
 
         def rank(candidate):
             ready, exact, colours, printer, plan, _ = candidate
@@ -577,6 +607,7 @@ async def find_eligible_printer(
                 colours,
                 printer.id in deferred_printers,
                 printer.id,
+                pick=pick_order.key(printer.id) if pick_order is not None else (),
                 remaining_rank=plan.remaining_rank if prefer_lowest else 0,
             )
             return returned_printer_rank(failed_identities, printer.connector_identity, ordinary)

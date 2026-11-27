@@ -596,20 +596,21 @@ def _receivers(
         fit = farm.fits.target(item.item_id, plate, machine.printer_id, companion=companion)
         if fit.verdict == "yes":
             deferred = machine.has_staged_rows or any(h.not_before > 0 for h in machine.held or ())
-            ranked.append(
-                placement_rank(
-                    True,
-                    verdict == "exact",
-                    fit.color_matches,
-                    deferred,
-                    machine.printer_id,
-                    remaining_rank=fit.remaining_rank,
-                )
+            rank = placement_rank(
+                True,
+                verdict == "exact",
+                fit.color_matches,
+                deferred,
+                machine.printer_id,
+                remaining_rank=fit.remaining_rank,
             )
+            # The id and the fit beside the rank, never read back out of it by position: the rank's
+            # shape belongs to ``placement_rank`` alone (C01 added the printer order to it).
+            ranked.append((rank, machine.printer_id, verdict == "exact", fit.color_matches, fit.remaining_rank))
         elif fit.verdict == "unknown":
             unknown.add(fit.reason)
-    ranked.sort(reverse=True)
-    return [(-pid, exact, colour, remaining) for _, exact, colour, _, remaining, pid in ranked]
+    ranked.sort(key=lambda entry: entry[0], reverse=True)
+    return [(pid, exact, colour, remaining) for _, pid, exact, colour, remaining in ranked]
 
 
 def _target_fits(

@@ -71,9 +71,24 @@ def row_holds_printer(row: PrintQueueItem | Row[tuple[int, str, bool, datetime |
 
 
 def placement_rank(
-    ready: bool, exact: bool, colours: int, has_deferred_rows: bool, printer_id: int, *, remaining_rank: float = 0
+    ready: bool,
+    exact: bool,
+    colours: int,
+    has_deferred_rows: bool,
+    printer_id: int,
+    *,
+    pick: tuple = (),
+    remaining_rank: float = 0,
 ):
-    return ready, exact, colours, not has_deferred_rows, remaining_rank, -printer_id
+    """The one rank of a placement — the router, the wake step's peers, the rebalancer and its replay.
+
+    Larger wins: ready, exact model, colour matches, no deferred rows, then the operator's printer
+    order (``pick``: ``printer_pick_order.PickOrder.key``, C01), then the remaining-filament level,
+    then the lower id. The order decides before the remaining level (owner D3, 28.11): between
+    printers equally fit, the chosen order wins and the emptiest spool only separates printers
+    with an equal place in it. ``()`` for every candidate leaves today's rank.
+    """
+    return ready, exact, colours, not has_deferred_rows, pick, remaining_rank, -printer_id
 
 
 def claim_token_matches(actual: datetime | None, expected: datetime | None) -> bool:
