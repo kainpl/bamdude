@@ -151,8 +151,14 @@ NOT_THE_MODE = {
     ("services/connector_submissions.py", "server_identity"): "the connector server id and storage epoch",
     ("services/connector_submissions.py", "stage_storage_epoch"): "the connector storage epoch",
     ("services/email_service.py", "save_smtp_settings"): "the SMTP keys",
+    ("services/failure_detection_restore.py", "deliver_restore_notice"): "the private OctoEverywhere restore marker",
+    ("services/failure_detection_restore.py", "turn_off_in_prepared_copy"): (
+        "octoeverywhere_enabled and the private restore marker, in the prepared restore copy"
+    ),
     ("services/library_trash.py", "LibraryTrashService.set_retention_days"): "the library trash retention",
-    ("services/obico_detection.py", "drop_printer_from_watch_list"): "obico_enabled_printers",
+    ("services/obico_detection.py", "drop_printer_from_watch_list"): (
+        "obico_enabled_printers, octoeverywhere_enabled_printers"
+    ),
     ("services/oidc_group_sync.py", "lock_oidc_policy"): "the credential anchor row (a no-op write on SQLite)",
     ("services/spoolman_usage_history.py", "_stage_source"): "the history-source record, never the mode",
     ("services/user_content_delete.py", "detach_account_rows"): "user_<id>_email_2fa_enabled",
