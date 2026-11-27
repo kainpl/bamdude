@@ -654,7 +654,7 @@ export function SpoolFormModal({
     enabled: isOpen && isEditing && !spoolmanMode,
   });
   const { data: spoolmanSlotAssignments } = useQuery({
-    queryKey: ['spoolman-slot-assignments-all'],
+    queryKey: ['spoolman-slot-assignments', 'all'],
     queryFn: () => api.getSpoolmanSlotAssignments(),
     enabled: isOpen && isEditing && spoolmanMode,
   });
@@ -703,7 +703,7 @@ export function SpoolFormModal({
     },
     onSuccess: async () => {
       if (spoolmanMode) {
-        await queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments-all'] });
+        await queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments', 'all'] });
         await queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments'] });
       } else {
         await queryClient.invalidateQueries({ queryKey: ['spool-assignments'] });
@@ -1210,7 +1210,7 @@ export function SpoolFormModal({
             // The form's own «is it in a slot» reads — the assignment dialog
             // refreshes the lists it knows about.
             queryClient.invalidateQueries({ queryKey: ['spool-assignments'] });
-            queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments-all'] });
+            queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments', 'all'] });
             refreshSpoolQueries();
           }}
         />

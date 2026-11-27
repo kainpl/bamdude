@@ -922,6 +922,7 @@
   "prometheus_token: enabled metrics requires a credential": "prometheus_token: для ввімкнених метрик потрібен токен",
   "Provide exactly one of archive_id, library_file_id, or source_queue_item_id": "Вкажіть рівно одне з: archive_id, library_file_id або source_queue_item_id",
   "Provide tray_uuid and/or tag_uid": "Вкажіть tray_uuid та/або tag_uid",
+  "tray_uuid is not a Bambu tray UUID": "tray_uuid не є UUID котушки Bambu",
   "Provider identity mismatch": "Ідентичність провайдера не збігається",
   "Provider is not a Telegram provider": "Провайдер не є Telegram-провайдером",
   "Provider not found": "Провайдера не знайдено",

@@ -90,7 +90,9 @@ from backend.app.services.spool_csv import (
     MAX_CSV_IMPORT_BYTES,
     ImportPreview,
     ImportResult,
+    hold_spool_numbers,
     parse_and_validate,
+    persist_import,
     serialize,
 )
 from backend.app.services.spool_label_identity import (
@@ -103,7 +105,7 @@ from backend.app.services.spoolman import SpoolmanClient, get_spoolman_client, i
 from backend.app.services.tag_conflict import tag_already_linked
 from backend.app.utils.filament_remaining import grams_used
 from backend.app.utils.spreadsheet import csv_literal
-from backend.app.utils.tag_normalization import normalize_tag_uid, normalize_tray_uuid
+from backend.app.utils.tag_normalization import is_bambu_tray_uuid, normalize_tag_uid, normalize_tray_uuid
 
 logger = logging.getLogger(__name__)
 
@@ -2058,11 +2060,11 @@ async def import_spools_csv(
     if dry_run:
         return preview
 
-    created = 0
-    for row in preview.rows:
-        if row.status == "valid" and row.spool is not None:
-            db.add(Spool(**row.spool))
-            created += 1
+    # The numbers a file keeps (C32) are decided again under the spool table's write
+    # lock: the reads above end first, so SQLite's writer comes before the counters are read.
+    await db.commit()
+    await hold_spool_numbers(db)
+    created = await persist_import(db, preview.rows)
 
     if created:
         await db.commit()
@@ -2094,11 +2096,17 @@ async def lookup_spool_by_tag(
     key (``inventory:update``) can read a spool back without widening the global
     read scope (upstream Bambuddy #1663). Declared before ``/spools/{spool_id}``
     so the literal path isn't captured by the integer param route.
+
+    A ``tray_uuid`` no Bambu tag can carry (``is_bambu_tray_uuid``, upstream
+    12e543b1b) matches nothing: the lookup goes by ``tag_uid`` alone.
     """
     normalized_tray_uuid = normalize_tray_uuid(tray_uuid) or None
     normalized_tag_uid = normalize_tag_uid(tag_uid) or None
     if not normalized_tray_uuid and not normalized_tag_uid:
         raise HTTPException(400, "Provide tray_uuid and/or tag_uid")
+    if normalized_tray_uuid and not is_bambu_tray_uuid(normalized_tray_uuid):
+        logger.warning("Tag lookup: tray_uuid %s is not a Bambu tray UUID; matching by tag_uid", normalized_tray_uuid)
+        normalized_tray_uuid = None
     base_query = select(Spool).options(selectinload(Spool.k_profiles))
     if not include_archived:
         base_query = base_query.where(Spool.archived_at.is_(None))
@@ -3444,6 +3452,10 @@ async def link_tag_to_spool(
 
     A tag another active spool already carries is refused with the shared
     ``tag_already_linked`` 409 naming that spool (upstream #3110).
+
+    A ``tray_uuid`` no Bambu tag can carry (``is_bambu_tray_uuid``, upstream
+    12e543b1b) is not linked: beside a ``tag_uid`` it is dropped and the spool
+    keeps the tray UUID it had; alone it is refused (422).
     """
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == spool_id))
     spool = result.scalar_one_or_none()
@@ -3457,6 +3469,17 @@ async def link_tag_to_spool(
 
     _validate_tag_input(data.tag_uid, normalized_tag_uid, "tag_uid")
     _validate_tag_input(data.tray_uuid, normalized_tray_uuid, "tray_uuid", exact_len=32)
+    if normalized_tray_uuid and not is_bambu_tray_uuid(normalized_tray_uuid):
+        if not normalized_tag_uid:
+            raise HTTPException(422, "tray_uuid is not a Bambu tray UUID")
+        logger.warning(
+            "Link tag: tray_uuid %s for spool %d is not a Bambu tray UUID; linking the tag UID only",
+            normalized_tray_uuid,
+            spool_id,
+        )
+        # As if it had not been sent: the spool's own tray UUID stays.
+        data = data.model_copy(update={"tray_uuid": None})
+        normalized_tray_uuid = None
 
     # Check for conflicts: tag already linked to another active spool.
     #

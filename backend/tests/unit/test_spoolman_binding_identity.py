@@ -340,6 +340,96 @@ class TestChargeCheck:
         assert await _rows(db_session, SpoolmanSlotAssignment) == []
 
 
+class TestArchivedInSpoolman:
+    """A spool archived in Spoolman itself leaves its slot after a print's tail (upstream 23d04c864).
+
+    The slot kept charging it and the card kept showing it. The tail releases the printer's
+    slots once its own charges are written, also a slot the print did not feed from.
+    """
+
+    @pytest.fixture
+    def finished(self, monkeypatch):
+        from backend.app.services.printer_manager import printer_manager
+
+        states: dict[int, str] = {}
+        monkeypatch.setattr(
+            printer_manager,
+            "get_status",
+            lambda pid: SimpleNamespace(connected=True, state=states.get(pid, "FINISH")),
+        )
+        return states
+
+    async def test_the_tail_releases_a_slot_whose_spool_is_archived(self, db_session, printer_factory, finished):
+        await _spoolman_on(db_session)
+        printer = await printer_factory()
+        await _bind(db_session, printer.id)
+        check = identity.ChargeCheck(_Spoolman({"id": NUMBER, "registered": OLD, "archived": True}), printer.id)
+
+        # Charged as the bound spool -- the print's usage still lands -- and released after.
+        assert (await check.admits(NUMBER, slot_stamp=OLD, tray=0, grams=5)).ok
+        await check.settle()
+
+        assert await _rows(db_session, SpoolmanSlotAssignment) == []
+
+    async def test_a_slot_the_print_did_not_feed_from_is_released_too(self, db_session, printer_factory, finished):
+        await _spoolman_on(db_session)
+        printer = await printer_factory()
+        await _bind(db_session, printer.id, stamp=None)  # from before m266: the archived spool's own row
+
+        await identity.ChargeCheck(_Spoolman({"id": NUMBER, "registered": OLD, "archived": True}), printer.id).settle()
+
+        assert await _rows(db_session, SpoolmanSlotAssignment) == []
+
+    async def test_a_printer_printing_again_keeps_the_row_for_its_own_tail(self, db_session, printer_factory, finished):
+        await _spoolman_on(db_session)
+        printer = await printer_factory()
+        await _bind(db_session, printer.id)
+        finished[printer.id] = "RUNNING"
+
+        await identity.ChargeCheck(_Spoolman({"id": NUMBER, "registered": OLD, "archived": True}), printer.id).settle()
+
+        assert len(await _rows(db_session, SpoolmanSlotAssignment)) == 1
+
+    async def test_only_the_tails_printer_lets_go(self, db_session, printer_factory, finished):
+        await _spoolman_on(db_session)
+        printer_id, other_id = (await printer_factory()).id, (await printer_factory()).id
+        await _bind(db_session, printer_id)
+        await _bind(db_session, other_id)
+
+        await identity.ChargeCheck(_Spoolman({"id": NUMBER, "registered": OLD, "archived": True}), printer_id).settle()
+
+        # The other printer's binding waits for a tail of its own.
+        assert [row.printer_id for row in await _rows(db_session, SpoolmanSlotAssignment)] == [other_id]
+
+    async def test_a_live_spool_keeps_its_slot(self, db_session, printer_factory, finished):
+        await _spoolman_on(db_session)
+        printer = await printer_factory()
+        await _bind(db_session, printer.id)
+
+        await identity.ChargeCheck(_Spoolman({"id": NUMBER, "registered": OLD, "archived": False}), printer.id).settle()
+
+        assert len(await _rows(db_session, SpoolmanSlotAssignment)) == 1
+
+    async def test_a_spool_spoolman_no_longer_has_goes_even_unread_by_the_charges(
+        self, db_session, printer_factory, finished
+    ):
+        await _spoolman_on(db_session)
+        printer = await printer_factory()
+        await _bind(db_session, printer.id)
+
+        await identity.ChargeCheck(_Spoolman(None), printer.id).settle()
+
+        assert await _rows(db_session, SpoolmanSlotAssignment) == []
+
+    async def test_nothing_is_released_with_spoolman_off(self, db_session, printer_factory, finished):
+        printer = await printer_factory()
+        await _bind(db_session, printer.id)
+
+        await identity.ChargeCheck(_Spoolman({"id": NUMBER, "registered": OLD, "archived": True}), printer.id).settle()
+
+        assert len(await _rows(db_session, SpoolmanSlotAssignment)) == 1
+
+
 # --- B01 / B09: the sync ----------------------------------------------------------------------
 
 

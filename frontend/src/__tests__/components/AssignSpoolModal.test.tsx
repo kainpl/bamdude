@@ -464,6 +464,25 @@ describe('AssignSpoolModal', () => {
       expect(screen.getByRole('heading', { name: 'Replace spool' })).toBeInTheDocument();
     });
 
+    it('refreshes the slots it filters "assigned elsewhere" by after a Spoolman assignment (upstream 23d04c864)', async () => {
+      (api.getSpoolmanInventorySpools as ReturnType<typeof vi.fn>).mockResolvedValue([freeSpool]);
+      (api.getSpoolmanSlotAssignments as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+      (api.assignSpoolmanSlot as ReturnType<typeof vi.fn>).mockResolvedValue({});
+      const slotsCall = api.getSpoolmanSlotAssignments as ReturnType<typeof vi.fn>;
+
+      render(<AssignSpoolModal {...defaultProps} spoolmanEnabled />);
+
+      await waitFor(() => expect(screen.getByText(/Overture/)).toBeInTheDocument());
+      const before = slotsCall.mock.calls.length;
+      fireEvent.click(screen.getByText(/Overture/));
+      fireEvent.click(screen.getByRole('button', { name: /Assign Spool/ }));
+
+      await waitFor(() => expect(api.assignSpoolmanSlot).toHaveBeenCalled());
+      // Without the shared prefix the all-printers list was never refetched, and the
+      // spool just assigned stayed on offer for a second slot.
+      await waitFor(() => expect(slotsCall.mock.calls.length).toBeGreaterThan(before));
+    });
+
     it('without a current spool it is still the assign dialog', async () => {
       render(<AssignSpoolModal {...defaultProps} />);
 

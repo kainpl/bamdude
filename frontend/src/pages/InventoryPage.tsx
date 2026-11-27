@@ -1384,7 +1384,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
     data: spoolmanSlotAssignments = [],
     isError: spoolmanSlotAssignmentsError,
   } = useQuery({
-    queryKey: ['spoolman-slot-assignments-all'],
+    queryKey: ['spoolman-slot-assignments', 'all'],
     queryFn: () => api.getSpoolmanSlotAssignments(),
     enabled: spoolmanMode,
     refetchInterval: 30000,
@@ -3256,6 +3256,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
                           onEdit={(s) => void openSpoolEditor(s, 'edit')}
                           onCopy={(s) => void openSpoolEditor(s, 'copy')}
                           onArchive={(id) => setConfirmAction({ type: 'archive', spoolId: id })}
+                          onRestore={(id) => restoreMutation.mutate(id)}
                           onDelete={(id) => setConfirmAction({ type: 'delete', spoolId: id })}
                           onPrintLabel={(id) => setLabelPickerSpoolIds([id])}
                           onResetConsumedCounter={(id) => setConfirmAction({ type: 'reset-consumed-counter', spoolId: id })}
@@ -3816,7 +3817,7 @@ function SpoolTableRow({
  */
 function SpoolTableGroupContainer({
   item, isExpanded, onToggle, selectedIds, onToggleSelected, onToggleGroupSelected,
-  onEdit, onCopy, onArchive, onDelete, onPrintLabel, onResetConsumedCounter,
+  onEdit, onCopy, onArchive, onRestore, onDelete, onPrintLabel, onResetConsumedCounter,
   visibleColumns, assignmentMap, catalogMap, currencySymbol, dateFormat, t, spoolDisplayTemplate, compareSpools,
 }: {
   item: Extract<DisplayItem, { type: 'group' }>;
@@ -3828,6 +3829,7 @@ function SpoolTableGroupContainer({
   onEdit: (spool: InventorySpool) => void;
   onCopy?: (spool: InventorySpool) => void;
   onArchive: (id: number) => void;
+  onRestore: (id: number) => void;
   onDelete: (id: number) => void;
   onPrintLabel?: (spoolId: number) => void;
   onResetConsumedCounter?: (id: number) => void;
@@ -3873,6 +3875,7 @@ function SpoolTableGroupContainer({
       onEdit={onEdit}
       onCopy={onCopy}
       onArchive={onArchive}
+      onRestore={onRestore}
       onDelete={onDelete}
       onPrintLabel={onPrintLabel}
       onResetConsumedCounter={onResetConsumedCounter}
@@ -3890,7 +3893,7 @@ function SpoolTableGroupContainer({
 /* Grouped spool rows for table view */
 function SpoolTableGroup({
   spools, memberIds, headerSpool, remaining, pct, isExpanded, onToggle,
-  onEdit, onCopy, onArchive, onDelete, onPrintLabel, onResetConsumedCounter,
+  onEdit, onCopy, onArchive, onRestore, onDelete, onPrintLabel, onResetConsumedCounter,
   visibleColumns, assignmentMap, catalogMap, currencySymbol, dateFormat, t, onSyncWeight,
   spoolDisplayTemplate, selectedIds, onToggleSelected, onToggleGroupSelected,
 }: {
@@ -3914,6 +3917,8 @@ function SpoolTableGroup({
   onEdit: (spool: InventorySpool) => void;
   onCopy?: (spool: InventorySpool) => void;
   onArchive: (id: number) => void;
+  /** An archived member's Restore. It did nothing inside an expanded group (upstream 23d04c864). */
+  onRestore: (id: number) => void;
   onDelete: (id: number) => void;
   onPrintLabel?: (spoolId: number) => void;
   onResetConsumedCounter?: (id: number) => void;
@@ -4009,7 +4014,7 @@ function SpoolTableGroup({
             onToggleSelected={onToggleSelected ? () => onToggleSelected(spool.id) : undefined}
             onEdit={() => onEdit(spool)}
             onCopy={onCopy ? () => onCopy(spool) : undefined}
-            onRestore={() => {}}
+            onRestore={() => onRestore(spool.id)}
             onArchive={() => onArchive(spool.id)}
             onDelete={() => onDelete(spool.id)}
             onPrintLabel={onPrintLabel ? () => onPrintLabel(spool.id) : undefined}

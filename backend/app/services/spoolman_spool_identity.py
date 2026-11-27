@@ -357,6 +357,70 @@ async def drop_stale(number: int, current: str | None, reason: str, *, tail_of: 
     return removed
 
 
+async def release_archived_slots(printer_id: int, spools: dict[int, dict]) -> list[Slot]:
+    """Release ``printer_id``'s slots whose Spoolman spool is archived (upstream 23d04c864).
+
+    A spool archived in Spoolman itself kept its BamDude binding: the next print from the
+    slot was charged to it and the card kept showing it. A print's tail releases it once its
+    own charges are written -- the tail owns that printer's rows (:func:`refute`'s
+    ``tail_of``) -- and only while the printer reports no print running: a print that started
+    meanwhile keeps them as its evidence, for its own tail. A row goes only for the spool it
+    was proved for (:func:`verdict` same or unknown): one the slot got for another spool
+    since stays. ``spools`` maps a number to its archived spool's record. Under the
+    slot-ledger doors, in its own session. Never raises. Returns the slots released.
+    """
+    from backend.app.core.database import async_session  # noqa: PLC0415
+    from backend.app.main import _get_ams_assignment_lock  # noqa: PLC0415
+    from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment  # noqa: PLC0415
+    from backend.app.services import spool_single_slot, spoolman_activity, spoolman_source_changes  # noqa: PLC0415
+    from backend.app.services.printer_manager import PrinterManager, printer_manager  # noqa: PLC0415
+
+    if not spools:
+        return []
+    state = printer_manager.get_status(printer_id)
+    reported = (getattr(state, "state", "") or "").upper()
+    if not getattr(state, "connected", False) or not reported or reported in PrinterManager.ACTIVE_PRINT_STATES:
+        return []
+    released: list[Slot] = []
+    try:
+        async with spoolman_activity.slot_write("spoolman_archived_spool"), async_session() as db:
+            if not await spoolman_source_changes.mode_on(db):
+                return []
+            await db.commit()  # no read transaction is carried into the lock
+            async with _get_ams_assignment_lock(printer_id):
+                rows = (
+                    (
+                        await db.execute(
+                            select(SpoolmanSlotAssignment).where(
+                                SpoolmanSlotAssignment.printer_id == printer_id,
+                                SpoolmanSlotAssignment.spoolman_spool_id.in_(sorted(spools)),
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                for row in rows:
+                    if verdict(row.spool_registered, spools[row.spoolman_spool_id]) not in (SAME, UNKNOWN):
+                        continue
+                    released.append((row.printer_id, row.ams_id, row.tray_id))
+                    await db.delete(row)
+                await db.commit()
+    except Exception:  # noqa: BLE001 — a release that fails leaves the binding for the next tail, never a crash
+        logger.exception("[SPOOLMAN] Could not release the slots of archived spools on printer %s", printer_id)
+        return []
+    forget_overlay(released)
+    for slot_printer, ams_id, tray_id in released:
+        logger.info(
+            "[SPOOLMAN] Slot %s/%s/%s: its spool is archived in Spoolman — the binding is released",
+            slot_printer,
+            ams_id,
+            tray_id,
+        )
+    await spool_single_slot.announce(released)
+    return released
+
+
 async def adopt_now(number: int, stamp: str | None) -> None:
     """:func:`adopt` in its own session, under the slot-ledger doors. Never raises."""
     from backend.app.core.database import async_session  # noqa: PLC0415
@@ -508,7 +572,8 @@ class ChargeCheck:
         return Admission(False, spool)
 
     async def settle(self) -> None:
-        """After the charges: adopt what was confirmed, remove what was refuted. Never raises."""
+        """After the charges: adopt what was confirmed, remove what was refuted, then let the
+        printer's slots go whose spool Spoolman has archived or no longer has. Never raises."""
         for number, stamp in self._adopt.items():
             if number not in self._refuted:
                 await adopt_now(number, stamp)
@@ -519,3 +584,43 @@ class ChargeCheck:
                 "the spool is gone from Spoolman" if stamp is None else "the number names another spool in Spoolman",
                 tail_of=self._printer_id,
             )
+        await self._release_archived_or_gone()
+
+    async def _release_archived_or_gone(self) -> None:
+        """Every slot of the printer, also one this print did not feed from (upstream 23d04c864).
+
+        A spool archived in Spoolman itself is released (:func:`release_archived_slots`); one
+        Spoolman no longer has (its own "no such spool") is refuted as for a charge. Each
+        number is read once for the whole print, as the charges read theirs.
+        """
+        from backend.app.core.database import async_session  # noqa: PLC0415
+        from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment  # noqa: PLC0415
+
+        try:
+            async with (self._session_factory or async_session)() as db:
+                numbers = sorted(
+                    set(
+                        (
+                            await db.execute(
+                                select(SpoolmanSlotAssignment.spoolman_spool_id).where(
+                                    SpoolmanSlotAssignment.printer_id == self._printer_id
+                                )
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                )
+        except Exception:  # noqa: BLE001 — the next print's tail asks again
+            logger.exception("[SPOOLMAN] Could not read the slots of printer %s", self._printer_id)
+            return
+        archived: dict[int, dict] = {}
+        for number in numbers:
+            if number in self._refuted:
+                continue  # removed above
+            spool = await self._spool(number)
+            if spool is None:
+                await drop_stale(number, None, "the spool is gone from Spoolman", tail_of=self._printer_id)
+            elif isinstance(spool, dict) and spool.get("archived"):
+                archived[number] = spool
+        await release_archived_slots(self._printer_id, archived)

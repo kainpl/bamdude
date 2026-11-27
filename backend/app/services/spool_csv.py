@@ -15,12 +15,14 @@ only the rows that came back `valid`.
 import csv
 import io
 import re
+import uuid
 from datetime import datetime, timezone
 
-from pydantic import BaseModel, ValidationError
-from sqlalchemy import select
+from pydantic import BaseModel, Field, ValidationError
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core import pg_sequences
 from backend.app.models.color_catalog import ColorCatalogEntry
 from backend.app.models.spool import Spool
 from backend.app.schemas.spool import SpoolCreate, naive_utc
@@ -40,10 +42,18 @@ from backend.app.utils.spreadsheet import needs_csv_text_prefix
 # fields included so a round-trip preserves them (they'd otherwise be lost).
 # New exports list the text fields actually prefixed on each row. A literal
 # apostrophe in any other field then survives re-import, even before a formula.
+#
+# `id` and `label_identity` (C32, upstream #3520) carry a spool from one install
+# to another: a printed label's QR code names the spool by its number and by a key
+# made from the number and the row's label identity (`spool_label_identity`), so
+# both have to arrive for the label to find its spool. Import keeps them only for
+# a number this install never handed out (`decide_numbers`); an empty `id` is a new
+# spool.
 _TEXT_ESCAPES_COLUMN = "__bamdude_text_escapes_v1"
 _LEGACY_TEXT_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
 CSV_COLUMNS = [
+    "id",
     "material",
     "brand",
     "subtype",
@@ -65,6 +75,7 @@ CSV_COLUMNS = [
     "low_stock_threshold_pct",
     "material_number",
     "purchase_location",
+    "label_identity",
 ]
 
 # Upload ceiling for the import endpoint. A spool inventory CSV is a few KB
@@ -95,6 +106,14 @@ class ImportRowResult(BaseModel):
 
     row_number: int  # 1-based data row (header is not counted)
     status: str  # "valid" | "error" | "skipped"
+    # The number the spool is created with (C32, upstream #3520); None takes the next free one.
+    keeps_id: int | None = None
+    # What the file asked for, kept apart from the decision so an import can decide again under
+    # the write lock (``decide_numbers``). Not sent: the label identity is the label key's secret
+    # half, and the answer only needs the number.
+    requested_id: int | None = Field(default=None, exclude=True)
+    requested_label_identity: str | None = Field(default=None, exclude=True)
+    keeps_label_identity: str | None = Field(default=None, exclude=True)
     reason: str | None = None
     material: str | None = None
     brand: str | None = None
@@ -435,6 +454,25 @@ async def parse_and_validate(
 
         row_error: str | None = None
 
+        # The spool's number and label identity (C32): whether it keeps them is decided for
+        # the whole file at once, after every row is read (``decide_numbers``).
+        requested_id: int | None = None
+        id_cell = cell(raw_row, "id")
+        if id_cell:
+            try:
+                requested_id = int(id_cell)
+            except ValueError:
+                requested_id = 0
+            if requested_id < 1:
+                row_error = f"id must be a positive whole number (got '{id_cell}')"
+        requested_label_identity: str | None = None
+        identity_cell = cell(raw_row, "label_identity")
+        if row_error is None and identity_cell:
+            try:
+                requested_label_identity = str(uuid.UUID(identity_cell))
+            except ValueError:
+                row_error = f"label_identity must be a UUID (got '{identity_cell}')"
+
         # Plain text passthrough columns.
         for field in (
             "subtype",
@@ -578,10 +616,14 @@ async def parse_and_validate(
                 resolved_color=resolved_color,
                 cross_material_color=cross_material_color,
                 duplicate_of_existing=_spool_key(material, brand, color_name) in existing_keys,
+                requested_id=requested_id,
+                requested_label_identity=requested_label_identity,
                 spool=spool_data,
             )
         )
         valid += 1
+
+    await decide_numbers(db, rows, warnings)
 
     return ImportPreview(
         columns=CSV_COLUMNS,
@@ -592,6 +634,139 @@ async def parse_and_validate(
         rows=rows,
         warnings=warnings,
     )
+
+
+def _is_postgres(db: AsyncSession) -> bool:
+    return db.get_bind().dialect.name == "postgresql"
+
+
+async def highest_spool_number_given_out(db: AsyncSession) -> int:
+    """The highest spool number this database has ever handed out, deleted spools included.
+
+    A number is never handed out again (m261): the counter -- the AUTOINCREMENT row in
+    SQLite's ``sqlite_sequence``, PostgreSQL's id sequence -- started above every number
+    the database still remembered and never goes back. With ``MAX(id)`` beside it, it is
+    the bound: only a number above it is free for an imported spool.
+    """
+    highest = (await db.execute(select(func.max(Spool.id)))).scalar() or 0
+    if _is_postgres(db):
+        state = await pg_sequences.sequence_state(db, Spool.__tablename__)
+        return max(highest, state.issued if state is not None else 0)
+    counter = (await db.execute(text("SELECT seq FROM sqlite_sequence WHERE name = 'spool'"))).scalar()
+    return max(highest, counter or 0)
+
+
+async def _label_identities_in_use(db: AsyncSession, identities: set[str]) -> set[str]:
+    found: set[str] = set()
+    wanted = sorted(identities)
+    for start in range(0, len(wanted), 500):
+        chunk = wanted[start : start + 500]
+        rows = await db.execute(select(Spool.label_identity).where(Spool.label_identity.in_(chunk)))
+        found.update(value for value in rows.scalars().all() if value)
+    return found
+
+
+async def decide_numbers(db: AsyncSession, rows: list[ImportRowResult], warnings: list[str]) -> None:
+    """Keep each valid row's number when this install never handed it out (C32, upstream #3520).
+
+    On a fresh install every number qualifies. A number given out here before -- a spool's
+    that is still here or was deleted -- or one the file names twice would put two spools
+    under one number, so that row gets a new one: one warning for all of them. A row that
+    keeps its number keeps its label identity too, unless another spool here already has
+    it or the file names it twice; its printed label then no longer proves the spool.
+    Decides afresh from what the rows asked for, so it can run again under the write lock.
+    """
+    highest = await highest_spool_number_given_out(db)
+    in_use = await _label_identities_in_use(
+        db,
+        {
+            row.requested_label_identity
+            for row in rows
+            if row.status == "valid" and row.requested_id is not None and row.requested_label_identity
+        },
+    )
+    numbers: set[int] = set()
+    identities: set[str] = set()
+    renumbered = relabelled = 0
+    for row in rows:
+        row.keeps_id = None
+        row.keeps_label_identity = None
+        if row.status != "valid" or row.requested_id is None:
+            continue
+        if row.requested_id <= highest or row.requested_id in numbers:
+            renumbered += 1
+            continue
+        numbers.add(row.requested_id)
+        row.keeps_id = row.requested_id
+        identity = row.requested_label_identity
+        if identity is None:
+            continue
+        if identity in in_use or identity in identities:
+            relabelled += 1
+            continue
+        identities.add(identity)
+        row.keeps_label_identity = identity
+    if renumbered:
+        warnings.append(
+            f"{renumbered} spool(s) get a new id: their id is already used on this install or appears twice in the file"
+        )
+    if relabelled:
+        warnings.append(
+            f"{relabelled} spool(s) keep their id but get a new label identity: it is already used on this install "
+            "or appears twice in the file, so their printed labels have to be printed again"
+        )
+
+
+async def hold_spool_numbers(db: AsyncSession) -> None:
+    """Take the spool table's write lock before the numbers are decided for an import.
+
+    Between the decision and the insert, a spool created meanwhile would take the next
+    number, which can be one the file keeps. SQLite: the writer, taken by a no-op UPDATE
+    before anything is read (a WAL read snapshot cannot become the writer once another
+    connection has written). PostgreSQL: a lock that holds every other insert into the
+    table until this transaction ends. Both end with the import's commit.
+    """
+    if _is_postgres(db):
+        await db.execute(text("LOCK TABLE spool IN SHARE ROW EXCLUSIVE MODE"))
+        return
+    from backend.app.core.database import take_write_lock
+
+    await take_write_lock(db, Spool.__table__, 0)
+
+
+async def persist_import(db: AsyncSession, rows: list[ImportRowResult]) -> int:
+    """Add the valid rows as spools, under the lock of :func:`hold_spool_numbers`. Does not commit.
+
+    The numbers are decided again here: the preview's decision was read without the lock.
+    Rows keeping their number go in first -- a row without one takes the next free number,
+    which could be one a later row of the file still needs -- and then PostgreSQL's
+    sequence is raised past them (SQLite's AUTOINCREMENT counter follows an explicit id
+    by itself), so the next spool created is numbered after the import's highest.
+    """
+    await decide_numbers(db, rows, [])
+    valid = [row for row in rows if row.status == "valid" and row.spool is not None]
+    kept = [row for row in valid if row.keeps_id is not None]
+
+    def spool_of(row: ImportRowResult) -> Spool:
+        spool = Spool(**row.spool)
+        if row.keeps_id is not None:
+            spool.id = row.keeps_id
+        if row.keeps_label_identity is not None:
+            spool.label_identity = row.keeps_label_identity
+        return spool
+
+    for row in kept:
+        db.add(spool_of(row))
+    if kept:
+        await db.flush()
+        if _is_postgres(db):
+            await pg_sequences.raise_to(
+                db, Spool.__tablename__, max(row.keeps_id for row in kept), plain=True, required=True
+            )
+    for row in valid:
+        if row.keeps_id is None:
+            db.add(spool_of(row))
+    return len(valid)
 
 
 def serialize(spools: list[Spool], *, delimiter: str = "comma", decimal: str = "dot", bom: bool = False) -> bytes:
