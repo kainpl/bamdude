@@ -24,5 +24,20 @@
     "chamber": "Chamber"
   },
   "open_button": "Open BamDude",
-  "fault_fallback": "Printer needs attention ({code})"
+  "fault_fallback": "Printer needs attention ({code})",
+  "eta_m": "{minutes}m",
+  "widget": {
+    "offline": "Offline",
+    "not_connected": "Printer is not connected",
+    "error": "Error",
+    "paused_at": "Print paused at {progress}%",
+    "time_left": "About {eta} left",
+    "print_completed": "Print completed",
+    "print_failed": "Print failed",
+    "print_stopped": "Print stopped",
+    "idle": "Idle",
+    "ready": "Ready to print",
+    "connecting": "Connecting",
+    "waiting": "Waiting for printer status"
+  }
 }
