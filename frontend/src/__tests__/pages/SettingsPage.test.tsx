@@ -1104,6 +1104,24 @@ describe('SettingsPage', () => {
     await waitFor(() => expect(receivedBody).toMatchObject({ auto_queue_return_failed: true }));
   });
 
+  it('offers the four AutoQueue printer orders, fewest hours by default, and saves the chosen one', async () => {
+    let receivedBody: Record<string, unknown> | null = null;
+    server.use(http.put('/api/v1/settings/', async ({ request }) => {
+      receivedBody = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({ ...mockSettings, ...receivedBody });
+    }));
+    const user = userEvent.setup();
+    render(<SettingsPage />);
+    await user.click(await screen.findByText('Printing'));
+    const select = await screen.findByLabelText('Pick the printer');
+    expect(select).toHaveValue('fewest_hours');
+    expect(within(select).getAllByRole('option').map((option) => (option as HTMLOptionElement).value)).toEqual([
+      'fewest_hours', 'most_hours', 'least_recently_used', 'priority',
+    ]);
+    await user.selectOptions(select, 'priority');
+    await waitFor(() => expect(receivedBody).toMatchObject({ model_dispatch_order: 'priority' }));
+  });
+
   describe('Usage accuracy — runout_archive_spool_enabled', () => {
     const LABEL = 'Archive the spool it closed';
 

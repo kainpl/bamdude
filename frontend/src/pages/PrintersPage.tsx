@@ -9076,6 +9076,7 @@ export function EditPrinterModal({
     cleanup_after_print: printer.cleanup_after_print ?? false,
     mqtt_connection_timeout: printer.mqtt_connection_timeout ?? 0,
     wear_cost_per_hour: (printer.wear_cost_per_hour ?? null) as number | null,
+    dispatch_priority: (printer.dispatch_priority ?? null) as number | null,
     stagger_interval_minutes: printer.stagger_interval_minutes ?? 0,
     swap_mode_enabled: printer.swap_mode_enabled ?? false,
     swap_profile: (printer.swap_profile ?? null) as string | null,
@@ -9119,6 +9120,9 @@ export function EditPrinterModal({
       mqtt_connection_timeout: form.mqtt_connection_timeout,
       // An emptied field is sent as null: it clears the rate.
       wear_cost_per_hour: form.wear_cost_per_hour,
+      // As upstream's form (#2915): empty clears it, 0 is a real first place, anything else a whole number >= 0.
+      dispatch_priority:
+        form.dispatch_priority === null ? null : Math.max(0, Math.round(form.dispatch_priority) || 0),
       stagger_interval_minutes: form.stagger_interval_minutes,
       swap_mode_enabled: form.swap_mode_enabled,
       swap_profile: form.swap_mode_enabled ? form.swap_profile : null,
@@ -9337,6 +9341,24 @@ export function EditPrinterModal({
                   className="w-32 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:ring-1 focus:ring-bambu-green"
                 />
                 <p className="text-xs text-bambu-gray mt-1">{t('printers.modal.wearCostPerHourHint')}</p>
+              </div>
+              <div>
+                <label htmlFor="edit_dispatch_priority" className="block text-sm font-medium text-bambu-gray mb-1">
+                  {t('printers.modal.dispatchPriorityLabel')}
+                </label>
+                <NumberInput
+                  id="edit_dispatch_priority"
+                  allowEmpty
+                  min={0}
+                  max={100000}
+                  step="any"
+                  inputMode="numeric"
+                  placeholder="—"
+                  value={form.dispatch_priority}
+                  onChange={(v) => setForm({ ...form, dispatch_priority: v })}
+                  className="w-32 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:ring-1 focus:ring-bambu-green"
+                />
+                <p className="text-xs text-bambu-gray mt-1">{t('printers.modal.dispatchPriorityHelp')}</p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-bambu-gray mb-1">{t('printers.modal.staggerInterval')}</label>
