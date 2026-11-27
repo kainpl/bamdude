@@ -217,7 +217,7 @@ async def test_the_obico_notice_carries_the_flagged_frame(monkeypatch):
 
     seen = {}
 
-    async def notify(printer_id, printer_name, task_name, score, action, frame=None):
+    async def notify(printer_id, printer_name, task_name, score, action, frame=None, **_):
         seen["frame"] = frame
 
     async def name(printer_id):

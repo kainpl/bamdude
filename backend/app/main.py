@@ -70,6 +70,7 @@ from backend.app.api.routes import (
     notification_templates,
     notifications,
     obico,
+    octoeverywhere,
     orca_cloud,
     overlay_branding,
     part_images as part_images_routes,
@@ -5205,6 +5206,10 @@ async def on_print_start(printer_id: int, data: dict):
         # A session of a deleted printer record; the id may name the next one (spec gh109-o1 r2 R6).
         logging.getLogger(__name__).warning("Ignoring print_start of a deleted printer record %s", printer_id)
         return
+    # A new print: OctoEverywhere's context and what was done for the last one end here (upstream Bambuddy).
+    from backend.app.services.octoeverywhere_detection import octoeverywhere_detection_service
+
+    octoeverywhere_detection_service.reset_printer(printer_id)
     if is_internal_printer_job(data.get("filename", ""), data.get("subtask_name", "")):
         logging.getLogger(__name__).info(
             "[CALLBACK] Skipping archive - internal printer job detected: filename=%s, subtask=%s",
@@ -11608,8 +11613,11 @@ async def on_print_complete(printer_id: int, data: dict) -> None:
     The wrapper closes registration in finally. Cleanup waits for consumers,
     independently of the token that fences actions against newer print runs.
     """
+    from backend.app.services.octoeverywhere_detection import octoeverywhere_detection_service
     from backend.app.services.print_completion_tasks import PrintCompletionTasks
 
+    # The print is over: OctoEverywhere drops its context and any inspection in flight (upstream Bambuddy).
+    octoeverywhere_detection_service.reset_printer(printer_id)
     scope = PrintCompletionTasks(printer_id)
     analysis_completion = {"archive_id": None, "tasks": scope}
     from backend.app.services.print_reconciliation import defer_queue_repair_during_completion
@@ -13479,6 +13487,17 @@ async def _application_lifespan(app: FastAPI):
         await obico_detection_service.start(serving=lambda: farm_startup_guard.ready)
     except Exception as e:
         logging.getLogger(__name__).warning("Failed to start Obico detection service: %s", e)
+    # OctoEverywhere AI failure detection, opt-in by ``octoeverywhere_enabled`` like Obico's loop.
+    try:
+        from backend.app.services.octoeverywhere_detection import octoeverywhere_detection_service
+
+        await octoeverywhere_detection_service.start()
+    except Exception as e:
+        logging.getLogger(__name__).warning("Failed to start OctoEverywhere detection service: %s", e)
+    # A restore that turned OctoEverywhere off tells the administrators on this first start.
+    from backend.app.services.failure_detection_restore import deliver_restore_notice
+
+    spawn_background_task(deliver_restore_notice(), name="octoeverywhere-restore-notice")
 
     # Daily archive 3MF cleanup loop (gated internally by the
     # ``archive_3mf_retention_enabled`` setting; always launched so a
@@ -13704,6 +13723,12 @@ async def _application_lifespan(app: FastAPI):
         from backend.app.services.obico_detection import obico_detection_service
 
         await obico_detection_service.quiesce(timeout=None)
+    except Exception:
+        pass
+    try:
+        from backend.app.services.octoeverywhere_detection import octoeverywhere_detection_service
+
+        await octoeverywhere_detection_service.quiesce(timeout=None)
     except Exception:
         pass
     try:
@@ -14781,6 +14806,7 @@ app.include_router(git_backup.router, prefix=app_settings.api_prefix)
 app.include_router(local_backup.router, prefix=app_settings.api_prefix)
 app.include_router(metrics.router, prefix=app_settings.api_prefix)
 app.include_router(obico.router, prefix=app_settings.api_prefix)
+app.include_router(octoeverywhere.router, prefix=app_settings.api_prefix)
 app.include_router(virtual_printers.router, prefix=app_settings.api_prefix)
 app.include_router(printer_queues.router, prefix=app_settings.api_prefix)
 app.include_router(telegram.router, prefix=app_settings.api_prefix)

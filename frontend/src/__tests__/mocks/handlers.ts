@@ -106,6 +106,10 @@ export const handlers = [
   // still running; a test that does not care sees none.
   http.get('/api/v1/printers/:id/files/download-jobs', () => HttpResponse.json({ jobs: [] })),
   http.get('/api/v1/archives/:id/media-download-jobs', () => HttpResponse.json({ jobs: [] })),
+  // Every printer card asks whether OctoEverywhere is the farm's detector; a test that does not care sees it off.
+  http.get('/api/v1/octoeverywhere/printer-status', () => HttpResponse.json({
+    enabled: false, monitored_printers: null, per_printer: {}, last_error: null, last_error_code: null,
+  })),
   // Scheduled drying: every printer card reads these two fleet-wide lists.
   http.get('/api/v1/scheduled-dryings', () => HttpResponse.json([])),
   http.get('/api/v1/firmware/batch', () => HttpResponse.json([])),

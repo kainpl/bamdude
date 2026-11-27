@@ -5154,6 +5154,7 @@ export interface AppSettings {
   ha_token_configured?: boolean;
   ldap_bind_password_configured?: boolean;
   obico_ml_token_configured?: boolean;
+  octoeverywhere_api_key_configured?: boolean;
   prometheus_token_configured?: boolean;
   virtual_printer_access_code_configured?: boolean;
   mcp_enabled?: boolean;
@@ -5388,7 +5389,17 @@ export interface AppSettings {
   obico_action: 'notify' | 'pause' | 'pause_and_off';
   obico_poll_interval: number;
   obico_enabled_printers: string;
+  // OctoEverywhere AI failure detection (upstream Bambuddy). The key is write-only:
+  // reads carry `octoeverywhere_api_key_configured` instead.
+  octoeverywhere_enabled: boolean;
+  octoeverywhere_api_key?: string;
+  octoeverywhere_confidence: OctoEverywhereConfidence;
+  octoeverywhere_action: 'notify' | 'pause' | 'pause_and_off';
+  octoeverywhere_poll_interval: number;
+  octoeverywhere_enabled_printers: string;
 }
+
+export type OctoEverywhereConfidence = 'lowest' | 'low' | 'medium' | 'high' | 'highest';
 
 export type AppSettingsUpdate = Partial<AppSettings> & {
   secret_actions?: Record<string, SecretAction>;
@@ -5471,6 +5482,45 @@ export interface ObicoPrinterStatus {
    * `unknown` — watched, no result yet (upstream #2952). */
   per_printer: Record<string, { class: string; frame_count: number; score: number; error?: string | null }>;
   last_error: string | null;
+}
+
+// OctoEverywhere AI failure detection (upstream Bambuddy)
+export interface OctoEverywhereDetectionState {
+  /** safe / warning / failure — the Gadget API's verdict; `error` — no verdict (`error` says why,
+   * withheld without settings:read); `unknown` — watched, no result yet. */
+  class: string;
+  print_quality: number | null;
+  frame_count: number;
+  error?: string | null;
+  error_code?: string | null;
+}
+
+export interface OctoEverywhereStatus {
+  is_running: boolean;
+  last_error: string | null;
+  last_error_code: string | null;
+  per_printer: Record<string, OctoEverywhereDetectionState>;
+  history: { printer_id: number; task_name: string; timestamp: string; class: 'warning' | 'failure'; print_quality: number | null }[];
+  enabled: boolean;
+  api_key_configured: boolean;
+  confidence: OctoEverywhereConfidence;
+  action: 'notify' | 'pause' | 'pause_and_off';
+  poll_interval: number;
+}
+
+export interface OctoEverywherePrinterStatus {
+  enabled: boolean;
+  monitored_printers: number[] | null;
+  per_printer: Record<string, OctoEverywhereDetectionState>;
+  last_error: string | null;
+  last_error_code: string | null;
+}
+
+export interface OctoEverywhereTestConnection {
+  ok: boolean;
+  status_code: number | null;
+  error: string | null;
+  error_code: string | null;
 }
 
 export interface ObicoTestConnection {
@@ -15946,6 +15996,18 @@ export const api = {
     request<ObicoTestConnection>('/obico/test-connection', {
       method: 'POST',
       body: JSON.stringify({ url, token, secret_actions }),
+    }),
+
+  // OctoEverywhere AI failure detection (upstream Bambuddy)
+  getOctoEverywhereStatus: () =>
+    request<OctoEverywhereStatus>('/octoeverywhere/status'),
+  getOctoEverywherePrinterStatus: () =>
+    request<OctoEverywherePrinterStatus>('/octoeverywhere/printer-status'),
+  // `api_key` omitted tests the saved key; a draft goes with secret_actions = replace.
+  testOctoEverywhereConnection: (api_key?: string, confidence?: OctoEverywhereConfidence, secret_actions?: Record<string, SecretAction>) =>
+    request<OctoEverywhereTestConnection>('/octoeverywhere/test-connection', {
+      method: 'POST',
+      body: JSON.stringify({ api_key, confidence, secret_actions }),
     }),
 
   // Server-side slicing (B.4) — Phase 2 of 0.5.x cycle

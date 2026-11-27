@@ -57,7 +57,7 @@
   "ai_failure_detection": {
     "name": "AI Failure Detection",
     "title_template": "Possible Print Failure Detected",
-    "body_template": "{printer}: {task_name}\nConfidence: {confidence}\nAction taken: {action}"
+    "body_template": "{printer}: {task_name}\nProvider: {provider}\nPrint quality: {print_quality}\nConfidence: {confidence}\nAction taken: {action}"
   },
   "plate_not_empty": {
     "name": "Plate Not Empty",
@@ -278,6 +278,11 @@
     "name": "Integration credentials need reissuing",
     "title_template": "Integration credentials need reissuing",
     "body_template": "Legacy API keys ({owned_api_key_count} owned, {ownerless_api_key_count} ownerless) and camera/monitor tokens ({long_lived_token_count}) have been retired. Create new API keys in Settings → API Keys and new camera, monitor and overlay tokens in Settings → Camera, then replace them in HA, scripts/webhooks, bridge, MCP/AI hosts, OrcaBamDude and saved camera/TV/OBS/kiosk links. Browser sign-in alone does not reconnect integrations. Review scopes and test one allowed operation; do not blindly retry a print."
+  },
+  "octoeverywhere_restore_off": {
+    "name": "OctoEverywhere turned off by a restore",
+    "title_template": "OctoEverywhere turned off by a restore",
+    "body_template": "The restored backup had OctoEverywhere failure detection on. It is off until you turn it on again in Settings → Failure Detection — do so if this is the same farm. The key and the other settings were kept."
   },
   "git_backup_not_admitted": {
     "name": "Git backup paused",

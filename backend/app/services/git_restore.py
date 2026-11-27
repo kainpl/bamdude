@@ -491,6 +491,11 @@ _RESTORABLE_SETTING_KEYS = frozenset(
         "obico_action",
         "obico_poll_interval",
         "obico_enabled_printers",
+        # ``octoeverywhere_enabled`` is not here: a restore never starts sending frames to the cloud.
+        "octoeverywhere_confidence",
+        "octoeverywhere_action",
+        "octoeverywhere_poll_interval",
+        "octoeverywhere_enabled_printers",
         "default_sidebar_order",
         "gcode_snippets",
     ]

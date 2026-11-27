@@ -1047,8 +1047,10 @@ async def _delete_printer(
     printer_deletion.finish(deletion, committed=True)
 
     from backend.app.services.obico_detection import obico_detection_service
+    from backend.app.services.octoeverywhere_detection import octoeverywhere_detection_service
 
     obico_detection_service.forget_printer_history(printer_id)
+    octoeverywhere_detection_service.forget_printer(printer_id)
 
     from backend.app.services.camera_metrics import forget_printer
 

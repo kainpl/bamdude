@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import AfterValidator, BaseModel, Field, StrictBool, field_validator
+from pydantic import AfterValidator, BaseModel, Field, StrictBool, ValidationInfo, field_validator
 
 from backend.app.core.timezones import server_timezone
 from backend.app.mcp_server.config import McpConfig, canonical_endpoint
@@ -827,6 +827,27 @@ class AppSettings(BaseModel):
         description="JSON array of printer IDs to monitor (empty = all connected printers)",
     )
 
+    # OctoEverywhere AI failure detection (upstream Bambuddy v1.3.0). One provider at a time:
+    # enabling it switches Obico off in the same save, and the other way round.
+    octoeverywhere_enabled: bool = Field(default=False, description="Enable OctoEverywhere AI print failure detection")
+    octoeverywhere_api_key: str = Field(default="", description="OctoEverywhere Gadget API key")
+    octoeverywhere_poll_interval: int = Field(
+        default=20, ge=5, le=30, description="Seconds between inspections, subject to the server's minimum interval"
+    )
+    octoeverywhere_confidence: str = Field(
+        default="medium",
+        description=(
+            "Confidence OctoEverywhere needs before suggesting a warning or pause: lowest, low, medium, high, "
+            "or highest (API levels 1-5). Lower reports sooner with more false positives."
+        ),
+    )
+    octoeverywhere_action: str = Field(
+        default="notify", description="Action on failure: notify, pause, or pause_and_off"
+    )
+    octoeverywhere_enabled_printers: str = Field(
+        default="", description="JSON array of printer IDs to monitor (empty = all connected printers)"
+    )
+
     # Default sidebar order (admin-set for all users)
     default_sidebar_order: str = Field(
         default="",
@@ -841,12 +862,14 @@ class AppSettingsRead(AppSettings):
     ha_token: str = Field(default="", exclude=True)
     ldap_bind_password: str = Field(default="", exclude=True)
     obico_ml_token: str = Field(default="", exclude=True)
+    octoeverywhere_api_key: str = Field(default="", exclude=True)
     prometheus_token: str = Field(default="", exclude=True)
     virtual_printer_access_code: str = Field(default="", exclude=True)
     mqtt_password_configured: bool = False
     ha_token_configured: bool = False
     ldap_bind_password_configured: bool = False
     obico_ml_token_configured: bool = False
+    octoeverywhere_api_key_configured: bool = False
     prometheus_token_configured: bool = False
     virtual_printer_access_code_configured: bool = False
     ha_url_configured: bool = False
@@ -1095,6 +1118,12 @@ class AppSettingsUpdate(BaseModel):
     obico_action: str | None = None
     obico_poll_interval: int | None = Field(default=None, ge=5, le=120)
     obico_enabled_printers: str | None = None
+    octoeverywhere_enabled: bool | None = None
+    octoeverywhere_api_key: str | None = None
+    octoeverywhere_poll_interval: int | None = Field(default=None, ge=5, le=30)
+    octoeverywhere_confidence: str | None = None
+    octoeverywhere_action: str | None = None
+    octoeverywhere_enabled_printers: str | None = None
     default_sidebar_order: str | None = None
     gcode_snippets: str | None = None
 
@@ -1173,18 +1202,37 @@ class AppSettingsUpdate(BaseModel):
             raise ValueError("ldap_group_mapping must be a JSON object mapping LDAP group DNs to BamDude group names")
         return v
 
-    @field_validator("obico_enabled_printers")
+    @field_validator("obico_enabled_printers", "octoeverywhere_enabled_printers")
     @classmethod
-    def validate_obico_enabled_printers(cls, v: str | None) -> str | None:
+    def validate_obico_enabled_printers(cls, v: str | None, info: ValidationInfo) -> str | None:
         if v is None or v == "":
             return v
         try:
             parsed = json.loads(v)
         except json.JSONDecodeError:
-            raise ValueError("obico_enabled_printers must be valid JSON or empty")
+            raise ValueError(f"{info.field_name} must be valid JSON or empty")
         # ``type is int``: a JSON ``true`` is an int to isinstance, and reads as printer 1.
         if not isinstance(parsed, list) or not all(type(item) is int and item > 0 for item in parsed):
-            raise ValueError("obico_enabled_printers must be a JSON array of printer IDs (integers)")
+            raise ValueError(f"{info.field_name} must be a JSON array of printer IDs (integers)")
+        return v
+
+    @field_validator("octoeverywhere_api_key")
+    @classmethod
+    def validate_octoeverywhere_api_key(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        v = v.strip()
+        if any(ord(char) < 33 or ord(char) > 126 for char in v):
+            raise ValueError("octoeverywhere_api_key must contain only printable ASCII characters without spaces")
+        return v
+
+    @field_validator("octoeverywhere_confidence")
+    @classmethod
+    def validate_octoeverywhere_confidence(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if v not in ("lowest", "low", "medium", "high", "highest"):
+            raise ValueError("octoeverywhere_confidence must be 'lowest', 'low', 'medium', 'high', or 'highest'")
         return v
 
     @field_validator("stagger_group_tag_ids", "stagger_group_location_ids")
@@ -1262,13 +1310,13 @@ class AppSettingsUpdate(BaseModel):
             raise ValueError("obico_sensitivity must be 'low', 'medium', or 'high'")
         return v
 
-    @field_validator("obico_action")
+    @field_validator("obico_action", "octoeverywhere_action")
     @classmethod
-    def validate_obico_action(cls, v: str | None) -> str | None:
+    def validate_obico_action(cls, v: str | None, info: ValidationInfo) -> str | None:
         if v is None:
             return v
         if v not in ("notify", "pause", "pause_and_off"):
-            raise ValueError("obico_action must be 'notify', 'pause', or 'pause_and_off'")
+            raise ValueError(f"{info.field_name} must be 'notify', 'pause', or 'pause_and_off'")
         return v
 
     @field_validator("default_sidebar_order")

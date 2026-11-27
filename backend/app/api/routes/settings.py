@@ -115,6 +115,8 @@ ADMIN_SETTING_FIELDS = frozenset(
         "obico_ml_url",
         "obico_snapshot_base_url",
         "obico_ml_token",
+        "octoeverywhere_enabled",
+        "octoeverywhere_api_key",
     }
 )
 
@@ -292,6 +294,7 @@ SETTINGS_SECRETS = frozenset(
         "ha_token",
         "ldap_bind_password",
         "obico_ml_token",
+        "octoeverywhere_api_key",
         "prometheus_token",
         "virtual_printer_access_code",
     }
@@ -677,6 +680,14 @@ async def update_settings(
     """Update application settings."""
     update_data = settings_update.model_dump(exclude_unset=True)
     actions = update_data.pop("secret_actions", None)
+    # Only one AI failure detection provider may control a print at a time (upstream Bambuddy):
+    # enabling one switches the other off in the same save.
+    if update_data.get("obico_enabled") and update_data.get("octoeverywhere_enabled"):
+        raise HTTPException(400, "Enable only one AI failure detection provider at a time.")
+    if update_data.get("octoeverywhere_enabled"):
+        update_data["obico_enabled"] = False
+    elif update_data.get("obico_enabled"):
+        update_data["octoeverywhere_enabled"] = False
     await lock_credential_config(db)
     if actions and not (current_user is not None and current_user.is_admin):
         raise HTTPException(403, "Requires admin role for protected settings")
@@ -803,6 +814,11 @@ async def update_settings(
         from backend.app.services.obico_history import obico_history
 
         obico_history.set_enabled(bool(update_data["obico_save_detections"]))
+
+    if any(key.startswith("octoeverywhere_") for key in update_data | (actions or {})):
+        from backend.app.services.octoeverywhere_detection import octoeverywhere_detection_service
+
+        await octoeverywhere_detection_service.refresh_settings()
 
     if {"mcp_enabled", "mcp_allowed_hosts", "mcp_allowed_origins"} & update_data.keys():
         from backend.app.mcp_server.runtime import mcp_runtime
@@ -1615,6 +1631,11 @@ async def _restore_backup(
                     },
                 )
 
+        # A restored database never starts sending frames to OctoEverywhere's cloud by itself: in
+        # the copy that replaces the database (SQLite) or is loaded in one transaction (PostgreSQL).
+        from backend.app.services.failure_detection_restore import turn_off_in_prepared_copy
+
+        await _file_work(turn_off_in_prepared_copy, prepared.path)
         if is_sqlite():
             from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -1707,6 +1728,12 @@ async def _restore_backup(
                 if not obico_stopped:
                     raise HTTPException(
                         409, "Obico readers and writers have not stopped; retry restore after they finish"
+                    )
+                from backend.app.services.octoeverywhere_detection import octoeverywhere_detection_service
+
+                if not await octoeverywhere_detection_service.quiesce():
+                    raise HTTPException(
+                        409, "OctoEverywhere inspections have not stopped; retry restore after they finish"
                     )
                 # Download jobs read printers and write the scratch volume (G10 D): admission
                 # closes, every job is stopped and its worker's end proven, and what was

@@ -80,6 +80,7 @@ The configuration editor preserves the quantities and descriptions of other save
 
 ### Added
 
+- **OctoEverywhere AI failure detection.** Settings → Failure Detection has a *Provider* selector: Obico (a self-hosted ML API) or OctoEverywhere (its cloud Gadget API). OctoEverywhere has its own panel: the Gadget API key (saved with *Save key*; *Test* checks the saved or the typed key without uploading a frame), the confidence it needs before it warns or pauses, the action — notify, pause, or pause and cut power, as for Obico — an inspection interval of 5–30 seconds, and the printers it watches. While it is on, camera snapshots of the watched running prints are sent to OctoEverywhere's servers; checks beyond your account's free quota are billed by OctoEverywhere, and when the usage limit is reached the panel and the printer card (for a settings reader) say so, with a link to billing. OctoEverywhere decides when to warn and when to pause; its 1–10 print quality is shown in the panel, on the printer card and in the notification. One provider runs at a time: turning one on turns the other off.
 - **OIDC groups follow the identity provider at every sign-in.** An OIDC provider now has a group claim (`groups` by default) and a group mapping, Settings → Authentication → OIDC: an IdP group → a BamDude group. At every OIDC sign-in the mapped groups are set to what the IdP grants right now; groups outside the mapping stay as assigned by hand, and an empty mapping keeps groups as they are. The groups change only when the sign-in completes — after 2FA, if the account has it — so a sign-in that is abandoned or refused changes nothing.
   - When the mapping manages Administrators, the IdP decides admin rights, the legacy admin role included. BamDude refuses to take them from the last active administrator; keep a separate local administrator outside the mapping.
   - An incomplete or malformed group claim (for example Entra ID's group overage) refuses the sign-in instead of guessing.
@@ -209,6 +210,8 @@ The configuration editor preserves the quantities and descriptions of other save
 
 ### Changed
 
+- **The AI failure notification names its detector.** The default text adds *Provider* and *Print quality* (OctoEverywhere's; Obico shows its confidence as before). A template you changed keeps its text.
+- **A full backup restore never turns OctoEverywhere on by itself.** If the restored backup had OctoEverywhere on, it is off after the restore, and every administrator gets an inbox notice to turn it on again if this is the same farm; the key and the other settings are kept. Obico restores as it was.
 - **Preset lists follow the selected slicer.** Slice and filament calibration use the cloud for the slicer shown in their controls. Assemble project and filament family creation from an existing preset have a slicer switch that starts from the preferred slicer. Local profiles remain available alongside the selected cloud.
 
 - **Assemble project** is available directly from an STL, OBJ, STEP or STP file's menu in the library. Open it to assemble that file without using the selection checkbox.
