@@ -375,7 +375,7 @@ Bambu Studio thinks in **filament families**: one identity (`filament_id`) behin
 
 ### Notifications
 - **A notification centre in the app, filled even with no channel configured** — the Bell in the sidebar is a per-user inbox: every farm event you subscribe to (a failed print, a filament runout, an AMS alarm, queue trouble, a sensor past its limit) lands there with a live unread count, read/unread kept per person, and filters by level, printer and period. An alarm about hardware no longer waits for somebody to set up a bot or a mail server first. Each person picks their own events — warnings and errors by default — history retention is a farm setting (30 days), and the per-user e-mail switches that used to be the whole Notifications page are now one tab inside the centre
-- Telegram (auto-restart bot on config change), Discord, Email, Pushover, ntfy, CallMeBot, **Bark** (free iOS push, no account)
+- Telegram (auto-restart bot on config change), Discord, Email, Pushover, ntfy, CallMeBot, **Bark** (free iOS push, no account), **Gotify** (your own server, per-event priority), **Notify!** (iOS push plus Live Activities with a print countdown on the Lock Screen and a status widget per printer)
 - Home Assistant, custom webhooks, **Signal CLI API** (self-hosted via signal-cli-rest-api, numbers or a group; in Docker, `docker-compose.signal.yml` runs that server next to BamDude and `docker-install.sh` offers it)
 - Customizable message templates (MarkdownV2 editor)
 - **Printer scope on every channel — all, one, or several printers** per provider, and per Telegram chat (where it also scopes the bot itself: lists, cameras, queue, controls)
