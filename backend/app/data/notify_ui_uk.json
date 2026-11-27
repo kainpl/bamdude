@@ -1,0 +1,28 @@
+{
+  "phase": {
+    "printing": "Друкує",
+    "printer_offline": "Принтер не на зв'язку",
+    "paused": "Пауза",
+    "preparing": "Підготовка",
+    "complete": "Готово",
+    "failed": "Друк не вдався",
+    "stopped": "Зупинено",
+    "finished": "Завершено",
+    "filament_runout": "Закінчився філамент",
+    "printer_error": "Помилка принтера"
+  },
+  "print_in_progress": "Іде друк",
+  "print_default": "Друк",
+  "layer": "Шар {current}/{total}",
+  "eta_hm": "{hours} год {minutes} хв",
+  "metric": {
+    "progress": "Прогрес",
+    "remaining": "Лишилося",
+    "layer": "Шар",
+    "nozzle": "Сопло",
+    "bed": "Стіл",
+    "chamber": "Термокамера"
+  },
+  "open_button": "Відкрити BamDude",
+  "fault_fallback": "Принтер потребує уваги ({code})"
+}
