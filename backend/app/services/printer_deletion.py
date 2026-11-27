@@ -112,6 +112,7 @@ _ID_KEYED = (
     ("backend.app.services.chamber_history", "_history"),
     ("backend.app.services.pause_warning", "_runs"),
     ("backend.app.services.mqtt_relay", "mqtt_relay._last_printer_status"),
+    ("backend.app.services.mqtt_relay", "mqtt_relay._last_printer_connected"),
     ("backend.app.services.mqtt_relay", "mqtt_relay._last_status_payload"),
     ("backend.app.services.timelapse_files", "_listing_answered"),
     ("backend.app.services.macro_trigger", "_fired_layer_macros"),
