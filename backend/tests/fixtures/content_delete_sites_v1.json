@@ -882,14 +882,6 @@
     },
     {
       "site": [
-        "api/routes/spoolman_inventory.py::get_spoolman_slot_assignment",
-        "sqlalchemy.delete",
-        "backend.app.models.spoolman_slot_assignment.SpoolmanSlotAssignment"
-      ],
-      "owner_policy": "Outside C parent purge: api/routes/spoolman_inventory.py::get_spoolman_slot_assignment retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
-    },
-    {
-      "site": [
         "api/routes/spoolman_inventory.py::unassign_spoolman_slot",
         "sqlalchemy.delete",
         "backend.app.models.spoolman_slot_assignment.SpoolmanSlotAssignment"
@@ -2143,6 +2135,38 @@
         "backend.app.models.spoolman_slot_assignment.SpoolmanSlotAssignment"
       ],
       "owner_policy": "Outside C parent purge: services/spoolman_source_changes.py::clear_left_ledger (C047 acceptance A08, moved from api/routes/settings.py::_write_spoolman_settings) empties the Spoolman slot ledger on a switch to the built-in inventory, in the transaction of the door that moves the mode, under the Spoolman source guard, after the slot-ledger writers in flight finished; owned by SourceChange.decide for every door that writes the mode, each naming it - the Spoolman settings route, the general settings save, the reset (C047 A09) and Git's settings category, pinned by tests/unit/test_spoolman_mode_writers_take_the_source_change.py; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/spoolman_spool_identity.py::clear_all",
+        "sqlalchemy.delete",
+        "backend.app.models.spoolman_k_profile.SpoolmanKProfile"
+      ],
+      "owner_policy": "Outside C parent purge: services/spoolman_spool_identity.py::clear_all empties the Spoolman bindings and K links when the Spoolman database changes, inside SourceChange.decide's transaction under the source guard (owner decision 2026-11-27); any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/spoolman_spool_identity.py::clear_all",
+        "sqlalchemy.delete",
+        "backend.app.models.spoolman_slot_assignment.SpoolmanSlotAssignment"
+      ],
+      "owner_policy": "Outside C parent purge: services/spoolman_spool_identity.py::clear_all empties the Spoolman bindings and K links when the Spoolman database changes, inside SourceChange.decide's transaction under the source guard (owner decision 2026-11-27); any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/spoolman_spool_identity.py::remove_refuted",
+        "sqlalchemy.delete",
+        "backend.app.models.spoolman_k_profile.SpoolmanKProfile"
+      ],
+      "owner_policy": "Outside C parent purge: services/spoolman_spool_identity.py::remove_refuted removes only the Spoolman bindings and K links a spool's registered stamp refutes (spec spoolman-binding-identity §6), conditional on what was read, inside its caller's transaction and slot-ledger doors (drop_stale, writer_proved, the sync's _apply); any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/spoolman_spool_identity.py::remove_refuted",
+        "sqlalchemy.delete",
+        "backend.app.models.spoolman_slot_assignment.SpoolmanSlotAssignment"
+      ],
+      "owner_policy": "Outside C parent purge: services/spoolman_spool_identity.py::remove_refuted removes only the Spoolman bindings and K links a spool's registered stamp refutes (spec spoolman-binding-identity §6), conditional on what was read, inside its caller's transaction and slot-ledger doors (drop_stale, writer_proved, the sync's _apply); any new or changed locator requires adjudication"
     },
     {
       "site": [

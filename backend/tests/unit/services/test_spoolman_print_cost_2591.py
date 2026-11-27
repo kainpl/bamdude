@@ -255,9 +255,9 @@ class TestTheChargePathsPriceWhatLanded:
         monkeypatch.setattr(spoolman_tracking, "_resolve_spool_tag", lambda *_a: "")
 
         async def _assigned(*_a):
-            return 55
+            return 55, None
 
-        monkeypatch.setattr(spoolman_tracking, "_resolve_spool_id_via_slot_assignment", _assigned)
+        monkeypatch.setattr(spoolman_tracking, "_resolve_bound_spool", _assigned)
         client = _Client({})
         charges = _PrintCost()
         await _report_spool_usage_for_slots(

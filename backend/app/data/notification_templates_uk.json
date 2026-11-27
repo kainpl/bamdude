@@ -44,6 +44,11 @@
     "title_template": "Філамент не списано",
     "body_template": "{printer}: друк завершено, але цей філамент не списано з жодної котушки — на кінець друку слот не мав призначеної котушки\n{missing_slot_details}"
   },
+  "print_usage_spool_changed": {
+    "name": "Котушку в Spoolman змінено",
+    "title_template": "Філамент не списано: котушка змінилась",
+    "body_template": "{printer}: друк завершено, але цей філамент не списано — котушка Spoolman, призначена слоту, у Spoolman тепер інша або її там видалено. Призначення слота знято; призначте слот знову.\n{missing_slot_details}"
+  },
   "printer_offline": {
     "name": "Принтер офлайн",
     "title_template": "Принтер офлайн",

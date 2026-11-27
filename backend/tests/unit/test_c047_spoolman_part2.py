@@ -1143,7 +1143,7 @@ class TestWriters:
         client._tag_request.assert_not_awaited()
 
     async def test_the_sync_ledger_refuses_a_stale_ticket(self, db_session, printer_factory):
-        from backend.app.services.spoolman_slot_ledger import write_sync_results
+        from backend.app.services.spoolman_slot_ledger import SyncChange, write_sync_results
 
         printer = await printer_factory()
         issued = fence.ticket()
@@ -1151,7 +1151,12 @@ class TestWriters:
         fence.release_delete(SPOOL)
         with pytest.raises(SpoolBeingDeleted):
             await write_sync_results(
-                db_session, printer_id=printer.id, read={}, changes=[(0, 1, SPOOL)], empties=[], issued=issued
+                db_session,
+                printer_id=printer.id,
+                read={},
+                changes=[SyncChange(0, 1, SPOOL, None, by_tag=True)],
+                empties=[],
+                issued=issued,
             )
         assert (await db_session.execute(select(SpoolmanSlotAssignment))).scalars().all() == []
 

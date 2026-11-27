@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from anyio import CancelScope
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from sqlalchemy import delete, func, select, text
@@ -1175,6 +1175,46 @@ async def spoolman_mode_switch_preview(
     ).all()
     return {
         "assignments": int(assignments or 0),
+        "printing": [name for printer_id, name in printers if printer_manager.is_print_active(printer_id)],
+    }
+
+
+@router.get("/spoolman/address-change-preview")
+async def spoolman_address_change_preview(
+    url: str = Query("", max_length=2048),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
+):
+    """What saving this Spoolman address would take away (spec ``spoolman-binding-identity`` §9).
+
+    A new non-empty address is another Spoolman database to BamDude — the API names no
+    database — so the save removes every Spoolman slot binding and K link
+    (``SourceChange.decide`` → ``spoolman_spool_identity.clear_all``). The settings page
+    asks first with this. ``blocked`` — a print is accounted in Spoolman, so the save will
+    be refused (409 ``spoolman_print_in_progress``); ``printing`` names the printers
+    printing now. The same address, or an empty one, changes no database and takes nothing.
+    """
+    from sqlalchemy import select
+
+    from backend.app.models.printer import Printer
+    from backend.app.services import spoolman_spool_identity
+    from backend.app.services.printer_manager import printer_manager
+    from backend.app.services.spoolman_source_changes import protected_print_exists
+    from backend.app.services.spoolman_usage_history import normalize_url
+
+    new_url = normalize_url(url)
+    base_change = bool(new_url) and new_url != normalize_url(await get_setting(db, "spoolman_url"))
+    if not base_change:
+        return {"base_change": False, "slot_bindings": 0, "k_links": 0, "blocked": False, "printing": []}
+    slot_bindings, k_links = await spoolman_spool_identity.binding_counts(db)
+    printers = (
+        await db.execute(select(Printer.id, Printer.name).where(Printer.archived.is_(False)).order_by(Printer.name))
+    ).all()
+    return {
+        "base_change": True,
+        "slot_bindings": slot_bindings,
+        "k_links": k_links,
+        "blocked": await protected_print_exists(db),
         "printing": [name for printer_id, name in printers if printer_manager.is_print_active(printer_id)],
     }
 

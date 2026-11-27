@@ -152,9 +152,9 @@ class TestEveryLandedChargeIsARow:
         await _spoolman(db_session)
 
         async def _assigned(*_a):
-            return 55
+            return 55, None
 
-        monkeypatch.setattr(spoolman_tracking, "_resolve_spool_id_via_slot_assignment", _assigned)
+        monkeypatch.setattr(spoolman_tracking, "_resolve_bound_spool", _assigned)
         client = _Client({"X": _full(55, price=30.0)})
         charges = _PrintCost(printer_id=None, archive_id=None, source_token=await _token(db_session))
         await _report_remain_delta_for_slots(

@@ -44,6 +44,11 @@
     "title_template": "Filament not charged",
     "body_template": "{printer}: the print finished, but this filament reached no spool — the slot had no spool assigned by the end\n{missing_slot_details}"
   },
+  "print_usage_spool_changed": {
+    "name": "Spool Changed in Spoolman",
+    "title_template": "Filament not charged: spool changed",
+    "body_template": "{printer}: the print finished, but this filament was not charged — the Spoolman spool its slot was assigned to is another spool in Spoolman now, or was deleted there. The slot's assignment was removed; assign the slot again.\n{missing_slot_details}"
+  },
   "printer_offline": {
     "name": "Printer Offline",
     "title_template": "Printer Offline",

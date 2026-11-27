@@ -249,6 +249,7 @@ async def _bound_spoolman(db, printer_id: int) -> dict[tuple[int, int], BoundSpo
 
     from backend.app.api.routes._spoolman_helpers import _map_spoolman_spool
     from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+    from backend.app.services import spoolman_spool_identity
     from backend.app.services.printer_manager import printer_manager
     from backend.app.services.slot_assignment import build_slot_assignment
     from backend.app.services.spoolman import get_spoolman_client
@@ -268,8 +269,14 @@ async def _bound_spoolman(db, printer_id: int) -> dict[tuple[int, int], BoundSpo
     for row in rows:
         key = slot_key(row.ams_id, row.tray_id)
         try:
-            mapped = _map_spoolman_spool(await client.get_spool(row.spoolman_spool_id))
+            raw = await client.get_spool(row.spoolman_spool_id)
+            mapped = _map_spoolman_spool(raw)
         except Exception:  # noqa: BLE001 — unreadable is unknown, not absent
+            bound[key] = None
+            continue
+        # The spool the number names now must be the bound one (m266): another spool's
+        # stamp tells nothing about what is in the slot — unknown, not that spool.
+        if spoolman_spool_identity.verdict(row.spool_registered, raw) == spoolman_spool_identity.OTHER:
             bound[key] = None
             continue
         material = (mapped.get("material") or "").strip()
@@ -289,6 +296,7 @@ async def _bound_spoolman(db, printer_id: int) -> dict[tuple[int, int], BoundSpo
                 db,
                 printer_id=printer_id,
                 spoolman_spool_id=row.spoolman_spool_id,
+                spool_registered=spoolman_spool_identity.stamp_of(raw) or row.spool_registered,
                 nozzle_diameter=nozzle.diameter_float,
                 slot_extruder=nozzle.extruder,
                 nozzle_flow=nozzle.flow,

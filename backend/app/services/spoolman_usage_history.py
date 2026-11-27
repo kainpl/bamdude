@@ -356,16 +356,10 @@ def belongs_to(row_registered: str | None, row_created_at: datetime | None, spoo
 
 
 def _instant(value: str | None) -> datetime | None:
-    """A Spoolman timestamp as naive UTC, or None when it is not one."""
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
-    return parsed
+    """A Spoolman timestamp as naive UTC, or None — the bindings' reading of a stamp, shared."""
+    from backend.app.services.spoolman_spool_identity import instant  # noqa: PLC0415
+
+    return instant(value)
 
 
 def _snapshot(spool: dict | None) -> dict:

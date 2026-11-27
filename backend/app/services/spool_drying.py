@@ -128,17 +128,20 @@ async def _stamp_internal(db: AsyncSession, printer_id: int, ams_id: int, record
 
 async def _stamp_spoolman(db: AsyncSession, printer_id: int, ams_id: int, record: DryingRecord) -> int:
     from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
-    from backend.app.services import spoolman
+    from backend.app.services import spoolman, spoolman_spool_identity
 
     result = await db.execute(
-        select(SpoolmanSlotAssignment.spoolman_spool_id).where(
+        select(SpoolmanSlotAssignment.spoolman_spool_id, SpoolmanSlotAssignment.spool_registered).where(
             SpoolmanSlotAssignment.printer_id == printer_id,
             SpoolmanSlotAssignment.ams_id == ams_id,
         )
     )
-    spool_ids = sorted(set(result.scalars().all()))
+    # A row names its spool by stamp too (m266): number → the stamp the binding holds.
+    stamps = dict(result.all())
+    spool_ids = sorted(stamps)
     if not spool_ids:
         return 0
+    await db.commit()  # no read transaction is carried across the network
     client = await spoolman.get_spoolman_client()
     if client is None:
         logger.info("Drying not recorded on Spoolman spools %s: Spoolman is not connected", spool_ids)
@@ -157,6 +160,28 @@ async def _stamp_spoolman(db: AsyncSession, printer_id: int, ams_id: int, record
             logger.info("Drying not recorded on Spoolman spool %d: the printer record is gone", spool_id)
             break
         try:
+            # The spool the number names now must be the bound one (spec
+            # ``spoolman-binding-identity`` §5.3): another spool's stamp, or no spool, is
+            # not written to, and the binding goes (outside a print's accounting).
+            try:
+                spool = await client.get_spool(spool_id)
+            except spoolman.SpoolmanNotFoundError:
+                spool = None
+            judged = spoolman_spool_identity.verdict(stamps[spool_id], spool)
+            if judged in (spoolman_spool_identity.OTHER, spoolman_spool_identity.GONE):
+                logger.warning(
+                    "Drying not recorded on Spoolman spool %d: the number names %s now",
+                    spool_id,
+                    "no spool" if spool is None else "another spool",
+                )
+                await spoolman_spool_identity.drop_stale(
+                    spool_id,
+                    spoolman_spool_identity.stamp_of(spool),
+                    "the spool is gone from Spoolman" if spool is None else "the number names another spool",
+                )
+                continue
+            if judged == spoolman_spool_identity.UNKNOWN:
+                await spoolman_spool_identity.adopt_now(spool_id, spoolman_spool_identity.stamp_of(spool))
             await client.merge_spool_extra(spool_id, fields)
             stamped += 1
         except Exception as exc:  # noqa: BLE001 - one unreachable spool must not skip the rest

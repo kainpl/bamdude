@@ -11,7 +11,7 @@ the inventory route picks one based on ``settings.inventory_backend``.
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -25,6 +25,10 @@ class SpoolmanSlotAssignment(Base):
     ams_id: Mapped[int] = mapped_column(Integer)
     tray_id: Mapped[int] = mapped_column(Integer)
     spoolman_spool_id: Mapped[int] = mapped_column(Integer)
+    # Spoolman's own ``registered`` stamp of the spool the writer proved: with the
+    # number it names ONE spool (m266, ``services/spoolman_spool_identity``). NULL is a
+    # row from before m266, stamped by the first confirming reader.
+    spool_registered: Mapped[str | None] = mapped_column(String(40), nullable=True)
     assigned_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     printer: Mapped["Printer"] = relationship()  # noqa: F821

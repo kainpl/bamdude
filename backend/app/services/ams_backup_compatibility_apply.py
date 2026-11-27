@@ -88,6 +88,12 @@ class SlotWalk:
 
     candidates: list[SlotCandidate] = field(default_factory=list)
     spoolman_deferred: bool = False
+    # A Spoolman binding names its spool by stamp too (m266, spec r1 B05): numbers whose
+    # binding the spool just read REFUTES (→ its stamp; None: Spoolman's own "no such
+    # spool") give no candidate, and the ones it confirms for a row without a stamp are
+    # to adopt. The walk itself writes nothing; ``bulk_apply`` settles both.
+    spoolman_refuted: dict[int, str | None] = field(default_factory=dict)
+    spoolman_adopt: dict[int, str | None] = field(default_factory=dict)
 
 
 async def _spoolman_mode(db) -> bool | None:
@@ -259,9 +265,17 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
             # halved farm for the whole answer.
             walk.spoolman_deferred = True
             sm_rows = []
+        from backend.app.services import spoolman_spool_identity as identity  # noqa: PLC0415
+        from backend.app.services.spoolman import SpoolmanNotFoundError  # noqa: PLC0415
+
         for row in sm_rows:
             try:
-                mapped = _map_spoolman_spool(await client.get_spool(row.spoolman_spool_id))
+                raw = await client.get_spool(row.spoolman_spool_id)
+                mapped = _map_spoolman_spool(raw)
+            except SpoolmanNotFoundError:
+                # Spoolman's own "no such spool": the binding names nothing — no plan, no K.
+                walk.spoolman_refuted[row.spoolman_spool_id] = None
+                continue
             except Exception as exc:  # noqa: BLE001 — Spoolman down must not break the walk
                 # Unreachable is the same answer as "the client is not up yet":
                 # the slot HAS a spool, we just could not read it. Counting it
@@ -270,6 +284,21 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
                 logger.info("bulk projection: Spoolman spool %s unreadable: %s", row.spoolman_spool_id, exc)
                 walk.spoolman_deferred = True
                 continue
+            # The spool the number names now must be the bound one: another spool's
+            # material, colour, temperatures and K are never published to this slot.
+            judged = identity.verdict(row.spool_registered, raw)
+            if judged == identity.OTHER:
+                logger.info(
+                    "bulk projection: Spoolman AMS%d-T%d: spool %s is another spool now; no candidate",
+                    row.ams_id,
+                    row.tray_id,
+                    row.spoolman_spool_id,
+                )
+                walk.spoolman_refuted[row.spoolman_spool_id] = identity.stamp_of(raw)
+                continue
+            if judged == identity.UNKNOWN:
+                walk.spoolman_adopt[row.spoolman_spool_id] = identity.stamp_of(raw)
+            confirmed_stamp = identity.stamp_of(raw) or row.spool_registered
             tray_type = mapped.get("material") or ""
             # Already 8 chars: ``_map_spoolman_spool`` validates the hex and
             # appends the alpha itself, so there is no 6-char form to pad here.
@@ -285,6 +314,7 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
                 db,
                 printer_id=printer.id,
                 spoolman_spool_id=row.spoolman_spool_id,
+                spool_registered=confirmed_stamp,
                 nozzle_diameter=nozzle.diameter_float,
                 slot_extruder=nozzle.extruder,
                 nozzle_flow=nozzle.flow,
@@ -585,6 +615,7 @@ async def bulk_apply(db, printer, client, *, dry_run: bool) -> dict:
                 r["kprofile"] = "kept"
             else:
                 r["kprofile"] = "skipped"
+    await _settle_spoolman_identity(db, walk)
     return {
         "dry_run": False,
         "rows": rows,
@@ -592,3 +623,26 @@ async def bulk_apply(db, printer, client, *, dry_run: bool) -> dict:
         "skipped": len(rows) - applied,
         "spoolman_unavailable": walk.spoolman_deferred,
     }
+
+
+async def _settle_spoolman_identity(db, walk: SlotWalk) -> None:
+    """What the walk's reads proved about the Spoolman bindings, written by the apply (r1 B05).
+
+    A refuted binding goes — outside a print's accounting (``drop_stale``); a row without
+    a stamp adopts the spool it was confirmed against. Never in the walk itself, which the
+    overlay rebuild also runs.
+    """
+    from backend.app.services import spoolman_spool_identity as identity  # noqa: PLC0415
+
+    if not walk.spoolman_refuted and not walk.spoolman_adopt:
+        return
+    await db.commit()  # the apply's read transaction ends before the writes' own sessions
+    for number, stamp in walk.spoolman_adopt.items():
+        if number not in walk.spoolman_refuted:
+            await identity.adopt_now(number, stamp)
+    for number, stamp in walk.spoolman_refuted.items():
+        await identity.drop_stale(
+            number,
+            stamp,
+            "the spool is gone from Spoolman" if stamp is None else "the number names another spool in Spoolman",
+        )

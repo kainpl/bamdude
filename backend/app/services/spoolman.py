@@ -145,6 +145,23 @@ class SpoolmanNotFoundError(Exception):
     """Raised when a spool ID does not exist in Spoolman (HTTP 404)."""
 
 
+def says_spool_not_found(response: httpx.Response) -> bool:
+    """Whether a 404 is Spoolman's OWN "no such item", not a proxy's.
+
+    Spoolman answers a missing item with 404 and a JSON object whose ``message`` names
+    it (``api/v1/router.py``, the ``ItemNotFoundError`` handler: ``{"message": "No spool
+    with ID 12 found."}``). A reverse proxy in front of a restarting container answers
+    404 too ("404 page not found"), and so does an unknown route (``{"detail": ...}``);
+    neither says the spool is gone. A binding is removed on a "gone" (spec
+    ``spoolman-binding-identity`` §3), so only the first kind may say it.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    return isinstance(body, dict) and isinstance(body.get("message"), str)
+
+
 class SpoolmanUnavailableError(Exception):
     """Raised when Spoolman is unreachable or returns a server/network error."""
 
@@ -597,7 +614,12 @@ class SpoolmanClient:
         json_body: dict | None = None,
         operation: str,
     ) -> httpx.Response:
-        """Perform a spool-scoped HTTP request, translating 404 and errors to named exceptions."""
+        """Perform a spool-scoped HTTP request, translating 404 and errors to named exceptions.
+
+        Only Spoolman's own "no such spool" is :class:`SpoolmanNotFoundError`; any other
+        404 — a reverse proxy while the container restarts — is Spoolman not answering
+        (:func:`says_spool_not_found`).
+        """
         try:
             client = await self._get_client()
             response = await client.request(
@@ -606,10 +628,18 @@ class SpoolmanClient:
                 json=json_body,
             )
             if response.status_code == 404:
-                raise SpoolmanNotFoundError(f"Spool {spool_id} not found in Spoolman")
+                if says_spool_not_found(response):
+                    raise SpoolmanNotFoundError(f"Spool {spool_id} not found in Spoolman")
+                logger.warning(
+                    "A 404 for %s spool %s did not come from Spoolman's API (body %r): treated as unreachable",
+                    operation,
+                    spool_id,
+                    response.text[:120],
+                )
+                raise SpoolmanUnavailableError(f"Spoolman did not answer {operation} for spool {spool_id}")
             response.raise_for_status()
             return response
-        except SpoolmanNotFoundError:
+        except (SpoolmanNotFoundError, SpoolmanUnavailableError):
             raise
         except httpx.HTTPStatusError as e:
             if 400 <= e.response.status_code < 500:
@@ -1008,7 +1038,9 @@ class SpoolmanClient:
                 json={"use_weight": used_weight},
             )
             if response.status_code == 404:
-                raise SpoolmanNotFoundError(f"Spool {spool_id} not found in Spoolman")
+                if says_spool_not_found(response):
+                    raise SpoolmanNotFoundError(f"Spool {spool_id} not found in Spoolman")
+                raise SpoolmanUnavailableError(f"Spoolman did not answer the use of spool {spool_id}")
             if 400 <= response.status_code < 500:
                 raise SpoolmanClientError(
                     f"Spoolman rejected use_spool for spool {spool_id} (HTTP {response.status_code})",

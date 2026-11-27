@@ -60,6 +60,23 @@ def _tagless_tray():
     )
 
 
+def _tagged_tray():
+    """A reel with a tag: what the sync finds by it is in the tray, so the row may move to it.
+
+    A tag-less tray is resolved only by the binding's own number (the hint) — the spool
+    that number names now, which proves nothing about the reel (spec
+    spoolman-binding-identity r1 B01) — so a different spool reaches a row only by a tag.
+    """
+    return SimpleNamespace(
+        tray_id=0,
+        tray_uuid="A1B2C3D4E5F60718293A4B5C6D7E8F90",
+        tag_uid="",
+        tray_type="PETG",
+        tray_color="00000000",
+        tray_sub_brands="PETG Basic",
+    )
+
+
 def _state(printer_state: str, ams: list):
     state = MagicMock()
     state.raw_data = {"ams": ams}
@@ -134,10 +151,7 @@ class TestTheSyncAnnouncesWhatItChanged:
         assert _announced(await _sync(async_client, path, current, _state("RUNNING", LOADED_SLOT_PUSH))) == []
         assert await db_session.scalar(spool_id) == 42
 
-        clear_tray = _tagless_tray()
-        clear_tray.tray_type = "PETG"
-        clear_tray.tray_color = "00000000"
-        replacement = _client(parsed_tray=clear_tray, synced_spool_id=77)
+        replacement = _client(parsed_tray=_tagged_tray(), synced_spool_id=77)
         loaded = [{"id": 0, "tray": [{"id": 0, "tray_type": "PETG", "tray_color": "00000000", "exists": True}]}]
         assert _announced(await _sync(async_client, path, replacement, _state("RUNNING", loaded))) == [
             (printer.id, 0, 0)
@@ -148,7 +162,7 @@ class TestTheSyncAnnouncesWhatItChanged:
         self, endpoint, async_client: AsyncClient, printer_factory, db_session: AsyncSession, spoolman_enabled
     ):
         printer = await _printer_with_row(printer_factory, db_session, spool_id=42)
-        client = _client(parsed_tray=_tagless_tray(), synced_spool_id=77)
+        client = _client(parsed_tray=_tagged_tray(), synced_spool_id=77)
         broadcast = await _sync(async_client, endpoint.format(id=printer.id), client, _state("IDLE", LOADED_SLOT_PUSH))
         assert _announced(broadcast) == [(printer.id, 0, 0)]
 

@@ -30,8 +30,8 @@ async def _remain_delta(spool, *, start=80, end=60):
     client.get_spool = AsyncMock(return_value=spool)
     cost = _PrintCost()
     with patch(
-        "backend.app.services.spoolman_tracking._resolve_spool_id_via_slot_assignment",
-        AsyncMock(return_value=spool["id"]),
+        "backend.app.services.spoolman_tracking._resolve_bound_spool",
+        AsyncMock(return_value=(spool["id"], None)),
     ):
         updated = await _report_remain_delta_for_slots(
             client,
