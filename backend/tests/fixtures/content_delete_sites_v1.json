@@ -1418,6 +1418,22 @@
     },
     {
       "site": [
+        "services/failure_detection_restore.py::deliver_restore_notice",
+        "sqlalchemy.delete",
+        "backend.app.models.settings.Settings"
+      ],
+      "owner_policy": "Outside C parent purge: N26 clears only its private OctoEverywhere restore marker row, in the same transaction that stages the administrators' inbox notice; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/failure_detection_restore.py::turn_off_in_prepared_copy",
+        "raw SQL",
+        "DELETE FROM settings WHERE key = ?"
+      ],
+      "owner_policy": "Outside C parent purge: N26 replaces only its private restore marker row inside the prepared restore copy, a file in a worker thread before it replaces the database; not an application parent deletion"
+    },
+    {
+      "site": [
         "services/filament_authoring.py::delete_family",
         "db.delete",
         "fam"
