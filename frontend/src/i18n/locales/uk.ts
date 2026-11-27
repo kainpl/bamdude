@@ -4157,7 +4157,7 @@ export default {
     updateEnergyCostDescription: 'Лише POST /settings/electricity-price — для Home Assistant і динамічних тарифів. Це не загальне право змінювати налаштування.',
     energyCostBadge: 'Ціна електрики',
     sendNotifications: 'Надсилати сповіщення як зовнішня програма',
-    sendNotificationsDescription: 'Лише POST /notifications/external-message: програма цього ключа повідомляє щось людям ферми, завжди з назвою ключа та його власником. Власник має мати право керувати сповіщеннями.',
+    sendNotificationsDescription: 'Лише POST /notifications/external-message — програма цього ключа повідомляє щось людям ферми, завжди з назвою ключа та його власником, — і PUT /external-links/badge: лічильник на посиланні сайдбару, що веде до цієї програми. Власник має мати право керувати сповіщеннями.',
     sendNotificationsBadge: 'Сповіщення',
     legacyBadge: 'Legacy',
     unnamedKey: 'Безіменний ключ',

@@ -360,6 +360,7 @@
   "expires_in_days must be a positive integer (max {}; #1108: no infinite tokens)": "expires_in_days має бути додатним цілим числом (максимум {}; #1108: безстрокових токенів немає)",
   "External folder has no configured path": "Для зовнішньої теки не налаштовано шлях",
   "External link not found": "Зовнішнє посилання не знайдено",
+  "No sidebar link points at this address": "Жодне посилання на бічній панелі не веде на цю адресу",
   "External path is not accessible: {}": "Зовнішній шлях недоступний: {}",
   "External path is not writable: {}": "Зовнішній шлях недоступний для запису: {}",
   "Extra percentages apply to printed parts only": "Відсоток додаткових деталей задається лише для друкованих деталей",

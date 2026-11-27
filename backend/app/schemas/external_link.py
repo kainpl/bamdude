@@ -78,8 +78,24 @@ class ExternalLinkResponse(ExternalLinkBase):
     sort_order: int
     created_at: datetime
     updated_at: datetime
+    # Reported by the app the link points to, while it keeps reporting; None otherwise.
+    badge_count: int | None = None
 
     model_config = {"from_attributes": True}
+
+
+class ExternalLinkBadgeSet(BaseModel):
+    """An app's count for the sidebar links that point at it (upstream 29a81520d)."""
+
+    url: str = Field(..., min_length=1, max_length=500, description="The app's address, as the link has it")
+    count: int = Field(..., ge=0, le=1_000_000)
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, v: str) -> str:
+        if not v.startswith(("http://", "https://")):
+            raise ValueError("URL must start with http:// or https://")
+        return v
 
 
 class ExternalLinkReorder(BaseModel):

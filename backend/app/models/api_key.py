@@ -61,7 +61,8 @@ class APIKey(Base):
     # Default False so existing keys never silently gain settings-write
     # capability on upgrade. Upstream Bambuddy #1356 / commit ae29a7dc.
     can_update_energy_cost: Mapped[bool] = mapped_column(Boolean, default=False)
-    # Send messages to the farm's people as an external app (m252, spec external-app-messages-spec).
+    # Send messages to the farm's people as an external app (m252, spec external-app-messages-spec),
+    # and set the count on the sidebar links pointing at the app (PUT /external-links/badge, m267).
     # Off by default: no existing key starts speaking for itself on upgrade.
     can_send_notifications: Mapped[bool] = mapped_column(Boolean, default=False)
     # File-manager scope (upstream Bambuddy GHSA-r2qv-8222-hqg3 / v0.2.4.5).

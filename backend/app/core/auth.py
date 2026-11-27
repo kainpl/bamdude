@@ -2122,7 +2122,8 @@ def require_energy_cost_update():
 
 
 def require_external_message_sender():
-    """Dependency for ``POST /notifications/external-message`` (spec external-app-messages-spec).
+    """Dependency for ``POST /notifications/external-message`` (spec external-app-messages-spec) and
+    ``PUT /external-links/badge`` (an app's count on its sidebar link, N45).
 
     The door is for PROGRAMS: only an API key, and only one its owner allowed to speak
     (``can_send_notifications``, off by default), whose owner is active and may manage notifications

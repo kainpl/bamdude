@@ -9858,6 +9858,8 @@ export interface ExternalLink {
   sort_order: number;
   created_at: string;
   updated_at: string;
+  /** Count reported by the app the link points to, while it keeps reporting (N45). */
+  badge_count?: number | null;
 }
 
 export interface ExternalLinkCreate {
