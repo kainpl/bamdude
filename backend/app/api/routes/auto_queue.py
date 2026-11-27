@@ -26,7 +26,7 @@ from contextlib import suppress
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -84,8 +84,13 @@ async def preview_routing(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.QUEUE_CREATE),
     user: User | None = RequirePermission(Permission.PRINTERS_READ),
+    request: Request = None,
 ):
-    return await routing_preview(db, data, user)
+    # N62 (acceptance A03): a model-based job routes over its author's printers, the caller's,
+    # so the preview counts those, not the farm.
+    from backend.app.core.printer_scope import request_printer_scope
+
+    return await routing_preview(db, data, user, printer_scope=request_printer_scope(request))
 
 
 @router.post("/printer-routing-preview")
@@ -345,14 +350,26 @@ async def add_to_auto_queue(
     return _to_response(first.scalar_one())
 
 
+def _assigned_printer(item: AutoQueueItem) -> int | None:
+    """The printer an Auto Queue row was handed to (its copy's queue), None while it waits."""
+    copy = item.assigned_to
+    queue = copy.queue if copy is not None else None
+    return queue.printer_id if queue is not None else None
+
+
 @router.get("/", response_model=list[AutoQueueItemResponse])
 async def list_auto_queue(
     status_filter: str | None = Query(None, alias="status"),
     batch_id: str | None = None,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.QUEUE_READ),
+    request: Request = None,
 ):
-    """List auto-queue items, optionally filtered by status / batch_id."""
+    """List auto-queue items, optionally filtered by status / batch_id.
+
+    N62 (spec 12.3, acceptance A03): a row still waiting for a printer is seen by queue rights; a
+    row handed to a printer is that printer's queue work and is listed only within the caller's
+    printers."""
     stmt = select(AutoQueueItem).options(*auto_queue_item_load_options())
     if status_filter:
         stmt = stmt.where(AutoQueueItem.status.in_(status_filter.split(",")))
@@ -360,7 +377,9 @@ async def list_auto_queue(
         stmt = stmt.where(AutoQueueItem.batch_id == batch_id)
     stmt = stmt.order_by(AutoQueueItem.position)
     result = await db.execute(stmt)
-    items = result.scalars().all()
+    from backend.app.core.printer_scope import in_request_scope
+
+    items = [item for item in result.scalars().all() if in_request_scope(request, _assigned_printer(item))]
     from backend.app.services.auto_queue_return_views import describe_returns
 
     await describe_returns(db, items, auto=True)
@@ -381,6 +400,7 @@ async def auto_queue_pending_summary(
 async def auto_queue_stats(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.QUEUE_READ),
+    request: Request = None,
 ):
     """Archive-backed totals for auto-queue dispatched prints.
 
@@ -394,10 +414,15 @@ async def auto_queue_stats(
     Declared before ``/{item_id}`` so the literal path wins over the
     int path-param.
     """
+    # N62: the prints of the printers the caller reaches (history, D1).
+    from backend.app.core.printer_scope import request_printer_scope, where as printer_scope_where
+
+    in_scope = printer_scope_where(request_printer_scope(request), PrintArchive.printer_id)
     result = await db.execute(
         select(PrintArchive.status, func.count())
         .where(func.coalesce(PrintArchive.extra_data["dispatch_aborted"].as_boolean(), False).is_(False))
         .where(PrintArchive.from_auto_queue.is_(True))
+        .where(*([in_scope] if in_scope is not None else []))
         .group_by(PrintArchive.status)
     )
     by_status = {row[0]: int(row[1] or 0) for row in result.all()}
@@ -415,6 +440,7 @@ async def get_auto_queue_item(
     item_id: int,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.QUEUE_READ),
+    request: Request = None,
 ):
     result = await db.execute(
         select(AutoQueueItem)
@@ -430,7 +456,10 @@ async def get_auto_queue_item(
         .where(AutoQueueItem.id == item_id)
     )
     item = result.scalar_one_or_none()
-    if not item:
+    from backend.app.core.printer_scope import in_request_scope
+
+    # N62 (acceptance A03): a row handed to another team's printer is not there for this caller.
+    if not item or not in_request_scope(request, _assigned_printer(item)):
         raise HTTPException(404, "Auto-queue item not found")
     from backend.app.services.auto_queue_return_views import describe_returns
 

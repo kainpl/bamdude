@@ -27,7 +27,9 @@ from backend.app.core import api_key_scope
 from backend.app.core.auth import _resolve_apikey_scope
 from backend.app.main import app
 
-_LOOKS_LIKE_A_PRINTER = re.compile(r"printer|queue", re.IGNORECASE)
+# N62 acceptance A01: an archive is its printer's history, so an archive-looking name is a printer
+# reference too.
+_LOOKS_LIKE_A_PRINTER = re.compile(r"printer|queue|archive", re.IGNORECASE)
 
 # Names a key-reachable route carries that are NOT a printer reference.
 NOT_A_PRINTER = {
@@ -81,9 +83,25 @@ NOT_A_PRINTER = {
     "on_queue_job_skipped": "a provider's event switch",
     "on_queue_job_started": "a provider's event switch",
     "on_queue_job_waiting": "a provider's event switch",
+    # N62 acceptance A01: archive-looking names that are not a print archive reference.
+    "expected_archive_id": "a guard value on a printer's own path: the printer's last print, compared, never opened",
+    "archived": "a filter: archived spools or prints, a boolean / state",
+    "include_archived": "a filter: include archived rows",
+    "delete_archives": "a boolean of a printer's own delete",
+    "can_manage_archives": "an API key's permission flag",
+    "backup_archives": "a Git export setting",
+    "archive_name_source": "a Virtual Printer setting",
+    "archive_3mf_retention_days": "an installation setting",
+    "archive_3mf_retention_enabled": "an installation setting",
+    "runout_archive_spool_enabled": "an installation setting",
 }
 
-READ_BY_THE_SCOPE = api_key_scope._PRINTER_KEYS | api_key_scope._PRINTER_CSV_QUERY | api_key_scope._QUEUE_ITEM_KEYS
+READ_BY_THE_SCOPE = (
+    api_key_scope._PRINTER_KEYS
+    | api_key_scope._PRINTER_CSV_QUERY
+    | api_key_scope._QUEUE_ITEM_KEYS
+    | api_key_scope._ARCHIVE_KEYS
+)
 
 
 def _gates(dependant) -> typing.Iterator[tuple[str, list[str]]]:

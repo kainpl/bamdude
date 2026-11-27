@@ -49,7 +49,7 @@ async def farm(async_client, printer_factory, archive_factory, db_session):
         "/api/v1/groups/",
         json={
             "name": "Team A",
-            "permissions": ["archives:update_all", "api_keys:create"],
+            "permissions": ["archives:update_all", "api_keys:create", "queue:delete_all"],
             "restrict_printers": True,
             "location_ids": [hall],
         },
@@ -317,3 +317,141 @@ class TestBackgroundWork:
         held = await db_session.get(AutoQueueItem, job_id)
         assert held.manual_start is True
         assert held.created_by_id is None
+
+
+class TestAcceptanceR1:
+    """The four doors acceptance r1 found open (A01-A04)."""
+
+    async def test_a01_an_archive_named_in_the_body_is_its_printers(self, async_client, farm, db_session):
+        from backend.app.models.print_queue import PrintQueueItem
+        from backend.app.services.printer_queues import ensure_printer_queue
+
+        await ensure_printer_queue(db_session, farm["a"].id)
+        foreign = farm["archives"]["b"].id
+        queued = await async_client.post(
+            "/api/v1/queue/", json={"printer_id": farm["a"].id, "archive_id": foreign}, headers=farm["alice"]
+        )
+        assert queued.status_code == 404, queued.text
+        assert queued.json()["detail"] == "Archive not found"
+        rows = (await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.archive_id == foreign))).all()
+        assert rows == []
+        auto = await async_client.post(
+            "/api/v1/auto-queue/", json={"archive_id": foreign, "target_model": "X1C"}, headers=farm["alice"]
+        )
+        assert auto.status_code == 404, auto.text
+        preview = await async_client.post(
+            "/api/v1/auto-queue/routing-preview", json={"archive_id": foreign}, headers=farm["alice"]
+        )
+        assert preview.status_code == 404, preview.text
+
+    async def test_a01_a_key_with_a_list_is_refused_another_printers_archive(self, async_client, farm):
+        created = await async_client.post(
+            "/api/v1/api-keys/", json={"name": "q", "can_queue": True, "printer_ids": [farm["a"].id]}
+        )
+        key = {"X-API-Key": created.json()["key"]}
+        response = await async_client.post(
+            "/api/v1/queue/", json={"printer_id": farm["a"].id, "archive_id": farm["archives"]["b"].id}, headers=key
+        )
+        assert response.status_code == 403, response.text
+
+    async def test_a02_system_information_counts_the_teams_printers(self, async_client, farm):
+        mine = (await async_client.get("/api/v1/system/info", headers=farm["alice"])).json()
+        everyone = (await async_client.get("/api/v1/system/info")).json()
+        assert mine["printers"]["total"] == 1 and everyone["printers"]["total"] == 3
+        assert mine["database"]["archives"] == 2 and everyone["database"]["archives"] == 3
+
+    async def test_a03_an_auto_queue_job_on_another_teams_printer_is_not_listed(self, async_client, farm, db_session):
+        from backend.app.models.auto_queue import AutoQueueItem
+        from backend.app.models.print_queue import PrintQueueItem
+        from backend.app.services.printer_queues import ensure_printer_queue
+
+        await ensure_printer_queue(db_session, farm["b"].id)
+        copy = PrintQueueItem(queue_id=farm["b"].id, archive_id=farm["archives"]["b"].id, status="printing", position=1)
+        db_session.add(copy)
+        await db_session.commit()
+        handed = AutoQueueItem(
+            archive_id=farm["archives"]["b"].id, target_model="X1C", status="assigned", assigned_to_item_id=copy.id
+        )
+        waiting = AutoQueueItem(archive_id=farm["archives"]["a"].id, target_model="X1C", status="pending")
+        db_session.add_all([handed, waiting])
+        await db_session.commit()
+        handed_id, waiting_id = handed.id, waiting.id
+
+        listed = await async_client.get("/api/v1/auto-queue/", headers=farm["alice"])
+        assert {row["id"] for row in listed.json()} == {waiting_id}
+        assert (await async_client.get(f"/api/v1/auto-queue/{handed_id}", headers=farm["alice"])).status_code == 404
+        cancelled = await async_client.delete(f"/api/v1/auto-queue/{handed_id}", headers=farm["alice"])
+        assert cancelled.status_code == 404, cancelled.text
+        assert (await async_client.get(f"/api/v1/auto-queue/{waiting_id}", headers=farm["alice"])).status_code == 200
+        admin = await async_client.get("/api/v1/auto-queue/")
+        assert {row["id"] for row in admin.json()} >= {handed_id, waiting_id}
+
+    async def test_a03_the_routing_preview_counts_the_callers_printers(self, async_client, farm, monkeypatch):
+        from backend.app.api.routes import auto_queue
+
+        seen = {}
+
+        async def preview(db, data, user, *, printer_scope=None):
+            seen["scope"] = printer_scope
+            return {"groups": []}
+
+        monkeypatch.setattr(auto_queue, "routing_preview", preview)
+        own = farm["archives"]["a"].id
+        response = await async_client.post(
+            "/api/v1/auto-queue/routing-preview", json={"archive_id": own}, headers=farm["alice"]
+        )
+        assert response.status_code == 200, response.text
+        assert seen["scope"] == {farm["a"].id}
+
+    async def test_a04_a_limited_chats_digest_lists_its_printers_only(
+        self, async_client, farm, db_session, monkeypatch
+    ):
+        import json
+
+        from backend.app.models.notification import NotificationDigestQueue, NotificationProvider
+        from backend.app.models.telegram_chat import TelegramChat
+        from backend.app.services.notification_service import NotificationService
+
+        provider = NotificationProvider(
+            name="TG",
+            provider_type="telegram",
+            enabled=True,
+            config=json.dumps({"bot_token": "1:test"}),
+            subscribed_events=["on_print_failed"],
+            daily_digest_enabled=True,
+            daily_digest_time="20:00",
+        )
+        db_session.add(provider)
+        await db_session.commit()
+        db_session.add_all(
+            [
+                TelegramChat(
+                    chat_id=101, provider_id=provider.id, is_active=True, daily_digest=True, group_id=farm["team"]
+                ),
+                TelegramChat(chat_id=202, provider_id=provider.id, is_active=True, daily_digest=True),
+            ]
+        )
+        for printer, title in ((farm["a"], "A failed"), (farm["b"], "B failed"), (None, "Farm news")):
+            db_session.add(
+                NotificationDigestQueue(
+                    provider_id=provider.id,
+                    event_type="print_failed",
+                    title=title,
+                    message=title,
+                    printer_id=printer.id if printer else None,
+                    printer_name=printer.name if printer else None,
+                )
+            )
+        await db_session.commit()
+        sent: dict[str, str] = {}
+
+        async def fake_send(self, config, message, chat_id="", **kwargs):
+            sent[chat_id] = message
+            return True, "ok"
+
+        monkeypatch.setattr(NotificationService, "_send_telegram", fake_send)
+        await NotificationService().send_digest(provider.id)
+
+        limited, open_ = sent["101"], sent["202"]
+        assert "A failed" in limited and "Farm news" in limited and "B failed" not in limited
+        assert all(text in open_ for text in ("A failed", "B failed", "Farm news"))

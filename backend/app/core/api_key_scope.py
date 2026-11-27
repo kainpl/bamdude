@@ -62,6 +62,7 @@ from backend.app.core.printer_scope import (
     user_scope,
 )
 from backend.app.models.archive import PrintArchive
+from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.calibration_session import CalibrationSession
 from backend.app.models.filament_calibration import FilamentCalibration
 from backend.app.models.maintenance import PrinterMaintenance
@@ -79,8 +80,9 @@ _PRINTER_CSV_QUERY = frozenset({"mqtt_printer_ids"})
 # Names that are a print-queue job wherever they appear.
 _QUEUE_ITEM_KEYS = frozenset({"source_queue_item_id", "queue_item_ids"})
 # Names that are print archives wherever they appear in a request body (an order's add / remove
-# archives, N62 r1 B04): an archive belongs to the printer that printed it.
-_ARCHIVE_KEYS = frozenset({"archive_ids"})
+# archives, N62 r1 B04; the archive a queue / Auto Queue job or a routing preview prints from,
+# acceptance A01): an archive belongs to the printer that printed it.
+_ARCHIVE_KEYS = frozenset({"archive_ids", "archive_id"})
 # Only on the queue router are these print-queue jobs; elsewhere they are other tables' ids.
 # ``cancelled_item_ids`` (bulk-retry) is read here itself rather than left to its body validator
 # (cancelled ⊆ confirmed): the gate runs before the body is validated, and a guard that depends on a
@@ -140,6 +142,7 @@ _NOT_FOUND = {
     "archive": "Archive not found",
     "calibration": "Calibration not found",
     "spoolman_spool": "Spool assignment not found",
+    "auto_queue_item": "Auto-queue item not found",
 }
 
 
@@ -387,6 +390,27 @@ async def _spoolman_spool(db: AsyncSession, raw: str) -> set[int]:
     return set(rows.scalars())
 
 
+async def _auto_queue_item(db: AsyncSession, raw: str) -> set[int]:
+    """The printer an Auto Queue row was handed to (its copy's queue IS that printer's number);
+    a row still waiting names none (N62 12.3, acceptance A03)."""
+    queue_id = await db.scalar(
+        select(PrintQueueItem.queue_id)
+        .join(AutoQueueItem, AutoQueueItem.assigned_to_item_id == PrintQueueItem.id)
+        .where(AutoQueueItem.id == _as_id(raw))
+    )
+    return {queue_id} if queue_id is not None else set()
+
+
+async def _auto_queue_batch(db: AsyncSession, raw: str) -> set[int]:
+    """Every printer the copies of an Auto Queue batch were handed to."""
+    rows = await db.execute(
+        select(PrintQueueItem.queue_id)
+        .join(AutoQueueItem, AutoQueueItem.assigned_to_item_id == PrintQueueItem.id)
+        .where(AutoQueueItem.batch_id == raw)
+    )
+    return {queue_id for queue_id in rows.scalars() if queue_id is not None}
+
+
 # (route template prefix, path parameter, what it is) → the printers that id belongs to.
 _PATH_RESOLVERS: tuple[tuple[str, str, Callable[[AsyncSession, str], Awaitable[set[int]]], str], ...] = (
     (_QUEUE_ROUTER, "item_id", _queue_item, "queue_item"),
@@ -402,6 +426,8 @@ _PATH_RESOLVERS: tuple[tuple[str, str, Callable[[AsyncSession, str], Awaitable[s
     ("/api/v1/", "archive_id", _archive, "archive"),
     ("/api/v1/filament-calibrations/", "cali_id", _calibration, "calibration"),
     ("/api/v1/spoolman/inventory/slot-assignments/", "spoolman_spool_id", _spoolman_spool, "spoolman_spool"),
+    ("/api/v1/auto-queue/", "item_id", _auto_queue_item, "auto_queue_item"),
+    ("/api/v1/auto-queue/", "batch_id", _auto_queue_batch, "batch"),
 )
 
 

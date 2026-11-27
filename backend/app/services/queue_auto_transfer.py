@@ -104,7 +104,6 @@ async def _rights(db, actor, item):
         # The Auto Queue is farm-wide: closed to a key limited to printers — by its own list or its
         # owner's groups (N62 D5).
         from backend.app.core.printer_scope import key_scope
-        from backend.app.models.user import User
 
         owner = await db.get(User, key.user_id) if key.user_id is not None else None
         if await key_scope(db, key, owner) is not None:

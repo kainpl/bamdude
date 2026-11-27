@@ -4561,7 +4561,8 @@ async def get_order_queue(
     the distributor has not handed out — through the SAME conditions the order's
     tiles count (``services/order_queue``). Rows are built by the queue page's own
     builders. A key limited to some printers sees its printers only and no
-    auto-queue, which is closed to it (as ``/auto-queue`` is)."""
+    auto-queue, which is closed to it (as ``/auto-queue`` is). A person limited to printers
+    sees the auto-queue rows still waiting, which belong to no printer (N62 12.3)."""
     if await db.get(Project, project_id) is None:
         raise HTTPException(status_code=404, detail="Project not found")
     scope = request_printer_scope(request)
@@ -4608,7 +4609,9 @@ async def get_order_queue(
 
     pending = [projected(item, queue_row_response(item)) for item in (await db.execute(pending_q)).scalars().all()]
     awaiting = []
-    if scope is None:
+    from backend.app.core.printer_scope import request_scope_kind
+
+    if scope is None or request_scope_kind(request) == "person":
         awaiting_q = (
             select(AutoQueueItem)
             .options(*auto_queue_item_load_options())

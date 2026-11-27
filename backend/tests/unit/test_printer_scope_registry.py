@@ -96,14 +96,12 @@ MODULES: dict[str, str] = {
     "stock": "finished goods — not a printer's",
     "stock_issues": "stock issues — not a printer's",
     "support": "an administrator's logs",
-    "system": "the installation's health",
     "telegram": "chat configuration; a chat is its own authority, narrowed by its group (D4)",
     "updates": "BamDude updates",
     "user_notifications": "the caller's own e-mail preferences",
     "virtual_printers": "Virtual Printers — administrative (§5.2)",
     "cameras": "standalone cameras are not printers (inv-standalone-cameras-are-not-printers)",
     "camwall": "the wall's standalone cameras; its printer list reads the token owner's scope",
-    "auto_queue": "AutoQueue rows are seen by queue rights (§12.3); routing holds a job to its author's printers (D2)",
     "inventory": "spools, catalogues and storage are not a printer's (§11); slot lists, usage and weight sync read the scope",
     "spoolman": "the Spoolman connection and its spools; the AMS sync of every printer reads the scope",
     "spoolman_inventory": "Spoolman spools are not a printer's (§11); slot lists and weight sync read the scope",
@@ -189,6 +187,16 @@ ROUTES: dict[tuple[str, str], str] = {
     ("DELETE", "/api/v1/zigbee/devices/{ieee}/settings"): "a mesh device's reporting settings",
     ("DELETE", "/api/v1/zigbee/devices/{ieee}"): "removes a device from the mesh",
     ("GET", "/api/v1/zigbee/devices/{ieee}/attributes"): "a mesh device's attributes",
+    # N62 acceptance A02 / A03: classified by route, no longer as whole modules.
+    ("GET", "/api/v1/system/database"): "the installation's database health",
+    ("GET", "/api/v1/system/db-pool"): "the installation's connection pool",
+    ("GET", "/api/v1/system/storage-usage"): "the installation's disk usage",
+    ("GET", "/api/v1/auto-queue/summary"): "the count of rows still waiting, which belong to no printer (12.3)",
+    ("POST", "/api/v1/auto-queue/"): "a new job: the gate reads its archive_id and any printer it names",
+    (
+        "POST",
+        "/api/v1/auto-queue/printer-routing-preview",
+    ): "names every target printer in targets[] (the gate reads them)",
 }
 
 _PREFIX = "backend.app.api.routes."
