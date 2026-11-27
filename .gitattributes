@@ -21,6 +21,8 @@ backend/app/data/part_render/** -text
 # STEP-preview fixtures carry their own sha256 and byte counts in expected.json (independent oracle, plan S3), and
 # scripts/pin_step_runtime.py --check compares the committed catalog text: keep both byte-exact on every clone.
 backend/tests/fixtures/step/** -text
+# ...except the generators that write them: ordinary source, LF in the repository like every other .py.
+backend/tests/fixtures/step/generators/** text eol=lf
 backend/app/data/step_runtime_*.json -text
 # The probe's STEP fixture is a copy of an authored one, and the CAD component's licence texts must stay the bytes
 # their upstreams ship (a re-sync is diffed against them, as OFL.txt is).

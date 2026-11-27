@@ -7,6 +7,8 @@ workflow runs.
 This file exists because an unlisted script is an absent script. Four of these
 worked perfectly and were referenced from nowhere at all, so nobody knew to
 reach for them (audited 2026-09-09). **Add a row when you add a script.**
+Generators of test fixtures live beside the fixtures they write (the STEP ones in
+`backend/tests/fixtures/step/generators/`), not here.
 
 ⚠️ **Anything that reads `data/bamdude.db` is SQLite-only.** On a PostgreSQL
 install the rows are elsewhere, and a *migrated* install keeps a **0-byte**
@@ -70,12 +72,6 @@ services, create users and wipe data directories — **never on a desk**.
 | `native_install_acceptance.sh` | `native-install-acceptance.yml`: the real `install.sh`, `update.sh` and `step-preview.sh`, one scenario per job. `native_install_http.py` is its HTTP half, the same flows as the Windows one on the scenario's own port. |
 | `part_render_armv7_smoke.sh` | `part-render-smoke.yml`: the part-render runtime on a real 32-bit armhf userland under QEMU, rendering the golden fixtures. |
 | `step_preview_armv7_smoke.sh`, `step_preview_armv7_stl_smoke.sh` | `step-preview-smoke.yml`: armhf has no CAD build, so the helper must answer "unsupported" with no network at all; STL pictures still render through Debian's own numpy, matplotlib and Pillow. |
-
-## Development fixtures
-
-| Script | What it is for |
-|---|---|
-| `dev/step_fixtures/` | Regenerates the STEP test fixtures under `backend/tests/fixtures/step/`: `make_fixtures.py` writes the authored planar ones with `p21.py` (a minimal Part 21 writer, no OCCT) plus `expected.json`; `make_occt_fixtures.py` writes the curved ones with the OCCT writer, checked against construction parameters, never against an OCCT read. |
 
 ## Maintenance on a live install
 
