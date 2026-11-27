@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, String, func
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -146,6 +146,10 @@ class Printer(Base):
     # Wear cost per printing hour (m246). NULL or 0 = off. Applies to prints that end after it
     # was set; a stamped print keeps the rate it was charged at (``print_archives.wear_rate``).
     wear_cost_per_hour: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Place in the order AutoQueue jobs pick printers when ``model_dispatch_order`` is
+    # ``priority`` (m271, upstream #2915): lowest first, NULL last, ties by id. Read for
+    # routing only by ``services/printer_pick_order.py``.
+    dispatch_priority: Mapped[int | None] = mapped_column(Integer, nullable=True)
     runtime_seconds: Mapped[int] = mapped_column(default=0)  # Accumulated active runtime (RUNNING state only; #1521)
     last_runtime_update: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True

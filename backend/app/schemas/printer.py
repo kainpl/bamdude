@@ -163,6 +163,9 @@ class PrinterUpdate(IgnoresNullForRequiredColumns):
     print_hours_offset: float | None = None
     # A nullable column: an explicit null clears the rate (wear off for this printer).
     wear_cost_per_hour: float | None = Field(default=None, ge=0, le=100000)
+    # Place in the AutoQueue printer order when it is "priority" (upstream #2915): lowest first.
+    # A nullable column: an explicit null clears it (the printer goes last).
+    dispatch_priority: int | None = Field(default=None, ge=0, le=100000)
     external_camera_url: str | None = None
     external_camera_type: str | None = None
     external_camera_enabled: bool | None = None
@@ -196,6 +199,8 @@ class PrinterResponse(PrinterBase):
     # ``tag_ids`` (inherited) for what a form posts back.
     tags: list[PrinterTagOut] = Field(default_factory=list)
     archived: bool = False
+    # Not in PrinterBase: set in Edit Printer only, as upstream (#2915).
+    dispatch_priority: int | None = None
     # The persisted intent, not the live handler — which is what the support
     # bundle's checkbox list wants: "what did the operator switch on".
     mqtt_recording: bool = False
