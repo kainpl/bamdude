@@ -2807,9 +2807,10 @@ class TestABatchActsOnItsOwnQueue:
         [
             # other, copy, copy, late
             (["reorder?direction=up"], [3, 1, 2, 4]),
-            (["bump"], [2, 0, 1, 3]),
+            # Bumps renumber from 1 too: 0 is the printer's direct-print claim.
+            (["bump"], [3, 1, 2, 4]),
             # Straight from 1-based positions: the copies sit just above the last row.
-            (["bump-bottom"], [0, 2, 3, 1]),
+            (["bump-bottom"], [1, 3, 4, 2]),
         ],
     )
     async def test_a_block_move_moves_the_named_queues_copies(

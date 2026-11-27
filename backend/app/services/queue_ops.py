@@ -392,20 +392,21 @@ async def _bump_block_to_top_unlocked(db: AsyncSession, queue_id: int, block_ids
     if not block_ids:
         return 0
     pending = await _pending_items_in_queue(db, queue_id)
-    id_to_item = {it.id: it for it in pending}
-    block_items = [id_to_item[i] for i in block_ids if i in id_to_item]
+    wanted = set(block_ids)
+    # In the queue's own order (position, then id), so a tie cannot reorder the block.
+    block_items = [it for it in pending if it.id in wanted]
     if not block_items:
         return 0
-    non_block = [it for it in pending if it.id not in {b.id for b in block_items}]
-    block_items.sort(key=lambda it: it.position)
+    non_block = [it for it in pending if it.id not in wanted]
 
-    # Already at top?
-    if block_items[0].position == 0 and all(block_items[i].position == i for i in range(len(block_items))):
+    # Already at top? Asked of the ORDER, never of the position values, as for the bottom: pending
+    # positions start at 1, and a check for 0 rewrote a block «Run next» had placed first (N03).
+    if [it.id for it in pending[: len(block_items)]] == [it.id for it in block_items]:
         return 0
 
     # Assign new positions: block first (preserving intra-order), then
-    # everyone else in their existing order.
-    next_pos = 0
+    # everyone else in their existing order. From 1: 0 is the direct-print claim's slot (42634ea27).
+    next_pos = 1
     for it in block_items:
         it.position = next_pos
         next_pos += 1
@@ -446,8 +447,8 @@ async def _bump_block_to_bottom_unlocked(db: AsyncSession, queue_id: int, block_
         return 0
 
     # Assign new positions: non-block items keep their relative order at the
-    # top, then the block (preserving intra-order) fills the tail.
-    next_pos = 0
+    # top, then the block (preserving intra-order) fills the tail. From 1: 0 is the claim's slot.
+    next_pos = 1
     for it in non_block:
         it.position = next_pos
         next_pos += 1

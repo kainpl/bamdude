@@ -304,9 +304,13 @@ class MQTTRelayService:
         self._last_printer_status[printer_id] = now
         self._last_printer_connected[printer_id] = state.connected
 
-        from backend.app.services.printer_manager import printer_state_to_dict
+        from backend.app.services.printer_manager import printer_manager, printer_state_to_dict
 
-        snapshot = printer_state_to_dict(state, printer_id)
+        # Ours: the AMS drying targets, as REST and the WebSocket pass them — upstream's call has none,
+        # so during a cycle BamDude started the unit showed no filament or target (owner 2026-11-27).
+        snapshot = printer_state_to_dict(
+            state, printer_id, drying_targets=printer_manager.get_drying_targets(printer_id)
+        )
 
         # Build status payload from PrinterState
         payload = {

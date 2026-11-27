@@ -341,7 +341,8 @@ class TestBumpBlockToTop:
 
         await queue_ops.bump_block_to_top(db_session, queue.id, [c.id])
 
-        assert await _positions(db_session, queue.id) == [(c.id, 0), (a.id, 1), (b.id, 2)]
+        # From 1: position 0 is the printer's direct-print claim (42634ea27, N03).
+        assert await _positions(db_session, queue.id) == [(c.id, 1), (a.id, 2), (b.id, 3)]
 
     async def test_batch_bump_preserves_intra_order(self, db_session, queue):
         batch = str(uuid.uuid4())
@@ -351,16 +352,19 @@ class TestBumpBlockToTop:
 
         await queue_ops.bump_block_to_top(db_session, queue.id, [a.id, b.id])
 
-        assert await _positions(db_session, queue.id) == [(a.id, 0), (b.id, 1), (solo.id, 2)]
+        assert await _positions(db_session, queue.id) == [(a.id, 1), (b.id, 2), (solo.id, 3)]
 
-    async def test_already_at_top_is_noop(self, db_session, queue):
-        a = await _add_item(db_session, queue.id, position=0)
-        b = await _add_item(db_session, queue.id, position=1)
+    @pytest.mark.parametrize("start", [0, 1])
+    async def test_already_at_top_is_noop(self, db_session, queue, start):
+        """Asked of the ORDER, as «already at the bottom» is: a block «Run next» placed first sits at 1,
+        and a check for position 0 rewrote it and logged a bump that moved nothing."""
+        a = await _add_item(db_session, queue.id, position=start)
+        b = await _add_item(db_session, queue.id, position=start + 1)
 
         changed = await queue_ops.bump_block_to_top(db_session, queue.id, [a.id])
 
         assert changed == 0
-        assert await _positions(db_session, queue.id) == [(a.id, 0), (b.id, 1)]
+        assert await _positions(db_session, queue.id) == [(a.id, start), (b.id, start + 1)]
 
     async def test_empty_block_ids_returns_zero(self, db_session, queue):
         await _add_item(db_session, queue.id, position=0)
@@ -375,7 +379,7 @@ class TestBumpBlockToTop:
 
         await queue_ops.bump_block_to_top(db_session, queue.id, [b.id])
 
-        assert await _positions(db_session, queue.id) == [(b.id, 0), (a.id, 1)]
+        assert await _positions(db_session, queue.id) == [(b.id, 1), (a.id, 2)]
         assert await _positions(db_session, queue_b.id) == [(x.id, 0), (y.id, 1)]
 
 
@@ -391,7 +395,7 @@ class TestBumpToBottom:
         changed = await queue_ops.bump_block_to_bottom(db_session, queue.id, [a.id, b.id])
 
         assert changed == 4
-        assert await _positions(db_session, queue.id) == [(first.id, 0), (last.id, 1), (a.id, 2), (b.id, 3)]
+        assert await _positions(db_session, queue.id) == [(first.id, 1), (last.id, 2), (a.id, 3), (b.id, 4)]
 
     @pytest.mark.parametrize("start", [0, 1])
     async def test_a_block_already_at_the_bottom_is_a_noop(self, db_session, queue, start):
