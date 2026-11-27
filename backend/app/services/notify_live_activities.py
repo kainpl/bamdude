@@ -300,6 +300,11 @@ class NotifyLiveActivityService(NotifyWorkerLifecycle):
         self._init_worker()
         self._status_grace_until: datetime | None = None
 
+    @property
+    def dormant(self) -> bool:
+        """Ours: no provider wants tiles, so the MQTT thread need not take a snapshot."""
+        return self._provider_enabled is False
+
     def forget_printer(self, printer_id: int) -> None:
         """Drop a deleted printer's print, and end its tiles now: the next tick
         ends them (the printer is gone), before a new printer is given the id."""
