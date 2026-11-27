@@ -31,6 +31,14 @@
     "ondelete": "SET NULL",
     "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
   },
+  "library_folders.created_by_id": {
+    "table": "library_folders",
+    "column": "created_by_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
   "library_files.created_by_id": {
     "table": "library_files",
     "column": "created_by_id",

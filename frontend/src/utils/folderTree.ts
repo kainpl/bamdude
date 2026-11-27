@@ -44,3 +44,14 @@ export function writableFolders(trees: LibraryFolderTree[] | undefined | null): 
     .filter((f) => !(f.is_external && f.external_readonly))
     .flatMap((f) => flattenFolderTree(f));
 }
+
+/**
+ * May the current user add files and subfolders to this folder (N56)? The server's
+ * `can_write`: their own folder, a shared one, or any for a reader of the whole
+ * library. A folder they only pass on the way to one of their files is listed, for
+ * the tree's shape, and not offered. The server refuses anyway; a folder from an
+ * answer without the field counts as writable.
+ */
+export function canWriteInto(folder: LibraryFolderTree): boolean {
+  return folder.can_write !== false;
+}

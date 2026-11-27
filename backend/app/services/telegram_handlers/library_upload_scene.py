@@ -11,6 +11,12 @@ callback, so the printer picker and dispatch are reused rather than repeated.
 ⚠️ **The folder is asked BEFORE the download.** Telegram keeps ``file_id``
 valid, so nothing is lost by waiting — and an abandoned dialog then costs no
 transfer at all instead of twenty megabytes fetched for nothing.
+
+Folders follow the library's folder rule (N56, ``services/library_folder_access``):
+the chat files as its linked user and sees every folder when its group reads the
+whole library; a chat without a user writes only into shared folders and the root.
+The picker offers only folders the chat may write to, and the chosen one is asked
+again — the button's data comes back from the client.
 """
 
 from __future__ import annotations
@@ -37,7 +43,8 @@ router = Router()
 # by name and number instead of failing minutes into a transfer.
 MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
 
-# Where uploads land unless the operator picks otherwise. Created on first use.
+# Where uploads land unless the operator picks otherwise: a shared folder in the
+# library root, created on first use.
 DEFAULT_FOLDER_NAME = "Telegram"
 
 FOLDER_PAGE = 6
@@ -47,37 +54,46 @@ class LibraryUploadState(StatesGroup):
     choosing_folder = State()
 
 
-async def _default_folder_id() -> int:
-    """The ``Telegram`` folder, created the first time a file arrives."""
-    from sqlalchemy import select
+async def _chat_actor(db, tg_chat: TelegramChat | None):
+    """Who the chat files as (N56 §4): its linked user, if any; it sees every folder
+    when its group holds ``library:read_all`` (no chat: auth disabled — everything)."""
+    from backend.app.models.user import User
+    from backend.app.services.library_folder_access import FolderActor
 
+    user = None
+    user_id = getattr(tg_chat, "user_id", None)
+    if user_id is not None:
+        user = await db.get(User, user_id)
+    return FolderActor(user, has_perm(tg_chat, "library:read_all"))
+
+
+async def _default_folder_id(tg_chat: TelegramChat | None) -> int:
+    """The shared ``Telegram`` folder in the root, created the first time a file arrives."""
     from backend.app.core.database import async_session
-    from backend.app.models.library import LibraryFolder
+    from backend.app.services.library_folder_access import writable_folder_named
 
     async with async_session() as db:
-        existing = (
-            await db.execute(select(LibraryFolder).where(LibraryFolder.name == DEFAULT_FOLDER_NAME))
-        ).scalar_one_or_none()
-        if existing:
-            return existing.id
-        folder = LibraryFolder(name=DEFAULT_FOLDER_NAME)
-        db.add(folder)
+        folder, _made = await writable_folder_named(
+            db, DEFAULT_FOLDER_NAME, None, await _chat_actor(db, tg_chat), system=True
+        )
         await db.commit()
-        await db.refresh(folder)
         return folder.id
 
 
-async def _folder_choices(default_id: int) -> list[tuple[int | None, str]]:
-    """``(id, name)`` for the picker — the default first, then the rest."""
-    from sqlalchemy import select
-
+async def _folder_choices(default_id: int, tg_chat: TelegramChat | None) -> list[tuple[int | None, str]]:
+    """``(id, name)`` for the picker — the default first, then the folders the chat may write to."""
     from backend.app.core.database import async_session
-    from backend.app.models.library import LibraryFolder
+    from backend.app.services.library_folder_access import can_write_folder, load_folder_index
 
     async with async_session() as db:
-        rows = (await db.execute(select(LibraryFolder.id, LibraryFolder.name).order_by(LibraryFolder.name))).all()
-
-    others = [(fid, name) for fid, name in rows if fid != default_id][: FOLDER_PAGE - 1]
+        actor = await _chat_actor(db, tg_chat)
+        index = await load_folder_index(db, with_files=False)
+    writable = sorted(
+        (folder.name, fid)
+        for fid, folder in index.folders.items()
+        if fid != default_id and can_write_folder(folder, actor)
+    )
+    others = [(fid, name) for name, fid in writable][: FOLDER_PAGE - 1]
     return [(default_id, DEFAULT_FOLDER_NAME), *others]
 
 
@@ -108,13 +124,13 @@ async def on_document(message: Message, state: FSMContext, tg_chat: TelegramChat
         )
         return
 
-    default_id = await _default_folder_id()
+    default_id = await _default_folder_id(tg_chat)
     await state.set_state(LibraryUploadState.choosing_folder)
     await state.update_data(file_id=doc.file_id, file_name=doc.file_name or "upload.bin")
 
     buttons = [
         [InlineKeyboardButton(text=f"\U0001f4c1 {name}", callback_data=f"libup:folder:{fid}")]
-        for fid, name in await _folder_choices(default_id)
+        for fid, name in await _folder_choices(default_id, tg_chat)
     ]
     buttons.append([InlineKeyboardButton(text=f"❌ {t(lang, NS, 'library.btn_cancel')}", callback_data="libup:cancel")])
 
@@ -165,6 +181,18 @@ async def cb_folder_chosen(callback: CallbackQuery, state: FSMContext, tg_chat: 
 
     folder_id = int(callback.data.split(":")[2])
     await callback.answer()
+
+    # The button's data comes from the client: the chosen folder is asked again (N56).
+    from backend.app.services.library_folder_access import can_write_folder
+
+    async with async_session() as db:
+        chosen = await db.get(LibraryFolder, folder_id)
+        refused = chosen is not None and not can_write_folder(chosen, await _chat_actor(db, tg_chat))
+    if refused:
+        await callback.message.edit_text(escape_md(t(lang, NS, "library.upload.folder_refused")))
+        await state.clear()
+        return
+
     await callback.message.edit_text(escape_md(t(lang, NS, "library.upload.saving", name=file_name)))
 
     buf = BytesIO()
@@ -177,6 +205,11 @@ async def cb_folder_chosen(callback: CallbackQuery, state: FSMContext, tg_chat: 
 
     async with async_session() as db:
         folder = (await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))).scalar_one_or_none()
+        if folder is not None and not can_write_folder(folder, await _chat_actor(db, tg_chat)):
+            # Made private while the file downloaded.
+            await callback.message.edit_text(escape_md(t(lang, NS, "library.upload.folder_refused")))
+            await state.clear()
+            return
         try:
             result = await store_library_upload(
                 db,

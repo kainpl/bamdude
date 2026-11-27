@@ -1,6 +1,6 @@
 import { ApiError } from '../api/client';
 import type { LibraryFolderTree, Permission } from '../api/client';
-import { flattenFolderTree } from './folderTree';
+import { canWriteInto, flattenFolderTree } from './folderTree';
 
 /**
  * Where a library folder may be moved — the same facts `PUT /library/folders/{id}`
@@ -9,11 +9,22 @@ import { flattenFolderTree } from './folderTree';
  */
 
 /** Why a target is not offered. `current` is "already there", not a refusal. */
-export type FolderMoveBlock = 'self' | 'descendant' | 'external' | 'current';
+export type FolderMoveBlock = 'self' | 'descendant' | 'external' | 'notWritable' | 'current';
 
-/** Folders carry no owner, so moving one asks what renaming one asks. */
+/**
+ * Moving asks what renaming asks: `library:update_all` moves any folder, and the owner
+ * with `library:update_own` their own (N56) — the folder's `can_rename` says which.
+ */
 export function canMoveFolders(hasPermission: (permission: Permission) => boolean): boolean {
-  return hasPermission('library:update_all');
+  return hasPermission('library:update_all') || hasPermission('library:update_own');
+}
+
+/** May the current user move THIS folder? The server's `can_rename`, else the old rule. */
+export function canMoveFolder(
+  folder: LibraryFolderTree,
+  hasPermission: (permission: Permission) => boolean,
+): boolean {
+  return folder.can_rename ?? hasPermission('library:update_all');
 }
 
 /** An external folder is a directory of its share: neither a mount point nor a subfolder moves. */
@@ -44,6 +55,9 @@ export function folderMoveBlock(
   if (targetId === source.id) return 'self';
   if (flattenFolderTree(source).some((row) => row.folder.id === targetId)) return 'descendant';
   if (externalFolderIds(tree).has(targetId)) return 'external';
+  // N56: a folder goes only into one the user may add to.
+  const target = (tree ?? []).flatMap((root) => flattenFolderTree(root)).find((row) => row.folder.id === targetId);
+  if (target && !canWriteInto(target.folder)) return 'notWritable';
   return null;
 }
 

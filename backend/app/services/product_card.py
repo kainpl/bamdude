@@ -75,6 +75,7 @@ from backend.app.models.product import Product, ProductPart, ProductPlate, produ
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption, variant_key
 from backend.app.schemas.product import CardNote
 from backend.app.services import part_images, product_variants
+from backend.app.services.library_folder_access import FolderActor
 from backend.app.services.library_identity import LibraryIdentity
 from backend.app.services.library_ingest import external_hash_is_stale, find_reusable_row, read_access
 from backend.app.services.order_metrics import grouped_figures, units_delivered
@@ -1001,7 +1002,9 @@ async def _products_of_file(db: AsyncSession, library_file_id: int) -> set[int]:
     )
 
 
-async def _import_destination(db: AsyncSession, folder_id: int | None, product_name: str) -> LibraryFolder:
+async def _import_destination(
+    db: AsyncSession, folder_id: int | None, product_name: str, actor: FolderActor
+) -> LibraryFolder:
     """Where a file nobody already has should land.
 
     ⚠️ A DESTINATION, not a link. The folder is never joined to the product:
@@ -1027,34 +1030,32 @@ async def _import_destination(db: AsyncSession, folder_id: int | None, product_n
     ``selectinload``: ``store_library_upload`` runs ``inherit_folder_products``,
     which reads ``folder.products`` — a lazy load inside an async session is a
     ``MissingGreenlet``, not a SELECT.
+
+    N56: a chosen folder is one ``actor`` may add to (404 unseen, 403 only seen); the
+    product's folder is a system folder — a shared one is reused, never someone's
+    private folder that happens to carry the product's name, and a new one is shared.
     """
+    from backend.app.services.library_folder_access import get_writable_folder, writable_folder_named
+
     query = select(LibraryFolder).options(selectinload(LibraryFolder.products))
     if folder_id is not None:
+        await get_writable_folder(db, folder_id, actor)
         folder = (await db.execute(query.where(LibraryFolder.id == folder_id))).scalar_one_or_none()
         if folder is None:
             raise HTTPException(status_code=404, detail="Folder not found")
         return folder
-    existing = (
-        await db.execute(
-            query.where(
-                LibraryFolder.name == product_name,
-                LibraryFolder.parent_id.is_(None),
-                LibraryFolder.is_external.is_(False),
-            ).order_by(LibraryFolder.id)
-        )
-    ).scalars()
-    folder = next(iter(existing), None)
-    if folder is not None:
-        return folder
-    folder = LibraryFolder(name=product_name[:255])
-    db.add(folder)
-    await db.flush()
-    await db.refresh(folder, ["products"])
+    folder, _made = await writable_folder_named(db, product_name[:255], None, actor, system=True)
     return folder
 
 
 async def import_zip(
-    db: AsyncSession, zip_source: Any, *, folder_id: int | None, user: Any, authority: Any = None
+    db: AsyncSession,
+    zip_source: Any,
+    *,
+    folder_id: int | None,
+    user: Any,
+    authority: Any = None,
+    folder_actor: FolderActor | None = None,
 ) -> tuple[Product, list[CardNote]]:
     """Rebuild a product from an export. Returns it and every note.
 
@@ -1079,6 +1080,8 @@ async def import_zip(
     attachment or a plate the file no longer carries.
     """
     notes: list[CardNote] = []
+    # Who the files are filed for (N56); without a request, the importing user.
+    folder_actor = folder_actor or FolderActor(user, False)
     try:
         archive = zipfile.ZipFile(zip_source)
     except (zipfile.BadZipFile, OSError) as e:
@@ -1097,7 +1100,7 @@ async def import_zip(
         destination: LibraryFolder | None = None
         resolved = False
         if folder_id is not None:  # a 404 for a folder that is not there, before any write
-            destination = await _import_destination(db, folder_id, product_name)
+            destination = await _import_destination(db, folder_id, product_name, folder_actor)
             resolved = True
 
         file_ids: list[int] = []
@@ -1152,7 +1155,7 @@ async def import_zip(
                     from backend.app.services.domain_authority import guard
 
                     await guard(db, authority, permissions=("library:upload",))
-                    destination = await _import_destination(db, None, product_name)
+                    destination = await _import_destination(db, None, product_name, folder_actor)
                     await db.commit()
                     resolved = True
                 try:

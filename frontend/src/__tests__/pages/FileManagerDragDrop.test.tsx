@@ -263,7 +263,8 @@ describe('dragging a folder', () => {
     expect(await treeRow('NAS')).not.toHaveAttribute('draggable');
     unmount();
 
-    auth.denied = new Set(['library:update_all']);
+    // N56: the owner moves their own folder too; neither right, nothing moves.
+    auth.denied = new Set(['library:update_all', 'library:update_own']);
     render(<FileManagerPage />);
     expect(await treeRow('Spares')).not.toHaveAttribute('draggable');
   });

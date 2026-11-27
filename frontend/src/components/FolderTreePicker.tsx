@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { FolderOpen, FolderSymlink } from 'lucide-react';
 import type { LibraryFolderTree } from '../api/client';
-import { flattenFolderTree, writableFolders } from '../utils/folderTree';
+import { canWriteInto, flattenFolderTree, writableFolders } from '../utils/folderTree';
 
 /**
  * The library folder tree as a pickable list — the look the "Move files" dialog
@@ -15,6 +16,12 @@ import { flattenFolderTree, writableFolders } from '../utils/folderTree';
  * ⚠️ **Read-only external folders are dropped by default.** The backend answers
  * an upload into one with 403. A picker that only moves rows between internal
  * folders can pass `includeReadOnly` — but nothing does today.
+ *
+ * ⚠️ **A folder the user may not add to is listed but not offered** (N56): one they
+ * only pass on the way to a file of theirs keeps the tree's shape, greyed out as
+ * "view only". Every dialog that chooses where something GOES reads this picker, so
+ * this is the one place that says so; a picker that only reads (`readOnly`) offers
+ * every folder.
  */
 
 export interface FolderTreePickerProps {
@@ -33,6 +40,8 @@ export interface FolderTreePickerProps {
   /** Something shown beside a folder's name — the product mark of a linked folder. */
   mark?: (folder: LibraryFolderTree) => ReactNode;
   includeReadOnly?: boolean;
+  /** The picker only READS folders (browsing): every folder may be chosen. */
+  readOnly?: boolean;
   className?: string;
 }
 
@@ -47,8 +56,10 @@ export function FolderTreePicker({
   lockedLabel,
   mark,
   includeReadOnly = false,
+  readOnly = false,
   className = 'max-h-64',
 }: FolderTreePickerProps) {
+  const { t } = useTranslation();
   // ⚠️ `writableFolders`, never its filter re-spelled here — that filter living
   // inline in every picker is exactly what it was extracted to stop.
   const rows = includeReadOnly
@@ -62,13 +73,16 @@ export function FolderTreePicker({
     current: boolean,
     folder?: LibraryFolderTree,
   ) => {
-    const lockedHere = !current && (locked?.(id) ?? false);
-    const disabled = current || lockedHere;
+    const viewOnly = !current && !readOnly && folder !== undefined && !canWriteInto(folder);
+    const lockedHere = !current && !viewOnly && (locked?.(id) ?? false);
+    const disabled = current || viewOnly || lockedHere;
     const label = current
       ? disabledLabel
-      : lockedHere
-        ? typeof lockedLabel === 'function' ? lockedLabel(id) : lockedLabel
-        : undefined;
+      : viewOnly
+        ? t('fileManager.folderViewOnly')
+        : lockedHere
+          ? typeof lockedLabel === 'function' ? lockedLabel(id) : lockedLabel
+          : undefined;
     return (
       <button
         key={id ?? 'root'}

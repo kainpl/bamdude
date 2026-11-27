@@ -303,7 +303,11 @@ def make_source_router(provider: ModelProvider) -> APIRouter:
         from backend.app.api.routes.library_thumbnail_jobs import request_authority
 
         authority = await request_authority(request, current_user)
-        folder = await model_import.destination_folder(db, provider, body.folder_id, authority)
+        from backend.app.services.library_folder_access import request_actor
+
+        folder = await model_import.destination_folder(
+            db, provider, body.folder_id, authority, actor=await request_actor(request, db, current_user)
+        )
         service = await service_for(db, current_user)
         try:
             frozen = getattr(service, "_config", None)

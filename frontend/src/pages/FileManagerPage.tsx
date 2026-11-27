@@ -69,6 +69,7 @@ import {
   ClipboardList,
   FolderKanban,
   ShieldCheck,
+  Users,
 } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import type {
@@ -136,10 +137,10 @@ import { AddToOrderDialog } from '../components/projects/add-to-order/AddToOrder
 import { plateFileOf } from '../components/projects/add-to-order/addToOrderState';
 import { invalidateProductCatalog, invalidateProductFiles, invalidateQueueViews } from '../utils/queryInvalidation';
 import { canLinkFile, canLinkFolder, moveChangesProducts } from '../utils/workshopRights';
-import { writableFolders } from '../utils/folderTree';
+import { canWriteInto, writableFolders } from '../utils/folderTree';
 import { MoveFolderModal } from '../components/library/MoveFolderModal';
 import { LibraryColumnsView, type ColumnFilters } from '../components/library/LibraryColumnsView';
-import { canMoveFolders, folderMoveRefusalText, isMovableFolder } from '../utils/folderMove';
+import { canMoveFolder, canMoveFolders, folderMoveRefusalText, isMovableFolder } from '../utils/folderMove';
 import { isOsFileDrag, useLibraryDragDrop, type LibraryDragDrop } from '../hooks/useLibraryDragDrop';
 
 type SortField = 'name' | 'date' | 'size' | 'type';
@@ -524,6 +525,8 @@ interface FolderTreeItemProps {
   onLink: (folder: LibraryFolderTree) => void;
   onRename: (folder: LibraryFolderTree) => void;
   onMove: (folder: LibraryFolderTree) => void;
+  /** Make the folder shared with everyone, or private again (N56) — offered when the server's `can_share` says so. */
+  onToggleShared: (folder: LibraryFolderTree) => void;
   /** Branches opened or closed by hand (or by a selection), by folder id — kept by the
    *  page so a folder that moves elsewhere in the tree keeps its branch as it was. */
   expandedOverrides: Record<number, boolean>;
@@ -584,7 +587,7 @@ function containsFolder(folder: LibraryFolderTree, folderId: number): boolean {
   return folder.id === folderId || folder.children.some((child) => containsFolder(child, folderId));
 }
 
-function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, onRename, onMove, expandedOverrides, onExpandedChange, dnd, depth = 0, wrapNames = false, defaultExpanded = true, hasPermission, t, timeFormat, dateFormat }: FolderTreeItemProps) {
+function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, onRename, onMove, onToggleShared, expandedOverrides, onExpandedChange, dnd, depth = 0, wrapNames = false, defaultExpanded = true, hasPermission, t, timeFormat, dateFormat }: FolderTreeItemProps) {
   const hasChildren = folder.children.length > 0;
   // Start compact, but never hide a folder selected through a deep-link (or
   // after returning from another page): every ancestor is expanded until
@@ -655,6 +658,12 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
             <Lock className="w-3 h-3 text-amber-600 dark:text-amber-400 flex-shrink-0" />
           </span>
         )}
+        {/* Shared with everyone (N56). A mount is always shared, so it says nothing there. */}
+        {folder.shared && !isExternal && (
+          <span title={t('fileManager.sharedFolder')} data-testid="folder-shared-mark">
+            <Users className="w-3 h-3 text-bambu-gray flex-shrink-0" />
+          </span>
+        )}
         {/* Order across all rows is strictly: link/unlink → count → menu,
             so the count sits right next to the three-dots trigger and the
             row's right edge stays vertically aligned regardless of whether
@@ -697,17 +706,29 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
                 {/* not-a-modal: menu */}
                 <div className="fixed inset-0 z-10" onClick={() => setShowActions(false)} />
                 <div className="absolute right-0 top-full mt-1 z-20 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl py-1 min-w-[120px]">
+                {/* The server says what this user may do with the folder (N56):
+                    `library:update_all` anything, the owner their own. */}
+                {(() => {
+                  const canRename = folder.can_rename ?? hasPermission('library:update_all');
+                  const why = canRename
+                    ? undefined
+                    : hasPermission('library:update_own')
+                      ? t('fileManager.onlyOwnerRenamesFolder')
+                      : t('fileManager.noPermissionRenameFolder');
+                  return (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    hasPermission('library:update_all') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
+                    canRename ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
                   }`}
-                  onClick={() => { if (hasPermission('library:update_all')) { onRename(folder); setShowActions(false); } }}
-                  disabled={!hasPermission('library:update_all')}
-                  title={!hasPermission('library:update_all') ? t('fileManager.noPermissionRenameFolder') : undefined}
+                  onClick={() => { if (canRename) { onRename(folder); setShowActions(false); } }}
+                  disabled={!canRename}
+                  title={why}
                 >
                   <Pencil className="w-3.5 h-3.5" />
                   {t('common.rename')}
                 </button>
+                  );
+                })()}
                 {/* Moving asks what renaming asks. An external folder is a
                     directory of its share and stays where the share has it;
                     the entry says so rather than vanishing. */}
@@ -716,7 +737,9 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
                     ? t('fileManager.moveFolder.noPermission')
                     : !isMovableFolder(folder)
                       ? t('fileManager.moveFolder.externalFixed')
-                      : undefined;
+                      : !canMoveFolder(folder, hasPermission)
+                        ? t('fileManager.moveFolder.onlyOwner')
+                        : undefined;
                   return (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
@@ -748,19 +771,31 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
                   <Link2 className="w-3.5 h-3.5" />
                   {isLinked ? t('fileManager.changeLink') : t('fileManager.linkTo')}
                 </button>
-                {/* A folder holds nobody's ownership, so clearing one that has
-                    contents needs delete_all. delete_own is enough for an empty
-                    one (#1781) — but only the BACKEND can say "empty", because a
-                    folder holding somebody's trashed file looks empty here and
-                    still refuses. This gate is the hint, not the rule. */}
+                {/* Shared with everyone, or private again (N56, owner decision D3): the
+                    owner or `library:update_all`; a mount is always shared. */}
+                {folder.can_share && (
+                <button
+                  className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                  onClick={() => { onToggleShared(folder); setShowActions(false); }}
+                  title={t('fileManager.shareFolderHint')}
+                >
+                  <Users className="w-3.5 h-3.5" />
+                  {folder.shared ? t('fileManager.unshareFolder') : t('fileManager.shareFolder')}
+                </button>
+                )}
+                {/* The server says who may delete the folder (N56): `library:delete_all`
+                    anything; the owner when everything in it — trashed files too,
+                    which this tree cannot see — is theirs; an ownerless folder only
+                    empty (#1781). A response without the flag keeps the old hint. */}
                 {(() => {
                   const looksEmpty = folder.file_count === 0 && folder.children.length === 0;
                   const canDelete =
-                    hasPermission('library:delete_all') ||
-                    (hasPermission('library:delete_own') && looksEmpty && !folder.is_external);
+                    folder.can_delete ??
+                    (hasPermission('library:delete_all') ||
+                      (hasPermission('library:delete_own') && looksEmpty && !folder.is_external));
                   const why = !canDelete
-                    ? hasPermission('library:delete_own') && !looksEmpty
-                      ? t('fileManager.onlyEmptyFolders')
+                    ? hasPermission('library:delete_own')
+                      ? t('fileManager.onlyOwnFolders')
                       : t('fileManager.noPermissionDeleteFolder')
                     : undefined;
                   return (
@@ -795,6 +830,7 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
               onLink={onLink}
               onRename={onRename}
               onMove={onMove}
+              onToggleShared={onToggleShared}
               expandedOverrides={expandedOverrides}
               onExpandedChange={onExpandedChange}
               dnd={dnd}
@@ -2723,6 +2759,18 @@ export function FileManagerPage() {
     },
   });
 
+  // Shared with everyone, or private again (N56).
+  const shareFolderMutation = useMutation({
+    mutationFn: ({ id, shared }: { id: number; shared: boolean }) => api.updateLibraryFolder(id, { shared }),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['library-folders'] });
+      showToast(t(variables.shared ? 'fileManager.toast.folderShared' : 'fileManager.toast.folderUnshared'), 'success');
+    },
+    onError: (error: Error) => showToast(error.message, 'error'),
+  });
+  const toggleFolderShared = (folder: LibraryFolderTree) =>
+    shareFolderMutation.mutate({ id: folder.id, shared: !folder.shared });
+
   // The page's one owner of STEP thumbnail jobs: it polls only active receipts and reports through the ordinary
   // library invalidation, so every other view learns from the same refetch. What one poll ended is told once per
   // kind (a batch, a restart that drops every job), never one identical toast per file.
@@ -2967,27 +3015,47 @@ export function FileManagerPage() {
   // ⚠️ Only a drag of files from the operating system: a folder or a file of
   // the library dragged onto a folder carries types of its own (and, when the
   // pointer grabbed a thumbnail, the browser's `Files` beside them).
+  // Find the selected folder in the tree to check external status
+  const selectedFolder = useMemo(() => {
+    if (!selectedFolderId || !folders) return null;
+    const findFolder = (items: LibraryFolderTree[]): LibraryFolderTree | null => {
+      for (const item of items) {
+        if (item.id === selectedFolderId) return item;
+        const found = findFolder(item.children);
+        if (found) return found;
+      }
+      return null;
+    };
+    return findFolder(folders);
+  }, [selectedFolderId, folders]);
+
+  // N56: a user adds files and folders only to their own folders, shared ones and the
+  // root; a folder they only pass through on the way to a file of theirs is view-only.
+  const canWriteHere = selectedFolder ? canWriteInto(selectedFolder) : true;
+  const canUploadHere = hasPermission('library:upload') && canWriteHere;
+  const notWritableTitle = hasPermission('library:upload') && !canWriteHere ? t('fileManager.folderNotWritable') : undefined;
+
   const handlePageDragEnter = (e: DragEvent<HTMLDivElement>) => {
-    if (!hasPermission('library:upload')) return;
+    if (!canUploadHere) return;
     if (!isOsFileDrag(e.dataTransfer.types)) return;
     e.preventDefault();
     dragCounterRef.current += 1;
     setIsPageDragging(true);
   };
   const handlePageDragOver = (e: DragEvent<HTMLDivElement>) => {
-    if (!hasPermission('library:upload')) return;
+    if (!canUploadHere) return;
     if (!isOsFileDrag(e.dataTransfer.types)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
   };
   const handlePageDragLeave = (e: DragEvent<HTMLDivElement>) => {
-    if (!hasPermission('library:upload')) return;
+    if (!canUploadHere) return;
     e.preventDefault();
     dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
     if (dragCounterRef.current === 0) setIsPageDragging(false);
   };
   const handlePageDrop = (e: DragEvent<HTMLDivElement>) => {
-    if (!hasPermission('library:upload')) return;
+    if (!canUploadHere) return;
     if (e.dataTransfer.types.includes('Files') && !isOsFileDrag(e.dataTransfer.types)) return;
     e.preventDefault();
     dragCounterRef.current = 0;
@@ -3043,20 +3111,6 @@ export function FileManagerPage() {
 
   const isLoading = foldersLoading || filesLoading;
 
-  // Find the selected folder in the tree to check external status
-  const selectedFolder = useMemo(() => {
-    if (!selectedFolderId || !folders) return null;
-    const findFolder = (items: LibraryFolderTree[]): LibraryFolderTree | null => {
-      for (const item of items) {
-        if (item.id === selectedFolderId) return item;
-        const found = findFolder(item.children);
-        if (found) return found;
-      }
-      return null;
-    };
-    return findFolder(folders);
-  }, [selectedFolderId, folders]);
-
   // The "External" root is a virtual node whose children are linked shares —
   // "New folder" has nothing meaningful to create there (it used to silently
   // create at the library root), so the button disables and points at Link.
@@ -3066,7 +3120,7 @@ export function FileManagerPage() {
   // the same mutations — the server's checks are untouched.
   const dnd = useLibraryDragDrop({
     folders,
-    canMoveFolders: canMoveFolders(hasPermission),
+    canMoveFolder: (folder) => canMoveFolders(hasPermission) && canMoveFolder(folder, hasPermission),
     canDragFile: (file) => canModify('library', 'update', file.created_by_id),
     canChangeProducts: hasPermission('products:update'),
     filesDraggedWith: (file) =>
@@ -3094,6 +3148,7 @@ export function FileManagerPage() {
       onLink={setLinkFolder}
       onRename={(f) => setRenameItem({ type: 'folder', id: f.id, name: f.name })}
       onMove={setMoveFolderTarget}
+      onToggleShared={toggleFolderShared}
       expandedOverrides={expandedOverrides}
       onExpandedChange={setFolderExpanded}
       dnd={dnd}
@@ -3225,13 +3280,13 @@ export function FileManagerPage() {
             size="sm"
             data-library-action="new-folder"
             onClick={() => setShowNewFolderModal(true)}
-            disabled={!hasPermission('library:upload') || atExternalRoot}
+            disabled={!canUploadHere || atExternalRoot}
             title={
               !hasPermission('library:upload')
                 ? t('fileManager.noPermissionCreateFolder')
                 : atExternalRoot
                   ? t('fileManager.newFolderExternalRootHint')
-                  : undefined
+                  : notWritableTitle
             }
           >
             <FolderPlus className="w-4 h-4 mr-2" />
@@ -3252,8 +3307,8 @@ export function FileManagerPage() {
             variant="primary"
             size="sm"
             onClick={() => setShowUploadModal(true)}
-            disabled={!hasPermission('library:upload')}
-            title={!hasPermission('library:upload') ? t('fileManager.noPermissionUpload') : undefined}
+            disabled={!canUploadHere}
+            title={!hasPermission('library:upload') ? t('fileManager.noPermissionUpload') : notWritableTitle}
           >
             <Upload className="w-4 h-4 mr-2" />
             {t('common.upload')}
@@ -3271,7 +3326,7 @@ export function FileManagerPage() {
                 {[
                   { label: t('fileManager.generateThumbnails'), icon: Image, disabled: batchThumbnailMutation.isPending || !hasAnyPermission('library:update_own', 'library:update_all'), title: !hasAnyPermission('library:update_own', 'library:update_all') ? t('fileManager.noPermissionGenerateThumbnail') : t('fileManager.generateThumbnailsForMissing'), action: () => batchThumbnailMutation.mutate() },
                   { label: t('fileManager.linkExternal'), icon: FolderSymlink, disabled: !hasPermission('settings:update'), title: !hasPermission('settings:update') ? t('fileManager.noPermissionLinkExternal') : t('fileManager.linkExternalFolder'), dialog: 'external', action: () => setShowExternalFolderModal(true) },
-                  { label: t('fileManager.newFolder'), icon: FolderPlus, disabled: !hasPermission('library:upload') || atExternalRoot, title: !hasPermission('library:upload') ? t('fileManager.noPermissionCreateFolder') : atExternalRoot ? t('fileManager.newFolderExternalRootHint') : undefined, dialog: 'new-folder', action: () => setShowNewFolderModal(true) },
+                  { label: t('fileManager.newFolder'), icon: FolderPlus, disabled: !canUploadHere || atExternalRoot, title: !hasPermission('library:upload') ? t('fileManager.noPermissionCreateFolder') : atExternalRoot ? t('fileManager.newFolderExternalRootHint') : notWritableTitle, dialog: 'new-folder', action: () => setShowNewFolderModal(true) },
                   { label: t('fileManager.tags.manage'), icon: TagIcon, title: t('fileManager.tags.manageTitle'), dialog: 'tags', action: () => setShowTagsModal(true) },
                   ...(filteredAndSortedFiles.length > 0 ? [{ label: t('fileManager.selectAll'), icon: CheckSquare, action: handleSelectAll }] : []),
                   ...(hasAnyPermission('library:delete_own', 'library:delete_all') ? [{ label: t('libraryTrash.headerButton'), icon: Trash2, title: t('libraryTrash.headerTooltip'), count: trashCount, action: () => navigate('/files/trash') }] : []),
@@ -4112,8 +4167,8 @@ export function FileManagerPage() {
               </p>
               <Button
                 onClick={() => setShowUploadModal(true)}
-                disabled={!hasPermission('library:upload')}
-                title={!hasPermission('library:upload') ? t('fileManager.noPermissionUpload') : undefined}
+                disabled={!canUploadHere}
+                title={!hasPermission('library:upload') ? t('fileManager.noPermissionUpload') : notWritableTitle}
               >
                 <Plus className="w-4 h-4 mr-2" />
                 {t('fileManager.uploadFiles')}

@@ -16627,6 +16627,14 @@ export interface LibraryFolderTree {
   // subtree — not just among immediate children. Drives the folder tree's
   // "sort by recent activity" mode.
   latest_activity_at: string | null;
+  // Ownership (N56). ``can_*`` are for the current user: what the File Manager
+  // may offer on this folder. The backend enforces the same rules.
+  created_by_id: number | null;
+  shared: boolean;
+  can_write: boolean;
+  can_rename: boolean;
+  can_share: boolean;
+  can_delete: boolean;
   children: LibraryFolderTree[];
 }
 
@@ -16662,6 +16670,14 @@ export interface LibraryFolder {
   file_count: number;
   // #1770: see LibraryFolderTree.latest_activity_at.
   latest_activity_at: string | null;
+  // Ownership (N56). ``can_*`` are for the current user: what the File Manager
+  // may offer on this folder. The backend enforces the same rules.
+  created_by_id: number | null;
+  shared: boolean;
+  can_write: boolean;
+  can_rename: boolean;
+  can_share: boolean;
+  can_delete: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -16695,6 +16711,8 @@ export interface LibraryFolderUpdate {
   // otherwise replace the whole list. A change cascades to the folder's
   // child files.
   product_ids?: number[];
+  // Shared with everyone (N56): the owner or library:update_all; never an external folder.
+  shared?: boolean;
 }
 
 export interface LibraryFileDuplicate {

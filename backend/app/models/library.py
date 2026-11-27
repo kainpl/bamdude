@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Text,
     and_,
+    false,
     func,
     or_,
     select,
@@ -66,6 +67,13 @@ class LibraryFolder(Base):
     # on the next scan. Readers must COALESCE onto ``updated_at`` so both cases
     # still contribute a sort key (#2680).
     fs_modified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Ownership (N56, upstream 6735e4556, m268): who made the folder, and whether it is
+    # shared with everyone. A ``library:read_own`` user sees their own folders, shared
+    # ones and the folders holding their files (``services/library_folder_access``). A
+    # folder made without an actor (scanner, system folders) is created shared.
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    shared: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
     # Relationships
     parent: Mapped["LibraryFolder | None"] = relationship(

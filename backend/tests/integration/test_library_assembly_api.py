@@ -756,3 +756,51 @@ async def test_a_previous_file_replaced_after_publication_is_kept_and_its_replac
     assert result["trashed"] == [] and result["removed"] == [] and result["kept"] == [old_id]
     current = await db_session.get(LibraryFile, old_id, populate_existing=True)
     assert current is not None and current.deleted_at is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_result_goes_to_the_root_when_its_folder_became_private_while_the_job_ran(
+    async_client, db_session, farm, monkeypatch
+):
+    """N56: the folder is asked when the result is PUBLISHED — the assembler's own folder
+    the first time, the root once it became someone else's private one mid-relayout."""
+    from backend.tests.integration.test_library_folder_ownership import _make_user
+
+    headers, me = await _make_user(
+        async_client, username="asm_owner", permissions=["library:read_own", "library:upload"]
+    )
+    _other_headers, other = await _make_user(async_client, username="asm_other", permissions=["library:read_own"])
+    folder = await db_session.get(LibraryFolder, farm["folder_id"])
+    folder.created_by_id = me
+    for file_id in farm["files"].values():
+        (await db_session.get(LibraryFile, file_id)).created_by_id = me
+    await db_session.commit()
+
+    first = await _finish(
+        async_client,
+        await async_client.post(f"{API}/library/assemble", json=_body(farm, [("lid", {})]), headers=headers),
+    )
+    made = first["result"]["printers"][0]["files"][0]
+    assert made["fallback_reason"] is None
+    assert (await db_session.get(LibraryFile, made["library_file_id"])).folder_id == farm["folder_id"]
+
+    real = assembly_job.run_assembly
+
+    async def packs_then_the_folder_goes_private(root, **kwargs):
+        result = await real(root, **kwargs)
+        row = await db_session.get(LibraryFolder, farm["folder_id"])
+        row.created_by_id, row.shared = other, False
+        await db_session.commit()
+        return result
+
+    monkeypatch.setattr(assembly_job, "run_assembly", packs_then_the_folder_goes_private)
+    body = {"parts": [{"quantity": 2}], "targets": [_row(farm)], "name": "jar", "trash_previous": False}
+    job = await _finish(
+        async_client,
+        await async_client.post(f"{API}/library/files/{made['library_file_id']}/relayout", json=body, headers=headers),
+    )
+    again = job["result"]["printers"][0]["files"][0]
+    assert again["fallback_reason"] == "folder_private"
+    db_session.expire_all()
+    assert (await db_session.get(LibraryFile, again["library_file_id"])).folder_id is None

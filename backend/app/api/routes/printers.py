@@ -2804,6 +2804,10 @@ async def import_printer_files_to_library(
 
     folder: LibraryFolder | None = None
     if folder_id is not None:
+        # Only into a library folder the caller may add to (N56): 404 unseen, 403 only seen.
+        from backend.app.services.library_folder_access import get_writable_folder, request_actor
+
+        await get_writable_folder(db, folder_id, await request_actor(http_request, db, current_user))
         # Eager-load .products so save_3mf_bytes_to_library's
         # inherit_folder_products() doesn't trip async lazy-load.
         folder = (

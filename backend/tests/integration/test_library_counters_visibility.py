@@ -1,7 +1,8 @@
 """Counters do not count files the caller cannot see (upstream #3201, G11 U4).
 
-Folders are shared structure — every library reader sees their names. But the
-numbers ON a folder were computed over everybody's files: a ``library:read_own``
+A shared folder's name reaches every library reader (which folders a reader sees is
+N56's folder rule, ``services/library_folder_access``). But the numbers ON a folder
+were computed over everybody's files: a ``library:read_own``
 caller read how many files others keep in a folder and when they last touched
 them. The same leak sat on a file: ``duplicate_count`` in the list and the
 duplicates panel of the detail counted, and named (file name, folder), other
@@ -51,14 +52,14 @@ async def _make_user(async_client: AsyncClient, *, username: str, permissions: l
 
 @pytest.fixture
 async def shared(async_client, db_session):
-    """One shared folder: Alice keeps one file in it, Bob two — one with Alice's bytes."""
+    """Two shared folders: Alice keeps one file in the first, Bob two — one with Alice's bytes."""
     alice, alice_id = await _make_user(async_client, username="lc_alice", permissions=OWN)
     _bob, bob_id = await _make_user(async_client, username="lc_bob", permissions=OWN)
     product = Product(name="Lamp")
     db_session.add(product)
     await db_session.flush()
-    folder = LibraryFolder(name="shared", created_at=OLD, updated_at=OLD, products=[product])
-    other = LibraryFolder(name="bobs corner", created_at=OLD, updated_at=OLD)
+    folder = LibraryFolder(name="shared", created_at=OLD, updated_at=OLD, products=[product], shared=True)
+    other = LibraryFolder(name="bobs corner", created_at=OLD, updated_at=OLD, shared=True)
     db_session.add_all([folder, other])
     await db_session.flush()
 
@@ -106,7 +107,7 @@ async def test_the_folder_tree_counts_only_the_callers_files(async_client, share
     node = _find(tree, shared["folder"].id)
     assert node["file_count"] == 1
     assert _day(node["latest_activity_at"]) == "2030-03-03"
-    # A folder with none of her files is still there — folders are shared — and reads empty.
+    # A shared folder with none of her files is still there, and reads empty.
     corner = _find(tree, shared["other"].id)
     assert corner["name"] == "bobs corner" and corner["file_count"] == 0
     assert _day(corner["latest_activity_at"]) == "2020-01-01"
