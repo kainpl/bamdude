@@ -83,6 +83,13 @@ CSV_COLUMNS = [
 # OOM-sized body before it's read into memory.
 MAX_CSV_IMPORT_BYTES = 5 * 1024 * 1024
 
+# How high a number a file may keep (C32). The counter only ever goes up, so a kept number near
+# the top of the id column's range would leave no number for the next spool, for good: a number
+# past the column's range (INTEGER on PostgreSQL) is a row error, and one far above this install's
+# own numbers is given a new one instead.
+_MAX_SPOOL_NUMBER = 2**31 - 1
+_MAX_NUMBER_JUMP = 1_000_000
+
 # Columns whose CSV cell must be coerced to a number before SpoolCreate sees it.
 # DictReader hands us strings; SpoolCreate wants int/float. Empty cell → omit
 # the field (falls back to the schema default / None).
@@ -465,6 +472,8 @@ async def parse_and_validate(
                 requested_id = 0
             if requested_id < 1:
                 row_error = f"id must be a positive whole number (got '{id_cell}')"
+            elif requested_id > _MAX_SPOOL_NUMBER:
+                row_error = f"id must be at most {_MAX_SPOOL_NUMBER} (got '{id_cell}')"
         requested_label_identity: str | None = None
         identity_cell = cell(raw_row, "label_identity")
         if row_error is None and identity_cell:
@@ -671,7 +680,9 @@ async def decide_numbers(db: AsyncSession, rows: list[ImportRowResult], warnings
 
     On a fresh install every number qualifies. A number given out here before -- a spool's
     that is still here or was deleted -- or one the file names twice would put two spools
-    under one number, so that row gets a new one: one warning for all of them. A row that
+    under one number, so that row gets a new one: one warning for all of them. So does a
+    number more than ``_MAX_NUMBER_JUMP`` above this install's own: kept, it would raise the
+    counter, which never goes back, close to the end of the column's range. A row that
     keeps its number keeps its label identity too, unless another spool here already has
     it or the file names it twice; its printed label then no longer proves the spool.
     Decides afresh from what the rows asked for, so it can run again under the write lock.
@@ -693,7 +704,7 @@ async def decide_numbers(db: AsyncSession, rows: list[ImportRowResult], warnings
         row.keeps_label_identity = None
         if row.status != "valid" or row.requested_id is None:
             continue
-        if row.requested_id <= highest or row.requested_id in numbers:
+        if row.requested_id <= highest or row.requested_id in numbers or row.requested_id > highest + _MAX_NUMBER_JUMP:
             renumbered += 1
             continue
         numbers.add(row.requested_id)
@@ -708,7 +719,8 @@ async def decide_numbers(db: AsyncSession, rows: list[ImportRowResult], warnings
         row.keeps_label_identity = identity
     if renumbered:
         warnings.append(
-            f"{renumbered} spool(s) get a new id: their id is already used on this install or appears twice in the file"
+            f"{renumbered} spool(s) get a new id: their id is already used on this install, appears twice in "
+            f"the file, or lies more than {_MAX_NUMBER_JUMP} above this install's numbers"
         )
     if relabelled:
         warnings.append(

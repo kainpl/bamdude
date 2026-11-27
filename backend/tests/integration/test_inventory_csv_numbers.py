@@ -143,6 +143,8 @@ class TestASpoolKeepsItsNumber:
         [
             ("abc,PLA,", "id must be a positive whole number"),
             ("0,PLA,", "id must be a positive whole number"),
+            # Past the id column's range: kept, it would leave the counter nowhere to go.
+            ("2147483648,PLA,", "id must be at most 2147483647"),
             ("12,PLA,not-a-uuid", "label_identity must be a UUID"),
         ],
     )
@@ -154,6 +156,21 @@ class TestASpoolKeepsItsNumber:
         row = preview.json()["rows"][0]
         assert row["status"] == "error"
         assert reason in row["reason"]
+
+    async def test_a_number_far_above_this_installs_is_given_a_new_one(
+        self, async_client: AsyncClient, db_session: AsyncSession
+    ):
+        """The counter never goes back: a number a million above this install's own would raise it for good."""
+        csv_text = "id,material,color_name\n1000000,PLA,At the bound\n1000005,PLA,Past it\n"
+
+        preview = await async_client.post(f"{IMPORT}?dry_run=true", files=_upload(csv_text))
+        assert [row["keeps_id"] for row in preview.json()["rows"]] == [1000000, None]
+        assert any("1 spool(s) get a new id" in warning for warning in preview.json()["warnings"])
+
+        assert (await async_client.post(IMPORT, files=_upload(csv_text))).json()["created"] == 2
+        past = next(spool for spool in (await _spools(db_session)).values() if spool.color_name == "Past it")
+        # The next number after the kept one, not the file's.
+        assert past.id == 1000001
 
     async def test_a_file_without_the_numbers_imports_as_before(
         self, async_client: AsyncClient, db_session: AsyncSession
