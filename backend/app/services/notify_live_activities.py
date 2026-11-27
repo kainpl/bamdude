@@ -17,14 +17,13 @@ from uuid import uuid4
 import httpx
 from sqlalchemy import delete, select, update
 
-from backend.app.core.database import async_session
 from backend.app.i18n import current_language, t
 from backend.app.models.notification import NotificationProvider
 from backend.app.models.notification_live_activity import NotificationLiveActivity
 from backend.app.models.printer import Printer
 from backend.app.services import hms_catalogue
 from backend.app.services.notify_client import NotifyClient, NotifyError, _https_url
-from backend.app.services.notify_worker import NotifyWorkerLifecycle
+from backend.app.services.notify_worker import NotifyWorkerLifecycle, default_session
 
 logger = logging.getLogger(__name__)
 _RUNNING = {"RUNNING", "PRINTING", "PAUSE", "PREPARE", "SLICING"}
@@ -287,7 +286,7 @@ class NotifyLiveActivityService(NotifyWorkerLifecycle):
     _cleanup_key = staticmethod(_credential_key)
 
     def __init__(self, session_factory=None, client=None):
-        self._session = session_factory or async_session
+        self._session = session_factory or default_session
         self._client = client
         self._http: httpx.AsyncClient | None = None
         self._snapshots: dict[int, PrintSnapshot] = {}

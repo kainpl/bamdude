@@ -620,6 +620,22 @@
       "site": [
         "api/routes/notifications.py::delete_notification_provider",
         "sqlalchemy.delete",
+        "backend.app.models.notification_live_activity.NotificationLiveActivity"
+      ],
+      "owner_policy": "Outside C parent purge: N48 removes a deleted Notify! provider's own Live Activity ownership rows in the provider delete transaction, after their remote cleanup was queued; not an application parent deletion"
+    },
+    {
+      "site": [
+        "api/routes/notifications.py::delete_notification_provider",
+        "sqlalchemy.delete",
+        "backend.app.models.notification_lock_screen_widget.NotificationLockScreenWidget"
+      ],
+      "owner_policy": "Outside C parent purge: N48 removes a deleted Notify! provider's own Lock Screen widget ownership rows in the provider delete transaction, after their remote cleanup was queued; not an application parent deletion"
+    },
+    {
+      "site": [
+        "api/routes/notifications.py::delete_notification_provider",
+        "sqlalchemy.delete",
         "backend.app.models.telegram_chat.TelegramChat"
       ],
       "owner_policy": "Outside C parent purge: api/routes/notifications.py::delete_notification_provider retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
@@ -1695,6 +1711,38 @@
         "entry"
       ],
       "owner_policy": "Outside C parent purge: services/notification_service.py::NotificationService.send_digest retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/notify_live_activities.py::NotifyLiveActivityService.cleanup_provider",
+        "sqlalchemy.delete",
+        "backend.app.models.notification_live_activity.NotificationLiveActivity"
+      ],
+      "owner_policy": "Outside C parent purge: N48 drops a retired Notify! credential's own Live Activity ownership rows after their remote tiles were ended; worker-owned transaction"
+    },
+    {
+      "site": [
+        "services/notify_live_activities.py::NotifyLiveActivityService.tick",
+        "sqlalchemy.delete",
+        "backend.app.models.notification_live_activity.NotificationLiveActivity"
+      ],
+      "owner_policy": "Outside C parent purge: N48 prunes Notify! Live Activity tombstones older than 30 days for printers not printing now; worker-owned transaction"
+    },
+    {
+      "site": [
+        "services/notify_widgets.py::NotifyWidgetService._remove",
+        "sqlalchemy.delete",
+        "backend.app.models.notification_lock_screen_widget.NotificationLockScreenWidget"
+      ],
+      "owner_policy": "Outside C parent purge: N48 removes one Notify! Lock Screen widget ownership row once its remote widget is deleted or was never created; worker-owned transaction"
+    },
+    {
+      "site": [
+        "services/notify_worker.py::NotifyWorkerLifecycle._purge_orphans",
+        "sqlalchemy.delete",
+        "self.ownership_model"
+      ],
+      "owner_policy": "Outside C parent purge: N48 drops Notify! ownership rows whose provider no longer exists (SQLite does not enforce the provider cascade); worker-owned transaction"
     },
     {
       "site": [

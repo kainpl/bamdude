@@ -17,6 +17,14 @@ from backend.app.models.notification import NotificationProvider
 logger = logging.getLogger(__name__)
 
 
+def default_session():
+    """Ours: the module-level session factory, resolved at call time like every service here
+    (upstream binds it at construction; our tests bind ``database.async_session`` per test)."""
+    from backend.app.core import database
+
+    return database.async_session()
+
+
 class NotifyWorkerLifecycle:
     ownership_model = None
     feature_field = ""

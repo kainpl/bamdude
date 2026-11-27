@@ -73,6 +73,8 @@ FORWARDED_ARG_INDEX = {
 FORWARDED_EXCEPTIONS = frozenset(
     {
         "AdmissionClosed",
+        # Notify! provider validation (notify_credentials), answered as 422 by the provider routes.
+        "NotifyError",
         # Plate-answer contention is forwarded by the existing StalePlateAnswer handler.
         "PlateAnswerBusy",
         "BambuCloudError",

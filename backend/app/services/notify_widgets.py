@@ -13,7 +13,6 @@ from datetime import timedelta
 import httpx
 from sqlalchemy import and_, case, delete, or_, select, update
 
-from backend.app.core.database import async_session
 from backend.app.models.notification import NotificationProvider
 from backend.app.models.notification_lock_screen_widget import NotificationLockScreenWidget
 from backend.app.models.printer import Printer
@@ -26,7 +25,7 @@ from backend.app.services.notify_live_activities import (
     _text,
     _user_agent,
 )
-from backend.app.services.notify_worker import NotifyWorkerLifecycle
+from backend.app.services.notify_worker import NotifyWorkerLifecycle, default_session
 
 logger = logging.getLogger(__name__)
 _ERROR_PREFIX = "Notify! Lock Screen widget: "
@@ -107,7 +106,7 @@ class NotifyWidgetService(NotifyWorkerLifecycle):
     _cleanup_key = staticmethod(_credential_key)
 
     def __init__(self, session_factory=None, client=None, state_getter=None):
-        self._session = session_factory or async_session
+        self._session = session_factory or default_session
         self._client = client
         self._http: httpx.AsyncClient | None = None
         self._state = state_getter or _status
