@@ -366,6 +366,20 @@ class TestBumpBlockToTop:
         assert changed == 0
         assert await _positions(db_session, queue.id) == [(a.id, start), (b.id, start + 1)]
 
+    @pytest.mark.parametrize("bump", ["bump_block_to_top", "bump_block_to_bottom"])
+    async def test_a_bump_leaves_the_commit_to_its_caller(self, db_session, queue, bump):
+        """A Repeat and a deferred claim bump inside their own transaction; a commit here split it."""
+        # Plain ids: the rollback expires every loaded object, and reading one after it would be IO.
+        queue_id = queue.id
+        a = (await _add_item(db_session, queue_id, position=1)).id
+        b = (await _add_item(db_session, queue_id, position=2)).id
+        block = [b] if bump == "bump_block_to_top" else [a]
+
+        assert await getattr(queue_ops, bump)(db_session, queue_id, block) == 2
+        await db_session.rollback()
+
+        assert await _positions(db_session, queue_id) == [(a, 1), (b, 2)]
+
     async def test_empty_block_ids_returns_zero(self, db_session, queue):
         await _add_item(db_session, queue.id, position=0)
         assert await queue_ops.bump_block_to_top(db_session, queue.id, []) == 0

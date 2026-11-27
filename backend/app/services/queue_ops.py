@@ -388,6 +388,10 @@ async def _bump_block_to_top_unlocked(db: AsyncSession, queue_id: int, block_ids
     """Move the block to the very top (lowest positions) of the queue.
 
     Preserves intra-block order.  Returns how many items shifted.
+
+    ⚠️ Flushes, never commits: the caller owns the transaction. A Repeat (``plate_hold._rearm`` under the
+    plate answer) and a deferred claim (``filament_deferred``) bump inside their own transaction and commit
+    it with everything else; a commit here split it and released the lane guard they held.
     """
     if not block_ids:
         return 0
@@ -414,7 +418,7 @@ async def _bump_block_to_top_unlocked(db: AsyncSession, queue_id: int, block_ids
         it.position = next_pos
         next_pos += 1
 
-    await db.commit()
+    await db.flush()
     logger.info("Queue %s: bumped block %s to top", queue_id, block_ids)
     return len(block_items) + len(non_block)
 
@@ -428,7 +432,7 @@ async def bump_block_to_bottom(db: AsyncSession, queue_id: int, block_ids: list[
 async def _bump_block_to_bottom_unlocked(db: AsyncSession, queue_id: int, block_ids: list[int]) -> int:
     """Move the block to the very bottom (highest positions) of the queue.
 
-    Preserves intra-block order.  Returns how many items shifted.
+    Preserves intra-block order.  Returns how many items shifted. Flushes; the caller commits.
     """
     if not block_ids:
         return 0
@@ -456,7 +460,7 @@ async def _bump_block_to_bottom_unlocked(db: AsyncSession, queue_id: int, block_
         it.position = next_pos
         next_pos += 1
 
-    await db.commit()
+    await db.flush()
     logger.info("Queue %s: bumped block %s to bottom", queue_id, block_ids)
     return len(block_items) + len(non_block)
 
