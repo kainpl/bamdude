@@ -108,6 +108,9 @@ class UserResponse(BaseModel):
     auth_source: str = "local"  # "local" or "ldap"
     groups: list[GroupBrief] = []
     permissions: list[str] = []  # All permissions from groups
+    # N62: limited to some printers by a group (or, for a key, by its list or its owner) — the
+    # pages say why a farm-wide action (adding a printer) is not theirs.
+    printers_restricted: bool = False
     created_at: str
 
     class Config:

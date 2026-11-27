@@ -11,10 +11,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import RequireAdmin, RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import request_printer_scope
 from backend.app.models.user import User
 from backend.app.services.obico_detection import obico_detection_service, pop_frame
 from backend.app.services.obico_history import HistoryUnavailable, obico_history
@@ -70,7 +70,7 @@ async def get_status(
     status = obico_detection_service.get_status(
         settings["sensitivity"], active=bool(settings["enabled"] and settings["ml_url"])
     )
-    scope = key_printer_scope(request)
+    scope = request_printer_scope(request)
     if scope is not None:
         status["last_error"] = None
     else:
@@ -124,7 +124,7 @@ async def get_printer_status(
     # URL), so they stay behind settings:read with the rest of the configuration.
     can_see_error = user is None or user.has_permission(Permission.SETTINGS_READ.value)
     per_printer = obico_detection_service.get_per_printer()
-    scope = key_printer_scope(request)
+    scope = request_printer_scope(request)
     if scope is not None:
         per_printer = {pid: entry for pid, entry in per_printer.items() if int(pid) in scope}
         enabled_printers = scope if enabled_printers is None else scope.intersection(enabled_printers)
@@ -175,7 +175,7 @@ async def get_history(
     ).hexdigest()
     try:
         return await obico_history.page(
-            scope=key_printer_scope(request),
+            scope=request_printer_scope(request),
             printer_id=printer_id,
             verdict=verdict,
             since=since,

@@ -57,6 +57,7 @@ import { EmailSettings } from '../components/EmailSettings';
 import { LDAPSettings } from '../components/LDAPSettings';
 import { TwoFactorSettings } from '../components/TwoFactorSettings';
 import { OIDCProviderSettings } from '../components/OIDCProviderSettings';
+import { PrinterAccessSettings } from '../components/PrinterAccessSettings';
 import { SecurityStatusCard } from '../components/SecurityStatusCard';
 import { SlicerPipelinesPanel } from '../components/SlicerPipelinesPanel';
 import { FailureDetectionSettings } from '../components/FailureDetectionSettings';
@@ -93,7 +94,7 @@ import { summarizePlugEnergy } from '../utils/plugEnergySummary';
 
 const validTabs = ['general', 'slicing', 'printing', 'camera', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
-type UsersSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc' | 'security';
+type UsersSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc' | 'security' | 'printer-access';
 /** ⚠️ Everything about labels lives under `marking` — the designs AND the
  *  printers that put them on stock. Splitting the two put half the answer
  *  under Printing, beside bed levelling, which is not the question anybody
@@ -137,6 +138,7 @@ registerSettingsSearch({ labelKey: 'settings.tabs.users', tab: 'users', subTab: 
 registerSettingsSearch({ labelKey: 'settings.sessionPolicy.title', labelFallback: 'Session Policy', tab: 'users', subTab: 'users', keywords: 'session timeout expiry logout remember me jwt token lifetime', anchor: 'card-session-policy' });
 registerSettingsSearch({ labelKey: 'settings.email.smtpSettings', labelFallback: 'SMTP Configuration', tab: 'users', subTab: 'email', keywords: 'smtp email send server port password auth starttls ssl', anchor: 'tab-users-email' });
 registerSettingsSearch({ labelKey: 'settings.ldap.title', labelFallback: 'LDAP Authentication', tab: 'users', subTab: 'ldap', keywords: 'ldap active directory ad authentication bind dn search base group mapping', anchor: 'tab-users-ldap' });
+registerSettingsSearch({ labelKey: 'settings.printerAccess.title', labelFallback: 'Printer access', tab: 'users', subTab: 'printer-access', keywords: 'printer access limit group team printers locations who has access restrict', anchor: 'tab-users-printer-access' });
 registerSettingsSearch({ labelKey: 'settings.tabs.backup', tab: 'backup', keywords: 'backup github gitlab restore download cloud sync profiles archives schedule', anchor: 'tab-backup' });
 
 const STORAGE_CATEGORY_COLORS: Record<string, string> = {
@@ -332,7 +334,12 @@ export function SettingsPage() {
   const linksToCameraCard = CAMERA_CARD_IDS.includes(window.location.hash.slice(1));
   const initialTab = isLegacyEmailTab ? 'users' : linksToCameraCard ? 'camera' : (tabParam && validTabs.includes(tabParam as TabType) ? tabParam as TabType : 'general');
   const [activeTab, setActiveTab] = useState<TabType>(initialTab);
-  const [usersSubTab, setUsersSubTab] = useState<UsersSubTab>(isLegacyEmailTab ? 'email' : 'users');
+  // N62: ``?tab=users&sub=printer-access&printer=<id>`` — a printer card's "Who has access" opens here.
+  const accessPrinterParam = Number(searchParams.get('printer'));
+  const accessPrinterId = searchParams.get('sub') === 'printer-access' && accessPrinterParam > 0 ? accessPrinterParam : null;
+  const [usersSubTab, setUsersSubTab] = useState<UsersSubTab>(
+    isLegacyEmailTab ? 'email' : tabParam === 'users' && searchParams.get('sub') === 'printer-access' ? 'printer-access' : 'users',
+  );
   const [filamentSubTab, setFilamentSubTab] = useState<FilamentSubTab>('general');
 
   // Update URL when tab changes
@@ -7095,6 +7102,19 @@ export function SettingsPage() {
             )}
             {isAdmin && (
               <button
+                onClick={() => setUsersSubTab('printer-access')}
+                className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+                  usersSubTab === 'printer-access'
+                    ? 'text-bambu-green border-bambu-green'
+                    : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+                }`}
+              >
+                <Printer className="w-4 h-4" />
+                {t('settings.printerAccess.tab')}
+              </button>
+            )}
+            {isAdmin && (
+              <button
                 onClick={() => setUsersSubTab('security')}
                 className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
                   usersSubTab === 'security'
@@ -7486,6 +7506,8 @@ export function SettingsPage() {
               <OIDCProviderSettings />
             </div>
           )}
+
+          {usersSubTab === 'printer-access' && isAdmin && <PrinterAccessSettings initialPrinterId={accessPrinterId} />}
 
           {usersSubTab === 'security' && isAdmin && (
             <div className="max-w-2xl">

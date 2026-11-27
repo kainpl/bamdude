@@ -12,10 +12,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.api_key_scope import in_key_scope
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import in_request_scope, request_printer_scope, where_strict
 from backend.app.models.firmware import FirmwareBatchItem, FirmwareBatchRun
 from backend.app.models.printer import Printer
 from backend.app.models.user import User
@@ -100,6 +100,7 @@ async def _automatic_checks_enabled(db: AsyncSession) -> bool:
 
 @router.get("/updates", response_model=FirmwareUpdatesResponse)
 async def check_firmware_updates(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.FIRMWARE_READ),
 ):
@@ -114,8 +115,11 @@ async def check_firmware_updates(
     """
     firmware_service = get_firmware_service()
 
-    # Get all printers from database
-    result = await db.execute(select(Printer).where(Printer.is_active.is_(True)).where(Printer.archived.is_(False)))
+    # Get all printers from database — those the caller reaches (N62)
+    query = select(Printer).where(Printer.is_active.is_(True)).where(Printer.archived.is_(False))
+    if (in_scope := where_strict(request_printer_scope(request), Printer.id)) is not None:
+        query = query.where(in_scope)
+    result = await db.execute(query)
     printers = result.scalars().all()
 
     updates = []
@@ -164,7 +168,7 @@ async def check_printers_firmware(
     Each value is what the single-printer route answers, the "Check printer firmware" setting
     included. A missing printer, or one outside an API key's list, is left out.
     """
-    wanted = {pid for pid in ids if in_key_scope(request, pid)}
+    wanted = {pid for pid in ids if in_request_scope(request, pid)}
     printers = (await db.scalars(select(Printer).where(Printer.id.in_(wanted)))).all() if wanted else []
     enabled = await _automatic_checks_enabled(db)
     return {printer.id: await _card_update_info(printer, enabled) for printer in printers}
@@ -483,6 +487,7 @@ async def preview_batch(
 @router.get("/batch/{run_id}", response_model=BatchRunOut)
 async def get_batch(
     run_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.FIRMWARE_READ),
 ):
@@ -490,7 +495,11 @@ async def get_batch(
     if not run:
         raise HTTPException(404, "Run not found")
     items = (await db.execute(select(FirmwareBatchItem).where(FirmwareBatchItem.run_id == run_id))).scalars().all()
-    return _batch_run_to_out(run, items)
+    # N62: a run shows the printers the caller reaches; one of none of them is not theirs to see.
+    visible = [item for item in items if in_request_scope(request, item.printer_id)]
+    if request_printer_scope(request) is not None and items and not visible:
+        raise HTTPException(404, "Run not found")
+    return _batch_run_to_out(run, visible)
 
 
 @router.get("/batch", response_model=list[BatchRunOut])
@@ -517,9 +526,15 @@ async def list_batches(
         .order_by(FirmwareBatchItem.id)
     )
     by_run: dict[int, list[FirmwareBatchItem]] = {run.id: [] for run in runs}
+    seen: set[int] = set()
     for item in items:
-        if not active_only or in_key_scope(request, item.printer_id):
+        seen.add(item.run_id)
+        # N62: every listing shows the printers the caller reaches (a key's list held only the
+        # active ones before; one rule now).
+        if in_request_scope(request, item.printer_id):
             by_run[item.run_id].append(item)
+    if request_printer_scope(request) is not None:
+        runs = [run for run in runs if by_run[run.id] or run.id not in seen]
     return [
         _batch_run_to_out(run, by_run[run.id])
         for run in runs

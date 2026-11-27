@@ -19,6 +19,7 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.core.config import settings
+from backend.app.core.printer_scope import where as printer_scope_where
 from backend.app.core.tasks import spawn_background_task
 from backend.app.core.timezones import day_bounds, server_timezone
 from backend.app.models.archive import PrintArchive
@@ -759,7 +760,7 @@ class ArchiveService:
         return sha256.hexdigest()
 
     async def get_duplicate_hashes_and_names(
-        self, among: set[str] | None = None
+        self, among: set[str] | None = None, printer_scope: frozenset[int] | None = None
     ) -> tuple[set[str], set[tuple[str, str]]]:
         """Get all effective hashes and (print name, hash) pairs that appear more than once.
 
@@ -780,6 +781,9 @@ class ArchiveService:
         if among is not None and not among:
             return set(), set()
         scope = [effective_hash.in_(among)] if among is not None and len(among) <= _DUPLICATE_SCOPE_LIMIT else []
+        # N62: a copy on a printer the caller cannot see is not a duplicate they are shown.
+        if (in_scope := printer_scope_where(printer_scope, PrintArchive.printer_id)) is not None:
+            scope.append(in_scope)
 
         # Trashed archives are excluded — a duplicate badge against a trashed
         # sibling is misleading; those rows are slated for hard-delete.
@@ -814,12 +818,22 @@ class ArchiveService:
         content_hash: str | None = None,
         print_name: str | None = None,
         makerworld_model_id: str | None = None,
+        *,
+        printer_scope: frozenset[int] | None = None,
+        visible_to_user_id: int | None = None,
     ) -> list[dict]:
         """Find duplicate archives based on hash or name matching.
 
-        Returns list of dicts with id, print_name, created_at, match_type.
+        Returns list of dicts with id, print_name, created_at, match_type. ``printer_scope`` and
+        ``visible_to_user_id`` keep the list to what the caller may open — the printers they
+        reach (N62) and, for ``archives:read_own``, their own prints.
         """
         duplicates = []
+        visible = []
+        if (in_scope := printer_scope_where(printer_scope, PrintArchive.printer_id)) is not None:
+            visible.append(in_scope)
+        if visible_to_user_id is not None:
+            visible.append(PrintArchive.created_by_id == visible_to_user_id)
 
         # First, find exact matches by effective hash (source_content_hash or
         # content_hash). This groups BamDude-patched archives with their
@@ -833,6 +847,7 @@ class ArchiveService:
                         effective_hash == content_hash,
                         PrintArchive.id != archive_id,
                         PrintArchive.deleted_at.is_(None),
+                        *visible,
                     )
                 )
                 .order_by(PrintArchive.created_at.desc())
@@ -852,7 +867,7 @@ class ArchiveService:
         # Prefer strict name+hash matching when hash exists; fallback to name-only for legacy/manual
         # archives that may not have a content_hash.
         if print_name or makerworld_model_id:
-            conditions = [PrintArchive.id != archive_id, PrintArchive.deleted_at.is_(None)]
+            conditions = [PrintArchive.id != archive_id, PrintArchive.deleted_at.is_(None), *visible]
 
             name_conditions = []
             if print_name:
@@ -2081,6 +2096,7 @@ class ArchiveService:
         visible_to_user_id: int | None = None,
         tz: tzinfo | None = None,
         outcome: str | None = None,
+        printer_scope: frozenset[int] | None = None,
     ) -> tuple[list[PrintArchive], int]:
         """List archives with server-side filtering, sorting and pagination.
 
@@ -2098,6 +2114,9 @@ class ArchiveService:
         the route when the caller holds ``archives:read_own`` but not
         ``archives:read_all`` (ownership read-split, security #2). None = no
         ownership scoping (caller can read all).
+
+        ``printer_scope`` keeps the prints of the printers the caller reaches, and those bound to
+        no printer (N62, ``core/printer_scope``); None = every printer.
         """
         from sqlalchemy.orm import selectinload
 
@@ -2108,6 +2127,8 @@ class ArchiveService:
         # Ownership scoping (security #2) — only the caller's own runs.
         if visible_to_user_id is not None:
             filters.append(PrintArchive.created_by_id == visible_to_user_id)
+        if (in_scope := printer_scope_where(printer_scope, PrintArchive.printer_id)) is not None:
+            filters.append(in_scope)
 
         # Printer / project filters
         if printer_id:
@@ -2172,7 +2193,11 @@ class ArchiveService:
                 eff_hash = func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash)
                 dup_hashes = (
                     select(eff_hash)
-                    .where(PrintArchive.content_hash.isnot(None), PrintArchive.deleted_at.is_(None))
+                    .where(
+                        PrintArchive.content_hash.isnot(None),
+                        PrintArchive.deleted_at.is_(None),
+                        *([in_scope] if in_scope is not None else []),
+                    )
                     .group_by(eff_hash)
                     .having(func.count(PrintArchive.id) > 1)
                     .scalar_subquery()
@@ -2312,12 +2337,15 @@ class ArchiveService:
 
         return items, total
 
-    async def get_filter_options(self) -> dict:
-        """Get distinct filter values for archive dropdowns."""
+    async def get_filter_options(self, printer_scope: frozenset[int] | None = None) -> dict:
+        """Get distinct filter values for archive dropdowns — of the prints the caller reaches (N62)."""
+        visible = []
+        if (in_scope := printer_scope_where(printer_scope, PrintArchive.printer_id)) is not None:
+            visible.append(in_scope)
         # Materials
         mat_result = await self.db.execute(
             select(PrintArchive.filament_type)
-            .where(PrintArchive.filament_type.isnot(None), PrintArchive.filament_type != "")
+            .where(PrintArchive.filament_type.isnot(None), PrintArchive.filament_type != "", *visible)
             .distinct()
         )
         raw_materials = [r[0] for r in mat_result.all()]
@@ -2327,7 +2355,7 @@ class ArchiveService:
         # Colors
         col_result = await self.db.execute(
             select(PrintArchive.filament_color)
-            .where(PrintArchive.filament_color.isnot(None), PrintArchive.filament_color != "")
+            .where(PrintArchive.filament_color.isnot(None), PrintArchive.filament_color != "", *visible)
             .distinct()
         )
         raw_colors = [r[0] for r in col_result.all()]
@@ -2335,7 +2363,7 @@ class ArchiveService:
 
         # Tags
         tag_result = await self.db.execute(
-            select(PrintArchive.tags).where(PrintArchive.tags.isnot(None), PrintArchive.tags != "").distinct()
+            select(PrintArchive.tags).where(PrintArchive.tags.isnot(None), PrintArchive.tags != "", *visible).distinct()
         )
         raw_tags = [r[0] for r in tag_result.all()]
         tags = sorted({t.strip() for raw in raw_tags for t in raw.split(",") if t.strip()})

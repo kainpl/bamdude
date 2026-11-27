@@ -25,6 +25,7 @@ from sqlalchemy import Integer, and_, case, cast, extract, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.db_dialect import is_postgres
+from backend.app.core.printer_scope import where as printer_scope_where
 from backend.app.core.timezones import day_bounds
 from backend.app.models.archive import PrintArchive
 from backend.app.services.statistics import outcomes
@@ -183,7 +184,13 @@ def split_multi(
 # is the intended shape, and it is why the indexes came first.
 
 
-def _base_filters(tz: ZoneInfo, date_from: date | None, date_to: date | None, user_id: int | None) -> list:
+def _base_filters(
+    tz: ZoneInfo,
+    date_from: date | None,
+    date_to: date | None,
+    user_id: int | None,
+    printer_scope: frozenset[int] | None = None,
+) -> list:
     """The one filter set, spelled once.
 
     ⚠️ The range is applied to ``created_at`` on BOTH axes, including the
@@ -199,6 +206,9 @@ def _base_filters(tz: ZoneInfo, date_from: date | None, date_to: date | None, us
     ]
     if user_id is not None:
         filters.append(PrintArchive.created_by_id == user_id)
+    # N62: the prints of the printers the caller reaches, and those bound to no printer.
+    if (in_scope := printer_scope_where(printer_scope, PrintArchive.printer_id)) is not None:
+        filters.append(in_scope)
     if date_from:
         filters.append(PrintArchive.created_at >= day_bounds(date_from, tz)[0])
     if date_to:
@@ -419,7 +429,12 @@ async def _success_streak(db, filters: list) -> int:
 
 
 async def _by_material_number(
-    db, tz: ZoneInfo, date_from: date | None, date_to: date | None, user_id: int | None
+    db,
+    tz: ZoneInfo,
+    date_from: date | None,
+    date_to: date | None,
+    user_id: int | None,
+    printer_scope: frozenset[int] | None = None,
 ) -> list[dict]:
     """Filament consumed and what it cost, grouped by the spools' material number.
 
@@ -456,6 +471,9 @@ async def _by_material_number(
         query = query.join(PrintArchive, PrintArchive.id == SpoolUsageHistory.archive_id).where(
             PrintArchive.created_by_id == user_id
         )
+    # N62: a usage row is of the printer that drew it; one bound to no printer stays.
+    if (in_scope := printer_scope_where(printer_scope, SpoolUsageHistory.printer_id)) is not None:
+        query = query.where(in_scope)
     rows = (await db.execute(query)).all()
     return sorted(
         (
@@ -478,10 +496,12 @@ async def collect(
     date_from: date | None,
     date_to: date | None,
     user_id: int | None,
+    printer_scope: frozenset[int] | None = None,
 ) -> dict[str, Any]:
-    """Everything the Stats page and the archive calendar fold, folded here."""
+    """Everything the Stats page and the archive calendar fold, folded here — of the printers
+    ``printer_scope`` reaches (N62; None = every printer)."""
     granularity = granularity_for(date_from, date_to)
-    filters = _base_filters(tz, date_from, date_to, user_id)
+    filters = _base_filters(tz, date_from, date_to, user_id, printer_scope)
 
     started = await _bucket_metrics(db, filters, PrintArchive.created_at, tz, granularity)
     ended = await _bucket_metrics(db, filters, _ENDED, tz, granularity)
@@ -519,7 +539,7 @@ async def collect(
             ({"material": r.pop("key"), **r} for r in materials), key=lambda r: r["grams"], reverse=True
         ),
         "by_color": sorted(({"color": r.pop("key"), **r} for r in colours), key=lambda r: r["grams"], reverse=True),
-        "by_material_number": await _by_material_number(db, tz, date_from, date_to, user_id),
+        "by_material_number": await _by_material_number(db, tz, date_from, date_to, user_id, printer_scope),
         "by_duration": await _by_duration(db, filters),
         "totals": await _totals(db, filters),
         "records": {

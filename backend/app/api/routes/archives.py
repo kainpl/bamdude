@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.routes._workshop_rights import ensure_may_file, ensure_may_file_future
 from backend.app.core import case_folding
-from backend.app.core.api_key_scope import in_key_scope
 from backend.app.core.auth import (
     RequestCredentials,
     RequirePermission,
@@ -28,6 +27,7 @@ from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.db_dialect import is_postgres
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import in_request_scope, request_printer_scope, where as printer_scope_where
 from backend.app.core.timezones import client_timezone, day_bounds
 from backend.app.core.websocket import ws_manager
 from backend.app.models.archive import PrintArchive
@@ -134,10 +134,10 @@ async def _archive_media_read(
         require_media_ownership_permission(Permission.ARCHIVES_READ_ALL, Permission.ARCHIVES_READ_OWN)
     ),
 ):
-    # Physical-printer scope does not restrict print history. The final live
-    # proof repeats this route policy while retaining owner/incarnation checks.
+    # N62 (D5): print history belongs to the printer that made it — the gate asked the archive's
+    # printer of this caller's scope, and the live proof asks it again while the bytes go out.
     binding = dict(getattr(request.state, "live_media_binding", {}))
-    binding["resource_printer_scope"] = False
+    binding["resource_printer_scope"] = True
     request.state.live_media_binding = binding
     return auth_result
 
@@ -342,7 +342,7 @@ async def last_print_by_printer(
     the list route refuses such a key's ``printer_id`` in the gate, which does not read ``ids``.
     """
     user, can_read_all = auth_result
-    wanted = {pid for pid in ids if in_key_scope(request, pid)}
+    wanted = {pid for pid in ids if in_request_scope(request, pid)}
     if not wanted:
         return {}
     conditions = [PrintArchive.deleted_at.is_(None), PrintArchive.printer_id.in_(wanted)]
@@ -452,6 +452,7 @@ async def list_archives(
         visible_to_user_id=visible_to_user_id,
         tz=client_timezone(request),
         outcome=outcome,
+        printer_scope=request_printer_scope(request),
     )
 
     # Get sets of duplicate hashes and duplicate (name, hash) pairs (efficient single queries).
@@ -462,7 +463,8 @@ async def list_archives(
     # Only the hashes on this page are asked about: the unscoped pair of GROUP BYs walked the
     # whole table on every list request, the printer cards' one-row reads included.
     duplicate_hashes, duplicate_name_hash_pairs = await service.get_duplicate_hashes_and_names(
-        {h for a in archives if (h := a.source_content_hash or a.content_hash)}
+        {h for a in archives if (h := a.source_content_hash or a.content_hash)},
+        printer_scope=request_printer_scope(request),
     )
 
     def _eff(archive: PrintArchive) -> str | None:
@@ -492,13 +494,15 @@ async def list_archives(
             ]
             duplicate_group_conditions.extend(name_hash_conditions)
 
+        # N62: the original a copy points at is one the caller can open.
+        group_scope = printer_scope_where(request_printer_scope(request), PrintArchive.printer_id)
         duplicate_group_rows = await db.execute(
             select(
                 PrintArchive.id,
                 PrintArchive.created_at,
                 eff_hash_col.label("effective_hash"),
                 func.lower(PrintArchive.print_name).label("print_name_lower"),
-            ).where(or_(*duplicate_group_conditions))
+            ).where(or_(*duplicate_group_conditions), *([group_scope] if group_scope is not None else []))
         )
 
         duplicate_groups_by_hash: dict[str, list[tuple[int, datetime]]] = defaultdict(list)
@@ -585,17 +589,19 @@ async def list_archives(
 
 @router.get("/filter-options", response_model=ArchiveFilterOptions)
 async def get_archive_filter_options(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.ARCHIVES_READ),
 ):
     """Get distinct filter values for archive dropdowns (materials, colors, tags)."""
     service = ArchiveService(db)
-    options = await service.get_filter_options()
+    options = await service.get_filter_options(printer_scope=request_printer_scope(request))
     return ArchiveFilterOptions(**options)
 
 
 @router.get("/search", response_model=list[ArchiveResponse])
 async def search_archives(
+    request: Request = None,
     q: str = Query(..., min_length=2, description="Search query"),
     printer_id: int | None = None,
     project_id: int | None = None,
@@ -620,6 +626,8 @@ async def search_archives(
 
     user, can_read_all = auth_result
     own_only = user is not None and not can_read_all
+    # N62: the prints of the printers the caller reaches, and those bound to no printer.
+    in_scope = printer_scope_where(request_printer_scope(request), PrintArchive.printer_id)
     search_term = q.strip()
 
     # Build dialect-specific FTS query
@@ -707,6 +715,8 @@ async def search_archives(
             query = query.where(PrintArchive.status == status)
         if own_only:
             query = query.where(PrintArchive.created_by_id == user.id)
+        if in_scope is not None:
+            query = query.where(in_scope)
 
         query = query.limit(limit).offset(offset)
         result = await db.execute(query)
@@ -732,6 +742,8 @@ async def search_archives(
         query = query.where(PrintArchive.status == status)
     if own_only:
         query = query.where(PrintArchive.created_by_id == user.id)
+    if in_scope is not None:
+        query = query.where(in_scope)
 
     result = await db.execute(query)
     archives_dict = {a.id: a for a in result.scalars().all()}
@@ -968,6 +980,7 @@ async def export_archives(
             date_to=date_to_dt,
             search=search,
             visible_to_user_id=visible_to_user_id,
+            printer_scope=request_printer_scope(request),
         )
     except ImportError as e:
         raise HTTPException(500, str(e))
@@ -989,6 +1002,7 @@ _NO_3MF_REASON_RANK = {"ftps_refused": 0, "auth_rejected": 1, "unreachable": 2, 
 
 @router.get("/no-3mf-warning")
 async def no_3mf_warning(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
@@ -1018,6 +1032,8 @@ async def no_3mf_warning(
     ]
     if user is not None and not can_read_all:
         conditions.append(PrintArchive.created_by_id == user.id)
+    if (in_scope := printer_scope_where(request_printer_scope(request), PrintArchive.printer_id)) is not None:
+        conditions.append(in_scope)
     result = await db.execute(select(PrintArchive.extra_data).where(*conditions))
     has_fallback = False
     reasons: set[str | None] = set()
@@ -1033,6 +1049,7 @@ async def no_3mf_warning(
 
 @router.get("/tags")
 async def get_all_tags(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
@@ -1050,6 +1067,8 @@ async def get_all_tags(
     tag_conditions = [PrintArchive.tags.isnot(None), PrintArchive.deleted_at.is_(None)]
     if user is not None and not can_read_all:
         tag_conditions.append(PrintArchive.created_by_id == user.id)
+    if (in_scope := printer_scope_where(request_printer_scope(request), PrintArchive.printer_id)) is not None:
+        tag_conditions.append(in_scope)
     result = await db.execute(select(PrintArchive.tags).where(*tag_conditions))
     all_tags_rows = result.all()
 
@@ -1090,8 +1109,12 @@ async def rename_tag(
     if new_name == tag_name:
         return {"affected": 0}
 
-    # Find all archives containing the old tag
-    result = await db.execute(select(PrintArchive).where(PrintArchive.tags.isnot(None)))
+    # Find all archives containing the old tag — of the printers the caller reaches (N62 r1 B04):
+    # the same tag on another team's prints stays as it is.
+    in_scope = printer_scope_where(request_printer_scope(request), PrintArchive.printer_id)
+    result = await db.execute(
+        select(PrintArchive).where(PrintArchive.tags.isnot(None), *([in_scope] if in_scope is not None else []))
+    )
     archives = list(result.scalars().all())
 
     affected = 0
@@ -1119,15 +1142,19 @@ async def rename_tag(
 @router.delete("/tags/{tag_name}")
 async def delete_tag(
     tag_name: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.ARCHIVES_UPDATE_ALL),
 ):
-    """Delete a tag from all archives.
+    """Delete a tag from all archives the caller reaches (N62: another team's prints keep it).
 
     Returns the count of affected archives.
     """
     # Find all archives containing the tag
-    result = await db.execute(select(PrintArchive).where(PrintArchive.tags.isnot(None)))
+    in_scope = printer_scope_where(request_printer_scope(request), PrintArchive.printer_id)
+    result = await db.execute(
+        select(PrintArchive).where(PrintArchive.tags.isnot(None), *([in_scope] if in_scope is not None else []))
+    )
     archives = list(result.scalars().all())
 
     affected = 0
@@ -1147,6 +1174,7 @@ async def delete_tag(
 
 @router.get("/{archive_id}", response_model=ArchiveResponse)
 async def get_archive(
+    request: Request,
     archive_id: int,
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = Depends(
@@ -1170,6 +1198,8 @@ async def get_archive(
         content_hash=archive.source_content_hash or archive.content_hash,
         print_name=archive.print_name,
         makerworld_model_id=makerworld_id,
+        printer_scope=request_printer_scope(request),
+        visible_to_user_id=user.id if (user is not None and not can_read_all) else None,
     )
 
     part_rows = (
@@ -1194,6 +1224,7 @@ async def get_archive(
 
 @router.get("/{archive_id}/similar")
 async def find_similar_archives(
+    request: Request,
     archive_id: int,
     limit: int = 10,
     db: AsyncSession = Depends(get_db),
@@ -1218,7 +1249,12 @@ async def find_similar_archives(
 
     service = ArchiveComparisonService(db)
     try:
-        return await service.find_similar_archives(archive_id, limit=limit)
+        return await service.find_similar_archives(
+            archive_id,
+            limit=limit,
+            printer_scope=request_printer_scope(request),
+            visible_to_user_id=user.id if (user is not None and not can_read_all) else None,
+        )
     except ValueError as e:
         raise HTTPException(404, str(e))
 
@@ -1310,7 +1346,7 @@ async def swap_declaration_jobs(
 ):
     """The pending and failed jobs linked to this source the caller may see, each with its revision and whether the
     current declaration may be applied to it. None is selected: a refresh names its jobs."""
-    from backend.app.core.api_key_scope import key_printer_scope
+    from backend.app.core.printer_scope import request_printer_scope
     from backend.app.services import swap_job_refresh
 
     actor, rights = await _swap_declaration_caller(request, db, read, update)
@@ -1320,7 +1356,7 @@ async def swap_declaration_jobs(
         actor=actor,
         rights=rights,
         job_rights=swap_job_refresh.JobRights(read_all=queue_read[1], update_all=queue_update[1]),
-        printer_scope=key_printer_scope(request),
+        printer_scope=request_printer_scope(request),
     )
 
 
@@ -1337,7 +1373,7 @@ async def refresh_swap_declaration_jobs(
 ):
     """Write the source's current declaration into the named jobs' snapshots -- every one, or none. Not a Retry: a
     failed job stays failed."""
-    from backend.app.core.api_key_scope import key_printer_scope
+    from backend.app.core.printer_scope import request_printer_scope
     from backend.app.services import swap_job_refresh
 
     actor, rights = await _swap_declaration_caller(request, db, read, update)
@@ -1351,7 +1387,7 @@ async def refresh_swap_declaration_jobs(
         actor=actor,
         rights=rights,
         job_rights=swap_job_refresh.JobRights(read_all=queue_read[1], update_all=queue_update[1]),
-        printer_scope=key_printer_scope(request),
+        printer_scope=request_printer_scope(request),
     )
 
 
@@ -1898,6 +1934,7 @@ async def retry_archive_download(
 
 @router.get("/{archive_id}/duplicates")
 async def get_archive_duplicates(
+    request: Request,
     archive_id: int,
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = Depends(
@@ -1920,6 +1957,8 @@ async def get_archive_duplicates(
         content_hash=archive.source_content_hash or archive.content_hash,
         print_name=archive.print_name,
         makerworld_model_id=makerworld_id,
+        printer_scope=request_printer_scope(request),
+        visible_to_user_id=user.id if (user is not None and not can_read_all) else None,
     )
     return {"duplicates": duplicates, "count": len(duplicates)}
 

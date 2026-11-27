@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone, tzinfo
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.printer_scope import where as printer_scope_where
 from backend.app.core.timezones import day_bounds, server_timezone
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
@@ -33,6 +34,7 @@ class FailureAnalysisService:
         project_id: int | None = None,
         created_by_id: int | None = None,
         tz: tzinfo | None = None,
+        printer_scope: frozenset[int] | None = None,
     ) -> dict:
         """Analyze failure patterns across archives.
 
@@ -87,6 +89,9 @@ class FailureAnalysisService:
         # non_date_filter so every sub-query (totals, by-reason, trend) inherits it.
         if created_by_id is not None:
             non_date_filter.append(PrintArchive.created_by_id == created_by_id)
+        # N62: the prints of the printers the caller reaches, and those bound to no printer.
+        if (in_scope := printer_scope_where(printer_scope, PrintArchive.printer_id)) is not None:
+            non_date_filter.append(in_scope)
         base_filter.extend(non_date_filter)
 
         if all_time:

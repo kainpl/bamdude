@@ -4,8 +4,9 @@ from dataclasses import dataclass
 
 from fastapi import HTTPException
 
-from backend.app.core.api_key_scope import key_printer_scope, narrowed_scope
+from backend.app.core.api_key_scope import narrowed_scope
 from backend.app.core.auth import authorize_api_key, library_name_scope
+from backend.app.core.printer_scope import request_printer_scope
 from backend.app.models.api_key import APIKey
 from backend.app.models.user import User
 from backend.app.services.swap_source_declarations import Actor, actor_for, fresh_api_key
@@ -34,7 +35,10 @@ async def capture(request, db, user):
     actor = await actor_for(request, db, user)
     key = await db.get(APIKey, actor.key_id) if actor.key_id else None
     return PlanAccess(
-        actor, await library_name_scope(request, db, user), key_printer_scope(request), key.key_hash if key else None
+        actor,
+        await library_name_scope(request, db, user),
+        request_printer_scope(request),
+        key.key_hash if key else None,
     )
 
 

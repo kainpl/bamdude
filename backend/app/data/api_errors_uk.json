@@ -1487,5 +1487,9 @@
   "The spool was created in Spoolman but not bound because of a concurrent delete": "Котушку створено у Spoolman, але не прив’язано через конкурентне видалення",
   "This spool is being deleted": "Цю котушку саме видаляють",
   "While a print is accounted in Spoolman, the Spoolman address or database cannot be changed. Try again after the print finishes": "Поки друк веде облік у Spoolman, адресу чи базу Spoolman змінити не можна. Спробуйте після завершення друку",
-  "You can only add to your own folders and folders shared with everyone": "Додавати можна лише у власні теки й теки, спільні для всіх"
+  "You can only add to your own folders and folders shared with everyone": "Додавати можна лише у власні теки й теки, спільні для всіх",
+  "API key does not have access to that target.": "API-ключ не має доступу до цієї цілі.",
+  "Only an administrator can add a printer to a limited group": "Лише адміністратор може додати принтер, коли ви в обмеженій групі",
+  "The Administrators group cannot be limited to printers": "Групу Administrators не можна обмежити принтерами",
+  "This changes which printers a limited group reaches; ask an administrator": "Це змінює, які принтери бачить обмежена група; зверніться до адміністратора"
 }

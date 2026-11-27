@@ -17,12 +17,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes.cloud import resolve_api_key_cloud_owner
-from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import RequireAnyPermission, RequirePermission, require_permission
 from backend.app.core.catalog_defaults import DEFAULT_COLOR_CATALOG, DEFAULT_SPOOL_CATALOG
 from backend.app.core.config import APP_VERSION
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import request_key_listed
 from backend.app.core.websocket import ws_manager
 from backend.app.models.ams_label import AmsLabel
 from backend.app.models.color_catalog import ColorCatalogEntry
@@ -1596,7 +1596,7 @@ async def list_spools(
     if sort_key in {"temperature", "humidity", "battery"} and sort_direction in {"asc", "desc"}:
         # Storage readings are a separate permission domain. A printer-scoped
         # key cannot inspect storage at all, even indirectly through ordering.
-        if key_printer_scope(request) is not None:
+        if request_key_listed(request):
             raise HTTPException(403, "A printer-scoped API key cannot sort storage conditions")
         authorization = request.headers.get("authorization", "")
         bearer = authorization.split(" ", 1)[1] if authorization.lower().startswith("bearer ") else None
@@ -2890,17 +2890,22 @@ async def get_replacement_window(
 
 @router.get("/assignments", response_model=list[SpoolAssignmentResponse])
 async def list_assignments(
+    request: Request,
     printer_id: int | None = None,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_VIEW_ASSIGNMENTS),
 ):
-    """List spool assignments, optionally filtered by printer."""
+    """List spool assignments, optionally filtered by printer — the slots of the printers the
+    caller reaches (N62: another team's slot is not shown; its spool stays in the inventory)."""
+    from backend.app.core.printer_scope import request_printer_scope, where_strict
     from backend.app.services.printer_manager import printer_manager
 
     query = select(SpoolAssignment).options(
         selectinload(SpoolAssignment.spool).selectinload(Spool.k_profiles),
         selectinload(SpoolAssignment.printer),
     )
+    if (in_scope := where_strict(request_printer_scope(request), SpoolAssignment.printer_id)) is not None:
+        query = query.where(in_scope)
     if printer_id is not None:
         query = query.where(SpoolAssignment.printer_id == printer_id)
     result = await db.execute(query)
@@ -3526,12 +3531,14 @@ async def link_tag_to_spool(
 
 @router.get("/spools/{spool_id}/usage", response_model=list[SpoolUsageHistoryResponse])
 async def get_spool_usage_history(
+    request: Request,
     spool_id: int,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
-    """Get usage history for a specific spool."""
+    """Get usage history for a specific spool — its prints on the printers the caller reaches,
+    and the corrections of no printer (N62)."""
     from backend.app.models.spool_usage_history import SpoolUsageHistory
 
     # Verify spool exists
@@ -3541,7 +3548,7 @@ async def get_spool_usage_history(
 
     result = await db.execute(
         select(SpoolUsageHistory)
-        .where(SpoolUsageHistory.spool_id == spool_id)
+        .where(SpoolUsageHistory.spool_id == spool_id, *_usage_scope(request, SpoolUsageHistory.printer_id))
         # id breaks the tie: a runout close-out lands in the same second as
         # the print's own rows, and date alone shows them in random order
         .order_by(SpoolUsageHistory.created_at.desc(), SpoolUsageHistory.id.desc())
@@ -3553,8 +3560,17 @@ async def get_spool_usage_history(
 _USAGE_PRINTER_ID_PATTERN = r"^(__none__|\d+)$"
 
 
+def _usage_scope(request: Request, column) -> list:
+    """N62: usage rows of the printers the caller reaches, and those of no printer."""
+    from backend.app.core.printer_scope import request_printer_scope, where as printer_scope_where
+
+    clause = printer_scope_where(request_printer_scope(request), column)
+    return [] if clause is None else [clause]
+
+
 @router.get("/usage/facets", response_model=SpoolUsageFacets)
 async def get_usage_history_facets(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
@@ -3564,7 +3580,9 @@ async def get_usage_history_facets(
     ``spool_usage_service.usage_facets``. Declared before the plain ``/usage``
     route so the literal path segment matches here.
     """
-    facets = await spool_usage_service.usage_facets(db, filters=[])
+    from backend.app.models.spool_usage_history import SpoolUsageHistory
+
+    facets = await spool_usage_service.usage_facets(db, filters=_usage_scope(request, SpoolUsageHistory.printer_id))
     return SpoolUsageFacets(
         statuses=facets["statuses"],
         printers=[SpoolUsageFacetPrinter(**row) for row in facets["printers"]],
@@ -3575,6 +3593,7 @@ async def get_usage_history_facets(
 
 @router.get("/usage", response_model=None)
 async def get_all_usage_history(
+    request: Request,
     limit: int = 100,
     printer_id: str | None = Query(
         None,
@@ -3645,6 +3664,7 @@ async def get_all_usage_history(
             query = query.where(SpoolUsageHistory.printer_id.is_(None))
         elif printer_id is not None:
             query = query.where(SpoolUsageHistory.printer_id == int(printer_id))
+        query = query.where(*_usage_scope(request, SpoolUsageHistory.printer_id))
         result = await db.execute(query)
         return [SpoolUsageHistoryResponse.model_validate(row) for row in result.scalars().all()]
 
@@ -3661,6 +3681,9 @@ async def get_all_usage_history(
         date_to=date_to,
         q=q,
     )
+    from backend.app.models.spool_usage_history import SpoolUsageHistory
+
+    filters.extend(_usage_scope(request, SpoolUsageHistory.printer_id))
 
     offset, page_limit = (0, None) if all else ((page - 1) * per_page, per_page)
 
@@ -3830,6 +3853,7 @@ async def delete_spool_usage_record(
 
 @router.post("/sync-ams-weights")
 async def sync_weights_from_ams(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
@@ -3843,15 +3867,19 @@ async def sync_weights_from_ams(
     counted in ``skipped_printers``: the print's own filament is still to be charged, and the AMS
     reading already contains part of it.
     """
-    from backend.app.services.printer_manager import printer_manager
-    from backend.app.services.usage_tracker import print_is_unbooked, sync_spool_weight_from_ams
-
     # Ascending spool id: every write below holds its spool's row until the
     # commit, so two requests walking the rows in different orders could hold
     # them crosswise on PostgreSQL. One order for all of them.
+    from backend.app.core.printer_scope import request_printer_scope, where_strict
+    from backend.app.services.printer_manager import printer_manager
+    from backend.app.services.usage_tracker import print_is_unbooked, sync_spool_weight_from_ams
+
+    # N62: the slots of the printers the caller reaches.
+    in_scope = where_strict(request_printer_scope(request), SpoolAssignment.printer_id)
     result = await db.execute(
         select(SpoolAssignment)
         .options(selectinload(SpoolAssignment.spool))
+        .where(*([in_scope] if in_scope is not None else []))
         .order_by(SpoolAssignment.spool_id, SpoolAssignment.id)
     )
     assignments = list(result.scalars().all())

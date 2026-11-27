@@ -184,8 +184,9 @@ async def cb_qadd_select_file(callback: CallbackQuery, state: FSMContext, tg_cha
 
     btns = []
 
-    # Model-based assignment
-    if models:
+    # Model-based assignment — the Auto Queue, which may place the job on any printer of the farm:
+    # not offered to a chat limited to printers (N62 r1 B03), as to a restricted API key.
+    if models and _chat_may_use_auto_queue(tg_chat):
         for model in models:
             btns.append(
                 [
@@ -300,10 +301,23 @@ async def _locations_for_model(model: str) -> list[tuple[int, str]]:
     return sorted(((loc_id, path_of(tree, loc_id)) for loc_id in offered), key=lambda pair: pair[1])
 
 
+def _chat_may_use_auto_queue(tg_chat: TelegramChat | None) -> bool:
+    """The Auto Queue is farm-wide: a chat whose printer scope is limited — by its own list or its
+    group (N62 D4) — queues only to a specific printer."""
+    return tg_chat is None or tg_chat.printer_scope() is None
+
+
+async def _refuse_auto_queue(callback: CallbackQuery, lang: str) -> None:
+    await callback.answer(t(lang, NS, "queue_add.auto_restricted"), show_alert=True)
+
+
 @router.callback_query(F.data.startswith("qadd:model:"))
 async def cb_qadd_select_model(callback: CallbackQuery, state: FSMContext, tg_chat: TelegramChat | None = None) -> None:
     """Model-based assignment selected — then, if it can matter, where."""
     lang = await get_language()
+    if not _chat_may_use_auto_queue(tg_chat):
+        await _refuse_auto_queue(callback, lang)
+        return
     model = callback.data.split(":")[2]
     await callback.answer()
 
@@ -516,6 +530,10 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
     # for it and then refused every one of them at this line: the target sets
     # printer_id=None, and the check below read that as "nothing chosen".
     if not printer_id and target_model:
+        # The button's data comes from the client: a limited chat is refused here too (N62 r1 B03).
+        if not _chat_may_use_auto_queue(tg_chat):
+            await _refuse_auto_queue(callback, lang)
+            return
         await _add_to_auto_queue(callback, lang, file_id, target_model, tg_chat, data.get("target_location_id"))
         return
 

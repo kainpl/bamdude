@@ -437,6 +437,11 @@ async def delete_user(
         raise HTTPException(403, "Administrator required")
     await _check_delete_target(db, user, current_user)
     await stage_end_sessions(db, target, "account_deleted")
+    # N62: a limited author's waiting Auto Queue jobs wait for an administrator once they have no
+    # author — without this they would read as "nobody's" and route over the whole farm.
+    from backend.app.core.printer_scope import hold_departing_author
+
+    await hold_departing_author(db, user)
     await detach_account_rows(db, target)
     # The explicit user-edge policy already removed the association rows;
     # a loaded groups collection must not DELETE those rows a second time.

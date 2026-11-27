@@ -46,7 +46,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from backend.app.core.api_key_scope import in_key_scope, printer_refusal
+from backend.app.core.api_key_scope import printer_refusal
 from backend.app.core.auth import (
     MEDIA_DOWNLOAD_GRANT_SECONDS,
     RequestCredentials,
@@ -62,6 +62,7 @@ from backend.app.core.auth import (
 )
 from backend.app.core.config import settings
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import in_request_scope
 from backend.app.i18n import current_language
 from backend.app.i18n.api_errors import translate_detail
 from backend.app.services import media_downloads
@@ -748,8 +749,9 @@ def _archive_descriptor(request: Request, archive, can_read_all: bool, printer=N
         resource_kind="archive",
         resource_id=archive.id,
         resource_stamp=_archive_stamp(archive),
-        # Print history is not narrowed by a key's printer list; reading the printer is, above.
-        resource_printer_scope=False,
+        # N62 (D5): print history is the printer's — the archive's printer stays in the caller's scope
+        # for as long as the job runs, as reading the printer does above.
+        resource_printer_scope=True,
     )
 
 
@@ -793,7 +795,7 @@ async def create_archive_download_job(
         await creds.check(_FILES_GATE)
         if any(item.printer_id != archive.printer_id for item in body.remote):
             raise HTTPException(400, "A recording must be on this archive's printer")
-        if not in_key_scope(request, archive.printer_id):
+        if not in_request_scope(request, archive.printer_id):
             raise printer_refusal(archive.printer_id)
         if printer is None:
             raise HTTPException(404, "Printer not found")
@@ -1065,7 +1067,7 @@ async def list_archive_media_sources(
     }
     if printer is None:
         status = "no_printer"
-    elif not await creds.allows(_FILES_GATE) or not in_key_scope(request, printer.id):
+    elif not await creds.allows(_FILES_GATE) or not in_request_scope(request, printer.id):
         status = "forbidden"
     else:
         status = None

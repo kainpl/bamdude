@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.auth import RequirePermission, require_ownership_permission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import request_printer_scope, where as printer_scope_where
 from backend.app.core.timezones import client_timezone, day_bounds
 from backend.app.models.archive import PrintArchive
 from backend.app.models.spool_usage_history import SpoolUsageHistory
@@ -93,6 +94,11 @@ async def get_archive_stats(
         PrintArchive.deleted_at.is_(None),
     ]
     _apply_user_filter(base_conditions, created_by_id)
+    # N62: the prints of the printers the caller reaches, and those bound to no printer; the plug
+    # figures below are of the same printers' plugs (and the plugs bound to none).
+    printer_scope = request_printer_scope(request)
+    if (in_scope := printer_scope_where(printer_scope, PrintArchive.printer_id)) is not None:
+        base_conditions.append(in_scope)
     # Client's day, not UTC's — the picker was filled in against their clock.
     # This decides which prints land in the range at all, so a UTC boundary
     # moved every print from the first hours of a local day into the one before.
@@ -264,7 +270,7 @@ async def get_archive_stats(
     if not date_from and not date_to:
         # All-time: the live lifetime counters, costed at the price of their own time (m245) —
         # never at today's price, which re-costed the whole past at every tariff change.
-        total_energy_kwh, total_energy_cost = await live_totals_and_cost(db)
+        total_energy_kwh, total_energy_cost = await live_totals_and_cost(db, printer_scope=printer_scope)
     else:
         # Total consumption mode with a date filter (#941): use hourly snapshots
         # to compute per-plug (endpoint - baseline) deltas.
@@ -281,7 +287,7 @@ async def get_archive_stats(
         dt_to = day_bounds(date_to, tz)[1] if date_to else None
 
         total_energy_kwh, total_energy_cost, energy_data_warming_up = await range_energy_and_cost(
-            db, dt_from=dt_from, dt_to=dt_to
+            db, dt_from=dt_from, dt_to=dt_to, printer_scope=printer_scope
         )
 
     return ArchiveStats(
@@ -341,6 +347,7 @@ async def aggregate_archives(
         date_from=date_from,
         date_to=date_to,
         user_id=None if can_read_all or current_user is None else current_user.id,
+        printer_scope=request_printer_scope(request),
     )
 
 
@@ -386,11 +393,13 @@ async def analyze_failures(
         project_id=project_id,
         created_by_id=scoped_user_id,
         tz=client_timezone(request),
+        printer_scope=request_printer_scope(request),
     )
 
 
 @router.get("/export")
 async def export_stats(
+    request: Request,
     format: str = Query("csv", description="Export format: csv or xlsx"),
     days: int = 30,
     printer_id: int | None = None,
@@ -413,6 +422,7 @@ async def export_stats(
             days=days,
             printer_id=printer_id,
             project_id=project_id,
+            printer_scope=request_printer_scope(request),
         )
     except ImportError as e:
         raise HTTPException(500, str(e))

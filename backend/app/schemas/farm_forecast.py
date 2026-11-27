@@ -31,13 +31,24 @@ class FarmForecastOut(BaseModel):
     printers: list[PrinterForecastOut] = []
 
     @classmethod
-    def of(cls, now: datetime, farm: FarmForecast) -> FarmForecastOut:
+    def of(cls, now: datetime, farm: FarmForecast, printer_scope: frozenset[int] | None = None) -> FarmForecastOut:
         """The one place the simulation's seconds become wall-clock dates —
-        both routes that answer a farm header go through it."""
+        both routes that answer a farm header go through it.
+
+        ``printer_scope`` (N62): the farm is simulated whole — another team's
+        queue still takes its printers — and the answer is read for the printers
+        the caller reaches: their rows, their «free at» (the latest of them) and
+        their unestimated prints."""
+        machines = farm.printers
+        free_seconds, unknown = farm.free_seconds, farm.unknown_prints
+        if printer_scope is not None:
+            machines = [p for p in farm.printers if p.printer_id in printer_scope]
+            free_seconds = max((p.free_seconds for p in machines), default=0)
+            unknown = sum(p.unknown_prints for p in machines)
         return cls(
-            free_at=now + timedelta(seconds=farm.free_seconds),
-            free_seconds=farm.free_seconds,
-            unknown_prints=farm.unknown_prints,
+            free_at=now + timedelta(seconds=free_seconds),
+            free_seconds=free_seconds,
+            unknown_prints=unknown,
             printers=[
                 PrinterForecastOut(
                     printer_id=p.printer_id,
@@ -45,7 +56,7 @@ class FarmForecastOut(BaseModel):
                     free_seconds=p.free_seconds,
                     unknown_prints=p.unknown_prints,
                 )
-                for p in farm.printers
+                for p in machines
             ],
         )
 

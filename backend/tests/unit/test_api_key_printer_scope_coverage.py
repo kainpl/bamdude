@@ -1,12 +1,14 @@
-"""The API-key printer scope reads every printer a key-reachable route can be told about.
+"""The printer scope reads every printer a gated route can be told about (N62 §9.2).
 
 ``core/api_key_scope`` finds the printers a request names by FIELD NAME —
 ``printer_id`` / ``printer_ids`` / ``queue_id`` / … in the path, the query or
 anywhere in a JSON body. That is only as good as the names: a route an API key
 can reach that takes ``target_printer_id`` would slip past it without a sound.
-So this walks every route a key can reach and demands that each printer- or
-queue-looking name is one the scope reads, or is listed here as not a printer
-with the reason.
+So this walks every route behind a permission gate — a person passes the same
+scanner since N62 (``enforce_person_scope``), not only a key — and demands that
+each printer- or queue-looking name is one the scope reads, or is listed here as
+not a printer with the reason. A printer in a FORM field is refused outright: the
+scanner reads JSON only (spec §5.1).
 
 ⚠️ Reachability is read off the gate closures (``perm_strings`` / ``all_perm``).
 If a refactor of the gates changes those names this walk finds nothing and
@@ -39,6 +41,46 @@ NOT_A_PRINTER = {
     "printer_preset": "a slicer preset reference (source + id) of an assembly target, not a farm printer",
     "controls_printer_power": "a boolean describing the plug's power role, not a printer reference",
     "show_on_printer_card": "a boolean display preference, not a printer reference",
+    # N62: names a person's gated routes carry that are not a printer reference.
+    "can_control_printer": "an API key's permission flag",
+    "can_queue": "an API key's permission flag",
+    "restrict_printers": "a group's flag; its printers are written by an administrator (§6)",
+    "editing_queue_item": "a boolean: the preview is of an edit (the job itself is source_queue_item_id)",
+    "printer_names": "printer PRESET names a filament family applies to",
+    "printer_data": "the body of a printer's own create / update route",
+    "src_printer_model": "a printer model",
+    "dst_printer_model": "a printer model",
+    "queue_force_color_match": "a Virtual Printer's boolean",
+    "clear_target_printer": "a Virtual Printer's boolean",
+    "target_printer_id": "a Virtual Printer's target — Virtual Printers are administrative (§5.2)",
+    "printer_location_id": "a printer LOCATION; the sensor routes ask target_in_request_scope (§12.2)",
+    # The installation's settings (settings:update), not a person's printer request.
+    "default_printer_id": "an installation setting",
+    "obico_enabled_printers": "an installation setting",
+    "octoeverywhere_enabled_printers": "an installation setting",
+    "check_printer_firmware": "an installation setting",
+    "per_printer_mapping_expanded": "an installation setting",
+    "printer_sensor_history_retention_days": "an installation setting",
+    "auto_queue_compatible_models": "an installation setting",
+    "auto_queue_rebalance_models": "an installation setting",
+    "auto_queue_return_failed": "an installation setting",
+    "queue_drying_block": "an installation setting",
+    "queue_drying_enabled": "an installation setting",
+    "queue_shortest_first": "an installation setting",
+    "virtual_printer_access_code": "an installation setting",
+    "virtual_printer_archive_name_source": "an installation setting",
+    "virtual_printer_enabled": "an installation setting",
+    "virtual_printer_mode": "an installation setting",
+    # Notification provider event switches.
+    "on_printer_error": "a provider's event switch",
+    "on_printer_offline": "a provider's event switch",
+    "on_printer_queue_completed": "a provider's event switch",
+    "on_queue_completed": "a provider's event switch",
+    "on_queue_job_added": "a provider's event switch",
+    "on_queue_job_failed": "a provider's event switch",
+    "on_queue_job_skipped": "a provider's event switch",
+    "on_queue_job_started": "a provider's event switch",
+    "on_queue_job_waiting": "a provider's event switch",
 }
 
 READ_BY_THE_SCOPE = api_key_scope._PRINTER_KEYS | api_key_scope._PRINTER_CSV_QUERY | api_key_scope._QUEUE_ITEM_KEYS
@@ -94,6 +136,11 @@ def _key_routes() -> list[APIRoute]:
     return [r for r in app.routes if isinstance(r, APIRoute) and _key_reachable(r)]
 
 
+def _gated_routes() -> list[APIRoute]:
+    """Every route behind a permission gate: a key's, and since N62 a person's too."""
+    return [r for r in app.routes if isinstance(r, APIRoute) and any(True for _ in _gates(r.dependant))]
+
+
 def test_the_walk_sees_the_routes_we_know():
     seen = {(method, r.path) for r in _key_routes() for method in r.methods}
 
@@ -110,21 +157,41 @@ def test_the_walk_sees_the_routes_we_know():
     } <= seen
 
 
-def test_every_printer_a_key_can_name_is_read_by_the_scope():
+def test_every_printer_a_caller_can_name_is_read_by_the_scope():
+    """N62 §9.2: every gated route — a person passes the scanner as a key does; the Auto Queue
+    is open to a person (D2), so its routes are walked too."""
     unread = sorted(
         {
             (route.path, name)
-            for route in _key_routes()
-            if not _farm_wide(route.path)
+            for route in _gated_routes()
             for name in _names(route)
             if _LOOKS_LIKE_A_PRINTER.search(name) and name not in READ_BY_THE_SCOPE and name not in NOT_A_PRINTER
         }
     )
 
     assert not unread, (
-        "A route an API key can reach takes a printer under a name core/api_key_scope does not read. "
+        "A gated route takes a printer under a name core/api_key_scope does not read. "
         "Read it there, or add it to NOT_A_PRINTER with the reason: " + repr(unread)
     )
+
+
+def test_no_gated_route_takes_a_printer_in_a_form_field():
+    """The scanner reads the path, the query and a JSON body — never a form (spec §5.1)."""
+    from fastapi import params
+
+    in_forms = sorted(
+        (route.path, param.name)
+        for route in _gated_routes()
+        for param in route.dependant.body_params
+        if isinstance(param.field_info, params.Form)
+        and _LOOKS_LIKE_A_PRINTER.search(param.name)
+        and param.name not in NOT_A_PRINTER
+    )
+    assert not in_forms, in_forms
+
+
+def test_the_gated_walk_sees_more_than_the_key_walk():
+    assert len(_gated_routes()) > len(_key_routes())
 
 
 def test_every_job_list_on_the_queue_router_is_read_by_the_scope():
@@ -148,7 +215,7 @@ def test_every_path_resolver_still_meets_a_route():
     templates = [(r.path, {p.name for p in r.dependant.path_params}) for r in app.routes if isinstance(r, APIRoute)]
     idle = [
         (prefix, param)
-        for prefix, param, _resolve in api_key_scope._PATH_RESOLVERS
+        for prefix, param, _resolve, _source in api_key_scope._PATH_RESOLVERS
         if not any(path.startswith(prefix) and param in params for path, params in templates)
     ]
 

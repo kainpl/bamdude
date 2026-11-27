@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import lazyload, load_only, selectinload
 
 from backend.app.api.routes._workshop_rights import ensure_may_file_future
-from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import (
     RequestCredentials,
     RequirePermission,
@@ -26,6 +25,7 @@ from backend.app.core.auth import (
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import request_printer_scope
 from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
@@ -478,24 +478,34 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
 
 @router.get("/stagger-state")
 async def get_stagger_state(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.QUEUE_READ),
 ):
-    """Current stagger slot occupancy for the UI diagnostic banner."""
+    """Current stagger slot occupancy for the UI diagnostic banner.
+
+    N62: a group's counts stay whole — they decide when the caller's own prints may start — but
+    the slots it names are of the printers the caller reaches."""
+    from backend.app.core.printer_scope import in_request_scope
     from backend.app.services.print_scheduler import scheduler as print_scheduler
 
-    return await print_scheduler.get_stagger_state_snapshot(db)
+    state = await print_scheduler.get_stagger_state_snapshot(db)
+    for group in state.get("groups", []):
+        group["slots"] = [slot for slot in group["slots"] if in_request_scope(request, slot["printer_id"])]
+    return state
 
 
 @router.get("/forecast", response_model=FarmForecastOut)
 async def get_queue_forecast(
-    db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.QUEUE_READ)
+    request: Request, db: AsyncSession = Depends(get_db), _: User | None = RequirePermission(Permission.QUEUE_READ)
 ):
     """When the last printer is free, given what the queues already hold — the
-    number the queue page's stats bar shows (spec 2026-09-06, Decision 5)."""
+    number the queue page's stats bar shows (spec 2026-09-06, Decision 5). Of the
+    printers the caller reaches (N62): the farm is simulated whole, its rows read
+    for them."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     farm = farm_forecast.simulate_farm(await farm_forecast.load_snapshot(db, now))
-    return FarmForecastOut.of(now, farm)
+    return FarmForecastOut.of(now, farm, printer_scope=request_printer_scope(request))
 
 
 @router.get("/summary", response_model=QueueSummaryResponse)
@@ -504,6 +514,7 @@ async def queue_summary(
     auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(Permission.QUEUE_READ_ALL, Permission.QUEUE_READ_OWN)
     ),
+    request: Request = None,
 ):
     """Small badge/issue counts from real visible queue rows, not archive history."""
     user, can_read_all = auth_result
@@ -516,6 +527,11 @@ async def queue_summary(
     )
     if user is not None and not can_read_all:
         stmt = stmt.where(PrintQueueItem.created_by_id == user.id)
+    # N62: the queues of the printers the caller reaches; a row of no printer's queue stays (§12.3).
+    from backend.app.core.printer_scope import where as printer_scope_where
+
+    if (in_scope := printer_scope_where(request_printer_scope(request), PrinterQueue.printer_id)) is not None:
+        stmt = stmt.where(in_scope)
 
     groups: dict[int, QueueSummaryGroup] = {}
     for queue_id, printer_id, status, count in (await db.execute(stmt)).all():
@@ -579,7 +595,7 @@ async def list_queue_leftovers(
     """
     from backend.app.services import queue_leftovers
 
-    found = await queue_leftovers.find(db, printer_ids=key_printer_scope(request))
+    found = await queue_leftovers.find(db, printer_ids=request_printer_scope(request))
     return QueueLeftoversResponse(
         items=[
             QueueLeftoverOut(
@@ -613,7 +629,7 @@ async def retire_queue_leftovers(
     """
     from backend.app.services import queue_leftovers
 
-    scoped = key_printer_scope(request) is not None
+    scoped = request_printer_scope(request) is not None
     result = await queue_leftovers.retire(item_ids=data.item_ids, auto_item_ids=() if scoped else data.orphan_ids)
     skipped = [
         QueueLeftoverSkipped(kind=s.kind, item_id=s.item_id, auto_item_id=s.auto_item_id, reason=s.reason)
@@ -659,7 +675,7 @@ async def list_queue(
     )
     if user is not None and not can_read_all:
         query = query.where(PrintQueueItem.created_by_id == user.id)
-    key_scope = key_printer_scope(request)
+    key_scope = request_printer_scope(request)
     if key_scope is not None:
         query = query.where(PrintQueueItem.queue_id.in_(key_scope))
 
@@ -2285,7 +2301,7 @@ async def retry_failed_block(
         data.queue_id,
         data.item_ids,
         actor=actor,
-        granted_scope=key_printer_scope(request),
+        granted_scope=request_printer_scope(request),
         key_hash=key.key_hash if key else None,
         cancelled_item_ids=data.cancelled_item_ids,
     )

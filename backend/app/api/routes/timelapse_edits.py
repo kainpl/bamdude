@@ -65,8 +65,8 @@ def _descriptor(request: Request, archive) -> LiveDescriptor:
         resource_kind="archive",
         resource_id=archive.id,
         resource_stamp=_archive_stamp(archive),
-        # Print history is not narrowed by a key's printer list.
-        resource_printer_scope=False,
+        # N62 (D5): print history is the printer's — the archive's printer stays in the caller's scope.
+        resource_printer_scope=True,
     )
 
 

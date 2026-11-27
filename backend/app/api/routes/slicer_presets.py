@@ -744,14 +744,14 @@ async def list_loaded_filaments(
     Spoolman. Needs the right to slice AND the right to read printers: the
     answer is printer facts (who is online, what is loaded).
     """
-    from backend.app.core.api_key_scope import key_printer_scope
+    from backend.app.core.printer_scope import request_printer_scope
     from backend.app.services.printer_manager import printer_manager
     from backend.app.services.slice_loaded_filaments import loaded_filaments
 
     return await loaded_filaments(
         db,
         printer_manager,
-        allowed=key_printer_scope(request),
+        allowed=request_printer_scope(request),
         user=current_user,
         key_owner=api_key_cloud_owner,
     )

@@ -29,7 +29,7 @@ from sqlalchemy.exc import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.api_key_scope import enforce_printer_scope, printer_refusal
+from backend.app.core.api_key_scope import enforce_key_scope, enforce_person_scope, printer_refusal
 from backend.app.core.auth_lifetime import (
     FrozenAuthority,
     VerifiedOutcome,
@@ -328,6 +328,12 @@ async def verify_camera_stream_token(token, *, printer_id=None, request=None):
 
     async with _auth_database_errors(), async_session() as db:
         record = await verify_token(db, token, scope=STREAM_SCOPES)
+        if record is not None and printer_id is not None:
+            # N62 (r1 B01): a long-lived token shows its owner's printers, no other.
+            from backend.app.core.printer_scope import allows
+
+            if not allows(await _long_lived_owner_scope(db, record), printer_id):
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Printer not found")
         if record is not None and request is not None:
             from backend.app.services.live_authority import LiveDescriptor, monotonic_expiry
 
@@ -1903,22 +1909,24 @@ async def check_webhook_permission(db: AsyncSession, api_key: APIKey, permission
         )
 
 
-def check_printer_access(api_key: APIKey, printer_id: int) -> None:
-    """Check if API key has access to the specified printer.
+def check_key_list_access(api_key: APIKey, printer_id: int) -> None:
+    """The key's OWN printer list holds ``printer_id`` — or 403. For a synchronous check that has
+    no session (``auth_lifetime.validate_loaded``); the owner's narrowing is the live recheck's."""
+    from backend.app.core.printer_scope import allows, key_list
 
-    Args:
-        api_key: The API key object
-        printer_id: The printer ID to check access for
+    if not allows(key_list(api_key), printer_id):
+        raise printer_refusal(printer_id)
 
-    Raises:
-        HTTPException: If access is denied
+
+async def check_printer_access(db: AsyncSession, api_key: APIKey, printer_id: int) -> None:
+    """The key reaches ``printer_id`` — its own list ∩ its owner's scope (N62 D5) — or 403.
+
+    For the doors that take a key outside the permission gates (``/webhook/*``).
     """
-    # If printer_ids is None, access to all printers (empty list = no access)
-    if api_key.printer_ids is None:
-        return
+    from backend.app.core.printer_scope import allows, key_scope
 
-    # Check if printer_id is in allowed list
-    if printer_id not in api_key.printer_ids:
+    owner = await resolve_apikey_owner(db, api_key)
+    if not allows(await key_scope(db, api_key, owner), printer_id):
         raise printer_refusal(printer_id)
 
 
@@ -1994,7 +2002,7 @@ def require_permission(*permissions: str | Permission):
                     # GHSA-r2qv-8222-hqg3: gate on the key's scope flags instead
                     # of allowing any valid key unconditionally.
                     await authorize_api_key(db, key_authority.key, perm_strings, authority=key_authority)
-                    await enforce_printer_scope(db, request, key_authority.key)
+                    await enforce_key_scope(db, request, key_authority.key, key_authority.owner)
                     remember_live_authority(request, key_authority, perm_strings)
                     return None  # API key valid + scoped, allow access
 
@@ -2013,7 +2021,7 @@ def require_permission(*permissions: str | Permission):
                 key_authority = await _api_key_authority_or_none(request, token)
                 if key_authority:
                     await authorize_api_key(db, key_authority.key, perm_strings, authority=key_authority)
-                    await enforce_printer_scope(db, request, key_authority.key)
+                    await enforce_key_scope(db, request, key_authority.key, key_authority.owner)
                     remember_live_authority(request, key_authority, perm_strings)
                     return None  # API key valid + scoped, allow access
                 raise HTTPException(
@@ -2032,6 +2040,8 @@ def require_permission(*permissions: str | Permission):
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Missing required permissions: {', '.join(perm_strings)}",
                 )
+            # N62: a person limited to printers, held to them after the permission passed.
+            await enforce_person_scope(db, request, authority.user)
             remember_live_authority(request, authority, perm_strings)
             return authority.user
 
@@ -2200,7 +2210,7 @@ def require_any_permission(*permissions: str | Permission):
                     await authorize_api_key(
                         db, key_authority.key, perm_strings, require_any=True, authority=key_authority
                     )
-                    await enforce_printer_scope(db, request, key_authority.key)
+                    await enforce_key_scope(db, request, key_authority.key, key_authority.owner)
                     remember_live_authority(request, key_authority)
                     request.state.live_descriptor = replace(
                         request.state.live_descriptor, any_permissions=tuple(perm_strings)
@@ -2223,7 +2233,7 @@ def require_any_permission(*permissions: str | Permission):
                     await authorize_api_key(
                         db, key_authority.key, perm_strings, require_any=True, authority=key_authority
                     )
-                    await enforce_printer_scope(db, request, key_authority.key)
+                    await enforce_key_scope(db, request, key_authority.key, key_authority.owner)
                     remember_live_authority(request, key_authority)
                     request.state.live_descriptor = replace(
                         request.state.live_descriptor, any_permissions=tuple(perm_strings)
@@ -2245,6 +2255,7 @@ def require_any_permission(*permissions: str | Permission):
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Missing any of the required permissions: {', '.join(perm_strings)}",
                 )
+            await enforce_person_scope(db, request, authority.user)  # N62
             remember_live_authority(request, authority)
             request.state.live_descriptor = replace(request.state.live_descriptor, any_permissions=tuple(perm_strings))
             return authority.user
@@ -2273,20 +2284,45 @@ async def verify_camwall_token(token: str) -> bool:
         return record is not None
 
 
+async def _long_lived_owner_scope(db: AsyncSession, record) -> frozenset[int] | None:
+    """The printers a long-lived token's owner reaches (N62) — a token without an owner none."""
+    from backend.app.core.printer_scope import author_scope
+
+    if record.user_id is None:
+        return frozenset()
+    return await author_scope(db, record.user_id)
+
+
+async def _verified_long_lived_scope(token: str, scope: str) -> tuple[bool, frozenset[int] | None]:
+    """Is ``token`` a valid long-lived token of ``scope``, and which printers its owner reaches."""
+    async with _auth_database_errors(), async_session() as db:
+        from backend.app.services.long_lived_tokens import verify_token as verify_long_lived
+
+        record = await verify_long_lived(db, token, scope=scope)
+        if record is None:
+            return False, frozenset()
+        return True, await _long_lived_owner_scope(db, record)
+
+
 def require_camwall_token():
     """Dependency that validates a Cam Wall token passed as ``?token=``.
 
     Auth is always on here, so unlike upstream there is no "if enabled" escape:
-    the token is always required.
+    the token is always required. The wall shows the printers the token's owner
+    reaches (N62): their scope is the request's, for the routes to narrow by.
     """
 
     async def checker(token: str | None = None, request: Request = None) -> None:
         reject_key_on_token_only_door(request)
-        if not token or not await verify_camwall_token(token):
+        valid, owner_scope = await _verified_long_lived_scope(token, "camwall") if token else (False, None)
+        if not valid:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Valid Cam Wall token required. Create one under Settings > Camera with the 'Cam Wall' scope.",
             )
+        from backend.app.core.printer_scope import set_request_scope
+
+        set_request_scope(request, owner_scope, "person")
 
     return checker
 
@@ -2318,7 +2354,8 @@ def require_overlay_token():
 
     async def checker(token: str | None = None, request: Request = None) -> None:
         reject_key_on_token_only_door(request)
-        if not token or not await verify_overlay_token(token):
+        valid, owner_scope = await _verified_long_lived_scope(token, "overlay") if token else (False, None)
+        if not valid:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=(
@@ -2326,6 +2363,13 @@ def require_overlay_token():
                     "with the 'Streaming Overlay' scope."
                 ),
             )
+        # N62 (r1 B01): the overlay names the file being printed — only on the owner's printers.
+        from backend.app.core.printer_scope import allows, set_request_scope
+
+        set_request_scope(request, owner_scope, "person")
+        raw = request.path_params.get("printer_id") if request is not None else None
+        if raw is not None and not allows(owner_scope, int(raw)):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Printer not found")
 
     return checker
 
@@ -2420,6 +2464,13 @@ def require_camera_token_or_headers():
     return checker
 
 
+async def _media_token_person_scope(request: Request, user: User) -> None:
+    """A media token names its person: they are held to their printers exactly as their headers
+    would be (N62 r1 B01) — the scanner over the path, query and the things it names (an archive)."""
+    async with _auth_database_errors(), async_session() as db:
+        await enforce_person_scope(db, request, user)
+
+
 def require_media_permission(*permissions: str | Permission):
     """Media-route dependency for a resource with no per-row ownership (audit D9 a2).
 
@@ -2445,6 +2496,7 @@ def require_media_permission(*permissions: str | Permission):
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Missing required permissions: {', '.join(perm_strings)}",
                 )
+            await _media_token_person_scope(request, authority.user)
             remember_live_authority(request, authority, perm_strings)
             return authority.user
         return await header_checker(request=request, credentials=credentials, x_api_key=x_api_key)
@@ -2472,6 +2524,7 @@ def require_media_any_permission(*permissions: str | Permission):
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Missing any of the required permissions: {', '.join(perm_strings)}",
                 )
+            await _media_token_person_scope(request, authority.user)
             remember_live_authority(request, authority)
             request.state.live_descriptor = replace(request.state.live_descriptor, any_permissions=tuple(perm_strings))
             return authority.user
@@ -2502,9 +2555,11 @@ def require_media_ownership_permission(all_permission: str | Permission, own_per
         if token and selected_api_key(request, credentials, x_api_key) is None:
             authority = await _media_token_authority(token)
             if authority.has_all(all_perm):
+                await _media_token_person_scope(request, authority.user)
                 remember_live_authority(request, authority, [all_perm])
                 return authority.user, True
             if authority.has_all(own_perm):
+                await _media_token_person_scope(request, authority.user)
                 remember_live_authority(request, authority, [own_perm])
                 return authority.user, False
             raise HTTPException(
@@ -2613,7 +2668,7 @@ def require_ownership_permission(
                     # keys have no per-row ownership identity so a passing key
                     # keeps can_modify_all=True.
                     await authorize_api_key(db, key_authority.key, [all_perm], authority=key_authority)
-                    await enforce_printer_scope(db, request, key_authority.key)
+                    await enforce_key_scope(db, request, key_authority.key, key_authority.owner)
                     remember_live_authority(request, key_authority, [all_perm])
                     return None, True
 
@@ -2625,7 +2680,7 @@ def require_ownership_permission(
                     key_authority = await _api_key_authority_or_none(request, token)
                     if key_authority:
                         await authorize_api_key(db, key_authority.key, [all_perm], authority=key_authority)
-                        await enforce_printer_scope(db, request, key_authority.key)
+                        await enforce_key_scope(db, request, key_authority.key, key_authority.owner)
                         remember_live_authority(request, key_authority, [all_perm])
                         return None, True
                     raise HTTPException(
@@ -2640,9 +2695,11 @@ def require_ownership_permission(
                     raise _credentials_exception() from exc
 
                 if authority.has_all(all_perm):
+                    await enforce_person_scope(db, request, authority.user)  # N62
                     remember_live_authority(request, authority, [all_perm])
                     return authority.user, True
                 if authority.has_all(own_perm):
+                    await enforce_person_scope(db, request, authority.user)  # N62
                     remember_live_authority(request, authority, [own_perm])
                     return authority.user, False
 

@@ -242,7 +242,7 @@ async def validate_captured(db, capture: FrozenAuthority, *, required_permission
                 .execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
-    return validate_loaded(
+    principal = validate_loaded(
         capture,
         user,
         session=session,
@@ -251,6 +251,26 @@ async def validate_captured(db, capture: FrozenAuthority, *, required_permission
         required_permissions=required_permissions,
         printer_id=printer_id,
     )
+    if printer_id is not None:
+        await _ensure_printer_in_scope(db, principal, printer_id)
+    return principal
+
+
+async def _ensure_printer_in_scope(db, principal: FreshPrincipal, printer_id: int) -> None:
+    """N62 (r1 B01): the printer a token is used for is inside its holder's printers — a person's
+    by their groups, a key's by its own list ∩ its owner's (``core/printer_scope``). A person is
+    told the printer is not there (404), a key that it may not (403), as at the gate."""
+    from backend.app.core import printer_scope
+
+    if principal.api_key is not None:
+        scope = await printer_scope.key_scope(db, principal.api_key, principal.user)
+        if not printer_scope.allows(scope, printer_id):
+            from backend.app.core.api_key_scope import printer_refusal
+
+            raise printer_refusal(printer_id)
+        return
+    if not printer_scope.allows(await printer_scope.user_scope(db, principal.user), printer_id):
+        raise HTTPException(404, "Printer not found")
 
 
 def validate_loaded(capture, user, *, session=None, key=None, record=None, required_permissions=(), printer_id=None):
@@ -289,12 +309,12 @@ def validate_loaded(capture, user, *, session=None, key=None, record=None, requi
             or (key.expires_at is not None and utc_naive(key.expires_at) <= now)
         ):
             raise refused()
-        from backend.app.core.auth import _check_apikey_permissions, check_printer_access
+        from backend.app.core.auth import _check_apikey_permissions, check_key_list_access
 
         if required_permissions:
             _check_apikey_permissions(key, list(required_permissions), owner=user)
         if printer_id is not None:
-            check_printer_access(key, printer_id)
+            check_key_list_access(key, printer_id)
     elif capture.kind == "long_lived":
         if (
             record is None

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Table, func
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Table, false, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
@@ -21,6 +21,24 @@ user_groups = Table(
     Base.metadata,
     Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     Column("group_id", Integer, ForeignKey("groups.id", ondelete="CASCADE"), primary_key=True),
+)
+
+# N62: the printers a group with ``restrict_printers`` reaches — picked one by one, and
+# every printer standing in one of its locations or anywhere below it. A group's reach is
+# worked out by ``core/printer_scope``, never here. SQLite keeps foreign keys off, so the
+# group, printer and location deletes remove these rows themselves.
+group_printers = Table(
+    "group_printers",
+    Base.metadata,
+    Column("group_id", Integer, ForeignKey("groups.id", ondelete="CASCADE"), primary_key=True),
+    Column("printer_id", Integer, ForeignKey("printers.id", ondelete="CASCADE"), primary_key=True),
+)
+
+group_locations = Table(
+    "group_locations",
+    Base.metadata,
+    Column("group_id", Integer, ForeignKey("groups.id", ondelete="CASCADE"), primary_key=True),
+    Column("location_id", Integer, ForeignKey("printer_locations.id", ondelete="CASCADE"), primary_key=True),
 )
 
 
@@ -41,6 +59,10 @@ class Group(Base):
     description: Mapped[str | None] = mapped_column(String(500), nullable=True)
     permissions: Mapped[list[str]] = mapped_column(JSON, default=list)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)
+    # N62: the group limits its members to the printers in ``group_printers`` and the
+    # locations in ``group_locations``. False — the group limits nothing (every group
+    # before N62, and every group of permissions).
+    restrict_printers: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

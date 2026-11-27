@@ -216,6 +216,7 @@
     "select_file": "Select a file:",
     "select_target": "Select a target:",
     "no_compatible_printers": "No compatible printers are available for this file.",
+    "auto_restricted": "This chat is limited to certain printers, so it can queue only to a specific printer.",
     "btn_any_model": "Any",
     "select_location": "Where should it run?",
     "btn_anywhere": "Anywhere",

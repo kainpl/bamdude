@@ -120,8 +120,9 @@ async def get_printers_data(tg_chat=None) -> list[dict]:
 
     async with async_session() as db:
         query = select(Printer).where(Printer.is_active == True).where(Printer.archived.is_(False))  # noqa: E712
-        if tg_chat is not None and tg_chat.printer_ids is not None:
-            query = query.where(Printer.id.in_(tg_chat.printer_ids))
+        scope = tg_chat.printer_scope() if tg_chat is not None else None  # N62 D4
+        if scope is not None:
+            query = query.where(Printer.id.in_(scope))
         result = await db.execute(query)
         printers = list(result.scalars().all())
 

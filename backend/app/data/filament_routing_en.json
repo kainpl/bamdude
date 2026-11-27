@@ -4,6 +4,7 @@
   "autoqueue_any_model": "any printer model",
   "autoqueue_location_unavailable": "unavailable location",
   "autoqueue_location_suffix": " in {path}",
+  "autoqueue_author_scope_suffix": " among the printers its author may use",
   "autoqueue_more_issues_one": "And {count} more issue. Open AutoQueue for the full list.",
   "autoqueue_more_issues_few": "And {count} more issues. Open AutoQueue for the full list.",
   "autoqueue_more_issues_many": "And {count} more issues. Open AutoQueue for the full list.",

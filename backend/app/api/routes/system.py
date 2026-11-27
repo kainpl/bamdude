@@ -14,12 +14,12 @@ from sqlalchemy import func, select, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core import install_kind
-from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import RequestCredentials, RequirePermission, request_credentials
 from backend.app.core.config import APP_VERSION, settings
 from backend.app.core.database import get_db
 from backend.app.core.db_dialect import is_postgres
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import request_printer_scope
 from backend.app.models.archive import PrintArchive
 from backend.app.models.printer import Printer
 from backend.app.models.project import Project
@@ -748,7 +748,7 @@ async def _print_state_mention(request: Request, creds: RequestCredentials) -> d
     for gate in READ:
         if not await creds.allows(gate):
             return None
-    return print_state_observer.public_summary(key_printer_scope(request))
+    return print_state_observer.public_summary(request_printer_scope(request))
 
 
 @router.get("/health", response_model=SystemHealthResult)

@@ -165,11 +165,11 @@ async def capabilities(
     db: AsyncSession = Depends(get_db),
 ):
     """What this server speaks and what THIS key may do with it -- never a grant by itself."""
-    from backend.app.core.api_key_scope import key_printer_scope
+    from backend.app.core.printer_scope import request_printer_scope
 
     server_id, epoch = await submissions.server_identity(db)
     enabled = await _enabled(db)
-    unrestricted = key_printer_scope(request) is None
+    unrestricted = request_printer_scope(request) is None
     may_submit = await _may(actor, submissions.SUBMIT_PERMISSIONS)
     may_upload = await _may(actor, UPLOAD_PERMISSIONS)
     may_watch = enabled and await _may(actor, (Permission.CAMERA_VIEW.value,))

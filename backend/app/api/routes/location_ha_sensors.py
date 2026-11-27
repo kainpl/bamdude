@@ -10,10 +10,10 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import request_key_listed
 from backend.app.core.websocket import ws_manager
 from backend.app.models.ha_sensor_history import HASensorHistory
 from backend.app.models.location import Location
@@ -129,7 +129,9 @@ def _category_for(device_class: str | None) -> str | None:
 
 
 def _check_storage_scope(request: Request) -> None:
-    if key_printer_scope(request) is not None:
+    # A storage place holds no printer: a person limited to printers sees its sensors like the
+    # spools (N62 r1 B06); a key with a printer list of its own reads no storage at all.
+    if request_key_listed(request):
         raise HTTPException(403, "A printer-scoped API key cannot read storage sensor bindings")
 
 

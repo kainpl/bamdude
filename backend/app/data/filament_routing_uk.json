@@ -4,6 +4,7 @@
   "autoqueue_any_model": "будь-яка модель принтера",
   "autoqueue_location_unavailable": "недоступна локація",
   "autoqueue_location_suffix": " у {path}",
+  "autoqueue_author_scope_suffix": " серед принтерів, доступних автору задачі",
   "autoqueue_more_issues_one": "Ще {count} перешкода. Повний список — в авточерзі.",
   "autoqueue_more_issues_few": "Ще {count} перешкоди. Повний список — в авточерзі.",
   "autoqueue_more_issues_many": "Ще {count} перешкод. Повний список — в авточерзі.",

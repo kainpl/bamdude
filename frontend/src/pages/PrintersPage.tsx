@@ -87,6 +87,7 @@ import {
   Home,
   Printer as PrinterIcon,
   Info,
+  UserCheck,
   Cable,
   Flame,
   Hourglass,
@@ -146,6 +147,7 @@ import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { Select } from '../components/Select';
 import { CardActionMenu, CardActionMenuItem } from '../components/CardActionMenu';
+import { LocationAccessNote } from '../components/LocationAccessNote';
 import { Modal } from '../components/Modal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { FileManagerModal } from '../components/FileManagerModal';
@@ -2104,7 +2106,7 @@ const PrinterCard = memo(function PrinterCard({
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { showToast } = useToast();
-  const { hasPermission } = useAuth();
+  const { hasPermission, isAdmin } = useAuth();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteArchives, setDeleteArchives] = useState(true);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -3947,6 +3949,18 @@ const PrinterCard = memo(function PrinterCard({
                       >
                         <Archive className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
                         {t('printers.archive.action')}
+                      </CardActionMenuItem>
+                    )}
+                    {/* N62: which limited groups reach this printer — the access page, on it. */}
+                    {isAdmin && (
+                      <CardActionMenuItem
+                        onSelect={() => {
+                          navigate(`/settings?tab=users&sub=printer-access&printer=${printer.id}`);
+                          close();
+                        }}
+                      >
+                        <UserCheck className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)]" />
+                        {t('settings.printerAccess.whoHasAccess')}
                       </CardActionMenuItem>
                     )}
                     <div className="mx-3 my-1 border-t border-bambu-dark-tertiary" />
@@ -9248,6 +9262,7 @@ export function EditPrinterModal({
                   allowCreate
                 />
                 <p className="text-xs text-bambu-gray mt-1">{t('printers.locationHelp')}</p>
+                <LocationAccessNote from={printer.location?.id ?? null} to={form.location_id ?? null} />
               </div>
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.tags')}</label>
@@ -9632,7 +9647,16 @@ export function PrintersPage() {
   const [statusCacheVersion, setStatusCacheVersion] = useState(0);
   const queryClient = useQueryClient();
   const { showToast } = useToast();
-  const { hasPermission, loading: authLoading } = useAuth();
+  const { hasPermission, loading: authLoading, user } = useAuth();
+  // N62 §12.4: a person limited to printers cannot add one — they would not see it, or an
+  // administrator has to place it where their group reaches anyway.
+  const addRestricted = user?.printers_restricted ?? false;
+  const canAddPrinter = hasPermission('printers:create') && !addRestricted;
+  const addPrinterTitle = !hasPermission('printers:create')
+    ? t('printers.permission.noAdd')
+    : addRestricted
+      ? t('printers.addRestricted')
+      : undefined;
   const displayedPageView = shownView(pageView, (mode) =>
     mode !== 'camwall' || (!authLoading && hasPermission('camera:view')), 'cards');
   const { data: activeFirmwareBatches } = useActiveFirmwareBatches(!authLoading && hasPermission('firmware:read'));
@@ -10732,8 +10756,8 @@ export function PrintersPage() {
 
       <Button
         onClick={() => { onComplete?.(); setShowAddModal(true); }}
-        disabled={!hasPermission('printers:create')}
-        title={!hasPermission('printers:create') ? t('printers.permission.noAdd') : undefined}
+        disabled={!canAddPrinter}
+        title={addPrinterTitle}
         className={`!h-8 !min-h-8 px-2 py-0 ${inMenu ? 'w-full' : ''}`}
       >
         <Plus className="w-4 h-4" />
@@ -10875,8 +10899,8 @@ export function PrintersPage() {
             <p className="text-bambu-gray mb-4">{t('printers.noPrintersConfigured')}</p>
             <Button
               onClick={() => setShowAddModal(true)}
-              disabled={!hasPermission('printers:create')}
-              title={!hasPermission('printers:create') ? t('printers.permission.noAdd') : undefined}
+              disabled={!canAddPrinter}
+              title={addPrinterTitle}
             >
               <Plus className="w-4 h-4" />
               {t('printers.addPrinter')}

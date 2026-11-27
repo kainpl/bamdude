@@ -9,10 +9,10 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.api_key_scope import in_key_scope, key_printer_scope
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import in_request_scope, request_printer_scope
 from backend.app.core.websocket import ws_manager
 from backend.app.models.ha_sensor_history import HASensorHistory
 from backend.app.models.printer import Printer
@@ -67,7 +67,7 @@ async def list_ha_sensors(
     query = select(PrinterHASensor)
     if printer_id is not None:
         query = query.where(PrinterHASensor.printer_id == printer_id)
-    scope = key_printer_scope(request)
+    scope = request_printer_scope(request)
     if scope is not None:
         query = query.where(PrinterHASensor.printer_id.in_(scope))
     result = await db.execute(query.order_by(PrinterHASensor.printer_id, PrinterHASensor.sort_order))
@@ -94,7 +94,7 @@ async def list_printer_sensor_management_readings(
 
     settings = await get_homeassistant_settings(db)
     query = select(PrinterHASensor)
-    scope = key_printer_scope(request)
+    scope = request_printer_scope(request)
     if scope is not None:
         query = query.where(PrinterHASensor.printer_id.in_(scope))
     rows = (
@@ -172,7 +172,7 @@ async def get_printer_sensor_readings(
     to its last persisted state, marked unreachable, rather than vanishing
     from the card on every restart.
     """
-    if not in_key_scope(request, printer_id):
+    if not in_request_scope(request, printer_id):
         raise HTTPException(403, "API key does not have access to this printer")
     return (await _card_readings(db, {printer_id})).get(printer_id, [])
 
@@ -189,7 +189,7 @@ async def get_sensor_readings_batch(
     A page of printer cards asks once per tick instead of once per card. A printer with no
     card sensor answers an empty list; one outside an API key's list is left out.
     """
-    wanted = {pid for pid in ids if in_key_scope(request, pid)}
+    wanted = {pid for pid in ids if in_request_scope(request, pid)}
     readings = await _card_readings(db, wanted)
     return {pid: readings.get(pid, []) for pid in sorted(wanted)}
 
@@ -237,7 +237,7 @@ async def create_ha_sensor(
     _: User | None = _CREATE,
 ):
     """Bind a Home Assistant entity to a printer."""
-    if not in_key_scope(request, data.printer_id):
+    if not in_request_scope(request, data.printer_id):
         raise HTTPException(403, "API key does not have access to this printer")
     printer = await db.get(Printer, data.printer_id)
     if not printer:
@@ -285,7 +285,7 @@ async def get_ha_sensor(
     sensor = await db.get(PrinterHASensor, sensor_id)
     if not sensor:
         raise HTTPException(404, "Sensor not found")
-    if not in_key_scope(request, sensor.printer_id):
+    if not in_request_scope(request, sensor.printer_id):
         raise HTTPException(403, "API key does not have access to this printer")
     return sensor
 
@@ -301,7 +301,7 @@ async def get_ha_sensor_history(
     sensor = await db.get(PrinterHASensor, sensor_id)
     if not sensor:
         raise HTTPException(404, "Sensor not found")
-    if not in_key_scope(request, sensor.printer_id):
+    if not in_request_scope(request, sensor.printer_id):
         raise HTTPException(403, "API key does not have access to this printer")
     since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours)
     rows = (
@@ -341,7 +341,7 @@ async def update_ha_sensor(
     sensor = await db.get(PrinterHASensor, sensor_id)
     if not sensor:
         raise HTTPException(404, "Sensor not found")
-    if not in_key_scope(request, sensor.printer_id):
+    if not in_request_scope(request, sensor.printer_id):
         raise HTTPException(403, "API key does not have access to this printer")
 
     updates = data.model_dump(exclude_unset=True)
@@ -401,7 +401,7 @@ async def delete_ha_sensor(
     sensor = await db.get(PrinterHASensor, sensor_id)
     if not sensor:
         raise HTTPException(404, "Sensor not found")
-    if not in_key_scope(request, sensor.printer_id):
+    if not in_request_scope(request, sensor.printer_id):
         raise HTTPException(403, "API key does not have access to this printer")
 
     name = sensor.name

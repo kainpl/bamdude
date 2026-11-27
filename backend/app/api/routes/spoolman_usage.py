@@ -18,7 +18,7 @@ from __future__ import annotations
 import math
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -63,8 +63,18 @@ async def _registered_of(db: AsyncSession, spool_id: int) -> str | None:
     return str(registered) if registered else None
 
 
+def _usage_scope(request: Request) -> list:
+    """N62: usage rows of the printers the caller reaches, and those of no printer."""
+    from backend.app.core.printer_scope import request_printer_scope, where as printer_scope_where
+    from backend.app.models.spoolman_usage_history import SpoolmanUsageHistory
+
+    clause = printer_scope_where(request_printer_scope(request), SpoolmanUsageHistory.printer_id)
+    return [] if clause is None else [clause]
+
+
 @router.get("/usage/facets", response_model=SpoolUsageFacets)
 async def get_spoolman_usage_facets(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ):
@@ -72,7 +82,7 @@ async def get_spoolman_usage_facets(
     await _require_spoolman_mode(db)
     token = await spoolman_usage_history.current_token(db)
     facets = await spoolman_usage_service.usage_facets(
-        db, filters=spoolman_usage_service.build_filters(source_token=token)
+        db, filters=[*spoolman_usage_service.build_filters(source_token=token), *_usage_scope(request)]
     )
     return SpoolUsageFacets(
         statuses=facets["statuses"],
@@ -131,6 +141,7 @@ async def rotate_spoolman_usage_source(
 
 @router.get("/usage", response_model=SpoolUsagePage)
 async def get_spoolman_usage_history(
+    request: Request,
     printer_id: str | None = Query(
         None,
         pattern=_USAGE_PRINTER_ID_PATTERN,
@@ -173,6 +184,7 @@ async def get_spoolman_usage_history(
         date_to=date_to,
         q=q,
     )
+    filters = [*filters, *_usage_scope(request)]
     offset, page_limit = (0, None) if all else ((page - 1) * per_page, per_page)
 
     total = await spoolman_usage_service.count_usage(db, filters=filters)
@@ -221,6 +233,7 @@ async def get_spoolman_usage_history(
 
 @router.get("/spools/{spool_id}/usage", response_model=list[SpoolUsageHistoryResponse])
 async def get_spoolman_spool_usage(
+    request: Request,
     spool_id: int = Path(..., gt=0),
     limit: int = Query(50, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
@@ -236,7 +249,14 @@ async def get_spoolman_spool_usage(
     rows = await spoolman_usage_service.spool_usage(
         db, source_token=await spoolman_usage_history.current_token(db), spool_id=spool_id
     )
-    own = [r for r in rows if spoolman_usage_history.belongs_to(r.spool_registered, r.created_at, registered)]
+    from backend.app.core.printer_scope import in_request_scope
+
+    own = [
+        r
+        for r in rows
+        if spoolman_usage_history.belongs_to(r.spool_registered, r.created_at, registered)
+        and in_request_scope(request, r.printer_id)
+    ]
     return [
         SpoolUsageHistoryResponse(
             id=r.id,

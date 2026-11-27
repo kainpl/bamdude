@@ -7,9 +7,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.app.api.routes.print_state_recovery import actor_identity, key_credential
-from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import RequestCredentials, finish_request_auth, request_credentials, require_permission
 from backend.app.core.permissions import Permission
+from backend.app.core.printer_scope import request_printer_scope
 from backend.app.core.websocket import ws_manager
 from backend.app.services.farm_startup_guard import FarmStartupRefused, farm_startup_guard
 
@@ -29,7 +29,7 @@ async def status(creds: RequestCredentials = Depends(request_credentials)):
     await creds.check(require_permission(Permission.SYSTEM_READ) if key_credential(creds) else _authenticated)
     state = farm_startup_guard.status()
     state["can_resume"] = (
-        state["can_resume"] and await creds.allows(_resume_permission) and key_printer_scope(creds.request) is None
+        state["can_resume"] and await creds.allows(_resume_permission) and request_printer_scope(creds.request) is None
     )
     return state
 
@@ -37,14 +37,14 @@ async def status(creds: RequestCredentials = Depends(request_credentials)):
 @router.post("/farm-startup/resume")
 async def resume(data: FarmResumeRequest, creds: RequestCredentials = Depends(request_credentials)):
     await creds.check(_resume_permission)
-    if key_printer_scope(creds.request) is not None:
+    if request_printer_scope(creds.request) is not None:
         raise HTTPException(403, "farm_scope_required")
     async with _resume_lock:
         # A permission decision from before a contended acknowledgement must
         # not outlive revocation, including the key owner's current authority.
         await finish_request_auth(creds.request)
         user = await creds.check(_resume_permission)
-        if key_printer_scope(creds.request) is not None:
+        if request_printer_scope(creds.request) is not None:
             raise HTTPException(403, "farm_scope_required")
         actor, _ = await actor_identity(creds, user)
         try:

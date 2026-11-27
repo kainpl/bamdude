@@ -23,6 +23,10 @@ class GroupCreate(BaseModel):
     name: str
     description: str | None = None
     permissions: list[str] = []
+    # N62: limit the group's members to these printers and locations (with the ones below).
+    restrict_printers: bool = False
+    printer_ids: list[int] = []
+    location_ids: list[int] = []
 
 
 class GroupUpdate(IgnoresNullForRequiredColumns):
@@ -33,6 +37,10 @@ class GroupUpdate(IgnoresNullForRequiredColumns):
     name: str | None = None
     description: str | None = None
     permissions: list[str] | None = None
+    # N62. ``None`` — leave as it is; a list replaces the whole set.
+    restrict_printers: bool | None = None
+    printer_ids: list[int] | None = None
+    location_ids: list[int] | None = None
 
 
 class GroupResponse(BaseModel):
@@ -44,6 +52,10 @@ class GroupResponse(BaseModel):
     permissions: list[str]
     is_system: bool
     user_count: int = 0
+    # N62: the printers and locations the group limits its members to, when restricted.
+    restrict_printers: bool = False
+    printer_ids: list[int] = []
+    location_ids: list[int] = []
     created_at: datetime
     updated_at: datetime
 

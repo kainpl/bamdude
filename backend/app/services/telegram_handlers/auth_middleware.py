@@ -62,6 +62,11 @@ class TelegramAuthMiddleware(BaseMiddleware):
                 )
             )
             tg_chat = result.scalar_one_or_none()
+            if tg_chat is not None:
+                # N62 D4: the chat's printers — its list ∩ its group's reach — for every handler.
+                from backend.app.core.printer_scope import load_chat_scope
+
+                await load_chat_scope(db, tg_chat)
 
             if tg_chat is None:
                 # Check if we should auto-register

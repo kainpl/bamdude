@@ -50,8 +50,13 @@ class InboxChannel:
 INBOX_CHANNEL = InboxChannel()
 
 
-async def recipients(db: AsyncSession, event_type: str, unless_subscribed_to: str | None = None) -> list[int]:
+async def recipients(
+    db: AsyncSession, event_type: str, unless_subscribed_to: str | None = None, printer_id: int | None = None
+) -> list[int]:
     """Active users whose subscription (NULL = defaults) contains ``event_type``; columns read by name.
+
+    ``printer_id`` — the event's printer: a person whose groups limit them to other printers does
+    not hear of it (N62 §5.5, ``core/printer_scope.users_outside``).
 
     ``unless_subscribed_to`` leaves out the users who also subscribe to that
     other event — for a message that stands in for it (a "reorder" copy of a
@@ -68,13 +73,17 @@ async def recipients(db: AsyncSession, event_type: str, unless_subscribed_to: st
     """
     with db.no_autoflush:
         rows = (await db.execute(select(User.id, User.is_active, User.inbox_events))).all()
-    return [
-        r.id
-        for r in rows
-        if r.is_active
-        and wants_inbox_event(r.inbox_events, event_type)
-        and not (unless_subscribed_to and wants_inbox_event(r.inbox_events, unless_subscribed_to))
-    ]
+        wanted = [
+            r.id
+            for r in rows
+            if r.is_active
+            and wants_inbox_event(r.inbox_events, event_type)
+            and not (unless_subscribed_to and wants_inbox_event(r.inbox_events, unless_subscribed_to))
+        ]
+        from backend.app.core.printer_scope import users_outside
+
+        outside = await users_outside(db, wanted, printer_id)
+    return [uid for uid in wanted if uid not in outside]
 
 
 async def has_subscriber(db: AsyncSession, event_type: str) -> bool:
@@ -266,7 +275,7 @@ async def deliver(
     level its sender chose (spec external-app-messages-spec); who receives it is still the catalog's.
     """
     meta = event_meta(event_type)
-    user_ids = await recipients(db, event_type, unless_subscribed_to)
+    user_ids = await recipients(db, event_type, unless_subscribed_to, printer_id)
     if not user_ids:
         return []
 

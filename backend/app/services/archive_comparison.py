@@ -2,6 +2,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.core.printer_scope import where as printer_scope_where
 from backend.app.models.archive import PrintArchive
 
 
@@ -181,6 +182,9 @@ class ArchiveComparisonService:
         self,
         archive_id: int,
         limit: int = 10,
+        *,
+        printer_scope: frozenset[int] | None = None,
+        visible_to_user_id: int | None = None,
     ) -> list[dict]:
         """Find archives with similar settings for comparison.
 
@@ -198,8 +202,14 @@ class ArchiveComparisonService:
         if not reference:
             raise ValueError("Archive not found")
 
-        # Find similar archives
+        # Find similar archives — only those the caller may open: the printers they reach (N62)
+        # and, for ``archives:read_own``, their own prints; never one in the trash.
         similar = []
+        visible = [PrintArchive.deleted_at.is_(None)]
+        if (in_scope := printer_scope_where(printer_scope, PrintArchive.printer_id)) is not None:
+            visible.append(in_scope)
+        if visible_to_user_id is not None:
+            visible.append(PrintArchive.created_by_id == visible_to_user_id)
 
         # By same print name
         if reference.print_name:
@@ -208,6 +218,7 @@ class ArchiveComparisonService:
                 .where(
                     PrintArchive.id != archive_id,
                     PrintArchive.print_name == reference.print_name,
+                    *visible,
                 )
                 .order_by(PrintArchive.created_at.desc())
                 .limit(limit)
@@ -235,6 +246,7 @@ class ArchiveComparisonService:
                 .where(
                     PrintArchive.id != archive_id,
                     func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash) == ref_eff_hash,
+                    *visible,
                 )
                 .order_by(PrintArchive.created_at.desc())
                 .limit(limit - len(similar))
@@ -261,6 +273,7 @@ class ArchiveComparisonService:
                 .where(
                     PrintArchive.id != archive_id,
                     PrintArchive.filament_type == reference.filament_type,
+                    *visible,
                 )
                 .order_by(PrintArchive.created_at.desc())
                 .limit(limit - len(similar))

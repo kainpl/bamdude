@@ -19,12 +19,13 @@ the line between this scope and ``overlay``, which *does* name the file.
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import RequireCamWallToken
 from backend.app.core.database import get_db
+from backend.app.core.printer_scope import request_printer_scope, where_strict as printer_scope_where_strict
 from backend.app.models.camera import Camera
 from backend.app.models.printer import Printer
 from backend.app.services.printer_manager import printer_manager
@@ -36,6 +37,7 @@ router = APIRouter(prefix="/camwall", tags=["camwall"])
 
 @router.get("/printers")
 async def list_camwall_printers(
+    request: Request = None,
     _: None = RequireCamWallToken,
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
@@ -53,8 +55,13 @@ async def list_camwall_printers(
     keeping its history; a retired machine reappearing on a lobby wall would
     defeat the point. Maintenance mode (``is_active=False``) is deliberately NOT
     filtered: that printer is still on the farm and its tile should stay visible.
+
+    Only the printers the token's owner reaches (N62, ``require_camwall_token``).
     """
-    result = await db.execute(select(Printer).where(Printer.archived.is_(False)).order_by(Printer.name))
+    query = select(Printer).where(Printer.archived.is_(False))
+    if (in_scope := printer_scope_where_strict(request_printer_scope(request), Printer.id)) is not None:
+        query = query.where(in_scope)
+    result = await db.execute(query.order_by(Printer.name))
     printers = list(result.scalars().all())
 
     payload: list[dict] = []

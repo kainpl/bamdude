@@ -90,6 +90,7 @@ class ExportService:
         date_to: datetime | None = None,
         search: str | None = None,
         visible_to_user_id: int | None = None,
+        printer_scope: frozenset[int] | None = None,
     ) -> tuple[bytes, str, str]:
         """Export archives to CSV or Excel format.
 
@@ -123,6 +124,11 @@ class ExportService:
         # when they hold archives:read_own but not archives:read_all.
         if visible_to_user_id is not None:
             query = query.where(PrintArchive.created_by_id == visible_to_user_id)
+        # N62: the prints of the printers the caller reaches, and those bound to no printer.
+        from backend.app.core.printer_scope import where as printer_scope_where
+
+        if (in_scope := printer_scope_where(printer_scope, PrintArchive.printer_id)) is not None:
+            query = query.where(in_scope)
         if printer_id:
             query = query.where(PrintArchive.printer_id == printer_id)
         if project_id:
@@ -179,6 +185,7 @@ class ExportService:
         days: int = 30,
         printer_id: int | None = None,
         project_id: int | None = None,
+        printer_scope: frozenset[int] | None = None,
     ) -> tuple[bytes, str, str]:
         """Export statistics summary to CSV or Excel format.
 
@@ -199,6 +206,7 @@ class ExportService:
             days=days,
             printer_id=printer_id,
             project_id=project_id,
+            printer_scope=printer_scope,
         )
 
         # Build stats rows

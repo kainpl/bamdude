@@ -50,7 +50,7 @@ def _unscoped_chat(chat: Any) -> bool:
     limited provider is. The chat stays the authority; nothing is added to the
     provider.
     """
-    return chat.printer_ids is None
+    return chat.printer_scope() is None
 
 
 def begin_internal_template_reconcile() -> None:
@@ -743,6 +743,13 @@ class NotificationService:
                     )
                 )
                 chats = result.scalars().all()
+                if event_type != "test":
+                    # N62 D4: each chat's printers — its list ∩ its group's reach. A test goes to
+                    # every chat (below) and asks no scope.
+                    from backend.app.core.printer_scope import load_chat_scope
+
+                    for chat in chats:
+                        await load_chat_scope(session, chat)
         except Exception as e:
             return False, f"Failed to query Telegram chats: {e}"
 
@@ -1675,6 +1682,9 @@ class NotificationService:
                 tg_chat = result.scalar_one_or_none()
                 if not tg_chat:
                     return None
+                from backend.app.core.printer_scope import load_chat_scope  # N62 D4
+
+                await load_chat_scope(db, tg_chat)
 
                 # Print complete/failed → clear plate button
                 if event_type in ("print_complete", "print_failed"):
@@ -2464,10 +2474,15 @@ class NotificationService:
             # same filter per chat at send time.
             from sqlalchemy import select as _select
 
+            from backend.app.core.printer_scope import load_chat_scope  # N62 D4
             from backend.app.models.telegram_chat import TelegramChat
 
-            result = await db.execute(_select(TelegramChat).where(TelegramChat.is_active == True))  # noqa: E712
-            any_recipients = any(c.should_notify("print_progress") and _chat_passes(c) for c in result.scalars())
+            active_chats = list(
+                (await db.execute(_select(TelegramChat).where(TelegramChat.is_active.is_(True)))).scalars()
+            )
+            for chat in active_chats:
+                await load_chat_scope(db, chat)
+            any_recipients = any(c.should_notify("print_progress") and _chat_passes(c) for c in active_chats)
 
         if not any_recipients and any(p.provider_type == "inbox" for p in kept):
             # The same question the telegram block above asks, for the in-app

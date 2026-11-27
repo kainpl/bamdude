@@ -12,7 +12,7 @@ import json as _json
 import logging
 import urllib.parse
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -323,12 +323,18 @@ async def get_session(
     response_model=list[CalibrationSessionOut],
 )
 async def list_sessions(
+    request: Request,
     printer_id: int | None = Query(default=None),
     status: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PRINTERS_READ),
 ) -> list[CalibrationSessionOut]:
+    from backend.app.core.printer_scope import request_printer_scope, where_strict
+
     q = select(CalibrationSession)
+    # N62 (r1 B04): the sessions of the printers the caller reaches.
+    if (in_scope := where_strict(request_printer_scope(request), CalibrationSession.printer_id)) is not None:
+        q = q.where(in_scope)
     if printer_id is not None:
         q = q.where(CalibrationSession.printer_id == printer_id)
     if status:
@@ -934,6 +940,7 @@ async def bake_calibration_3mf(
     response_model=list[FilamentCalibrationOut],
 )
 async def list_filament_calibrations(
+    request: Request,
     printer_id: int | None = Query(default=None),
     filament_id: str | None = Query(default=None),
     nozzle_diameter: float | None = Query(default=None),
@@ -941,7 +948,12 @@ async def list_filament_calibrations(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PRINTERS_READ),
 ) -> list[FilamentCalibrationOut]:
+    from backend.app.core.printer_scope import request_printer_scope, where_strict
+
     q = select(FilamentCalibration)
+    # N62 (r1 B04): the calibrations of the printers the caller reaches.
+    if (in_scope := where_strict(request_printer_scope(request), FilamentCalibration.printer_id)) is not None:
+        q = q.where(in_scope)
     if printer_id is not None:
         q = q.where(FilamentCalibration.printer_id == printer_id)
     if filament_id:

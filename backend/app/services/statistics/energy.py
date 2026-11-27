@@ -27,15 +27,18 @@ async def sum_live_plug_totals(db: AsyncSession) -> float:
     return sum((value for _plug, value, _lifetime in await live_plug_readings(db)), 0.0)
 
 
-async def live_plug_readings(db: AsyncSession) -> list[tuple]:
+async def live_plug_readings(db: AsyncSession, printer_scope: frozenset[int] | None = None) -> list[tuple]:
     """Every plug's live energy figure: ``(plug, kWh, is_lifetime_counter)``, plugs without one left out.
 
     ``is_lifetime_counter`` is False for a REST plug that reports only a daily figure -- it is in the
-    all-time sum (see below) but has no counter history to cost it along.
+    all-time sum (see below) but has no counter history to cost it along. ``printer_scope`` keeps the
+    plugs of those printers and the plugs bound to none (N62; None = every plug).
     """
+    from backend.app.core.printer_scope import where as printer_scope_where
     from backend.app.models.smart_plug import SmartPlug
 
-    plugs_result = await db.execute(select(SmartPlug))
+    in_scope = printer_scope_where(printer_scope, SmartPlug.printer_id)
+    plugs_result = await db.execute(select(SmartPlug).where(*([in_scope] if in_scope is not None else [])))
     plugs = list(plugs_result.scalars().all())
 
     # Resolved per plug rather than branched on by hand. The chain this replaces
@@ -213,7 +216,11 @@ def _range_figures(plugs, baselines, in_range, history, dt_from) -> tuple[float,
 
 
 async def range_energy_and_cost(
-    db: AsyncSession, *, dt_from: datetime | None, dt_to: datetime | None
+    db: AsyncSession,
+    *,
+    dt_from: datetime | None,
+    dt_to: datetime | None,
+    printer_scope: frozenset[int] | None = None,
 ) -> tuple[float, float, bool]:
     """``sum_snapshot_deltas``'s total, its cost at the price of its own time, and ``warming_up``.
 
@@ -224,15 +231,24 @@ async def range_energy_and_cost(
 
     from sqlalchemy import func
 
+    from backend.app.core.printer_scope import where as printer_scope_where
     from backend.app.models.smart_plug import SmartPlug
     from backend.app.models.smart_plug_energy_snapshot import SmartPlugEnergySnapshot as Snapshot
     from backend.app.services import energy_price
 
     dt_from = energy_price.naive_utc(dt_from) if dt_from is not None else None
     dt_to = energy_price.naive_utc(dt_to) if dt_to is not None else None
+    # N62: the plugs of the printers in scope, and those bound to no printer.
+    in_scope = printer_scope_where(printer_scope, SmartPlug.printer_id)
     plugs = [
         (plug_id, energy_price.naive_utc(since) if since is not None else None)
-        for plug_id, since in (await db.execute(select(SmartPlug.id, SmartPlug.measurement_source_since))).all()
+        for plug_id, since in (
+            await db.execute(
+                select(SmartPlug.id, SmartPlug.measurement_source_since).where(
+                    *([in_scope] if in_scope is not None else [])
+                )
+            )
+        ).all()
     ]
     if not plugs:
         return 0.0, 0.0, False
@@ -291,7 +307,7 @@ def _all_time_cost(readings, points_by_plug, history, now) -> float:
     return cost
 
 
-async def live_totals_and_cost(db: AsyncSession) -> tuple[float, float]:
+async def live_totals_and_cost(db: AsyncSession, printer_scope: frozenset[int] | None = None) -> tuple[float, float]:
     """``sum_live_plug_totals``'s total and its cost at the price of its own time.
 
     A live counter is its plug's CURRENT measurement source, so only that source's snapshots (after
@@ -304,7 +320,9 @@ async def live_totals_and_cost(db: AsyncSession) -> tuple[float, float]:
     from backend.app.models.smart_plug_energy_snapshot import SmartPlugEnergySnapshot as Snapshot
     from backend.app.services import energy_price
 
-    readings = [(plug.id, float(value), lifetime) for plug, value, lifetime in await live_plug_readings(db)]
+    readings = [
+        (plug.id, float(value), lifetime) for plug, value, lifetime in await live_plug_readings(db, printer_scope)
+    ]
     total = sum((value for _id, value, _lifetime in readings), 0.0)
     counters = [plug_id for plug_id, _value, lifetime in readings if lifetime]
     history = await energy_price.load_history(db)
