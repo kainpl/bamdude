@@ -10,7 +10,7 @@ import {
 } from 'react';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Briefcase, Check, ChevronLeft, ChevronRight, FileBox, FolderOpen, FolderSymlink, Info, Link2, Loader2, MoveRight, X } from 'lucide-react';
+import { Briefcase, Check, ChevronLeft, ChevronRight, FileBox, FolderOpen, FolderSymlink, Info, Link2, Loader2, MoveRight, Users, X } from 'lucide-react';
 import { api } from '../../api/client';
 import type { LibraryFileListItem, LibraryFileListParams, LibraryFolderTree } from '../../api/client';
 import type { LibraryDragDrop } from '../../hooks/useLibraryDragDrop';
@@ -230,6 +230,11 @@ function Column({
                     <FolderOpen className="w-4 h-4 shrink-0 text-bambu-green" />
                   )}
                   <span className="flex-1 min-w-0 truncate" title={folder.name}>{folder.name}</span>
+                  {folder.shared && !folder.is_external && (
+                    <span className="shrink-0" title={t('fileManager.sharedFolder')}>
+                      <Users className="w-3 h-3 text-bambu-gray" />
+                    </span>
+                  )}
                   {folder.products.length > 0 && (
                     <span
                       className="shrink-0 flex items-center gap-0.5 text-blue-700 dark:text-blue-400"
@@ -374,7 +379,9 @@ export function LibraryColumnsView({
       ? t('fileManager.moveFolder.noPermission')
       : !isMovableFolder(folder)
         ? t('fileManager.moveFolder.externalFixed')
-        : undefined;
+        : folder.can_rename === false
+          ? t('fileManager.moveFolder.onlyOwner')
+          : undefined;
 
   // A folder the tree does not hold (deleted, a stale link) leaves just the root.
   const path = useMemo(

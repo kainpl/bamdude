@@ -253,7 +253,7 @@ build when the rule is broken. `Vault: inv-x` is the maintainer's note
 ### Library and model sources · [full text](docs/development/invariants/library-and-model-sources.md)
 
 - **A long walk holds neither the transaction nor the loop.** The scan answers `202 {job_id}`; an empty walk against a stocked folder deletes nothing.
-- **A library file's visibility has one rule, and an ownerless external file is shared** (`owner_scope_sees` / `owner_scope_clause`). Vault: `inv-library-visibility-has-one-rule`.
+- **A library file's visibility has one rule, and an ownerless external file is shared** (`owner_scope_sees` / `owner_scope_clause`). **A folder has an owner and one rule too** (`services/library_folder_access.py`): `read_own` sees own, shared, holding-my-file and the way there; writes only into own, shared and the root; a by-name door uses `writable_folder_named`, never `scalar_one_or_none`. Vault: `inv-library-visibility-has-one-rule`.
 - **A library file's photos have one writer and leave the disk after the commit** (`services/library_file_photos.py`). Vault: `inv-library-file-photos-single-writer`.
 - **A 3D-model site is a `ModelProvider`, and the routes reach it only through one.** The Bambu Cloud credential has one seam, `services/bambu_cloud_credentials.py`. Vault: `inv-a-model-site-is-a-provider`.
 - **A self-hosted model source is reached through one pinned transport** (`services/model_providers/outbound.py`; LAN and plain http allowed on purpose). Vault: `inv-self-hosted-model-source-pinned-transport`.

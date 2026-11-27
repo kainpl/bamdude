@@ -83,6 +83,9 @@ class Plan:
     owner_id: int | None  # the acting user, for attribution
     cloud_user_id: int | None  # whose cloud presets may be read
     trash_ids: tuple[int, ...] = ()  # re-layout: the previous files the caller may delete
+    # N56: whether the acting user sees every library folder — with ``owner_id``, who
+    # the result's folder is asked for when it is published.
+    sees_all_folders: bool = False
 
 
 @dataclass
@@ -472,6 +475,8 @@ async def _publish(plan: Plan, row: Row, outputs: list[tuple[str, int | None]], 
     from backend.app.core.database import async_session
     from backend.app.core.websocket import ws_manager
     from backend.app.models.library import LibraryFolder
+    from backend.app.models.user import User
+    from backend.app.services.library_folder_access import FolderActor, can_write_folder
 
     async def check(db, _principal):
         await _check_sources(db, plan)
@@ -494,6 +499,11 @@ async def _publish(plan: Plan, row: Row, outputs: list[tuple[str, int | None]], 
                     )
                     if folder is None:
                         fallback = "folder_missing"  # deleted while the job ran: the file goes to the library's root
+                    else:
+                        # Made private while the job ran (N56): the root, as for a deleted one.
+                        owner = await db.get(User, plan.owner_id) if plan.owner_id is not None else None
+                        if not can_write_folder(folder, FolderActor(owner, plan.sees_all_folders)):
+                            folder, fallback = None, "folder_private"
                 saved = await save_3mf_bytes_to_library(
                     db,
                     content=content,

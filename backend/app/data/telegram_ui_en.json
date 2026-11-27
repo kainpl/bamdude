@@ -252,6 +252,7 @@
       "too_big": "{name} is {size} MB. Telegram only lets a bot download files up to {limit} MB — upload it through the web interface instead.",
       "download_failed": "Telegram would not hand over the file: {error}",
       "failed": "Could not save the file.",
+      "folder_refused": "Files cannot be added to that folder from this chat. Send the file again and pick another one.",
       "cancelled": "Cancelled — nothing was saved.",
       "btn_print": "Print it"
     }

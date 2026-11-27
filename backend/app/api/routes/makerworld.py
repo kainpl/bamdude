@@ -399,7 +399,11 @@ async def import_instance(
     # are the provider-neutral core (``services/model_import``); what is
     # MakerWorld's stays here: the file's name, the cloud credential that guards
     # the publication, and the meta row below.
-    effective_folder = await model_import.destination_folder(db, provider, body.folder_id, ingest_authority)
+    from backend.app.services.library_folder_access import request_actor
+
+    effective_folder = await model_import.destination_folder(
+        db, provider, body.folder_id, ingest_authority, actor=await request_actor(request, db, current_user)
+    )
 
     # API-keyed callers carry identity on the key, not in current_user — see
     # the /status handler comment and #1777. The same resolved user is reused

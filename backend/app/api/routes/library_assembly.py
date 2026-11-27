@@ -128,7 +128,7 @@ async def assemble_project(
         refuse_bed_type_for_slicer(target.bed_type, body.slicer)
     if any(part.file_id is None for part in body.parts):
         raise HTTPException(422, "Every part of a new assembly names its file")
-    actor, _scope, files = await _visible_files(db, http_request, current_user, [part.file_id for part in body.parts])
+    actor, scope, files = await _visible_files(db, http_request, current_user, [part.file_id for part in body.parts])
     ordered = [files[part.file_id] for part in body.parts]
     for file in ordered:
         kind = _suffix(file.filename)
@@ -161,6 +161,7 @@ async def assemble_project(
         authority=authority,
         owner_id=actor.id if actor else None,
         cloud_user_id=cloud_user.id if cloud_user else None,
+        sees_all_folders=scope == "all",
     )
     await db.commit()
     return await _enqueue(plan, source=ordered[0], actor=actor, authority=authority)
@@ -292,6 +293,7 @@ async def relayout_file(
             raise HTTPException(403, "You can only delete your own files")
         trash_ids = tuple(row.id for row in members)
     authority = await request_authority(http_request, current_user)
+    scope = await library_name_scope(http_request, db, actor)
     sources = [assembly_job.Source(_proof(row), await _on_disk(row), "3mf", row.filename) for row in members]
     cloud_user = current_user or api_key_cloud_owner
     plan = assembly_job.Plan(
@@ -309,6 +311,7 @@ async def relayout_file(
         owner_id=actor.id if actor else None,
         cloud_user_id=cloud_user.id if cloud_user else None,
         trash_ids=trash_ids,
+        sees_all_folders=scope == "all",
     )
     await db.commit()
     return await _enqueue(plan, source=file, actor=actor, authority=authority)

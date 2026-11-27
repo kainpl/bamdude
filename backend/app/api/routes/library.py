@@ -106,6 +106,22 @@ from backend.app.services.design_settings import (
 )
 from backend.app.services.entity_codes import code_for
 from backend.app.services.filament_requirements import annotate_rack_groups
+from backend.app.services.library_folder_access import (
+    FolderActor,
+    FolderIndex,
+    can_rename_folder,
+    can_share_folder,
+    folder_delete_blocker,
+    folder_flags,
+    get_visible_folder,
+    get_writable_folder,
+    load_folder_index,
+    new_folder_owner,
+    request_actor,
+    result_folder_id,
+    visible_folder_ids,
+    writable_folder_named,
+)
 from backend.app.services.library_helpers import (
     NOT_SLICED_DETAIL,
     UNSLICED_PROJECT_DETAIL,
@@ -212,14 +228,44 @@ def _files_visible_to(user: User | None, can_read_all: bool):
     """SQL: whose files the caller's COUNTERS may count (G11 U4) — the ownership half
     of :func:`_library_file_visible`; the trash is the caller's own clause.
 
-    Folders are shared structure, so their names reach every library reader; the
-    numbers on them (file count, latest activity) and a file's duplicates are
-    facts about FILES and follow the files' rule, or a ``read_own`` caller reads
-    how many files others keep where, when they touched them and under what name.
+    Which folders a caller sees is the folders' own rule (N56,
+    ``services/library_folder_access``); the numbers on them (file count, latest
+    activity) and a file's duplicates are facts about FILES and follow the files'
+    rule, or a ``read_own`` caller reads how many files others keep where, when they
+    touched them and under what name.
     """
     if can_read_all or user is None:
         return true()
     return owner_scope_clause(user.id)
+
+
+def _folder_rights(user: User | None) -> dict[str, bool]:
+    """The four library rights a folder's ``can_*`` flags ask of the caller (N56). An
+    API key arrives as no user: its scope is asked by each route it calls."""
+    if user is None:
+        return {"modify_all": True, "may_update_own": True, "delete_all": True, "may_delete_own": True}
+    return {
+        "modify_all": user.has_permission(Permission.LIBRARY_UPDATE_ALL.value),
+        "may_update_own": user.has_permission(Permission.LIBRARY_UPDATE_OWN.value),
+        "delete_all": user.has_permission(Permission.LIBRARY_DELETE_ALL.value),
+        "may_delete_own": user.has_permission(Permission.LIBRARY_DELETE_OWN.value),
+    }
+
+
+async def _folder_index_for(db: AsyncSession, actor: FolderActor, rights: dict[str, bool]) -> FolderIndex:
+    """The folder index a folder answer needs: whose files sit where only when the
+    caller sees not everything or may not delete everything."""
+    return await load_folder_index(db, with_files=not actor.sees_all or not rights["delete_all"])
+
+
+def _access_fields(index: FolderIndex, folder: LibraryFolder, actor: FolderActor, rights: dict[str, bool]) -> dict:
+    return folder_flags(folder, index, actor, **rights)
+
+
+async def _folder_access(db: AsyncSession, folder: LibraryFolder, actor: FolderActor) -> dict:
+    """A single folder answer's ownership fields, for the caller."""
+    rights = _folder_rights(actor.user)
+    return _access_fields(await _folder_index_for(db, actor, rights), folder, actor, rights)
 
 
 def file_name_visible(library_file: LibraryFile | None, user: User | None, scope: str) -> bool:
@@ -1213,8 +1259,13 @@ async def list_folders(
         )
     ),
 ):
-    """Get all folders as a tree structure."""
+    """Get the folders the caller sees as a tree structure (N56), each with what the
+    caller may do to it."""
     counted = _files_visible_to(*auth_result)
+    actor = FolderActor(*auth_result)
+    rights = _folder_rights(actor.user)
+    index = await _folder_index_for(db, actor, rights)
+    visible = visible_folder_ids(index, actor)
     # Prevent browser caching of folder list
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
 
@@ -1223,7 +1274,7 @@ async def list_folders(
     result = await db.execute(
         select(LibraryFolder).options(selectinload(LibraryFolder.products)).order_by(LibraryFolder.name)
     )
-    folders_orm = result.scalars().all()
+    folders_orm = [folder for folder in result.scalars().all() if visible is None or folder.id in visible]
 
     # Files each folder HAS — the trash excluded.
     #
@@ -1270,6 +1321,7 @@ async def list_folders(
             file_count=file_counts.get(folder.id, 0),
             latest_activity_at=latest_activity_at,
             children=[],
+            **_access_fields(index, folder, actor, rights),
         )
         folder_map[folder.id] = folder_item
 
@@ -1317,8 +1369,13 @@ async def get_folders_by_product(
         )
     ),
 ):
-    """Get all folders linked to a specific product (via the M2M pivot)."""
+    """Get the folders linked to a specific product (via the M2M pivot) that the
+    caller sees (N56)."""
     counted = _files_visible_to(*auth_result)
+    actor = FolderActor(*auth_result)
+    rights = _folder_rights(actor.user)
+    index = await _folder_index_for(db, actor, rights)
+    visible = visible_folder_ids(index, actor)
     result = await db.execute(
         select(LibraryFolder)
         .join(product_folders, product_folders.c.library_folder_id == LibraryFolder.id)
@@ -1326,7 +1383,7 @@ async def get_folders_by_product(
         .options(selectinload(LibraryFolder.products))
         .order_by(LibraryFolder.name)
     )
-    folders_orm = result.scalars().unique().all()
+    folders_orm = [f for f in result.scalars().unique().all() if visible is None or f.id in visible]
 
     folders = []
     for folder in folders_orm:
@@ -1359,6 +1416,7 @@ async def get_folders_by_product(
                 latest_activity_at=latest_activity_at,
                 created_at=folder.created_at,
                 updated_at=folder.updated_at,
+                **_access_fields(index, folder, actor, rights),
             )
         )
 
@@ -1369,11 +1427,13 @@ async def get_folders_by_product(
 @router.post("/folders/", response_model=FolderResponse)
 async def create_folder(
     data: FolderCreate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
+    current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
     creds: RequestCredentials = Depends(request_credentials),
 ):
-    """Create a new folder."""
+    """Create a new folder, owned by whoever makes it (N56) — inside a folder they may
+    write to; under an external parent it is the share's, shared and ownerless."""
     # A folder born linked to products asks ``products:update`` too (WS-13 E13 B01) —
     # first, and the products are read before anything is made (LIB-02): inside an
     # external parent the folder is a directory on the share, and a refusal after the
@@ -1381,12 +1441,11 @@ async def create_folder(
     if data.product_ids:
         await creds.check(_products_update)
     product_rows = await _resolve_products_for_assign(db, data.product_ids)
-    # Verify parent exists if specified
+    actor = await request_actor(request, db, current_user)
+    parent: LibraryFolder | None = None
+    # Verify parent exists if specified, and that the actor may add to it (N56)
     if data.parent_id is not None:
-        parent_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == data.parent_id))
-        parent = parent_result.scalar_one_or_none()
-        if not parent:
-            raise HTTPException(status_code=404, detail="Parent folder not found")
+        parent = await get_writable_folder(db, data.parent_id, actor, missing="Parent folder not found")
         # An external folder mirrors a real filesystem, so a folder created
         # inside it must be a REAL directory on the share — a virtual row
         # would be a phantom that looks like part of the NAS while its files
@@ -1428,11 +1487,15 @@ async def create_folder(
                 external_path=str(dest),
                 external_readonly=False,
                 external_show_hidden=parent.external_show_hidden,
+                created_by_id=None,
+                shared=True,
             )
             folder.products = product_rows
             db.add(folder)
             await db.commit()
+            access = await _folder_access(db, folder, actor)
             return FolderResponse(
+                **access,
                 id=folder.id,
                 name=folder.name,
                 parent_id=folder.parent_id,
@@ -1447,9 +1510,12 @@ async def create_folder(
                 updated_at=folder.updated_at,
             )
 
+    owner_id, shared = new_folder_owner(parent, actor)
     folder = LibraryFolder(
         name=data.name,
         parent_id=data.parent_id,
+        created_by_id=owner_id,
+        shared=shared,
     )
     # A brand-new folder has no files yet, so there is nothing for the sync to
     # mirror: only ``product_folders`` is written, and the ORM owns that side.
@@ -1461,8 +1527,10 @@ async def create_folder(
     # request loop. We've set ``folder.products`` explicitly above and
     # the session is configured with ``expire_on_commit=False``, so the
     # in-session list is the authoritative final state.
+    access = await _folder_access(db, folder, actor)
 
     return FolderResponse(
+        **access,
         id=folder.id,
         name=folder.name,
         parent_id=folder.parent_id,
@@ -1491,8 +1559,10 @@ async def get_folder(
         )
     ),
 ):
-    """Get a folder by ID."""
+    """Get a folder by ID; a folder the caller does not see is 404 (N56)."""
     counted = _files_visible_to(*auth_result)
+    actor = FolderActor(*auth_result)
+    await get_visible_folder(db, folder_id, actor)
     result = await db.execute(
         select(LibraryFolder).options(selectinload(LibraryFolder.products)).where(LibraryFolder.id == folder_id)
     )
@@ -1529,6 +1599,7 @@ async def get_folder(
         latest_activity_at=latest_activity_at,
         created_at=folder.created_at,
         updated_at=folder.updated_at,
+        **await _folder_access(db, folder, actor),
     )
 
 
@@ -1555,9 +1626,8 @@ async def get_folder_readme(
     """
     user, can_read_all = auth_result
 
-    folder_row = await db.execute(select(LibraryFolder.id).where(LibraryFolder.id == folder_id))
-    if folder_row.scalar_one_or_none() is None:
-        raise HTTPException(status_code=404, detail="Folder not found")
+    # A folder the caller does not see is 404, like a missing one (N56).
+    await get_visible_folder(db, folder_id, FolderActor(user, can_read_all))
 
     query = LibraryFile.active().where(
         LibraryFile.folder_id == folder_id,
@@ -1602,15 +1672,29 @@ async def get_folder_readme(
 async def update_folder(
     folder_id: int,
     data: FolderUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    editor: User | None = Depends(require_permission(Permission.LIBRARY_UPDATE_ALL)),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_UPDATE_ALL,
+            Permission.LIBRARY_UPDATE_OWN,
+        )
+    ),
     creds: RequestCredentials = Depends(request_credentials),
 ):
     """Update a folder.
 
-    Note: Folders require library:update_all permission since they don't have
-    ownership tracking.
+    ``library:update_all`` changes any folder. With ``library:update_own`` the owner
+    renames their folder, moves it into a folder they may write to and shares it
+    (N56, owner decision D3); a product link stays ``library:update_all``'s. An
+    external folder is always shared.
     """
+    editor, can_modify_all = auth_result
+    # ``library:update_all`` reaches every folder, seen or not; everyone else only one
+    # they see — another is 404, like a missing one.
+    actor = await request_actor(request, db, editor)
+    if not can_modify_all:
+        await get_visible_folder(db, folder_id, actor)
     # Eager-load products up front so the response build at the end
     # doesn't trigger a lazy fetch outside the async context.
     result = await db.execute(
@@ -1621,9 +1705,41 @@ async def update_folder(
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
 
+    products_change = data.product_ids is not None and set(data.product_ids) != {p.id for p in folder.products}
+    renaming = data.name is not None and data.name != folder.name
+    moving_asked = data.parent_id is not None and (data.parent_id or None) != folder.parent_id
+    sharing = data.shared is not None and data.shared != bool(folder.shared)
+    if sharing and folder.is_external:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "folder_external_shared",
+                "message": "An external folder is always shared.",
+            },
+        )
+    if not can_modify_all:
+        if products_change:
+            raise HTTPException(status_code=403, detail="Linking folders to products requires library:update_all")
+        if (renaming or moving_asked) and not can_rename_folder(folder, editor, modify_all=False):
+            raise HTTPException(status_code=403, detail="Only the folder's owner can rename or move it")
+        if sharing and not can_share_folder(folder, editor, modify_all=False):
+            raise HTTPException(status_code=403, detail="Only the folder's owner can share it")
+        if moving_asked and data.parent_id:
+            # The new parent: one the editor may add to — 404 unseen (the same answer
+            # as a missing parent below), 403 only seen.
+            try:
+                await get_writable_folder(db, data.parent_id, actor)
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+                raise HTTPException(
+                    status_code=404,
+                    detail={"error": "folder_parent_not_found", "message": "Parent folder not found"},
+                ) from None
+
     # An explicit product list that CHANGES the folder's set asks ``products:update`` too
     # (WS-13 E13 B01, LIB-03), before any field is written; the same set is library work.
-    if data.product_ids is not None and set(data.product_ids) != {p.id for p in folder.products}:
+    if products_change:
         await creds.check(_products_update)
 
     # Every check before the first field is written (G11 U3, upstream #3306).
@@ -1718,6 +1834,9 @@ async def update_folder(
     if data.name is not None:
         folder.name = data.name
 
+    if sharing:
+        folder.shared = data.shared
+
     if moving:
         folder.parent_id = new_parent_id
 
@@ -1777,46 +1896,18 @@ async def update_folder(
         latest_activity_at=latest_activity_at,
         created_at=refreshed.created_at,
         updated_at=refreshed.updated_at,
+        **await _folder_access(db, refreshed, actor),
     )
 
 
-async def _restricted_folder_delete_blocker(db: AsyncSession, folder: LibraryFolder) -> str | None:
-    """Why a ``library:delete_own`` user may NOT delete this folder, or None if they may.
+async def _restricted_folder_delete_blocker(db: AsyncSession, folder: LibraryFolder, user: User | None) -> str | None:
+    """Why a ``library:delete_own`` user may NOT delete this folder, or None if they may
+    — ``library_folder_access.folder_delete_blocker`` (N56, #1781) over a fresh index.
 
-    Folders carry no ownership, so a user without ``library:delete_all`` may only
-    remove one that holds nobody's data: truly empty, not external, not linked
-    to a project (#1781). Without this a user could create a
-    folder, delete their own files from it, and then need an admin to clear the
-    empty shell they left behind.
-
-    ⚠️ **"Empty" has to include TRASHED files.** ``library_files.folder_id`` is
-    ``ON DELETE CASCADE`` and ``_trash_folder_contents`` walks
-    ``LibraryFile.active()`` — so a file that was already in the trash is never
-    detached, and the folder delete takes its row with it. The other user's
-    restore then fails with no explanation. A folder can look empty in the tree
-    and still be holding someone's deleted work.
+    ⚡ Ours diverges from upstream: a folder's filing link is the ``product_folders``
+    pivot, not a column, so "linked" is asked of the pivot, for the whole subtree.
     """
-    if folder.is_external:
-        return "External folders can only be deleted by users with library:delete_all"
-    # ⚡ Ours diverges from upstream here: a folder's filing link is the
-    # ``product_folders`` pivot, not a column, so the question is "is it linked
-    # to ANY product", asked of the pivot.
-    linked = await db.execute(
-        select(func.count()).select_from(product_folders).where(product_folders.c.library_folder_id == folder.id)
-    )
-    if (linked.scalar() or 0) > 0:
-        return "Folders linked to a product can only be deleted by users with library:delete_all"
-
-    children = await db.execute(select(func.count(LibraryFolder.id)).where(LibraryFolder.parent_id == folder.id))
-    if (children.scalar() or 0) > 0:
-        return "Only empty folders can be deleted without library:delete_all"
-
-    # No deleted_at filter, deliberately — see the docstring.
-    files = await db.execute(select(func.count(LibraryFile.id)).where(LibraryFile.folder_id == folder.id))
-    if (files.scalar() or 0) > 0:
-        return "Only empty folders can be deleted without library:delete_all (the folder may contain trashed files)"
-
-    return None
+    return folder_delete_blocker(await load_folder_index(db), folder, user, delete_all=False)
 
 
 @router.delete("/folders/{folder_id}")
@@ -1832,10 +1923,11 @@ async def delete_folder(
 ):
     """Delete a folder and all its contents (cascade).
 
-    Folders have no ownership tracking, so clearing one that still holds files
-    requires ``library:delete_all``. A user with only ``library:delete_own`` may
-    delete an empty, non-external, non-linked folder — see
-    :func:`_restricted_folder_delete_blocker` for what "empty" has to mean.
+    ``library:delete_all`` deletes any folder. With ``library:delete_own`` the owner
+    deletes their folder when everything in it — folders and files, trashed ones
+    too — is theirs, not external and not linked to a product (N56); a folder
+    without an owner only when it is truly empty (#1781). A folder the caller does
+    not see is 404. See ``library_folder_access.folder_delete_blocker``.
     """
     from backend.app.services.library_delete_cleanup import finish
     from backend.app.services.library_delete_scope import (
@@ -1859,9 +1951,11 @@ async def delete_folder(
             if not folder:
                 raise HTTPException(status_code=404, detail="Folder not found")
 
-            _, can_modify_all = auth_result
+            user, can_modify_all = auth_result
             if not can_modify_all:
-                blocker = await _restricted_folder_delete_blocker(db, folder)
+                sees_all = user is not None and user.has_permission(Permission.LIBRARY_READ_ALL.value)
+                await get_visible_folder(db, folder_id, FolderActor(user, sees_all))
+                blocker = await _restricted_folder_delete_blocker(db, folder, user)
                 if blocker:
                     raise HTTPException(status_code=403, detail=blocker)
 
@@ -2060,10 +2154,11 @@ def _validate_external_path(path_str: str) -> Path:
 @router.post("/folders/external", response_model=FolderResponse)
 async def create_external_folder(
     data: ExternalFolderCreate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     # ⚠️ Mounting names a directory of the HOST: an administrator's act, never
     # ``library:upload`` (Operators hold it) — upstream b7d7c8250.
-    _: User | None = Depends(require_permission(Permission.SETTINGS_UPDATE)),
+    current_user: User | None = Depends(require_permission(Permission.SETTINGS_UPDATE)),
 ):
     """Create an external folder that points to a host directory."""
     resolved = _validate_external_path(data.external_path)
@@ -2091,12 +2186,17 @@ async def create_external_folder(
         external_path=str(resolved),
         external_readonly=data.readonly,
         external_show_hidden=data.show_hidden,
+        # A mount is everyone's and stays so (N56 §5.5): its ownerless files are
+        # shared by the file rule, so a private mount would hide nothing.
+        created_by_id=None,
+        shared=True,
     )
     db.add(folder)
     await db.commit()
     await db.refresh(folder)
 
     return FolderResponse(
+        **await _folder_access(db, folder, await request_actor(request, db, current_user)),
         id=folder.id,
         name=folder.name,
         parent_id=folder.parent_id,
@@ -2295,6 +2395,9 @@ async def list_files(
 
     if user is not None and not can_read_all:
         filters.append(owner_scope_clause(user.id))
+        if folder_id is not None:
+            # A folder the caller does not see is 404, like a missing one (N56).
+            await get_visible_folder(db, folder_id, FolderActor(user, can_read_all))
 
     if tag_ids:
         # #1268 — cross-cutting AND filter: the file must carry EVERY requested
@@ -3432,9 +3535,14 @@ async def slice_and_persist(
     job_id: int | None = None,
     ingest_authority=None,
     source_proof=None,
+    folder_actor: FolderActor | None = None,
 ):
     """Slice a model and save the result as a new ``LibraryFile`` in
     ``folder_id`` (same folder as the source by convention).
+
+    ``folder_actor``: who the job was accepted for (N56). The result goes into
+    ``folder_id`` only while that actor may still write there — asked when the result
+    is published, never at accept — else into the root.
 
     Always exports as ``.gcode.3mf`` so the existing library thumbnail
     pipeline works on the new file. Plain ``.gcode`` would have no embedded
@@ -3489,6 +3597,9 @@ async def slice_and_persist(
     # folder is loaded here rather than passed in because every caller already
     # has only the id.
     target_folder: LibraryFolder | None = None
+    if folder_id is not None and folder_actor is not None:
+        # The source's folder may have gone private, or gone, while the job ran (N56).
+        folder_id = await result_folder_id(db, folder_id, folder_actor)
     if folder_id is not None:
         folder_result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
         target_folder = folder_result.scalar_one_or_none()
@@ -4017,11 +4128,14 @@ async def slice_library_file(
                     job_id=job_id,
                     ingest_authority=ingest_authority,
                     source_proof=source_proof,
+                    folder_actor=folder_actor,
                 )
             except HTTPException as exc:
                 raise http_exception_to_job_error(exc) from exc
         return response.model_dump()
 
+    # Who the result is filed for (N56): the folder is decided when it is published.
+    folder_actor = FolderActor(actor, scope == "all")
     await db.commit()
     job = await slice_dispatch.enqueue(
         kind="library_file",
@@ -4298,6 +4412,8 @@ async def upload_file(
         # plate recipe auto-fills.
         target_folder: LibraryFolder | None = None
         if folder_id is not None:
+            # Only into a folder the uploader may add to (N56): 404 unseen, 403 only seen.
+            await get_writable_folder(db, folder_id, await request_actor(request, db, current_user))
             folder_result = await db.execute(
                 select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.products))
             )
@@ -4376,9 +4492,12 @@ async def extract_zip_file(
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Only ZIP files are supported")
 
+    # Who the ZIP's folders are made for, and where they may go (N56).
+    actor = await request_actor(request, db, current_user)
     # Verify target folder exists if specified. Eager-load .products so the
     # inherit-on-create path below doesn't trip the async lazy-load.
     if folder_id is not None:
+        await get_writable_folder(db, folder_id, actor, missing="Target folder not found")
         folder_result = await db.execute(
             select(LibraryFolder).where(LibraryFolder.id == folder_id).options(selectinload(LibraryFolder.products))
         )
@@ -4419,26 +4538,18 @@ async def extract_zip_file(
         await guard(db, authority, permissions=(Permission.LIBRARY_UPLOAD.value,))
         # Remove .zip extension to get folder name
         zip_folder_name = file.filename[:-4] if file.filename.lower().endswith(".zip") else file.filename
-        # Check if folder already exists
-        existing = await db.execute(
-            select(LibraryFolder).where(
-                LibraryFolder.name == zip_folder_name,
-                LibraryFolder.parent_id == folder_id if folder_id else LibraryFolder.parent_id.is_(None),
-            )
+        # A folder of that name the uploader may add to, or a new one of theirs —
+        # never someone's private folder that happens to share the name (N56).
+        zip_folder, made = await writable_folder_named(
+            db, zip_folder_name, folder_id or None, actor, system=False, managed_only=False
         )
-        existing_folder = existing.scalar_one_or_none()
-        if existing_folder:
-            zip_folder_id = existing_folder.id
-            logger.info("Reusing existing folder '%s' with id=%s", zip_folder_name, zip_folder_id)
-        else:
-            # Create folder
-            new_folder = LibraryFolder(name=zip_folder_name, parent_id=folder_id)
-            db.add(new_folder)
-            await db.flush()
-            await db.commit()  # Commit folder creation immediately
-            zip_folder_id = new_folder.id
+        await db.commit()  # Commit folder creation immediately
+        zip_folder_id = zip_folder.id
+        if made:
             folders_created += 1
             logger.info("Created new folder '%s' with id=%s", zip_folder_name, zip_folder_id)
+        else:
+            logger.info("Reusing existing folder '%s' with id=%s", zip_folder_name, zip_folder_id)
 
     await db.commit()
     try:
@@ -4480,25 +4591,14 @@ async def extract_zip_file(
                                 if current_path in folder_cache:
                                     current_parent = folder_cache[current_path]
                                 else:
-                                    # Check if folder exists
-                                    existing = await db.execute(
-                                        select(LibraryFolder).where(
-                                            LibraryFolder.name == part,
-                                            LibraryFolder.parent_id == current_parent
-                                            if current_parent
-                                            else LibraryFolder.parent_id.is_(None),
-                                        )
+                                    # The segment's folder the uploader may add to, or
+                                    # a new one of theirs (N56) — never someone's private
+                                    # folder of that name.
+                                    segment, made = await writable_folder_named(
+                                        db, part, current_parent or None, actor, system=False, managed_only=False
                                     )
-                                    existing_folder = existing.scalar_one_or_none()
-
-                                    if existing_folder:
-                                        current_parent = existing_folder.id
-                                    else:
-                                        # Create folder
-                                        new_folder = LibraryFolder(name=part, parent_id=current_parent)
-                                        db.add(new_folder)
-                                        await db.flush()
-                                        current_parent = new_folder.id
+                                    current_parent = segment.id
+                                    if made:
                                         new_folder_count += 1
 
                                     pending_folders[current_path] = current_parent
@@ -6100,6 +6200,7 @@ async def refresh_swap_declaration_jobs(
 async def update_file(
     file_id: int,
     data: FileUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
@@ -6130,6 +6231,10 @@ async def update_file(
     # moving it into an unlinked folder clears it (replace semantics).
     target_folder: LibraryFolder | None = None
     if data.folder_id:
+        # Only into a folder the editor may add to (N56); ``library:update_all``
+        # moves into any folder, as before.
+        if not can_modify_all and data.folder_id != file.folder_id:
+            await get_writable_folder(db, data.folder_id, await request_actor(request, db, user))
         folder_result = await db.execute(
             select(LibraryFolder)
             .options(selectinload(LibraryFolder.products))
@@ -6632,6 +6737,7 @@ async def get_gcode(
 @router.post("/files/move")
 async def move_files(
     data: FileMoveRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
@@ -6661,6 +6767,10 @@ async def move_files(
     target_folder: LibraryFolder | None = None
     target_product_rows: list[Product] = []
     if data.folder_id is not None:
+        # Only into a folder the user may add to (N56); ``library:update_all`` moves
+        # into any folder, as before.
+        if not can_modify_all:
+            await get_writable_folder(db, data.folder_id, await request_actor(request, db, user))
         folder_result = await db.execute(
             select(LibraryFolder)
             .options(selectinload(LibraryFolder.products))
@@ -6838,14 +6948,20 @@ async def bulk_delete(
                     await library_trash_service.trash_or_purge(db, file)
                     deleted_files += 1
 
-            # Delete folders. Folders have no ownership tracking, so a user without
-            # *_all may only take empty, non-external, non-linked ones — the same rule
-            # as DELETE /folders/{id}, asked through the same function so the two doors
-            # cannot drift apart (#1781).
+            # Delete folders. Without *_all a user takes only what DELETE
+            # /folders/{id} would let them (#1781, N56), asked through the same
+            # function so the two doors cannot drift apart; a folder they do not see
+            # is skipped like one that does not exist.
+            visible: set[int] | None = None
+            if data.folder_ids and not can_modify_all:
+                sees_all = user is not None and user.has_permission(Permission.LIBRARY_READ_ALL.value)
+                visible = visible_folder_ids(await load_folder_index(db), FolderActor(user, sees_all))
             for folder_id in data.folder_ids:
                 result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
                 folder = result.scalar_one_or_none()
-                if folder and not can_modify_all and await _restricted_folder_delete_blocker(db, folder):
+                if folder and visible is not None and folder.id not in visible:
+                    continue
+                if folder and not can_modify_all and await _restricted_folder_delete_blocker(db, folder, user):
                     continue
                 if folder:
                     # Same door, same answer as DELETE /folders/{id}: the files inside
@@ -6901,9 +7017,15 @@ async def get_library_stats(
     total_files_result = await db.execute(select(func.count(LibraryFile.id)).where(*live_files))
     total_files = total_files_result.scalar() or 0
 
-    # Total folders (folders are shared org structure, not per-user — count all)
-    total_folders_result = await db.execute(select(func.count(LibraryFolder.id)))
-    total_folders = total_folders_result.scalar() or 0
+    # Total folders: the ones the caller sees (N56)
+    visible = (
+        visible_folder_ids(await load_folder_index(db), FolderActor(user, can_read_all)) if not can_read_all else None
+    )
+    if visible is None:
+        total_folders_result = await db.execute(select(func.count(LibraryFolder.id)))
+        total_folders = total_folders_result.scalar() or 0
+    else:
+        total_folders = len(visible)
 
     # Total size
     total_size_result = await db.execute(select(func.sum(LibraryFile.file_size)).where(*file_filters))

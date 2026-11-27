@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
 import type { LibraryFileListItem, LibraryFolderTree } from '../api/client';
 import { folderMoveBlock, isMovableFolder } from '../utils/folderMove';
-import { writableFolders } from '../utils/folderTree';
+import { canWriteInto, writableFolders } from '../utils/folderTree';
 import { moveChangesProducts } from '../utils/workshopRights';
 
 /**
@@ -59,7 +59,7 @@ export interface LibraryDragDrop {
 
 export function useLibraryDragDrop({
   folders,
-  canMoveFolders,
+  canMoveFolder,
   canDragFile,
   canChangeProducts,
   filesDraggedWith,
@@ -68,7 +68,8 @@ export function useLibraryDragDrop({
   onHoverExpand,
 }: {
   folders: LibraryFolderTree[] | undefined;
-  canMoveFolders: boolean;
+  /** May the viewer move THIS folder (the page's own rights helper; N56: the owner their own)? */
+  canMoveFolder: (folder: LibraryFolderTree) => boolean;
   canDragFile: (file: LibraryFileListItem) => boolean;
   /** `products:update` — a move that changes a file's products needs it. */
   canChangeProducts: boolean;
@@ -123,7 +124,7 @@ export function useLibraryDragDrop({
       if (drag.files.every((file) => (file.folder_id ?? null) === targetId)) return false;
       if (targetId === null) return canChangeProducts || !moveChangesProducts(drag.files, []);
       const target = writableFolders(folders).find((row) => row.folder.id === targetId)?.folder;
-      if (!target) return false;
+      if (!target || !canWriteInto(target)) return false;
       return canChangeProducts || !moveChangesProducts(drag.files, target.products.map((p) => p.id));
     },
     [folders, canChangeProducts],
@@ -138,7 +139,7 @@ export function useLibraryDragDrop({
   };
 
   const folderDragProps = (folder: LibraryFolderTree): DragProps =>
-    enabled && canMoveFolders && isMovableFolder(folder)
+    enabled && isMovableFolder(folder) && canMoveFolder(folder)
       ? {
           draggable: true,
           onDragStart: (e) => start(e, { kind: 'folder', folder }, FOLDER_DRAG_MIME, String(folder.id)),

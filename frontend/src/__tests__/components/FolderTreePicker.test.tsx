@@ -150,3 +150,31 @@ describe('the folder you are already in', () => {
     }
   });
 });
+
+describe('folders the user may not add to (N56)', () => {
+  // Someone's private folder the user only passes on the way to a file of theirs.
+  const OWNED = [folder(1, 'Passage', [folder(2, 'Shared below', [], { can_write: true })], { can_write: false })];
+
+  it('lists them for the tree’s shape, greyed out as view only, and keeps what is below them', async () => {
+    const onChange = vi.fn();
+    render(<FolderTreePicker folders={OWNED} value={null} onChange={onChange} rootLabel="Root" />);
+
+    const passage = screen.getByText('Passage').closest('button')!;
+    expect(passage).toBeDisabled();
+    expect(passage).toHaveTextContent('view only');
+    await userEvent.click(screen.getByText('Shared below'));
+    expect(onChange).toHaveBeenCalledWith(2);
+  });
+
+  it('offers them in a picker that only reads folders', () => {
+    render(<FolderTreePicker folders={OWNED} value={null} onChange={vi.fn()} rootLabel="Root" includeReadOnly readOnly />);
+
+    expect(screen.getByText('Passage').closest('button')).not.toBeDisabled();
+  });
+
+  it('treats a folder from an answer without the flag as writable', () => {
+    render(<FolderTreePicker folders={TREE} value={null} onChange={vi.fn()} rootLabel="Root" />);
+
+    expect(screen.getByText('Prints').closest('button')).not.toBeDisabled();
+  });
+});

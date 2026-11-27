@@ -58,9 +58,23 @@ class FolderUpdate(IgnoresNullForRequiredColumns):
     name: str | None = Field(None, min_length=1, max_length=255)
     parent_id: int | None = None
     product_ids: list[int] | None = None
+    # Shared with everyone (N56): the owner or ``library:update_all``; never an
+    # external folder. ``null`` leaves it as it is.
+    shared: bool | None = None
 
 
-class FolderResponse(BaseModel):
+# A folder's ownership (N56, ``services/library_folder_access``): ``can_*`` are for
+# the caller — what the File Manager may offer on it; the routes enforce the same rules.
+class FolderAccess(BaseModel):
+    created_by_id: int | None = None
+    shared: bool = False
+    can_write: bool = False
+    can_rename: bool = False
+    can_share: bool = False
+    can_delete: bool = False
+
+
+class FolderResponse(FolderAccess):
     """Schema for folder response."""
 
     id: int
@@ -99,7 +113,7 @@ class FolderReadmeResponse(BaseModel):
     truncated: bool
 
 
-class FolderTreeItem(BaseModel):
+class FolderTreeItem(FolderAccess):
     """Schema for folder tree item (includes children)."""
 
     id: int

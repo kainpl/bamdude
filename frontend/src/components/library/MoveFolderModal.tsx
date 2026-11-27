@@ -26,6 +26,7 @@ const BLOCK_LABELS: Record<Exclude<FolderMoveBlock, 'current'>, string> = {
   self: 'fileManager.moveFolder.blocked.self',
   descendant: 'fileManager.moveFolder.blocked.descendant',
   external: 'fileManager.moveFolder.blocked.external',
+  notWritable: 'fileManager.moveFolder.blocked.notWritable',
 };
 
 /**

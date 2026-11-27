@@ -393,7 +393,7 @@ async def _keep_checks(db, planned):
 
 
 async def detach_account_rows(db, capture):
-    """The reviewed 35 user edges. No SQLite FK inference or anonymous preference."""
+    """The reviewed 36 user edges. No SQLite FK inference or anonymous preference."""
     from backend.app.services import library_file_photos, stock_issues
 
     owners = {

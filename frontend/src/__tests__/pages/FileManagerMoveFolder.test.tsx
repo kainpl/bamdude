@@ -266,7 +266,8 @@ describe('who gets the Move… entry', () => {
   });
 
   it('explains the missing right', async () => {
-    auth.denied = new Set(['library:update_all']);
+    // N56: the owner moves their own folder with `library:update_own`; neither right, no move.
+    auth.denied = new Set(['library:update_all', 'library:update_own']);
     render(<FileManagerPage />);
     await openMenu('Spares');
 

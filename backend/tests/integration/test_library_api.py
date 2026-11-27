@@ -2275,12 +2275,12 @@ class TestLibraryProductLinksAPI:
 
         folder = await folder_factory()
         product = await product_factory()
-        assert await _restricted_folder_delete_blocker(db_session, folder) is None
+        assert await _restricted_folder_delete_blocker(db_session, folder, None) is None
 
         await apply_folder_products(db_session, folder_id=folder.id, product_ids=[product.id])
         await db_session.commit()
 
-        blocker = await _restricted_folder_delete_blocker(db_session, folder)
+        blocker = await _restricted_folder_delete_blocker(db_session, folder, None)
         assert blocker is not None and "product" in blocker
 
     @pytest.mark.asyncio

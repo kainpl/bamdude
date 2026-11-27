@@ -50,6 +50,12 @@ const folder = (id: number, name: string): LibraryFolderTree =>
     external_readonly: false,
     file_count: 0,
     latest_activity_at: null,
+    created_by_id: null,
+    shared: true,
+    can_write: true,
+    can_rename: true,
+    can_share: true,
+    can_delete: true,
   }) as LibraryFolderTree;
 
 function renderPicker(props: Partial<Parameters<typeof LibraryPickerModal>[0]> = {}) {

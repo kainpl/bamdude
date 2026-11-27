@@ -3441,6 +3441,11 @@ async def save_archive_to_library(
 
     folder = None
     if folder_id is not None:
+        # Only into a library folder the caller may add to (N56): the LIBRARY's
+        # rule, never the archive's ``read_all`` — 404 unseen, 403 only seen.
+        from backend.app.services.library_folder_access import get_writable_folder, request_actor
+
+        await get_writable_folder(db, folder_id, await request_actor(request, db, _upload))
         folder = (await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))).scalar_one_or_none()
         if folder is None:
             raise HTTPException(404, "Folder not found")

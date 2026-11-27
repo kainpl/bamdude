@@ -418,6 +418,9 @@ async def ensure_folders(
                 # directory, never request input.
                 external_path=str(root / current),
                 external_show_hidden=root_folder.external_show_hidden,
+                # A subfolder of a share is everyone's, like the mount (N56 §5.5).
+                created_by_id=None,
+                shared=True,
             )
             db.add(new_folder)
             await db.flush()

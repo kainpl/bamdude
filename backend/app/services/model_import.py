@@ -54,6 +54,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.core.permissions import Permission
 from backend.app.models.library import LibraryFile, LibraryFolder
+from backend.app.services.library_folder_access import FolderActor
 from backend.app.services.library_ingest import IngestResult, read_access
 from backend.app.services.model_providers.base import (
     ModelProvider,
@@ -218,20 +219,23 @@ class ModelImport:
 
 
 async def destination_folder(
-    db: AsyncSession, provider: ModelProvider, folder_id: int | None, authority: Any
+    db: AsyncSession, provider: ModelProvider, folder_id: int | None, authority: Any, *, actor: FolderActor
 ) -> LibraryFolder | None:
     """The folder an import lands in; ends its own short transaction.
 
-    A named folder must exist and be writable. Without one: the provider's
-    dedicated top-level folder, created on the first import — or the library
-    root for a provider that names none.
+    A named folder must exist and be writable — on the share and for ``actor``
+    (N56: 404 unseen, 403 only seen). Without one: the provider's dedicated
+    top-level folder, shared with everyone and created on the first import — or the
+    library root for a provider that names none.
     """
     from backend.app.services.domain_authority import guard
+    from backend.app.services.library_folder_access import get_writable_folder, writable_folder_named
 
     await db.commit()
     await guard(db, authority, permissions=(Permission.LIBRARY_UPLOAD.value,))
     effective_folder: LibraryFolder | None
     if folder_id is not None:
+        await get_writable_folder(db, folder_id, actor)
         # Eager-load .products so save_3mf_bytes_to_library's
         # inherit_folder_products() doesn't trip async lazy-load.
         folder_q = await db.execute(
@@ -255,19 +259,9 @@ async def destination_folder(
         # ("MakerWorld"). Keeps imports out of the library root so power users
         # can still organise manually in subfolders, and auto-creates the
         # folder on the first import so users don't have to set it up.
-        default_folder_q = await db.execute(
-            select(LibraryFolder).where(
-                LibraryFolder.name == provider.default_folder_name,
-                LibraryFolder.parent_id.is_(None),
-                LibraryFolder.is_external.is_(False),
-            )
+        effective_folder, _made = await writable_folder_named(
+            db, provider.default_folder_name, None, actor, system=True
         )
-        default_folder = default_folder_q.scalar_one_or_none()
-        if default_folder is None:
-            default_folder = LibraryFolder(name=provider.default_folder_name, parent_id=None)
-            db.add(default_folder)
-            await db.flush()
-        effective_folder = default_folder
     await db.commit()
     return effective_folder
 

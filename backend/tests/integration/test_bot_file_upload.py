@@ -222,3 +222,63 @@ class TestStoringIt:
 
         cb.bot.download.assert_not_awaited()
         assert state.cleared
+
+
+class _ScopedChat:
+    """A chat whose group holds exactly ``perms``, linked to ``user_id`` or to nobody."""
+
+    def __init__(self, perms, user_id=None):
+        self._perms = set(perms)
+        self.user_id = user_id
+
+    def has_permission(self, perm: str) -> bool:
+        return perm in self._perms
+
+
+class TestTheFolderRule:
+    """N56: the chat files as its linked user; without one and without ``library:read_all`` it
+    writes only into shared folders and the root, and the chosen folder is asked again."""
+
+    async def test_a_chat_without_a_user_is_offered_only_shared_folders(self, db_session):
+        db_session.add_all([LibraryFolder(name="someones private"), LibraryFolder(name="for everyone", shared=True)])
+        await db_session.commit()
+        msg = _message("a.gcode.3mf", 10)
+
+        await scene.on_document(msg, _State(), tg_chat=_ScopedChat({"library:upload"}))
+
+        labels = [b.text for row in msg.answer.call_args.kwargs["reply_markup"].inline_keyboard for b in row]
+        assert any("for everyone" in x for x in labels), labels
+        assert not any("someones private" in x for x in labels), labels
+
+    async def test_a_forged_private_folder_is_refused_before_the_download(self, db_session):
+        private = LibraryFolder(name="someones private")
+        db_session.add(private)
+        await db_session.commit()
+        cb = _callback(f"libup:folder:{private.id}", _3mf_bytes(sliced=True))
+        state = _State({"file_id": "F1", "file_name": "a.gcode.3mf"})
+
+        await scene.cb_folder_chosen(cb, state, tg_chat=_ScopedChat({"library:upload"}))
+
+        cb.bot.download.assert_not_awaited()
+        assert state.cleared
+        db_session.expire_all()
+        assert await db_session.scalar(select(func.count(LibraryFile.id))) == 0
+
+    async def test_the_default_folder_is_a_shared_one_in_the_root(self, db_session):
+        elsewhere = LibraryFolder(name="elsewhere", shared=True)
+        db_session.add(elsewhere)
+        await db_session.flush()
+        db_session.add(LibraryFolder(name=scene.DEFAULT_FOLDER_NAME, parent_id=elsewhere.id, shared=True))
+        await db_session.commit()
+
+        await scene.on_document(_message("a.gcode.3mf", 10), _State(), tg_chat=_ScopedChat({"library:upload"}))
+
+        db_session.expire_all()
+        rooted = (
+            await db_session.scalars(
+                select(LibraryFolder).where(
+                    LibraryFolder.name == scene.DEFAULT_FOLDER_NAME, LibraryFolder.parent_id.is_(None)
+                )
+            )
+        ).all()
+        assert [(f.created_by_id, f.shared) for f in rooted] == [(None, True)]

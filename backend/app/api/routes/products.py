@@ -1365,9 +1365,15 @@ async def import_product(
     # ``file.file`` is seekable, which is all ``zipfile`` asks for — so the
     # archive is read where it already is, member by member.
     from backend.app.api.routes.library_thumbnail_jobs import request_authority
+    from backend.app.services.library_folder_access import request_actor
 
     product, warnings = await import_zip(
-        db, file.file, folder_id=folder_id, user=current_user, authority=await request_authority(request, current_user)
+        db,
+        file.file,
+        folder_id=folder_id,
+        user=current_user,
+        authority=await request_authority(request, current_user),
+        folder_actor=await request_actor(request, db, current_user),
     )
     return ProductImportResponse(product=await _response(db, product, reload_links=True), warnings=warnings)
 
@@ -2505,7 +2511,8 @@ async def get_product_files(
     ):
         plates.setdefault(row[1].id, []).append(row)
     # WS-13 E9 A03 — the linked folders, in one statement. Their names follow the
-    # library's folder routes: any library reader sees them (``read_own`` too), nobody else.
+    # library's folder rule (N56): a folder the caller sees is named, any other is
+    # listed hidden, as a hidden file is; without a library right nothing is named.
     linked_folders = (
         await db.execute(
             select(LibraryFolder.id, LibraryFolder.name)
@@ -2514,10 +2521,26 @@ async def get_product_files(
         )
     ).all()
     linked_folder_ids = {folder_id for folder_id, _name in linked_folders}
-    folders_named = scope != "none"
+    seen_folders: set[int] | None = set()
+    if scope == "all":
+        seen_folders = None
+    elif scope == "own" and linked_folders:
+        from backend.app.core.auth import acting_user
+        from backend.app.services.library_folder_access import FolderActor, load_folder_index, visible_folder_ids
+
+        actor = FolderActor(await acting_user(request, db, user), False)
+        seen_folders = visible_folder_ids(await load_folder_index(db), actor)
+
+    def folder_named(folder_id: int) -> bool:
+        return seen_folders is None or folder_id in seen_folders
+
     folders = sorted(
         (
-            ProductFolderOut(folder_id=folder_id, name=name if folders_named else None, hidden=not folders_named)
+            ProductFolderOut(
+                folder_id=folder_id,
+                name=name if folder_named(folder_id) else None,
+                hidden=not folder_named(folder_id),
+            )
             for folder_id, name in linked_folders
         ),
         key=lambda f: (f.hidden, (f.name or "").casefold(), f.folder_id),

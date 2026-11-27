@@ -180,6 +180,7 @@ export function LibraryPickerModal({
             onChange={setFolder}
             rootLabel={t('libraryPicker.libraryRoot')}
             includeReadOnly
+            readOnly
             className="max-h-none"
           />
         </div>

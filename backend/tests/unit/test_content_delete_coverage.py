@@ -55,7 +55,7 @@ async def assignment_door(db):
     assert not Printer.__mapper__.relationships["archives"].cascade.delete
 
 
-def test_all_35_user_edges_keep_the_reviewed_literal_policy():
+def test_all_36_user_edges_keep_the_reviewed_literal_policy():
     import_all_models()
     policy = json.loads((APP / "data/content_delete_user_reference_policy.json").read_text(encoding="utf-8"))
     actual = {}
@@ -64,10 +64,10 @@ def test_all_35_user_edges_keep_the_reviewed_literal_policy():
             if fk.target_fullname == "users.id":
                 actual[f"{table.name}.{fk.parent.name}"] = (fk.parent.nullable, fk.ondelete)
     assert actual == {key: (row["nullable"], row["ondelete"]) for key, row in policy.items()}
-    assert len(actual) == 35
+    assert len(actual) == 36  # N56: library_folders.created_by_id
 
 
-def test_all_109_parent_fk_edges_and_secondaries_have_a_literal_disposition():
+def test_all_110_parent_fk_edges_and_secondaries_have_a_literal_disposition():
     import_all_models()
     policy = json.loads((APP / "data/content_delete_fk_reference_policy.json").read_text(encoding="utf-8"))
     parents = {
@@ -87,7 +87,7 @@ def test_all_109_parent_fk_edges_and_secondaries_have_a_literal_disposition():
         if fk.column.table.name in parents
     }
     assert actual == {key: (row["target"], row["nullable"], row["ondelete"]) for key, row in policy.items()}
-    assert len(actual) == 109
+    assert len(actual) == 110  # N56: library_folders.created_by_id
     assert all(row["policy"] for row in policy.values())
 
 
