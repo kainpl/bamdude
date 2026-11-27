@@ -144,6 +144,25 @@ async def test_it_goes_to_the_front(db_session, printer_factory):
     assert again.position < later.position
 
 
+async def test_an_uncommitted_repeat_with_work_ahead_leaves_the_commit_to_its_caller(db_session, printer_factory):
+    """The plate answer re-arms with ``commit=False`` and commits defects, receipt, gate and re-arm together. The
+    front-of-queue bump committed by itself whenever other work waited ahead of the row, which split that
+    transaction and let go of the locks the answer held."""
+    printer, queue, row = await _finished(db_session, printer_factory)
+    row.position = 5
+    later = PrintQueueItem(queue_id=queue.id, status="pending", position=1)
+    db_session.add(later)
+    await db_session.commit()
+
+    again = await answer_by_repeating(db_session, printer.id, commit=False)
+    assert again.status == "pending"
+    await db_session.rollback()
+
+    await db_session.refresh(row)
+    await db_session.refresh(later)
+    assert (row.status, row.position, later.position) == ("completed", 5, 1)
+
+
 async def test_nothing_waiting_returns_none(db_session, printer_factory):
     printer = await printer_factory()
     db_session.add(PrinterQueue(id=printer.id, printer_id=printer.id))
