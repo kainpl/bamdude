@@ -882,14 +882,6 @@
     },
     {
       "site": [
-        "api/routes/spoolman_inventory.py::get_spoolman_slot_assignment",
-        "sqlalchemy.delete",
-        "backend.app.models.spoolman_slot_assignment.SpoolmanSlotAssignment"
-      ],
-      "owner_policy": "Outside C parent purge: api/routes/spoolman_inventory.py::get_spoolman_slot_assignment retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
-    },
-    {
-      "site": [
         "api/routes/spoolman_inventory.py::unassign_spoolman_slot",
         "sqlalchemy.delete",
         "backend.app.models.spoolman_slot_assignment.SpoolmanSlotAssignment"

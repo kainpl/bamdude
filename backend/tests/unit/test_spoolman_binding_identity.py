@@ -512,3 +512,172 @@ class TestReaders:
             await resolve_spoolman_slot_kprofile(
                 None, printer_id=1, spoolman_spool_id=NUMBER, nozzle_diameter=0.4, slot_extruder=0
             )
+
+
+# --- acceptance r1: A01-A03 ------------------------------------------------------------------------
+
+
+@pytest.fixture
+def tracking_sessions(monkeypatch, test_engine):
+    """The tracking module bound ``async_session`` at import; give it the test database."""
+    from backend.app.core import database
+    from backend.app.services import spoolman_tracking
+
+    monkeypatch.setattr(spoolman_tracking, "async_session", database.async_session)
+    return spoolman_tracking
+
+
+class _Recorder:
+    def __init__(self, result=None, error: BaseException | None = None):
+        self.calls: list[tuple] = []
+        self._result = result
+        self._error = error
+
+    async def __call__(self, *args, **kwargs):
+        self.calls.append(args)
+        if self._error is not None:
+            raise self._error
+        return self._result
+
+
+def _runout(number: int = NUMBER):
+    from backend.app.models.print_usage_event import EVENT_RUNOUT, KIND_AUTOSWITCH
+
+    return SimpleNamespace(
+        id=1,
+        event=EVENT_RUNOUT,
+        kind=KIND_AUTOSWITCH,  # a closed episode: drained, and archived when that is on
+        global_tray_id=0,
+        layer_num=40,
+        spool_id=None,
+        spoolman_spool_id=number,
+        archive_id=1,
+    )
+
+
+class TestAcceptanceR1:
+    async def test_a01_the_zero_correction_neither_drains_nor_archives_another_spool(
+        self, db_session, printer_factory, tracking_sessions
+    ):
+        await _spoolman_on(db_session)
+        db_session.add(Settings(key="runout_archive_spool_enabled", value="true"))
+        await db_session.commit()
+        printer = await printer_factory()
+        await _bind(db_session, printer.id)
+        client = SimpleNamespace(
+            get_spool=_Recorder({"id": NUMBER, "registered": NEW, "remaining_weight": 800.0}),
+            use_spool=_Recorder(),
+            update_spool=_Recorder(),
+            set_spool_archived=_Recorder(),
+        )
+        check = identity.ChargeCheck(client, printer.id)
+
+        await tracking_sessions._apply_runout_zero_corrections_spoolman(client, [_runout()], 1, identity=check)
+        assert (client.use_spool.calls, client.set_spool_archived.calls, client.update_spool.calls) == ([], [], [])
+        await check.settle()
+        assert await _rows(db_session, SpoolmanSlotAssignment) == []
+
+    async def test_a01_a_stopped_prints_tail_is_one_check_settled_after_the_zero_correction(
+        self, db_session, printer_factory, tracking_sessions, monkeypatch
+    ):
+        from backend.app.models.active_print_spoolman import ActivePrintSpoolman
+
+        printer = await printer_factory()
+        archive = PrintArchive(
+            printer_id=printer.id, filename="a.3mf", file_path="", file_size=0, print_name="a", status="failed"
+        )
+        db_session.add(archive)
+        await db_session.commit()
+        db_session.add(
+            ActivePrintSpoolman(printer_id=printer.id, archive_id=archive.id, filament_usage=[], ams_trays={})
+        )
+        await db_session.commit()
+
+        order: list[str] = []
+        seen: list = []
+
+        async def partial(*_a, identity=None, **_kw):
+            order.append("partial")
+            seen.append(identity)
+
+        async def zero(_client, _events, _archive_id, identity=None):
+            order.append("zero")
+            seen.append(identity)
+            return 0
+
+        async def settle(self):
+            order.append("settle")
+
+        monkeypatch.setattr(tracking_sessions, "_report_partial_usage", partial)
+        monkeypatch.setattr(tracking_sessions, "_apply_runout_zero_corrections_spoolman", zero)
+        monkeypatch.setattr(tracking_sessions, "_get_spoolman_client_with_fallback", _Recorder(object()))
+        monkeypatch.setattr(tracking_sessions, "_load_journal_events", _Recorder([]))
+        monkeypatch.setattr(identity.ChargeCheck, "settle", settle)
+
+        await tracking_sessions._cleanup_tracking(
+            printer.id, archive.id, db_session, None, None, None, "failed", charge=SimpleNamespace(enabled=True)
+        )
+        assert order == ["partial", "zero", "settle"]
+        assert seen[0] is not None and seen[0] is seen[1]
+
+    async def test_a02_the_slot_card_on_a_gone_spool_removes_the_row_and_the_numbers_links(
+        self, db_session, printer_factory, monkeypatch
+    ):
+        from backend.app.api.routes import spoolman_inventory
+
+        await _spoolman_on(db_session)
+        printer = await printer_factory()
+        fc = await _calibration(db_session, printer.id)
+        await _bind(db_session, printer.id, stamp=None)
+        await _link(db_session, printer.id, fc.id, stamp=None)
+
+        async def _get_client(_db, **_kw):
+            return SimpleNamespace(get_spool=_Recorder(error=SpoolmanNotFoundError("gone")))
+
+        monkeypatch.setattr(spoolman_inventory, "_get_client", _get_client)
+        answer = await spoolman_inventory.get_spoolman_slot_assignment(
+            printer_id=printer.id, ams_id=0, tray_id=0, db=db_session, _=None
+        )
+        assert answer is None
+        assert await _rows(db_session, SpoolmanSlotAssignment) == []
+        assert await _rows(db_session, SpoolmanKProfile) == []
+
+    async def test_a02_during_a_print_the_gone_binding_stays_for_its_tail(
+        self, db_session, printer_factory, monkeypatch
+    ):
+        from backend.app.api.routes import spoolman_inventory
+
+        await _spoolman_on(db_session)
+        printer = await printer_factory()
+        await _bind(db_session, printer.id)
+        await _printing(db_session, printer.id)
+
+        async def _get_client(_db, **_kw):
+            return SimpleNamespace(get_spool=_Recorder(error=SpoolmanNotFoundError("gone")))
+
+        monkeypatch.setattr(spoolman_inventory, "_get_client", _get_client)
+        await spoolman_inventory.get_spoolman_slot_assignment(
+            printer_id=printer.id, ams_id=0, tray_id=0, db=db_session, _=None
+        )
+        assert len(await _rows(db_session, SpoolmanSlotAssignment)) == 1
+
+    async def test_a03_the_remain_delta_says_a_gone_spool_too(self, db_session, printer_factory, tracking_sessions):
+        await _spoolman_on(db_session)
+        printer = await printer_factory()
+        await _bind(db_session, printer.id)
+        client = SimpleNamespace(get_spool=_Recorder(error=SpoolmanNotFoundError("gone")), use_spool=_Recorder())
+        check = identity.ChargeCheck(client, printer.id)
+
+        await tracking_sessions._report_remain_delta_for_slots(
+            client,
+            printer_id=printer.id,
+            tray_remain_start={"0-0": {"remain": 80, "tray_uuid": ""}},
+            current_lookup={"0-0": {"remain": 50, "tray_uuid": ""}},
+            handled_global_tray_ids=set(),
+            archive_id=1,
+            identity=check,
+        )
+        assert client.use_spool.calls == []
+        assert check.changed == [(0, 0.0, NUMBER)]
+        await check.settle()
+        assert await _rows(db_session, SpoolmanSlotAssignment) == []

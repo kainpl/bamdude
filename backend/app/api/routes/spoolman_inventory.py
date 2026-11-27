@@ -2343,25 +2343,12 @@ async def get_spoolman_slot_assignment(
     except HTTPException as exc:
         if exc.status_code != 404:
             raise
-        # Spool deleted in Spoolman — clean up stale assignment.
-        # Include spoolman_spool_id in WHERE to avoid a TOCTOU race where a
-        # concurrent re-assign changed the slot to a different spool between
-        # the GET and this DELETE.
-        try:
-            await db.execute(
-                delete(SpoolmanSlotAssignment).where(
-                    SpoolmanSlotAssignment.id == slot.id,
-                    SpoolmanSlotAssignment.spoolman_spool_id == slot.spoolman_spool_id,
-                )
-            )
-            await db.commit()
-        except Exception as cleanup_exc:
-            await db.rollback()
-            logger.warning(
-                "Failed to remove stale slot assignment for spool %s: %s",
-                slot.spoolman_spool_id,
-                cleanup_exc,
-            )
+        # Spoolman's own "no such spool" (a proxy's 404 is a 503 here): the binding goes
+        # with every K link of the number — through the one removal, which keeps the row of
+        # a printer whose print is still accounting (acceptance A02). Conditional on what
+        # was read, so a re-assignment made meanwhile stays.
+        await db.commit()  # the route's read transaction ends before the removal's own session
+        await spoolman_spool_identity.drop_stale(slot.spoolman_spool_id, None, "the spool is gone from Spoolman")
         return None
 
 

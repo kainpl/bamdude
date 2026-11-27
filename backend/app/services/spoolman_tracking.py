@@ -733,6 +733,16 @@ async def _cleanup_tracking(
         logger.debug("[SPOOLMAN] No tracking data to clean up for printer=%s, archive=%s", printer_id, archive_id)
         return
 
+    # ONE check of the binding numbers for the whole tail (m266, acceptance A01): the
+    # partial report and the zero correction are judged by it, and it settles only after
+    # both — a journal number is confirmed through the slot rows that name it, so they
+    # must still be there when the zero correction asks.
+    identity = None
+    if charge.enabled:
+        tail_client = await _get_spoolman_client_with_fallback(charge)
+        if tail_client:
+            identity = ChargeCheck(tail_client, printer_id, async_session)
+
     # Try to report partial usage before cleanup
     try:
         await _report_partial_usage(
@@ -743,6 +753,7 @@ async def _cleanup_tracking(
             completion=completion,
             status=status,
             charge=charge,
+            identity=identity,
         )
     except Exception as e:
         logger.warning("[SPOOLMAN] Partial usage report failed: %s", e)
@@ -755,7 +766,7 @@ async def _cleanup_tracking(
             client = await _get_spoolman_client_with_fallback(charge)
             if client:
                 events = await _load_journal_events(printer_id, archive_id)
-                await _apply_runout_zero_corrections_spoolman(client, events, archive_id)
+                await _apply_runout_zero_corrections_spoolman(client, events, archive_id, identity=identity)
     except Exception as e:
         logger.warning("[SPOOLMAN] Runout zero corrections on cleanup failed: %s", e)
 
@@ -767,6 +778,18 @@ async def _cleanup_tracking(
     )
     await db.commit()
     logger.debug("[SPOOLMAN] Cleaned up tracking data for printer=%s, archive=%s", printer_id, archive_id)
+
+    # Bindings the tail refuted: removed now that this print's rows are no longer its
+    # evidence (their own sessions, after the commit above), and said once.
+    if identity is not None:
+        await identity.settle()
+        if identity.changed:
+            from backend.app.services import spool_assignment_notifications  # noqa: PLC0415
+
+            async with async_session() as notify_db:
+                await spool_assignment_notifications.notify_usage_spool_changed(
+                    printer_id, identity.changed, notify_db, logger
+                )
 
 
 async def _load_journal_events(printer_id: int, archive_id: int) -> list:
@@ -1615,6 +1638,7 @@ async def _report_partial_usage(
     status: str = "failed",
     *,
     charge,
+    identity=None,
 ):
     """Report what a print that stopped used: the slicer's per-slot estimate scaled by
     how far each slot got along its own G-code timeline (``partial_slot_grams`` — the
@@ -1628,9 +1652,15 @@ async def _report_partial_usage(
 
     ``status`` is the print's own outcome, recorded on its usage-history rows only; the
     archive is settled as a failed print whatever it says.
+
+    ``identity`` — the tail's ``ChargeCheck`` when the caller owns it (``_cleanup_tracking``:
+    the zero correction after this report is judged by the same check, which the caller
+    settles after both, acceptance A01). Without one this report makes and settles its own.
     """
     from backend.app.services.printer_manager import printer_manager
     from backend.app.utils.threemf_tools import partial_slot_grams
+
+    owns_identity = identity is None
 
     async with async_session() as db:
         from backend.app.api.routes.settings import get_setting
@@ -1714,8 +1744,8 @@ async def _report_partial_usage(
             async with async_session() as notify_db:
                 await spool_assignment_notifications.notify_usage_not_recorded(printer_id, uncharged, notify_db, logger)
         # Bindings the charges refuted (m266): removed now that this print's rows are no
-        # longer its evidence, and said once.
-        if identity is not None:
+        # longer its evidence, and said once — by whoever owns the check.
+        if identity is not None and owns_identity:
             await identity.settle()
             if identity.changed:
                 async with async_session() as notify_db:
@@ -1735,7 +1765,8 @@ async def _report_partial_usage(
     # below, so the loss can be named (``_say_usage_lost``) instead of dropped.
     client = await _get_spoolman_client_with_fallback(charge)
     # A number a binding or the journal gave is charged only to the bound spool (m266).
-    identity = ChargeCheck(client, printer_id, async_session) if client is not None else None
+    if owns_identity:
+        identity = ChargeCheck(client, printer_id, async_session) if client is not None else None
 
     # The print's journal: runout boundaries on any slot's tray, and — for a one-slot print —
     # the tray chronology's unknown feeds and identities. Read whatever the slot count.
@@ -2446,8 +2477,13 @@ async def _report_remain_delta_for_slots(
             spool = await client.get_spool(spool_id)
         except (SpoolmanNotFoundError, SpoolmanClientError, SpoolmanUnavailableError) as exc:
             logger.debug("[SPOOLMAN] AMS%d-T%d: get_spool(%s) failed: %s", ams_id, tray_id, spool_id, exc)
-            if identity is not None and isinstance(exc, SpoolmanNotFoundError):
-                await identity.judge(spool_id, None, slot_stamp=bound_stamp)
+            if (
+                identity is not None
+                and isinstance(exc, SpoolmanNotFoundError)
+                and not await identity.judge(spool_id, None, slot_stamp=bound_stamp)
+            ):
+                # Gone from Spoolman: said like another spool, without a figure (acceptance A03).
+                identity.changed.append((global_tray_id, 0.0, spool_id))
             continue
         if identity is not None and not await identity.judge(spool_id, spool, slot_stamp=bound_stamp):
             # The grams are not worked out for a spool that is not the bound one: the
