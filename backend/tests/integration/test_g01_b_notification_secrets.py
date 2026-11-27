@@ -39,6 +39,7 @@ CASES = {
         "numbers": "+15559876543",
         "auth_header": "Bearer CANARY_SIGNAL",
     },
+    "gotify": {"server": "https://gotify.example/base", "app_token": "CANARY_GOTIFY"},
 }
 
 
@@ -164,6 +165,7 @@ async def test_explicit_actions_conflicts_clear_and_replacement(
         ("webhook", {"webhook_url": "https://evil.example/receiver"}),
         ("signal", {"server": "https://evil.example"}),
         ("signal", {"sender_number": "+15550000000"}),
+        ("gotify", {"server": "https://evil.example"}),
     ],
 )
 async def test_scope_change_refused_before_save_or_draft_outbound(
@@ -177,7 +179,7 @@ async def test_scope_change_refused_before_save_or_draft_outbound(
     await assert_scope_rejected_before_outbound(async_client, provider.id, kind, config, outbound)
 
 
-@pytest.mark.parametrize("kind", ["ntfy", "bark", "signal"])
+@pytest.mark.parametrize("kind", ["ntfy", "bark", "signal", "gotify"])
 async def test_legacy_credential_base_url_is_opaque_and_kept(
     kind, async_client, notification_provider_factory, db_session, monkeypatch
 ):
@@ -301,6 +303,7 @@ async def test_test_all_does_not_carry_status_writer_into_next_sender(
         ("bark", {"server": "https://BARK.example:443/base/"}),
         ("email", {"smtp_server": "SMTP.EXAMPLE", "smtp_port": 587, "security": "starttls"}),
         ("signal", {"server": "https://SIGNAL.example:443/v1/send/"}),
+        ("gotify", {"server": "https://GOTIFY.example:443/base/message/"}),
         ("webhook", {"webhook_url": "https://HOOKS.example:443/CANARY_WEBHOOK"}),
     ],
 )

@@ -1,7 +1,7 @@
 """Camera frames in notifications: who gets bytes, who gets a link, and what the link opens.
 
-A frame goes as bytes to the channels that take bytes. Home Assistant, Bark and
-a Slack-format webhook fetch a URL themselves, and ``{finish_photo_url}`` is
+A frame goes as bytes to the channels that take bytes. Home Assistant, Bark,
+Gotify and a Slack-format webhook fetch a URL themselves, and ``{finish_photo_url}`` is
 opened from a chat: those lead to a short-lived copy with an unguessable name,
 never to the archive's own photo, which is behind the media token.
 """
@@ -118,6 +118,34 @@ async def test_bark_is_given_the_link(async_client, db_session, monkeypatch):
     )
 
     assert LINK.match(seen["kwargs"]["image_url"])
+
+
+async def test_gotify_is_given_the_link(async_client, db_session, monkeypatch):
+    """Gotify takes no uploads; its Android app fetches the picture (upstream #2743)."""
+    await external_url(db_session)
+    seen = capture(monkeypatch, "_send_gotify")
+    row = await provider(db_session, "gotify", {"server": "https://gotify.example", "app_token": "AgotifyToken1"})
+
+    await NotificationService()._send_to_provider(
+        row, "t", "m", db_session, image_data=FRAME, event_type="printer_error"
+    )
+
+    assert LINK.match(seen["kwargs"]["image_url"])
+
+
+async def test_an_opted_out_gotify_gets_no_link(async_client, db_session, monkeypatch):
+    await external_url(db_session)
+    seen = capture(monkeypatch, "_send_gotify")
+    row = await provider(
+        db_session, "gotify", {"server": "https://gotify.example", "app_token": "AgotifyToken1"}, attach_photo=False
+    )
+
+    await NotificationService()._send_to_provider(
+        row, "t", "m", db_session, image_data=FRAME, event_type="printer_error"
+    )
+
+    assert seen["kwargs"]["image_url"] is None
+    assert not notification_photos.notification_photos_dir().exists()
 
 
 @pytest.mark.parametrize(("payload_format", "linked"), [("slack", True), ("generic", False)])

@@ -52,6 +52,7 @@ async def test_ten_provider_dtos_edits_and_drafts_on_postgres(
         ("email", {"smtp_server": "attacker.invalid"}),
         ("webhook", {"webhook_url": "https://attacker.invalid"}),
         ("signal", {"server": "https://attacker.invalid"}),
+        ("gotify", {"server": "https://attacker.invalid"}),
     ):
         await assert_scope_refusal(kind, change, async_client, notification_provider_factory, monkeypatch)
 

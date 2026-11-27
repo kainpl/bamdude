@@ -28,6 +28,7 @@ from backend.app.services.notification_credentials import (
     config_dict,
     credential_safe_sender,
     email_auth_enabled,
+    gotify_server,
     ntfy_server,
     safe_provider_message,
 )
@@ -127,6 +128,37 @@ _USER_AGENT = f"BamDude/{APP_VERSION} (+https://github.com/kainpl/bamdude)"
 DIGEST_RETRY_HOURS = 48
 
 _BARK_INTERRUPTION_LEVELS = frozenset({"active", "timeSensitive", "critical", "passive"})
+
+
+def _event_priority_level(config: dict, event_type: str | None) -> int | None:
+    """The 1-5 priority level mapped to this event in config.event_priorities.
+
+    1=min, 2=low, 3=default, 4=high, 5=urgent, as the dialog writes them for
+    ntfy (#990) and Gotify (upstream #2743). None when the event has no valid entry.
+
+    The dialog keys the map by the provider's toggle column ("on_print_failed")
+    while every sender passes the bare event name ("print_failed"), so the lookup
+    used to miss for every real notification (upstream #3139). Both spellings,
+    bare first — stored configs keep working unmigrated.
+    """
+    event_priorities = config.get("event_priorities") or {}
+    if not event_type or not isinstance(event_priorities, dict):
+        return None
+    raw = event_priorities.get(event_type)
+    if raw is None and not event_type.startswith("on_"):
+        raw = event_priorities.get(f"on_{event_type}")
+    try:
+        level = int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+    if level is not None and 1 <= level <= 5:
+        return level
+    return None
+
+
+# Gotify priorities run 0-10; its Android app stays silent below 4 and pops
+# the notification up from 8. The dialog's five levels map onto those bands.
+_GOTIFY_PRIORITY_BY_LEVEL = {1: 0, 2: 2, 3: 5, 4: 8, 5: 10}
 
 
 def _looks_like_cloudflare_challenge(response: httpx.Response) -> bool:
@@ -364,6 +396,8 @@ class NotificationService:
                 return await self._send_homeassistant(config, title, message, db=db)
             elif provider_type == "signal":
                 return await self._send_signal(config, title, message)
+            elif provider_type == "gotify":
+                return await self._send_gotify(config, title, message, event_type="test")
             else:
                 return False, f"Unknown provider type: {provider_type}"
         except Exception as e:
@@ -431,23 +465,9 @@ class NotificationService:
         # Per-event Priority header (#990). Only set when the user has
         # explicitly mapped this event to a 1-5 value; otherwise fall through
         # to the ntfy server's default so existing setups stay unchanged.
-        #
-        # The dialog keys the map by the provider's toggle column
-        # ("on_print_failed") while every sender passes the bare event name
-        # ("print_failed"), so the lookup used to miss for every real
-        # notification (upstream #3139). Both spellings, bare first — stored
-        # configs keep working unmigrated.
-        event_priorities = config.get("event_priorities") or {}
-        if event_type and isinstance(event_priorities, dict):
-            raw = event_priorities.get(event_type)
-            if raw is None and not event_type.startswith("on_"):
-                raw = event_priorities.get(f"on_{event_type}")
-            try:
-                priority = int(raw) if raw is not None else None
-            except (TypeError, ValueError):
-                priority = None
-            if priority is not None and 1 <= priority <= 5:
-                headers["Priority"] = str(priority)
+        priority = _event_priority_level(config, event_type)
+        if priority is not None:
+            headers["Priority"] = str(priority)
 
         client = await self._get_client()
 
@@ -625,6 +645,52 @@ class NotificationService:
                 "rule for this hostname or front it with Cloudflare Access."
             )
         return False, f"HTTP {response.status_code}: {safe_provider_message(response.text, 'bark', config)[:200]}"
+
+    @credential_safe_sender("gotify")
+    async def _send_gotify(
+        self,
+        config: dict,
+        title: str,
+        message: str,
+        event_type: str | None = None,
+        image_url: str | None = None,
+    ) -> tuple[bool, str]:
+        """Send notification via a self-hosted Gotify server (upstream Bambuddy #2743).
+
+        POSTs JSON to ``{server}/message`` with the application token in the
+        ``X-Gotify-Key`` header, so the token never ends up in a URL or a log line.
+        Gotify takes no uploads: a photo goes in as a URL its Android app fetches
+        itself. A Gotify server on the same box or LAN is the normal case, so the
+        URL goes through the LAN-service policy, like ntfy and Bark.
+        """
+        server = gotify_server(config)
+        app_token = (config.get("app_token") or "").strip()
+
+        if not server or not app_token:
+            return False, "Server URL and app token are required"
+
+        try:
+            assert_safe_lan_service_url(server, label="Gotify server URL")
+        except ValueError as exc:
+            return False, str(exc)
+
+        # Events without a mapped level go out at Gotify's middle band (5), the
+        # "Default" the dialog shows for them -- sound on, no pop-up.
+        level = _event_priority_level(config, event_type) or 3
+        payload: dict[str, Any] = {
+            "title": title,
+            "message": message,
+            "priority": _GOTIFY_PRIORITY_BY_LEVEL[level],
+        }
+        if image_url:
+            payload["extras"] = {"client::notification": {"bigImageUrl": image_url}}
+
+        client = await self._get_client()
+        response = await client.post(f"{server}/message", json=payload, headers={"X-Gotify-Key": app_token})
+
+        if response.status_code == 200:
+            return True, "Message sent successfully"
+        return False, f"HTTP {response.status_code}: {safe_provider_message(response.text, 'gotify', config)[:200]}"
 
     @staticmethod
     def _passes_progress_floor(effective_floor: int, estimated_minutes: float | None) -> bool:
@@ -1509,6 +1575,14 @@ class NotificationService:
                 )
             elif provider.provider_type == "signal":
                 return await self._send_signal(config, title, message, image_data=image_data)
+            elif provider.provider_type == "gotify":
+                return await self._send_gotify(
+                    config,
+                    title,
+                    message,
+                    event_type=event_type,
+                    image_url=await self.photo_link(db, image_data, event_type),
+                )
             else:
                 return False, f"Unknown provider type: {provider.provider_type}"
         except Exception as e:
@@ -1525,7 +1599,7 @@ class NotificationService:
     ) -> str | None:
         """A link to a short-lived copy of this frame, for whoever fetches it without a session.
 
-        Home Assistant, Bark and a Slack-format webhook fetch the picture
+        Home Assistant, Bark, Gotify and a Slack-format webhook fetch the picture
         themselves, and ``{finish_photo_url}`` is opened from a chat. The copy has
         an unguessable name and lives three days (``utils/notification_photos``);
         the link opens that one picture and nothing else -- not the archive, not

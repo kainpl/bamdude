@@ -75,6 +75,7 @@ class ProviderType(StrEnum):
     WEBHOOK = "webhook"
     HOMEASSISTANT = "homeassistant"
     SIGNAL = "signal"
+    GOTIFY = "gotify"
 
 
 class NotificationProviderBase(BaseModel):
@@ -350,6 +351,21 @@ class NtfyConfig(BaseModel):
     server: str = Field(default="https://ntfy.sh", description="ntfy server URL")
     topic: str = Field(..., description="Topic name to publish to")
     auth_token: str | None = Field(default=None, description="Optional authentication token")
+
+
+class GotifyConfig(BaseModel):
+    """Gotify configuration (upstream Bambuddy #2743)."""
+
+    server: str = Field(..., description="Gotify server URL")
+    app_token: str = Field(..., description="Token of the Gotify application to post as")
+    event_priorities: dict[str, int] | None = Field(
+        default=None,
+        description=(
+            "Per-event priority override, keyed like ntfy's event_priorities. Values are "
+            "levels 1-5 (min, low, default, high, urgent), sent to Gotify as 0, 2, 5, 8 and 10. "
+            "Events without an entry are sent at 5."
+        ),
+    )
 
 
 class PushoverConfig(BaseModel):

@@ -18,10 +18,10 @@ interface AddNotificationModalProps {
   onClose: () => void;
 }
 
-const PROVIDER_VALUES: ProviderType[] = ['email', 'telegram', 'discord', 'ntfy', 'pushover', 'bark', 'callmebot', 'webhook', 'homeassistant', 'signal'];
+const PROVIDER_VALUES: ProviderType[] = ['email', 'telegram', 'discord', 'ntfy', 'pushover', 'bark', 'gotify', 'callmebot', 'webhook', 'homeassistant', 'signal'];
 
 export function AddNotificationModal({ provider, onClose }: AddNotificationModalProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const isEditing = !!provider;
   const secretFields = notificationSecretFields(provider?.provider_type || 'email', provider);
@@ -85,8 +85,8 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       : {},
   );
 
-  // Per-event ntfy priority (#990). Map of event key → 1-5. Persisted into
-  // config.event_priorities on save; only sent when the provider is ntfy.
+  // Per-event priority for ntfy (#990) and Gotify (upstream #2743). Map of
+  // event key → 1-5. Persisted into config.event_priorities on save for those two only.
   const initialEventPriorities = (() => {
     const raw = provider?.config?.event_priorities;
     if (!raw || typeof raw !== 'object') return {} as Record<string, number>;
@@ -119,7 +119,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   const [error, setError] = useState<string | null>(null);
 
   // Merges the config fields that live outside the generic `config` blob
-  // (ntfy's event_priorities, Signal's recipient_type/numbers/group_id) back
+  // (ntfy's and Gotify's event_priorities, Signal's recipient_type/numbers/group_id) back
   // in. Shared by the test button and the actual save so a test always
   // reflects what would be persisted.
   const buildFinalConfig = (): Record<string, unknown> => {
@@ -130,7 +130,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
     for (const key of notificationSecretFields(providerType, provider)) {
       if (!safeConfig[key]?.trim() || secretActions[key] === 'clear') delete safeConfig[key];
     }
-    if (providerType === 'ntfy' && Object.keys(eventPriorities).length > 0) {
+    if ((providerType === 'ntfy' || providerType === 'gotify') && Object.keys(eventPriorities).length > 0) {
       return { ...safeConfig, event_priorities: eventPriorities };
     }
     if (providerType === 'signal') {
@@ -332,6 +332,11 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             { value: 'passive', label: t('notifications.barkLevelPassive') },
           ]},
         ];
+      case 'gotify':
+        return [
+          { key: 'server', label: 'Server URL', placeholder: 'https://gotify.example.com', type: 'text', required: true },
+          { key: 'app_token', label: 'App Token', placeholder: 'Token of a Gotify application', type: 'password', required: true },
+        ];
       case 'telegram':
         return [
           { key: 'bot_token', label: 'Bot Token', placeholder: 'Bot token from @BotFather', type: 'password', required: true },
@@ -436,11 +441,14 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             }}
             disabled={isEditing}
           >
-            {PROVIDER_VALUES.map((value) => (
-              <option key={value} value={value}>
-                {t(`notifications.providerTypes.${value}`, value)}
-              </option>
-            ))}
+            {/* Sorted by the label shown, so the order holds in every language */}
+            {PROVIDER_VALUES.map((value) => ({ value, label: t(`notifications.providerTypes.${value}`, value) }))
+              .sort((a, b) => a.label.localeCompare(b.label, i18n.language, { sensitivity: 'base' }))
+              .map(({ value, label }) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
           </Select>
           <p className="text-xs text-bambu-gray mt-1">
             {t(`notifications.providerDescriptions.${providerType}`, '')}
@@ -783,8 +791,8 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             columns={2}
           />
 
-          {/* Per-event ntfy priority (#990) */}
-          {providerType === 'ntfy' && (() => {
+          {/* Per-event priority: ntfy (#990), Gotify (upstream #2743) */}
+          {(providerType === 'ntfy' || providerType === 'gotify') && (() => {
             const enabledEvents = (providerEvents ?? [])
               .filter((event) => eventsWithDefaults[event.flag])
               .map((event) => ({ key: event.flag, label: eventLabel(event) }));
@@ -794,9 +802,15 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             return (
               <div className="space-y-2 p-3 bg-bambu-dark rounded-lg">
                 <p className="text-xs text-bambu-gray uppercase tracking-wide mb-1">
-                  {t('notifications.eventPriority.sectionTitle')}
+                  {providerType === 'gotify'
+                    ? t('notifications.eventPriority.sectionTitleGotify')
+                    : t('notifications.eventPriority.sectionTitle')}
                 </p>
-                <p className="text-xs text-bambu-gray mb-2">{t('notifications.eventPriority.helpNtfy')}</p>
+                <p className="text-xs text-bambu-gray mb-2">
+                  {providerType === 'gotify'
+                    ? t('notifications.eventPriority.helpGotify')
+                    : t('notifications.eventPriority.helpNtfy')}
+                </p>
                 <div className="space-y-2">
                   {enabledEvents.map((ev) => (
                     <div key={ev.key} className="flex items-center justify-between gap-3">

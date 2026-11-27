@@ -2606,6 +2606,179 @@ class TestBarkProvider:
         assert mock_send.call_count == 2
 
 
+class TestGotifyProvider:
+    """Gotify, a self-hosted push server (upstream Bambuddy #2743)."""
+
+    @pytest.fixture
+    def service(self):
+        return NotificationService()
+
+    def _client_returning(self, status_code: int, text: str = ""):
+        mock_response = MagicMock()
+        mock_response.status_code = status_code
+        mock_response.text = text
+        mock_response.headers = {}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        return mock_client
+
+    async def _send(self, service, mock_client, config, **kwargs):
+        with patch.object(service, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            mock_get_client.return_value = mock_client
+            return await service._send_gotify(config, "Title", "Body", **kwargs)
+
+    @pytest.mark.asyncio
+    async def test_posts_message_with_token_in_header(self, service):
+        """The token goes in X-Gotify-Key, never in the URL, and an event
+        without a mapped level goes out at Gotify's middle priority."""
+        mock_client = self._client_returning(200)
+
+        success, _ = await self._send(
+            service, mock_client, {"server": "https://gotify.example.com/", "app_token": "Atoken"}
+        )
+
+        assert success is True
+        call_args = mock_client.post.call_args
+        assert call_args[0][0] == "https://gotify.example.com/message"
+        assert call_args.kwargs["headers"] == {"X-Gotify-Key": "Atoken"}
+        assert call_args.kwargs["json"] == {"title": "Title", "message": "Body", "priority": 5}
+
+    @pytest.mark.asyncio
+    async def test_a_pasted_endpoint_url_is_not_doubled(self, service):
+        mock_client = self._client_returning(200)
+
+        await self._send(service, mock_client, {"server": "https://g.example/gotify/message/", "app_token": "t"})
+
+        assert mock_client.post.call_args[0][0] == "https://g.example/gotify/message"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("level", "priority"),
+        [(1, 0), (2, 2), (3, 5), (4, 8), (5, 10)],
+    )
+    async def test_event_level_maps_to_gotify_priority(self, service, level, priority):
+        """The dialog stores the toggle column name; senders get the bare event."""
+        mock_client = self._client_returning(200)
+        config = {"server": "https://g.example", "app_token": "t", "event_priorities": {"on_print_failed": level}}
+
+        await self._send(service, mock_client, config, event_type="print_failed")
+
+        assert mock_client.post.call_args.kwargs["json"]["priority"] == priority
+
+    @pytest.mark.asyncio
+    async def test_invalid_level_falls_back_to_default(self, service):
+        mock_client = self._client_returning(200)
+        config = {"server": "https://g.example", "app_token": "t", "event_priorities": {"print_failed": 9}}
+
+        await self._send(service, mock_client, config, event_type="print_failed")
+
+        assert mock_client.post.call_args.kwargs["json"]["priority"] == 5
+
+    @pytest.mark.asyncio
+    async def test_the_photo_goes_in_notification_extras(self, service):
+        """Upstream also sends a tap URL into its outcome-confirmation dialog;
+        BamDude has no such dialog, so only the picture travels."""
+        mock_client = self._client_returning(200)
+
+        await self._send(
+            service,
+            mock_client,
+            {"server": "https://g.example", "app_token": "t"},
+            image_url="https://bamdude.example/api/v1/notifications/photos/a.jpg",
+        )
+
+        assert mock_client.post.call_args.kwargs["json"]["extras"] == {
+            "client::notification": {"bigImageUrl": "https://bamdude.example/api/v1/notifications/photos/a.jpg"}
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("config", [{"server": "https://g.example"}, {"app_token": "AgotifyToken1"}, {}])
+    async def test_missing_server_or_token(self, service, config):
+        mock_client = self._client_returning(200)
+
+        success, message = await self._send(service, mock_client, config)
+
+        assert success is False
+        assert "required" in message
+        mock_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_http_error_never_echoes_the_token(self, service):
+        """Ours, not upstream's opaque message: like every BamDude sender the body
+        is reported, with the configured credential masked out of it."""
+        mock_client = self._client_returning(401, text='{"error":"Unauthorized","token":"AsecretToken"}')
+
+        success, message = await self._send(
+            service, mock_client, {"server": "https://g.example", "app_token": "AsecretToken"}
+        )
+
+        assert success is False
+        assert "HTTP 401" in message
+        assert "AsecretToken" not in message
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("server", ["http://169.254.169.254", "file:///etc/passwd"])
+    async def test_the_server_url_goes_through_the_lan_gate(self, service, server):
+        mock_client = self._client_returning(200)
+
+        success, message = await self._send(service, mock_client, {"server": server, "app_token": "AgotifyToken1"})
+
+        assert success is False
+        assert "Gotify server URL" in message
+        mock_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_lan_gotify_server_is_allowed(self, service):
+        """Self-hosting on the same network is the norm, as for ntfy and Bark."""
+        mock_client = self._client_returning(200)
+
+        success, _ = await self._send(service, mock_client, {"server": "http://192.168.1.50:8080", "app_token": "t"})
+
+        assert success is True
+        assert mock_client.post.call_args[0][0] == "http://192.168.1.50:8080/message"
+
+    @pytest.mark.asyncio
+    async def test_both_dispatch_tables_know_gotify(self, service):
+        """The live path passes the event for its priority; the test path sends "test"."""
+        provider = MagicMock()
+        provider.provider_type = "gotify"
+        provider.config = json.dumps({"server": "https://g.example", "app_token": "t"})
+        provider.quiet_hours_enabled = False
+
+        with patch.object(service, "_send_gotify", new_callable=AsyncMock) as mock_send:
+            mock_send.return_value = (True, "OK")
+            live_ok, _ = await service._send_to_provider(
+                provider, "Title", "Message", db=AsyncMock(), event_type="print_failed"
+            )
+            assert mock_send.call_args.kwargs["event_type"] == "print_failed"
+            test_ok, _ = await service.send_test_notification(
+                "gotify", {"server": "https://g.example", "app_token": "t"}
+            )
+            assert mock_send.call_args.kwargs["event_type"] == "test"
+
+        assert live_ok is True
+        assert test_ok is True
+
+    @pytest.mark.asyncio
+    async def test_the_live_path_links_the_photo(self, service):
+        """Gotify takes no uploads, so its photo has to be a URL its app fetches."""
+        provider = MagicMock()
+        provider.provider_type = "gotify"
+        provider.config = json.dumps({"server": "https://g.example", "app_token": "t"})
+        provider.quiet_hours_enabled = False
+        provider.attach_photo = True
+
+        with (
+            patch.object(service, "_send_gotify", new_callable=AsyncMock) as mock_send,
+            patch.object(service, "photo_link", new_callable=AsyncMock) as mock_link,
+        ):
+            mock_send.return_value = (True, "OK")
+            mock_link.return_value = "https://bamdude.example/photo.jpg"
+            await service._send_to_provider(provider, "Title", "Body", db=AsyncMock(), image_data=b"jpeg")
+
+        assert mock_send.call_args.kwargs["image_url"] == "https://bamdude.example/photo.jpg"
+
+
 class TestSignalProvider:
     """Signal, via a self-hosted signal-cli-rest-api instance.
 

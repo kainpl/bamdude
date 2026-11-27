@@ -12696,7 +12696,8 @@ export default {
       discord: 'Discord',
       webhook: 'Webhook',
       homeassistant: 'Home Assistant',
-      signal: 'Signal CLI API'
+      signal: 'Signal CLI API',
+      gotify: 'Gotify'
     },
     // Provider descriptions
     providerDescriptions: {
@@ -12709,7 +12710,8 @@ export default {
       callmebot: 'Безкоштовні WhatsApp сповіщення через CallMeBot',
       webhook: 'Загальний HTTP POST на будь-який URL',
       homeassistant: 'Постійні сповіщення у панелі Home Assistant',
-      signal: 'Повідомлення Signal через власний сервер signal-cli-rest-api'
+      signal: 'Повідомлення Signal через власний сервер signal-cli-rest-api',
+      gotify: 'Push-сповіщення через ваш власний сервер Gotify'
     },
     // Signal recipients
     signalRecipientType: 'Тип отримувача',
@@ -13089,6 +13091,8 @@ export default {
     eventPriority: {
       sectionTitle: 'Пріоритет події (ntfy)',
       helpNtfy: 'Перевизначити серверний пріоритет ntfy для кожної події. 1 = мін., 5 = терміново.',
+      sectionTitleGotify: 'Пріоритет події (Gotify)',
+      helpGotify: 'Виберіть пріоритет для кожної ввімкненої події. BamDude надсилає до Gotify рівні «Мін.», «Низький», «За замовч.», «Високий» і «Терміново» як 0, 2, 5, 8 і 10. У застосунку Gotify для Android рівні від «За замовч.» і вище відтворюють звук, а «Високий» і «Терміново» з’являються у спливному вікні.',
       min: '1 - Мін.',
       low: '2 - Низький',
       default: '3 - За замовч.',

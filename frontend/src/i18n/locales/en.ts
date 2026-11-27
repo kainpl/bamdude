@@ -12467,7 +12467,8 @@ export default {
       discord: 'Discord',
       webhook: 'Webhook',
       homeassistant: 'Home Assistant',
-      signal: 'Signal CLI API'
+      signal: 'Signal CLI API',
+      gotify: 'Gotify'
     },
     // Provider descriptions
     providerDescriptions: {
@@ -12480,7 +12481,8 @@ export default {
       callmebot: 'Free WhatsApp notifications via CallMeBot',
       webhook: 'Generic HTTP POST to any URL',
       homeassistant: 'Persistent notifications in Home Assistant dashboard',
-      signal: 'Signal messages via a self-hosted signal-cli-rest-api instance'
+      signal: 'Signal messages via a self-hosted signal-cli-rest-api instance',
+      gotify: 'Push notifications via your own Gotify server'
     },
     // Signal recipients
     signalRecipientType: 'Recipient Type',
@@ -12858,6 +12860,8 @@ export default {
     eventPriority: {
       sectionTitle: 'Event priority (ntfy)',
       helpNtfy: 'Override the ntfy server-side priority per event. 1 = min, 5 = urgent.',
+      sectionTitleGotify: 'Event priority (Gotify)',
+      helpGotify: 'Pick a priority for each enabled event. BamDude sends Min, Low, Default, High and Urgent to Gotify as 0, 2, 5, 8 and 10. In the Gotify Android app, Default and above play a sound, and High and Urgent pop up.',
       min: '1 - Min',
       low: '2 - Low',
       default: '3 - Default',

@@ -32,6 +32,7 @@ async def test_real_http_sender_error_redacts_before_its_body_limit(kind, monkey
         "discord": "webhook_url",
         "webhook": "auth_header",
         "signal": "auth_header",
+        "gotify": "app_token",
     }[kind]
     base = "CANARY_PRIVATE_" + "x" * 400
     value = {
@@ -96,7 +97,7 @@ def test_known_header_and_capability_fragments_are_not_returned_as_prose():
     assert "CANARY" not in safe
 
 
-@pytest.mark.parametrize("kind", ["ntfy", "bark", "signal", "email"])
+@pytest.mark.parametrize("kind", ["ntfy", "bark", "signal", "gotify", "email"])
 @pytest.mark.parametrize("url", ["https%3A%2F%2Fuser%3ACANARY%40host", "https://user:CANARY@[", "user:CANARY@host"])
 def test_malformed_legacy_endpoint_is_opaque_and_survives_edit(kind, url):
     field = "smtp_server" if kind == "email" else "server"

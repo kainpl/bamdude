@@ -25,6 +25,7 @@ SECRET_FIELDS = {
     "webhook": {"webhook_url", "auth_header"},
     "homeassistant": set(),
     "signal": {"auth_header"},
+    "gotify": {"app_token"},
 }
 PUBLIC_FIELDS = {
     "callmebot": {"phone"},
@@ -37,6 +38,7 @@ PUBLIC_FIELDS = {
     "webhook": {"payload_format", "field_title", "field_message", "auth_mode"},
     "homeassistant": {"service", "data"},
     "signal": {"server", "sender_number", "recipient_type", "numbers", "group_id", "auth_mode"},
+    "gotify": {"server", "event_priorities"},
 }
 REQUIRED_SECRETS = {
     "callmebot": {"apikey"},
@@ -46,6 +48,7 @@ REQUIRED_SECRETS = {
     "telegram": {"bot_token"},
     "discord": {"webhook_url"},
     "webhook": {"webhook_url"},
+    "gotify": {"app_token"},
 }
 
 
@@ -62,7 +65,9 @@ def provider_secret_fields(kind: str, *configs: dict) -> set[str]:
     fields = set(SECRET_FIELDS.get(kind, ()))
     # Legacy base URLs can embed Basic credentials/capabilities too. Their
     # endpoint becomes opaque instead of returning a stripped, writable URL.
-    endpoint_fields = ("server",) if kind in {"ntfy", "bark", "signal"} else ("smtp_server",) if kind == "email" else ()
+    endpoint_fields = (
+        ("server",) if kind in {"ntfy", "bark", "signal", "gotify"} else ("smtp_server",) if kind == "email" else ()
+    )
     for config in configs:
         for key in endpoint_fields:
             value = config.get(key)
@@ -113,6 +118,17 @@ def ntfy_server(config: dict) -> str:
     return value.rstrip("/") if isinstance(value, str) else ""
 
 
+def gotify_server(config: dict) -> str:
+    """The base URL the Gotify sender posts ``/message`` to (upstream #2743).
+
+    Gotify's own docs show the full endpoint, so a pasted ".../message" names the
+    same server, not ".../message/message". The credential scope reads this too,
+    so the token stays bound to the server it is actually sent to.
+    """
+    value = config.get("server")
+    return value.strip().rstrip("/").removesuffix("/message") if isinstance(value, str) else ""
+
+
 def email_auth_enabled(config: dict) -> bool:
     return str(config.get("auth_enabled", "true")).lower() == "true"
 
@@ -130,6 +146,8 @@ def _scope(kind: str, field: str, config: dict):
         return (kind, server) if field == "topic" else (kind, server, text("topic"))
     if kind == "bark":
         return kind, canonical_url(config.get("server"), default="https://api.day.app")
+    if kind == "gotify":
+        return kind, canonical_url(gotify_server(config))
     if kind == "email":
         try:
             port = int(config.get("smtp_port", 587))

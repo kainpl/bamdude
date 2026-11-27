@@ -100,6 +100,80 @@ describe('AddNotificationModal — Bark', () => {
 });
 
 /**
+ * Gotify, a self-hosted push server (upstream Bambuddy #2743). Its token is a
+ * secret like every other provider's, and it shares ntfy's per-event priority
+ * section under its own title.
+ */
+describe('AddNotificationModal — Gotify', () => {
+  const gotifyProvider = () =>
+    ({
+      ...buildProvider('gotify', 'My Gotify', { server: 'https://gotify.example.com', app_token: 'Atoken' }),
+      on_print_failed: true,
+    }) as unknown as NotificationProvider;
+
+  it('shows the server and a masked token field', async () => {
+    render(<AddNotificationModal provider={gotifyProvider()} onClose={() => undefined} />);
+
+    expect(await screen.findByDisplayValue('https://gotify.example.com')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('Atoken')).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Configured. Leave blank to keep.')).toHaveAttribute('type', 'password');
+  });
+
+  it('renders its own priority section and saves event_priorities', async () => {
+    let captured: { config: Record<string, unknown>; secret_actions: Record<string, string> } | null = null;
+    server.use(
+      http.patch('*/api/v1/notifications/1', async ({ request }) => {
+        captured = (await request.json()) as typeof captured;
+        return HttpResponse.json({ id: 1 });
+      }),
+    );
+
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<AddNotificationModal provider={gotifyProvider()} onClose={onClose} />);
+
+    const sectionHeader = await screen.findByText('Event priority (Gotify)');
+    expect(screen.queryByText('Event priority (ntfy)')).not.toBeInTheDocument();
+    const sectionRoot = sectionHeader.closest('div')!;
+    await user.selectOptions(within(sectionRoot).getByRole('combobox'), '4');
+
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(captured!.config).toMatchObject({
+      server: 'https://gotify.example.com',
+      event_priorities: { on_print_failed: 4 },
+    });
+    expect(captured!.config).not.toHaveProperty('app_token');
+    expect(captured!.secret_actions).toEqual({ app_token: 'keep' });
+  });
+});
+
+describe('AddNotificationModal — provider type list', () => {
+  it('lists the providers alphabetically by their label', async () => {
+    render(<AddNotificationModal onClose={() => undefined} />);
+
+    await screen.findByRole('switch', { name: 'Print Started' });
+    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement;
+    const labels = Array.from(select.options).map((o) => o.textContent);
+
+    expect(labels).toEqual([
+      'Bark',
+      'CallMeBot/WhatsApp',
+      'Discord',
+      'Email',
+      'Gotify',
+      'Home Assistant',
+      'ntfy',
+      'Pushover',
+      'Signal CLI API',
+      'Telegram',
+      'Webhook',
+    ]);
+  });
+});
+
+/**
  * Home Assistant custom service data (upstream Bambuddy #1441). A notify service
  * takes its mobile-push options — priority, ttl, channel — under a nested
  * `data` object. It is JSON rather than key=value lines precisely so `ttl: 0`
