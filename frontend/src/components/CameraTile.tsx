@@ -235,6 +235,9 @@ export function CameraTile({
   const showTemps = connected && statusMode === 'full' && temperatures != null;
   const nozzleTemps = [temperatures?.nozzle, temperatures?.nozzle_2].filter((v): v is number => v != null);
   const hasTemps = showTemps && (nozzleTemps.length > 0 || temperatures?.bed != null || temperatures?.chamber != null);
+  // A printing or paused printer is the one whose tile has the print's rows and, in
+  // the controls, Pause and Stop: on a narrow tile the heaters give way to them.
+  const heatersGiveWay = printerState === 'RUNNING' || printerState === 'PAUSE';
 
   // Kiosk walls pass neither handler. They remain passive and redacted, while
   // an authenticated operator gets two distinct actions: select live, or open
@@ -387,11 +390,12 @@ export function CameraTile({
                 </span>
               )}
               {/* A paused print has no finish time: it moves with the pause. On a tile
-                  narrower than 12rem (size S on a phone: our S is two columns there,
-                  upstream's one) the print's rows already fill the tile, so the finish
-                  time and the heaters give way and the overlay stays as it was. */}
+                  narrower than 15rem (size S on most screens; ours is two columns on a
+                  phone, upstream's one) the print's rows already fill the tile up to the
+                  chips, so the finish time and the heaters give way and the overlay
+                  stays as it was. */}
               {hasRemaining && bucket === 'printing' && (
-                <span className="@max-[12rem]:hidden">
+                <span className="@max-[15rem]:hidden">
                   {t('printers.camWall.eta', { time: formatETA(remainingMin ?? 0, timeFormat, t) })}
                 </span>
               )}
@@ -401,7 +405,7 @@ export function CameraTile({
         {hasTemps && (
           <div
             className={`mb-0.5 flex flex-wrap items-center gap-x-2 text-[11px] leading-tight text-bambu-gray${
-              showInfoStrip ? ' @max-[12rem]:hidden' : ''
+              heatersGiveWay ? ' @max-[15rem]:hidden' : ''
             }`}
           >
             {nozzleTemps.length > 0 && (

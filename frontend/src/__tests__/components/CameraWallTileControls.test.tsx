@@ -118,17 +118,24 @@ describe('tile information (full overlay)', () => {
     expect(screen.queryByText(/^ETA /)).not.toBeInTheDocument();
   });
 
-  // Size S on a phone is two columns here (upstream's is one): below 12rem the
-  // print's rows already fill the tile, so the new rows give way there. jsdom has
-  // no container queries; the class is what the browser applies them by.
+  // Below 15rem (size S on most screens) the print's rows already fill the tile up
+  // to the chips, so the new rows give way there. jsdom has no container queries;
+  // the class is what the browser applies them by.
   it('lets the finish time and the heaters give way on a narrow printing tile', () => {
     const { unmount } = tile({});
-    expect(screen.getByText(/^ETA /)).toHaveClass('@max-[12rem]:hidden');
-    expect(screen.getByTitle('Bed').parentElement).toHaveClass('@max-[12rem]:hidden');
+    expect(screen.getByText(/^ETA /)).toHaveClass('@max-[15rem]:hidden');
+    expect(screen.getByTitle('Bed').parentElement).toHaveClass('@max-[15rem]:hidden');
     unmount();
     // An idle tile has only the heaters, which fit at any width.
     tile({ printerState: 'IDLE', remainingMin: null });
-    expect(screen.getByTitle('Bed').parentElement).not.toHaveClass('@max-[12rem]:hidden');
+    expect(screen.getByTitle('Bed').parentElement).not.toHaveClass('@max-[15rem]:hidden');
+  });
+
+  // A printing tile with an HMS error shows the error chip, not the print's rows, but
+  // its controls still have Pause and Stop: the heaters give way to them as well.
+  it('lets the heaters give way on a narrow printing tile with an HMS error', () => {
+    tile({ hmsErrorCount: 1 });
+    expect(screen.getByTitle('Bed').parentElement).toHaveClass('@max-[15rem]:hidden');
   });
 
   it('shows no heaters in the compact overlay or for an offline printer', () => {

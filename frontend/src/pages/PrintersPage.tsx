@@ -3022,7 +3022,7 @@ const PrinterCard = memo(function PrinterCard({
       return { previousStatus };
     },
     onSuccess: (_, on) => {
-      showToast(`Chamber light ${on ? 'on' : 'off'}`);
+      showToast(t(on ? 'camera.chamberLightTurnedOn' : 'camera.chamberLightTurnedOff'));
     },
     onError: (error: Error, _, context) => {
       // Rollback on error
