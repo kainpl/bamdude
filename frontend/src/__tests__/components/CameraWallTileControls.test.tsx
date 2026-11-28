@@ -118,6 +118,19 @@ describe('tile information (full overlay)', () => {
     expect(screen.queryByText(/^ETA /)).not.toBeInTheDocument();
   });
 
+  // Size S on a phone is two columns here (upstream's is one): below 12rem the
+  // print's rows already fill the tile, so the new rows give way there. jsdom has
+  // no container queries; the class is what the browser applies them by.
+  it('lets the finish time and the heaters give way on a narrow printing tile', () => {
+    const { unmount } = tile({});
+    expect(screen.getByText(/^ETA /)).toHaveClass('@max-[12rem]:hidden');
+    expect(screen.getByTitle('Bed').parentElement).toHaveClass('@max-[12rem]:hidden');
+    unmount();
+    // An idle tile has only the heaters, which fit at any width.
+    tile({ printerState: 'IDLE', remainingMin: null });
+    expect(screen.getByTitle('Bed').parentElement).not.toHaveClass('@max-[12rem]:hidden');
+  });
+
   it('shows no heaters in the compact overlay or for an offline printer', () => {
     const { unmount } = tile({ statusMode: 'compact' });
     expect(screen.queryByTitle('Nozzle')).not.toBeInTheDocument();
@@ -293,5 +306,32 @@ describe('the /camwall page', () => {
 
     await screen.findByRole('button', { name: 'Pause' });
     expect(screen.getByTestId('camwall-tile-controls').className).not.toContain('opacity-0');
+  });
+
+  // The full settings need settings:read; a user who may control printers without it
+  // still gets their own time format, as on the Printers page.
+  it('signed in, takes the time format from the UI preferences, not the full settings', async () => {
+    vi.spyOn(api, 'getPrinters').mockResolvedValue([{ id: 7, name: 'X1C-Lab', camera_rotation: 0 }] as never);
+    vi.spyOn(api, 'getCameras').mockResolvedValue([]);
+    vi.spyOn(api, 'getPrinterStatus').mockResolvedValue({ ...PRINTING, hms_errors: [] } as never);
+    const preferences = vi.spyOn(api, 'getUiPreferences').mockResolvedValue({ time_format: '24h' } as never);
+    const fullSettings = vi.spyOn(api, 'getSettings');
+    renderPage('/camwall');
+
+    await screen.findByRole('button', { name: 'Pause' });
+    await waitFor(() => expect(preferences).toHaveBeenCalled());
+    expect(fullSettings).not.toHaveBeenCalled();
+  });
+
+  it('reads no preferences on a kiosk: it has no session', async () => {
+    vi.spyOn(api, 'getCamWallPrinters').mockResolvedValue([
+      { id: 7, name: 'X1C-Lab', camera_rotation: 0, connected: true, state: 'IDLE', hms_errors: [] },
+    ] as never);
+    vi.spyOn(api, 'getCamWallCameras').mockResolvedValue([]);
+    const preferences = vi.spyOn(api, 'getUiPreferences');
+    renderPage('/camwall?token=bblt_abcdefgh_secretsecretsecret');
+
+    expect(await screen.findByText('X1C-Lab')).toBeInTheDocument();
+    expect(preferences).not.toHaveBeenCalled();
   });
 });

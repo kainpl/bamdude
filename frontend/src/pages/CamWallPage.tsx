@@ -111,10 +111,12 @@ export function CamWallPage() {
     setControlsMode(mode);
     saveCamWallControlsMode(mode);
   };
-  // The time format for the finish time; a kiosk has no session to read it with.
+  // The time format for the finish time, from the preferences any signed-in user may
+  // read (the Printers page's own query, #1293) — not the full settings, which need
+  // settings:read. A kiosk has no session to read them with.
   const { data: settings } = useQuery({
-    queryKey: ['settings'],
-    queryFn: api.getSettings,
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
     enabled: !kiosk,
   });
 

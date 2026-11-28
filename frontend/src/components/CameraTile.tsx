@@ -250,7 +250,8 @@ export function CameraTile({
           ? ' border-bambu-green ring-1 ring-bambu-green/75'
           : ' border-bambu-dark-tertiary';
   const rootClass =
-    'group relative aspect-video w-full overflow-hidden rounded-lg border bg-black text-left' + attentionClass +
+    // `@container`: the overlay's extra rows read the tile's own width (below).
+    'group @container relative aspect-video w-full overflow-hidden rounded-lg border bg-black text-left' + attentionClass +
     (interactive ? '' : ' cursor-default');
 
   return (
@@ -385,15 +386,24 @@ export function CameraTile({
                   })}
                 </span>
               )}
-              {/* A paused print has no finish time: it moves with the pause. */}
+              {/* A paused print has no finish time: it moves with the pause. On a tile
+                  narrower than 12rem (size S on a phone: our S is two columns there,
+                  upstream's one) the print's rows already fill the tile, so the finish
+                  time and the heaters give way and the overlay stays as it was. */}
               {hasRemaining && bucket === 'printing' && (
-                <span>{t('printers.camWall.eta', { time: formatETA(remainingMin ?? 0, timeFormat, t) })}</span>
+                <span className="@max-[12rem]:hidden">
+                  {t('printers.camWall.eta', { time: formatETA(remainingMin ?? 0, timeFormat, t) })}
+                </span>
               )}
             </div>
           </div>
         )}
         {hasTemps && (
-          <div className="mb-0.5 flex flex-wrap items-center gap-x-2 text-[11px] leading-tight text-bambu-gray">
+          <div
+            className={`mb-0.5 flex flex-wrap items-center gap-x-2 text-[11px] leading-tight text-bambu-gray${
+              showInfoStrip ? ' @max-[12rem]:hidden' : ''
+            }`}
+          >
             {nozzleTemps.length > 0 && (
               <span className="flex items-center gap-0.5" title={t('printers.temperatures.nozzle')}>
                 <Flame className="h-3 w-3" aria-label={t('printers.temperatures.nozzle')} />
