@@ -29,6 +29,13 @@ from backend.app.services import direct_rack_gate
 from backend.app.services.hms_actions import HMSAction, get_actions_for_error_code
 from backend.app.services.printer_feed_snapshot import FeedTelemetry, snapshot_from_state
 from backend.app.utils.ams_drying import ACTIVE_DRY_STATUSES, DRY_COUNTDOWN_STALL_SECONDS
+from backend.app.utils.direct_rack import (
+    NO_RACK,
+    RackState,
+    build_rack_state,
+    filament_setting_ids,
+    project_file_entry,
+)
 from backend.app.utils.filename import subtask_name_from_remote_filename
 from backend.app.utils.paho_teardown import retire_paho_client
 from backend.app.utils.printer_models import is_dual_nozzle_model
@@ -37,6 +44,9 @@ from backend.app.utils.tray_ids import (
     A2L_LITE_GLOBAL_BASE,
     A2L_LITE_NORMALIZED_AMS_ID,
     A2L_LITE_PHYSICAL_AMS_ID,
+    AMS_HT_FIRST_ID,
+    EXTERNAL_DEPUTY_ID,
+    EXTERNAL_MAIN_ID,
     AmsType,
     TrayLayout,
     ams_exist_bit,
@@ -495,7 +505,9 @@ def a2l_lite_wire_ids(ams_id: int, tray_id: int) -> tuple[int, int, int] | None:
     )
 
 
-def resolve_external_spools_in_mapping(ams_mapping: object, ams_mapping2: object, is_dual_nozzle: bool) -> object:
+def resolve_external_spools_in_mapping(
+    ams_mapping: object, ams_mapping2: object, is_dual_nozzle: bool, layout: TrayLayout | None = None
+) -> object:
     """Put the external holder back into a captured flat ``ams_mapping`` (upstream 37502719b, #3166).
 
     The firmware rejects 254/255 in the flat list, so BambuStudio and our own
@@ -513,17 +525,29 @@ def resolve_external_spools_in_mapping(ams_mapping: object, ams_mapping2: object
     and stays ``-1``. Every other entry is left exactly as captured, and without
     a usable ``ams_mapping2`` the input is returned unchanged: a ``-1`` that
     remains is still read downstream as "the external holder".
+
+    A direct-connected rack (``layout.direct_rack``, H3C / P3C) has one input
+    per PrintTool, each its own id: a ``-1`` naming one of them is that very id
+    — 255 is PrintTool 1's input, never folded to 254 (which would charge
+    PrintTool 2's spool). Its flat 247-253 arrive raw and pass as they are.
     """
     if not isinstance(ams_mapping, list) or not isinstance(ams_mapping2, list):
         return ams_mapping
     if len(ams_mapping2) != len(ams_mapping):
         return ams_mapping
+    rack = layout if isinstance(layout, TrayLayout) and layout.direct_rack else None
     resolved = list(ams_mapping)
     for i, (flat, detail) in enumerate(zip(ams_mapping, ams_mapping2, strict=True)):
         if flat != -1 or isinstance(flat, bool) or not isinstance(detail, dict):
             continue
         ams_id = detail.get("ams_id")
-        if isinstance(ams_id, bool) or ams_id not in (254, 255) or detail.get("slot_id") == 255:
+        if isinstance(ams_id, bool) or not isinstance(ams_id, int) or detail.get("slot_id") == 255:
+            continue
+        if rack is not None:
+            if rack.is_external(ams_id):
+                resolved[i] = ams_id
+            continue
+        if ams_id not in (254, 255):
             continue
         resolved[i] = ams_id if is_dual_nozzle else 254
     return resolved
@@ -573,6 +597,10 @@ def _direct_rack_nozzle_fields(entry: dict) -> dict:
     bind = entry.get("bind_ams")
     return {
         "addr_id": as_int(entry.get("addr_id")),
+        # The hotend's own slot now, raw ``(ams_id << 8) | slot`` (low byte 0xFF:
+        # nothing) — ``utils/direct_rack`` reads it for the bound slot and the
+        # feed block, as Studio's ``m_slot_now``.
+        "snow": as_int(entry.get("snow")),
         "current_temp": float(raw_temp & 0xFFFF) if raw_temp is not None and raw_temp >= 0 else None,
         "target_temp": float((raw_temp >> 16) & 0xFFFF) if raw_temp is not None and raw_temp >= 0 else None,
         "temp_status": (stat >> 3) & 0x3 if stat is not None and "addr_id" in entry else None,
@@ -1557,6 +1585,8 @@ _NOZZLE_FLOW_LETTER_MAP: dict[str, str] = {
     "X": "standard",
     "E": "high_flow",
     "U": "tpu_high_flow",
+    # TPU285 (``T_FLOW``): an H3C / P3C rack hotend for 2.85 mm TPU (``HT01``).
+    "T": "tpu285",
     "B": "e3d_high_flow",
 }
 
@@ -2112,6 +2142,19 @@ class PrinterState:
     # above 0 a direct-connected rack (H3C, P3C), 0 the H2C's RackType_AB, None never
     # seen — then the model's config decides. Sticky: the holder is pushed on change.
     direct_rack_type: int | None = None
+    # A direct rack's holder and hotends as Studio reads them (``utils/direct_rack``):
+    # ``holder.stat`` (above 0: the rack is moving), ``holder.info2`` raw (bit 0 the
+    # rack setup, bits 5 + addr each dock's docking calibration), and the
+    # ``device.nozzle`` masks ``exist`` (by full nozzle id) and ``hc`` (by addr).
+    # Sticky like the holder: absent from a frame, the last value stands.
+    rack_holder_status: int | None = None
+    rack_holder_info2: int | None = None
+    nozzle_exist_mask: int | None = None
+    nozzle_hc_mask: int | None = None
+    # A direct rack: PrintTool 1's external input (255) is the tray now. ``tray_now``
+    # 255 is also "nothing loaded"; only the toolhead's ``snow`` tells them apart
+    # (0xFF00 the input, low byte 0xFF nothing), so only that parse writes this.
+    direct_rack_input_loaded: bool = False
     # Timestamp of last AMS data update (for RFID refresh detection)
     last_ams_update: float = 0.0
     # Printable objects for skip object functionality: {identify_id: object_name}
@@ -3081,6 +3124,18 @@ class BambuMQTTClient:
         )
         return True
 
+    def _refuse_slot_outside_rack(self, what: str, ams_id: int, tray_id: int) -> bool:
+        """A direct rack: a slot its layout does not have (P3C input 247, an AMS 3P slot 7) is not sent.
+
+        Without this the other printers' branches would publish it (a P3C's ``(255, 2)``
+        as an H2D external) — only a raw API call reaches here; the routes answer 422.
+        """
+        layout = self.tray_layout()
+        if not layout.direct_rack or layout.accepts_slot(ams_id, tray_id):
+            return False
+        logger.info("[%s] %s for AMS %s slot %s not sent: no such slot", self.serial_number, what, ams_id, tray_id)
+        return True
+
     def _refuse_tray_command(self, what: str, tray: int | None) -> bool:
         """The same for a command that names its target by global tray id."""
         if not direct_rack_gate.tray_command_refused(self.tray_layout(), tray):
@@ -3728,12 +3783,13 @@ class BambuMQTTClient:
             flat,
             print_data.get("ams_mapping2"),
             self._is_dual_nozzle or is_dual_nozzle_model(self.model),
+            self.tray_layout(),
         )
 
     @_routing_locked
     def _process_message(self, payload: dict):
         """Process incoming MQTT message from printer."""
-        self.state.feed_telemetry.observe(payload, self.model)
+        self.state.feed_telemetry.observe(payload, self.model, self.tray_layout())
         self._snow_in_frame = frozenset()
         # Handle top-level AMS data (comes outside of "print" key)
         # Wrap in try/except to prevent breaking the MQTT connection
@@ -3900,6 +3956,8 @@ class BambuMQTTClient:
                 if _rack_type is not None and _rack_type != self.state.direct_rack_type:
                     logger.info("[%s] Nozzle holder reports rack type %s", self.serial_number, _rack_type)
                     self.state.direct_rack_type = _rack_type
+            if isinstance(_dev_for_rack, dict):
+                self._store_rack_holder_facts(_dev_for_rack)
 
             # Detect dual-nozzle BEFORE processing AMS data (tray_now disambiguation needs it)
             # device.extruder.info with >= 2 entries only exists on dual-nozzle printers (H2D, H2D Pro).
@@ -5047,11 +5105,50 @@ class BambuMQTTClient:
         if tray != self.state.tray_now:
             logger.debug("[%s] direct rack snow=%s -> tray %s", self.serial_number, entry.get("snow"), tray)
         self.state.tray_now = tray
+        # 255 from a real slot (0xFF00) is PrintTool 1's input; from a low byte 0xFF it is
+        # nothing. Only this parse decides it — a bare ``tray_now`` 255 is both.
+        self.state.direct_rack_input_loaded = split[1] != 0xFF and tray == EXTERNAL_MAIN_ID
         ams_block = print_data.get("ams")
         if not (isinstance(ams_block, dict) and "tray_now" in ams_block) and self._is_journal_tray(tray):
             # No ``ams.tray_now`` in this frame to journal the change through.
             self._observe_journal_tray(tray, _packet_layer(print_data))
         return frozenset({0})
+
+    def _store_rack_holder_facts(self, device: dict) -> None:
+        """A direct rack's ``holder.stat`` / ``holder.info2`` and the ``device.nozzle`` masks ``exist`` / ``hc``.
+
+        Studio (``DevNozzleRack::ParseRackInfoV1_0``, ``DevNozzleSystemParser::ParseV2_0``)
+        reads these for the rack's readiness and each hotend's presence. Each is
+        sticky: a frame without it leaves the last value alone.
+        """
+        holder = device.get("holder")
+        if isinstance(holder, dict):
+            if "stat" in holder and (stat := as_int(holder.get("stat"))) is not None:
+                self.state.rack_holder_status = stat
+            if "info2" in holder and (info2 := as_int(holder.get("info2"))) is not None:
+                self.state.rack_holder_info2 = info2
+        nozzle = device.get("nozzle")
+        if isinstance(nozzle, dict):
+            if "exist" in nozzle and (exist := as_int(nozzle.get("exist"))) is not None:
+                self.state.nozzle_exist_mask = exist
+            if "hc" in nozzle and (hc := as_int(nozzle.get("hc"))) is not None:
+                self.state.nozzle_hc_mask = hc
+
+    def rack_state(self) -> RackState:
+        """This printer's direct rack — its hotends and holder (``utils/direct_rack``); ``NO_RACK`` elsewhere."""
+        layout = self.tray_layout()
+        if not layout.direct_rack:
+            return NO_RACK
+        return build_rack_state(
+            self.state.nozzle_rack,
+            layout,
+            exist_mask=self.state.nozzle_exist_mask,
+            hc_mask=self.state.nozzle_hc_mask,
+            holder_status=self.state.rack_holder_status,
+            holder_info2=self.state.rack_holder_info2,
+            rack_type=self.state.direct_rack_type,
+            units=[uid for uid, _ in layout.units],
+        )
 
     def _normalize_a2l_am_units(self, ams_list) -> None:
         """A2L AMS-Lite normalisation: rewrite the physical unit id 16 → 6 in
@@ -5297,6 +5394,10 @@ class BambuMQTTClient:
                     # without it carries the rack's bare slot (upstream's capture).
                     if not self._snow_in_frame:
                         self.state.tray_now = self._direct_rack_tray(parsed_tray_now, self.state.tray_now)
+                        # A bare 255 says nothing about PrintTool 1's input; another
+                        # tray now does: the input is no longer what is loaded.
+                        if self.state.tray_now != EXTERNAL_MAIN_ID:
+                            self.state.direct_rack_input_loaded = False
                 elif self._is_dual_nozzle and 0 <= parsed_tray_now <= 3:
                     # First, check if we have a pending target that matches this slot
                     pending_target = self.state.pending_tray_target
@@ -8519,12 +8620,26 @@ class BambuMQTTClient:
         # Build probe command: re-send current external slot config (no-op on success)
         vt_tray = self.state.raw_data.get("vt_tray", []) if self.state.raw_data else []
         current = vt_tray[0] if vt_tray else {}
+        probe_tray_id = 0
+        if self.tray_layout().direct_rack:
+            # A direct rack lists one input per PrintTool, in no promised order:
+            # ``vt_tray[0]`` may be another input, and re-sending its settings to
+            # 255 would overwrite PrintTool 1's. The entry WITH id 255, in Studio's
+            # form (``tray_id`` 254), or no probe at all.
+            current = next(
+                (t for t in vt_tray if isinstance(t, dict) and str(t.get("id", "")) == "255"),
+                None,
+            )
+            if current is None:
+                self._dev_mode_probe_seq = None
+                return
+            probe_tray_id = 254
 
         command = {
             "print": {
                 "command": "ams_filament_setting",
                 "ams_id": 255,
-                "tray_id": 0,
+                "tray_id": probe_tray_id,
                 "slot_id": 0,
                 "tray_info_idx": current.get("tray_info_idx", ""),
                 "tray_type": current.get("tray_type", ""),
@@ -9703,6 +9818,7 @@ class BambuMQTTClient:
         timelapse_storage: str | None = None,
         submission_id: str | None = None,
         routing_guard=None,
+        calibration: bool = False,
     ):
         """Start a print job on the printer.
 
@@ -9792,7 +9908,18 @@ class BambuMQTTClient:
             # Passing raw 254/255 in the flat array causes H2D firmware to fail
             # with 0700_8012 "Failed to get AMS mapping table".
             flat_ams_mapping = []
-            if ams_mapping is not None:
+            # A direct-connected rack (H3C, P3C): Bambu Studio's own form, one helper
+            # (``direct_rack.project_file_entry``) — the rack AMS as {32|33, k}, each
+            # PrintTool's input by its own id, 247-253 raw and only 254/255 as -1.
+            layout = self.tray_layout()
+            if ams_mapping is not None and layout.direct_rack:
+                for tray_id in ams_mapping:
+                    flat, wire = project_file_entry(
+                        int(tray_id) if tray_id is not None else -1, layout, raw_externals=calibration
+                    )
+                    flat_ams_mapping.append(flat)
+                    ams_mapping2.append(wire)
+            elif ams_mapping is not None:
                 for tray_id in ams_mapping:
                     # Ensure tray_id is an integer (may be string from JSON)
                     tray_id = int(tray_id) if tray_id is not None else -1
@@ -9800,7 +9927,7 @@ class BambuMQTTClient:
                         # Unmapped filament slot
                         flat_ams_mapping.append(-1)
                         ams_mapping2.append({"ams_id": 255, "slot_id": 255})
-                    elif tray_id >= 254:
+                    elif tray_id in (EXTERNAL_DEPUTY_ID, EXTERNAL_MAIN_ID):
                         # External/virtual spool: each virtual tray is its own AMS unit
                         # with a single slot (slot 0). BambuStudio convention:
                         #   255 = VIRTUAL_TRAY_MAIN_ID (main/left nozzle)
@@ -9820,11 +9947,11 @@ class BambuMQTTClient:
                         ext_ams_id = tray_id if _is_dual_nozzle else 255
                         flat_ams_mapping.append(-1)
                         ams_mapping2.append({"ams_id": ext_ams_id, "slot_id": 0})
-                    elif tray_id >= 128:
+                    elif tray_id >= AMS_HT_FIRST_ID:
                         # AMS-HT: global tray ID IS the ams_id (single tray per unit)
                         flat_ams_mapping.append(tray_id)
                         ams_mapping2.append({"ams_id": tray_id, "slot_id": 0})
-                    elif (_a2l := a2l_lite_wire_ids(tray_id // 4, tray_id)) is not None:
+                    elif (_a2l := a2l_lite_wire_ids(regular_slot_key(tray_id)[0], tray_id)) is not None:
                         # A2L AMS-Lite (normalised global 24-27): flat mapping is the
                         # LOCAL slot 0-3 and ams_mapping2 carries {ams_id:16,
                         # slot_id:0-3} — both CONFIRMED against the firmware's own
@@ -9834,8 +9961,7 @@ class BambuMQTTClient:
                         ams_mapping2.append({"ams_id": _wire_ams, "slot_id": _wire_slot})
                     else:
                         # Regular AMS tray: Global tray ID = (ams_id * 4) + slot_id
-                        ams_id = tray_id // 4
-                        slot_id = tray_id % 4
+                        ams_id, slot_id = regular_slot_key(tray_id)
                         flat_ams_mapping.append(tray_id)
                         ams_mapping2.append({"ams_id": ams_id, "slot_id": slot_id})
 
@@ -9905,7 +10031,8 @@ class BambuMQTTClient:
                 if routing_guard is not None
                 else bool(self.state.raw_data.get("ams"))
             )
-            no_ams_printer = not use_ams and not is_dual_nozzle and not has_ams
+            # Never on a direct rack: its inputs are named by ams_mapping2, as Studio sends them.
+            no_ams_printer = not use_ams and not is_dual_nozzle and not has_ams and not layout.direct_rack
             if no_ams_printer and flat_ams_mapping:
                 flat_ams_mapping = [0 if v == -1 else v for v in flat_ams_mapping]
                 logger.info(
@@ -9955,9 +10082,11 @@ class BambuMQTTClient:
             flow_cali_bool = mode_to_bool(flow_cali)
             auto_bed_leveling_int = clamp_auto(mode_to_int(bed_levelling), supports_auto_bed_leveling(self.model))
             extrude_cali_flag_int = clamp_auto(mode_to_int(flow_cali), supports_auto_flow_cali(self.model))
+            # A direct rack has a nozzle offset too (one per hotend): Studio sends the
+            # option there as on dual-nozzle heads (``support_nozzle_offset_calibration``).
             nozzle_offset_cali_int = (
                 clamp_auto(mode_to_int(nozzle_offset_cali), supports_auto_nozzle_offset(self.model))
-                if is_dual_nozzle
+                if is_dual_nozzle or layout.direct_rack
                 else 0
             )
 
@@ -10049,7 +10178,9 @@ class BambuMQTTClient:
             # we err on the side of not emitting unrecognised fields. A parse
             # failure is logged but never blocks the dispatch (fail-open — the
             # firmware falls back to its auto-pick path, i.e. pre-fix behaviour).
-            if is_dual_nozzle and nozzle_mapping:
+            # Never on a direct rack: there the tray decides the PrintTool and Studio
+            # sends no nozzle_mapping (``nozzles_info`` / V0 / V1 never apply).
+            if is_dual_nozzle and nozzle_mapping and not layout.direct_rack:
                 try:
                     command["print"]["nozzle_mapping"] = json.loads(nozzle_mapping)
                 except json.JSONDecodeError:
@@ -13025,12 +13156,16 @@ class BambuMQTTClient:
         Returns:
             True if command was sent, False otherwise
         """
-        if self._refuse_slot_command("ams_filament_setting", ams_id, tray_id):
-            return False
         if not self._client or not self.state.connected:
             logger.warning("[%s] Cannot set AMS filament setting: not connected", self.serial_number)
             return False
+        if self._refuse_slot_outside_rack("ams_filament_setting", ams_id, tray_id):
+            return False
 
+        # A direct-connected rack (H3C, P3C): a rack AMS slot or a PrintTool's
+        # input in Bambu Studio's form (``direct_rack.filament_setting_ids``) —
+        # the branches below would send a rack slot as an AMS-HT's (slot 0).
+        rack_ids = filament_setting_ids(ams_id, tray_id, self.tray_layout())
         # Calculate mqtt IDs based on AMS type.
         # External-spool convention verified against a BambuStudio → X1C
         # packet capture (upstream Bambuddy #1279, May 2026): for
@@ -13043,7 +13178,9 @@ class BambuMQTTClient:
         # ``result: "fail"``, silently breaking external-spool filament
         # selection on every Bambu printer with no AMS or external
         # spool in active use.
-        if ams_id == 255:
+        if rack_ids is not None:
+            mqtt_ams_id, mqtt_tray_id, slot_id = rack_ids
+        elif ams_id == 255:
             vt_tray = self.state.raw_data.get("vt_tray", []) if self.state.raw_data else []
             if len(vt_tray) > 1:
                 # Dual external slots (H2D): each ext slot is its own
@@ -13052,7 +13189,7 @@ class BambuMQTTClient:
                 # capture — left at ``mqtt_tray_id = 0`` until a
                 # captured Studio → H2D exchange confirms the correct
                 # value.
-                mqtt_ams_id = 254 + tray_id
+                mqtt_ams_id = external_tray_id(tray_id)
                 mqtt_tray_id = 0
             else:
                 # Single external slot (X1C, P1S, A1): global tray_id=254.
@@ -13120,22 +13257,25 @@ class BambuMQTTClient:
         Returns:
             True if command was sent, False otherwise
         """
-        if self._refuse_slot_command("reset slot", ams_id, tray_id):
-            return False
         if not self._client or not self.state.connected:
             logger.warning("[%s] Cannot reset AMS slot: not connected", self.serial_number)
+            return False
+        if self._refuse_slot_outside_rack("reset slot", ams_id, tray_id):
             return False
 
         # Calculate mqtt IDs based on AMS type — same convention as
         # ``ams_set_filament_setting`` above. See its comment for the
-        # #1279 capture rationale.
-        if ams_id == 255:
+        # #1279 capture rationale. A direct rack: Studio's form, as there.
+        rack_ids = filament_setting_ids(ams_id, tray_id, self.tray_layout())
+        if rack_ids is not None:
+            mqtt_ams_id, mqtt_tray_id, slot_id = rack_ids
+        elif ams_id == 255:
             vt_tray = self.state.raw_data.get("vt_tray", []) if self.state.raw_data else []
             if len(vt_tray) > 1:
                 # Dual external slots (H2D): each ext slot is its own
                 # virtual AMS unit. Dual-external left at
                 # ``mqtt_tray_id = 0`` pending a Studio → H2D capture.
-                mqtt_ams_id = 254 + tray_id
+                mqtt_ams_id = external_tray_id(tray_id)
                 mqtt_tray_id = 0
             else:
                 # Single external slot (X1C, P1S, A1): global tray_id=254.

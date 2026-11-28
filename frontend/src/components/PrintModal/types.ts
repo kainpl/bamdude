@@ -1,4 +1,4 @@
-import type { AutoQueueItem, FilamentRoutingSnapshot, FeedPolicy, CalibrationMode, PrintQueueItem, Printer, PrinterRoutingChannel, TrackSwitchPlan } from '../../api/client';
+import type { AutoQueueItem, FilamentRoutingSnapshot, FeedPolicy, CalibrationMode, PrintQueueItem, Printer, PrinterRoutingChannel, RoutingNotice, TrackSwitchPlan } from '../../api/client';
 import type { AutoCalibrationCaps } from '../../utils/printerCapabilities';
 
 /**
@@ -538,6 +538,8 @@ export interface FilamentMappingProps {
   routingReason?: string;
   routingChannels?: PrinterRoutingChannel[];
   routingDualNozzle?: boolean;
+  /** A direct rack's plan notices that name no one channel (two sources on one PrintTool). */
+  routingNotices?: RoutingNotice[];
   printerId: number;
   /** Pre-fetched filament requirements data */
   filamentReqs: FilamentReqsData | undefined;

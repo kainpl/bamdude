@@ -9,9 +9,20 @@ import json
 from dataclasses import asdict, dataclass, field
 
 from backend.app.services.ams_advertised_overlay import matches_live, slot_key
+from backend.app.utils.direct_rack import NO_RACK, PRELOAD, RackState, candidate_print_tools, feed_block
 from backend.app.utils.filament_types import routing_filament_type
 from backend.app.utils.model_compatibility import effective_model_for_state
 from backend.app.utils.printer_models import is_dual_nozzle_model, is_nozzle_rack_model, normalize_model_name
+from backend.app.utils.tray_ids import (
+    NO_LAYOUT,
+    TrayLayout,
+    ams_exist_bit,
+    ams_type_of,
+    as_layout,
+    is_zmulti,
+    unit_extruder,
+    unit_type,
+)
 
 
 @dataclass(frozen=True)
@@ -34,6 +45,12 @@ class FeedSource:
     declared_color: str | None = None
     declared_variant: str | None = None
     reported_material: str | None = field(default=None, compare=False)
+    #: A direct rack (H3C, P3C): the hotend this source prints through, by its
+    #: 0-based dock ``addr`` (PrintTool ``addr + 1``) — Bambu Studio's candidate
+    #: rule (``utils/direct_rack``); None when no existing hotend is bound to it.
+    #: ``feed_block``: why an automatic plan may not take it (``direct_rack.feed_block``).
+    rack_addr: int | None = None
+    feed_block: str | None = None
 
     @property
     def rule_color(self) -> str | None:
@@ -69,10 +86,18 @@ class PrinterFeedSnapshot:
     #: one that ran dry — keeps the group it was last in while loaded
     #: (``backup_group_memory``). Read only for a pinned slot that is empty.
     backup_membership: dict[int, tuple[int, ...]] = field(default_factory=dict)
+    #: A direct rack's hotends and holder; ``NO_RACK`` on every other printer.
+    rack: RackState = NO_RACK
+    #: How this printer numbers its trays (labels, externals, rack slots).
+    layout: TrayLayout = NO_LAYOUT
 
     @property
     def marker(self) -> tuple[int, str]:
         return self.generation, self.revision
+
+    @property
+    def direct_rack(self) -> bool:
+        return self.layout.direct_rack
 
 
 def _integer(value, default=None):
@@ -117,8 +142,12 @@ class FeedTelemetry:
     fts: bool = False
     fts_authoritative: bool = False
     left_tpu_firmware: bool | None = None
+    #: The printer's tray numbering the last frame was read with (``utils/tray_ids``).
+    layout: TrayLayout = NO_LAYOUT
 
-    def observe(self, payload: dict, model: str | None) -> None:
+    def observe(self, payload: dict, model: str | None, layout: TrayLayout | None = None) -> None:
+        layout = as_layout(layout)
+        self.layout = layout
         report = payload.get("print", {})
         if not isinstance(report, dict):
             return
@@ -170,10 +199,17 @@ class FeedTelemetry:
 
                     wire_uid = _integer(unit.get("id"))
                     uid = normalize_am_unit_id(wire_uid) if wire_uid is not None else None
-                    if uid is None or not (0 <= uid < 16 or 128 <= uid <= 143):
+                    # A rack AMS (AMS 3H unit 32, AMS 3P unit 33): told by its ``info`` type,
+                    # else by its id, as the printer's own merge does (``tray_ids``).
+                    typed = unit_type(unit)
+                    zmulti = typed is not None and is_zmulti(typed[1])
+                    if uid is None or not (0 <= uid < 16 or 128 <= uid <= 143 or zmulti):
                         continue
                     current = self.units.setdefault(uid, {"id": uid, "tray": []})
                     current["_wire_id"] = wire_uid
+                    if zmulti:
+                        current["_zmulti"] = True
+                    zmulti = zmulti or current.get("_zmulti", False)
                     trays = {str(t.get("id")): dict(t) for t in current["tray"]}
                     if unit.get("tray") == []:
                         trays.clear()
@@ -181,12 +217,19 @@ class FeedTelemetry:
                         if not isinstance(tray, dict):
                             continue
                         tray_id = _integer(tray.get("id"))
-                        if tray_id is None or not 0 <= tray_id <= (0 if uid >= 128 else 3):
+                        last_slot = layout.slot_limit(uid) - 1 if zmulti else (0 if uid >= 128 else 3)
+                        if tray_id is None or not 0 <= tray_id <= last_slot:
                             continue
                         tid = str(tray_id)
                         merged = {**trays.get(tid, {}), **tray}
+                        # The "not 11 -> empty" reading is a regular AMS's; a rack AMS's
+                        # slot states mean otherwise (stage A, ``tray_ids``).
                         if tray.get("tray_type") == "" or (
-                            uid < 128 and "state" in tray and tray["state"] != 11 and "tray_type" not in tray
+                            uid < 128
+                            and not zmulti
+                            and "state" in tray
+                            and tray["state"] != 11
+                            and "tray_type" not in tray
                         ):
                             merged = {"id": tray.get("id"), "tray_type": ""}
                         trays[tid] = merged
@@ -202,8 +245,13 @@ class FeedTelemetry:
                     else:
                         # Regular AMS IDs are bit positions. HT units have a
                         # separate protocol range; do not infer their bit layout.
+                        # A rack AMS has its own bit (13 / 14, ``tray_ids.ams_exist_bit``).
                         for uid in list(self.units):
-                            if uid < 16 and not mask & (1 << self.units[uid].get("_wire_id", uid)):
+                            if self.units[uid].get("_zmulti"):
+                                bit = ams_exist_bit(uid, ams_type_of(uid))
+                                if bit is not None and not mask & (1 << bit):
+                                    del self.units[uid]
+                            elif uid < 16 and not mask & (1 << self.units[uid].get("_wire_id", uid)):
                                 del self.units[uid]
                 except (TypeError, ValueError):
                     pass
@@ -228,9 +276,16 @@ class FeedTelemetry:
             for tray in external:
                 if not isinstance(tray, dict):
                     continue
-                tid = _integer(tray.get("id"), 254) if dual else 254
-                if tid not in (254, 255):
-                    continue
+                if layout.direct_rack:
+                    # Each PrintTool has its own input, named by its id (255 PrintTool 1 ...
+                    # 247 PrintTool 9); never folded into one 254.
+                    tid = _integer(tray.get("id"))
+                    if tid is None or not layout.external_in_rack(tid):
+                        continue
+                else:
+                    tid = _integer(tray.get("id"), 254) if dual else 254
+                    if tid not in (254, 255):
+                        continue
                 merged = {**self.external.get(tid, {}), **tray, "id": tid}
                 if tray.get("tray_type") == "":
                     merged = {"id": tid, "tray_type": ""}
@@ -280,8 +335,28 @@ class FeedTelemetry:
             for tray in unit.get("tray", []):
                 tid = _integer(tray.get("id"))
                 if tid is not None and tray.get("tray_type"):
-                    ids.add(uid if uid >= 128 else uid * 4 + tid)
+                    ids.add(self.layout.global_tray_id(uid, tid))
         return ids
+
+    def tray_ids(self) -> set[int]:
+        """Global ids of every AMS tray the printer lists, loaded or not (a direct rack's bound-slot rule)."""
+        ids: set[int] = set()
+        for uid, unit in self.units.items():
+            for tray in unit.get("tray", []):
+                tid = _integer(tray.get("id"))
+                if tid is not None:
+                    ids.add(self.layout.global_tray_id(uid, tid))
+        return ids
+
+    def unit_tray_ids(self) -> dict[int, list[int]]:
+        """Each unit's listed trays as global ids (a hotend's ``bind_ams`` sub-AMS candidates)."""
+        out: dict[int, list[int]] = {}
+        for uid, unit in self.units.items():
+            for tray in unit.get("tray", []):
+                tid = _integer(tray.get("id"))
+                if tid is not None:
+                    out.setdefault(uid, []).append(self.layout.global_tray_id(uid, tid))
+        return out
 
     def _diameter(self, nozzle_id, value):
         try:
@@ -301,6 +376,15 @@ def snapshot_from_state(
     telemetry = getattr(state, "feed_telemetry", None)
     if not isinstance(telemetry, FeedTelemetry):
         telemetry = FeedTelemetry()
+    layout = TrayLayout.from_state(state, model) if state is not None else NO_LAYOUT
+    rack = _rack_of(state, layout)
+    # A direct rack: which hotend each tray prints through (Studio's candidate rule) —
+    # computed over every listed tray, loaded or not (a bound rack slot may be empty).
+    rack_bind = (
+        candidate_print_tools(rack, layout, telemetry.tray_ids(), set(telemetry.external), telemetry.unit_tray_ids())
+        if layout.direct_rack
+        else {}
+    )
     sources = []
     # What the overlay actually changed, folded into the revision below: a slot
     # whose advertised profile is masked must invalidate every cached routing
@@ -322,6 +406,18 @@ def snapshot_from_state(
             material, color, variant = entry.actual_material, entry.actual_color, entry.actual_variant
             declared_color, declared_variant = entry.advertised_color or None, entry.advertised_variant or None
             applied_overlay.append([key[0], key[1], material, color, variant])
+        rack_addr = block = None
+        if layout.direct_rack:
+            # Studio takes a tray only when its type AND colour are known (``is_tray_info_ready``).
+            if not color:
+                return
+            rack_addr = rack_bind.get(sid)
+            hotend = rack.hotend(rack_addr)
+            block = feed_block(hotend, sid, layout) if hotend is not None else None
+            own_slot = layout.rack_slot(sid) if rack_addr is None else None
+            if own_slot is not None and (own := rack.hotend(own_slot[1])) is not None and own.exists:
+                # Its hotend's own rack slot, not the bound one: a pin may take it (Studio's preload card).
+                rack_addr, block = own_slot[1], PRELOAD
         sources.append(
             FeedSource(
                 id=sid,
@@ -335,14 +431,13 @@ def snapshot_from_state(
                 declared_color=declared_color,
                 declared_variant=declared_variant,
                 reported_material=tray.get("tray_type"),
+                rack_addr=rack_addr,
+                feed_block=block,
             )
         )
 
     for uid, unit in telemetry.units.items():
-        try:
-            extruder = (int(str(unit["info"]), 16) >> 8) & 0xF
-        except (KeyError, ValueError):
-            extruder = None
+        extruder = unit_extruder(unit["info"]) if "info" in unit else None
         nozzles = (0, 1) if dual and telemetry.fts else ((extruder,) if extruder in (0, 1) else ())
         if not dual:
             nozzles = (0,)
@@ -352,8 +447,12 @@ def snapshot_from_state(
                 # The overlay is keyed by (unit, slot) as the assignment rows
                 # are, NOT by the global source id this snapshot sorts on —
                 # ``slot_key`` owns the HT normalisation for every caller.
-                add(tray, uid if uid >= 128 else uid * 4 + tid, "ams", nozzles, key=slot_key(uid, tid))
+                add(tray, layout.global_tray_id(uid, tid), "ams", nozzles, key=slot_key(uid, tid))
     for tid, tray in telemetry.external.items():
+        if layout.direct_rack:
+            # One toolhead: every input is on extruder 0, its PrintTool is its own.
+            add(tray, tid, "external", (0,))
+            continue
         nozzle = (255 - tid) if dual else 0
         add(tray, tid, "external", (nozzle,) if nozzle in (0, 1) else ())
     sources.sort(key=lambda s: s.id)
@@ -365,6 +464,12 @@ def snapshot_from_state(
         )
     )
     diameters = {k: tuple(sorted(v)) for k, v in telemetry.nozzles.items()}
+    if layout.direct_rack:
+        # One extruder (0) whose hotends are the rack's: the diameters any existing
+        # hotend has (BS ``CollectNozzles`` over the toolhead and the rack). Which
+        # hotend a source reaches is the source's ``rack_addr``.
+        rack_diameters = tuple(sorted({h.diameter for h in rack.hotends if h.exists and h.is_hotend and h.diameter}))
+        diameters = {0: rack_diameters} if rack_diameters else {}
     membership: dict[int, tuple[int, ...]] = {
         member: tuple(sorted(members)) for member, members in (remembered_groups or {}).items()
     }
@@ -392,6 +497,11 @@ def snapshot_from_state(
         "overlay": sorted(applied_overlay),
         "backup_membership": sorted([member, list(members)] for member, members in membership.items()),
     }
+    if layout.direct_rack:
+        # Every rack fact a plan here rests on — a swapped hotend, a moving rack, a
+        # dock calibrated, filament at an inlet — is a new revision, so AutoQueue's
+        # stale-plan check sees it before the upload, not at the final validate.
+        payload["rack"] = rack.facts()
     revision = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     return PrinterFeedSnapshot(
         printer_id,
@@ -410,4 +520,29 @@ def snapshot_from_state(
         telemetry.left_tpu_firmware,
         getattr(state, "fts_pending_confirmation", False) is True,
         backup_membership=membership,
+        rack=rack,
+        layout=layout,
     )
+
+
+def _rack_of(state, layout: TrayLayout) -> RackState:
+    """A direct rack's hotends and holder from the printer's state (``utils/direct_rack``)."""
+    if not layout.direct_rack or state is None:
+        return NO_RACK
+    from backend.app.utils.direct_rack import build_rack_state
+
+    nozzle_rack = getattr(state, "nozzle_rack", None)
+    return build_rack_state(
+        nozzle_rack if isinstance(nozzle_rack, list) else None,
+        layout,
+        exist_mask=_int_or_none(getattr(state, "nozzle_exist_mask", None)),
+        hc_mask=_int_or_none(getattr(state, "nozzle_hc_mask", None)),
+        holder_status=_int_or_none(getattr(state, "rack_holder_status", None)),
+        holder_info2=_int_or_none(getattr(state, "rack_holder_info2", None)),
+        rack_type=_int_or_none(getattr(state, "direct_rack_type", None)),
+        units=[uid for uid, _ in layout.units],
+    )
+
+
+def _int_or_none(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) else None

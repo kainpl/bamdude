@@ -97,4 +97,11 @@ describe('computeNextStep', () => {
   it('towerFinish stays put', () => {
     expect(computeNextStep('towerFinish', {})).toBe('towerFinish');
   });
+
+  it('running → rackPrinted when an H3C / P3C calibration printed (no save step yet)', () => {
+    expect(
+      computeNextStep('running', { cali_mode: 'pa_line', method: 'manual', sessionStatus: 'printed' }),
+    ).toBe('rackPrinted');
+    expect(computeNextStep('rackPrinted', { cali_mode: 'pa_line', method: 'manual' })).toBe('rackPrinted');
+  });
 });

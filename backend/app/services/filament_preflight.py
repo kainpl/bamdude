@@ -29,6 +29,7 @@ from backend.app.services.filament_routing import (
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.source_io import SourceUnavailable
 from backend.app.utils.printer_configs import requires_left_tpu_firmware_check
+from backend.app.utils.tray_ids import is_external_id
 
 #: The one deadline of ``settle_plan``: how long a prepared attempt waits for the
 #: plan to hold again — a reconnected printer's first complete report, an empty
@@ -169,6 +170,16 @@ def planned_nozzle_diameters(req, policy, plan, snapshot) -> dict[int, tuple[flo
     the rack carriage — a per-dock swap that leaves the set unchanged is not
     visible here.
     """
+    if getattr(snapshot, "direct_rack", False) is True:
+        # A direct rack: every channel is on extruder 0, and the hotend that prints
+        # a channel is the one its planned tray leads to — keyed by that hotend's
+        # dock ``addr``, so a swap on a planned PrintTool is a changed plan.
+        out: dict[int, tuple[float, ...]] = {}
+        for source in plan.assignments.values():
+            hotend = snapshot.rack.hotend(source.rack_addr)
+            if hotend is not None:
+                out[hotend.addr] = (hotend.diameter,) if hotend.diameter else ()
+        return dict(sorted(out.items()))
     nozzles = {
         slot_nozzle(slot) for slot in (effective_slots(req, policy) or []) if slot["slot_id"] in plan.assignments
     }
@@ -291,8 +302,11 @@ async def preflight_item(db, item, printer_id, *, cache=None, prefer_lowest=None
         raw_gcode and item.source_auto_item_id is None
     )
     if exempt_from_normal_routing:
-        if _has_explicit_external_mapping(item) and printer_manager.get_feed_snapshot(printer_id).fts:
+        snapshot = printer_manager.get_feed_snapshot(printer_id)
+        if _has_explicit_external_mapping(item) and snapshot.fts:
             raise RoutingDeferred("fts_external_unsupported")
+        if getattr(snapshot, "direct_rack", False) is True:
+            await _direct_rack_exempt_check(db, item, snapshot)
         return None
     req = await read_item_requirements(db, item, cache)
     if req.status != "ok":
@@ -372,6 +386,47 @@ async def preflight_item(db, item, printer_id, *, cache=None, prefer_lowest=None
     )
 
 
+def _mapped_trays(item) -> list[int]:
+    """The trays an exempt row's own ``ams_mapping`` names (``-1`` and junk left out)."""
+    mapping = getattr(item, "ams_mapping", None)
+    if isinstance(mapping, str):
+        try:
+            mapping = json.loads(mapping)
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(mapping, list):
+        return []
+    return [v for v in mapping if isinstance(v, int) and not isinstance(v, bool) and v >= 0]
+
+
+async def _direct_rack_exempt_check(db, item, snapshot) -> None:
+    """A direct rack (H3C, P3C): what an exempt row (calibration, raw G-code) is still asked.
+
+    * A row ``m275`` marked — its mapping was saved before H3C / P3C support,
+      and it has no dialog to be confirmed in — waits until it is re-created
+      (``rack_mapping_recreate``): sent as it is, 128 + k would go out as an
+      AMS-HT that does not exist.
+    * A calibration row: the hotend each mapped tray leads to must still have the
+      session's nozzle diameter and flow (and a calibrated dock) — it may have been
+      swapped while the row waited (``filament_routing.calibration_hotend_refusal``).
+    """
+    saved = decode(item.filament_routing, {})
+    if isinstance(saved, dict) and saved.get("review_required") is True:
+        raise RoutingDeferred("rack_mapping_recreate")
+    if not (item.is_calibration and item.calibration_session_id is not None):
+        return
+    from backend.app.models.calibration_session import CalibrationSession
+    from backend.app.services.filament_routing import calibration_hotend_refusal
+
+    session = await db.get(CalibrationSession, item.calibration_session_id)
+    if session is None:
+        return
+    for tray in _mapped_trays(item) or [None]:
+        code = calibration_hotend_refusal(snapshot, tray, session.nozzle_diameter, session.nozzle_volume_type)
+        if code is not None:
+            raise RoutingDeferred(code)
+
+
 def _has_explicit_external_mapping(item) -> bool:
     """Whether an exempt item explicitly selected Bambu's virtual tray.
 
@@ -385,9 +440,7 @@ def _has_explicit_external_mapping(item) -> bool:
             mapping = json.loads(mapping)
         except (TypeError, ValueError):
             return False
-    return isinstance(mapping, list) and any(
-        isinstance(slot, int) and not isinstance(slot, bool) and slot >= 254 for slot in mapping
-    )
+    return isinstance(mapping, list) and any(is_external_id(slot) for slot in mapping)
 
 
 async def ranked_feed(db, printer_id, policy, prefer_lowest=None):

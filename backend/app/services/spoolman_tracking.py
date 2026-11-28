@@ -27,7 +27,9 @@ from backend.app.utils.tray_ids import (
     external_slot_index,
     global_tray_id as stored_global_tray,
     is_external_id,
+    names_loaded_source,
     slot_key as tray_slot_key,
+    state_is_direct_rack,
     unit_type,
 )
 from backend.app.utils.tray_split import CompletionSnapshot, PrintedBound, printed_bound, sole_owner, split_weight
@@ -1989,12 +1991,13 @@ def _single_slot_tray_from_state(state, tray_changes: list) -> int | None:
     if state is None:
         return None
     tray_now = getattr(state, "tray_now", 255)
-    if isinstance(tray_now, int) and 0 <= tray_now <= 254:
+    # 255 too on a direct rack whose snow said PrintTool 1's input (``names_loaded_source``).
+    if names_loaded_source(tray_now, state):
         return tray_now
     last_loaded = getattr(state, "last_loaded_tray", -1)
     if isinstance(last_loaded, int) and 0 <= last_loaded <= 253:
         return last_loaded
-    if tray_now == 255:
+    if tray_now == 255 and not state_is_direct_rack(state):
         vt_tray = (getattr(state, "raw_data", None) or {}).get("vt_tray") or []
         if any(isinstance(vt, dict) and int(vt.get("id", 0)) == 255 for vt in vt_tray):
             return 255

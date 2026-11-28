@@ -4,15 +4,18 @@
  * for AMS, AMS-HT, and external spool configurations.
  */
 import {
+  NO_LAYOUT,
   amsTypeOf,
   externalLabel,
   externalTrayId,
   globalTrayId,
   isAmsHtId,
   isZmulti,
+  namesLoadedSource,
   unitLetter,
   unitName,
 } from './trayIds';
+import type { TrayLayout } from './trayIds';
 import { parseUTCDate } from './date';
 
 /**
@@ -599,8 +602,10 @@ export function matchLoadedExtruderTray<T extends { globalTrayId: number; type?:
   req: FilamentMatchRequirement,
   candidates: T[],
   trayNow: number | null | undefined,
+  layout: TrayLayout = NO_LAYOUT,
 ): T | undefined {
-  if (trayNow == null || trayNow === 255) return undefined;
+  // 255 is "nothing loaded" — except a direct rack's PrintTool 1 input (utils/trayIds).
+  if (trayNow == null || !namesLoadedSource(layout, trayNow)) return undefined;
   return candidates.find(
     (f) => f.globalTrayId === trayNow && filamentRequirementMatches(req, f),
   );
@@ -832,6 +837,9 @@ export function resolveBackupGroups(
   amsExtruderMap: Record<string, number> | undefined,
   isDualNozzle: boolean,
   firmwareGroups: Record<string, number[][]> | null | undefined,
+  // A direct rack (H3C, P3C): the firmware's own groups only. Matching trays by
+  // profile there would pair trays of different PrintTools — another hotend each.
+  firmwareOnly = false,
 ): BackupGroupsResolution {
   if (!amsUnits || amsUnits.length === 0) return { groups: [], usesFallback: false };
 
@@ -885,7 +893,7 @@ export function resolveBackupGroups(
     }
   }
 
-  const fallback = computeBackupGroups(amsUnits, amsExtruderMap, isDualNozzle)
+  const fallback = firmwareOnly ? [] : computeBackupGroups(amsUnits, amsExtruderMap, isDualNozzle)
     .filter((group) => !authoritativeExtruders.has(group.extruder));
   const groups = [...reported, ...fallback].sort((a, b) => {
     if (a.extruder !== b.extruder) return a.extruder - b.extruder;
@@ -894,7 +902,7 @@ export function resolveBackupGroups(
   });
   return {
     groups,
-    usesFallback: [...activeExtruders].some((extruder) => !authoritativeExtruders.has(extruder)),
+    usesFallback: !firmwareOnly && [...activeExtruders].some((extruder) => !authoritativeExtruders.has(extruder)),
   };
 }
 

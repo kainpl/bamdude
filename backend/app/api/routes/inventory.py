@@ -267,17 +267,9 @@ async def apply_spool_to_slot_via_mqtt(
     client = printer_manager.get_client(printer_id)
     if client is None:
         return False
-    if direct_rack_gate.slot_command_refused(tray_layout_of(printer_id, printer_manager), ams_id, tray_id):
-        # Not sent, nothing registered: the assignment waits (N01 stage C).
-        logger.info(
-            "Spool %d on printer %d AMS%d-T%d not configured: %s",
-            spool.id,
-            printer_id,
-            ams_id,
-            tray_id,
-            direct_rack_gate.UNSUPPORTED_MESSAGE,
-        )
-        return False
+    # A rack AMS slot / a direct rack's external input (H3C, P3C) is configured in
+    # Studio's form like any slot (N01 stage B); only its K-profile waits (stage C).
+    rack_slot = direct_rack_gate.is_rack_slot(tray_layout_of(printer_id, printer_manager), ams_id, tray_id)
 
     state = printer_manager.get_status(printer_id)
 
@@ -340,7 +332,16 @@ async def apply_spool_to_slot_via_mqtt(
     from backend.app.services.calibration_service import apply_active_calibration_to_slot
 
     # Bind the family from the authorized plan before compatibility masking.
-    if plan.tray_info_idx and kprofile_allowed(projection):
+    if rack_slot:
+        logger.info(
+            "Spool %d on printer %d AMS%d-T%d: K-profile not bound: %s",
+            spool.id,
+            printer_id,
+            ams_id,
+            tray_id,
+            direct_rack_gate.UNSUPPORTED_MESSAGE,
+        )
+    elif plan.tray_info_idx and kprofile_allowed(projection):
         await apply_active_calibration_to_slot(
             db=db,
             printer_id=printer_id,
@@ -3304,24 +3305,10 @@ async def _assign_spool(
     slot_is_definitely_empty = firmware_says_empty(tray_has_spool, tray_state)
     configured = False
     pending_config = slot_is_definitely_empty
-    # A rack AMS slot / a rack's external input is not configured on the printer
-    # yet (services/direct_rack_gate, N01 stage C): the row is kept and waits,
-    # as for an empty slot.
-    rack_refused = direct_rack_gate.slot_command_refused(layout, data.ams_id, data.tray_id)
-    if rack_refused:
-        logger.info(
-            "Assignment kept unconfigured: spool %d → printer %d AMS%d-T%d (%s)",
-            spool.id,
-            data.printer_id,
-            data.ams_id,
-            data.tray_id,
-            direct_rack_gate.UNSUPPORTED_MESSAGE,
-        )
-        pending_config = True
+    # A rack AMS slot / a rack's external input (H3C, P3C) is configured like any
+    # slot since N01 stage B (Studio's form, ``direct_rack.filament_setting_ids``).
 
-    if rack_refused:
-        pass
-    elif slot_is_definitely_empty:
+    if slot_is_definitely_empty:
         logger.info(
             "Pre-configured assignment: spool %d → printer %d AMS%d-T%d (firmware reports empty state=%s, will configure on insert)",
             spool.id,

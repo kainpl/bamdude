@@ -35,6 +35,21 @@ function createPrinterStatus(ams: TestAmsUnit[], vt_tray: TestTray[] = []): Prin
 }
 
 describe('buildLoadedFilaments', () => {
+  it('reads an H3C as one toolhead: AMS 3H slots 28 + k, each input its own PrintTool', () => {
+    const status = createPrinterStatus(
+      [{ id: 32, ams_type: 6, tray: [{ id: 5, tray_type: 'PLA', tray_color: 'DE4343FF' }] }],
+      [
+        { id: 248, tray_type: 'TPU', tray_color: '000000FF' },
+        { id: 255, tray_type: 'PETG', tray_color: 'FFFFFFFF' },
+      ],
+    );
+    Object.assign(status, { direct_rack: true, rack_size: 9 });
+    const loaded = buildLoadedFilaments(status);
+    expect(loaded[0]).toMatchObject({ globalTrayId: 33, label: 'AMS-3H 6', extruderId: 0 });
+    expect(loaded[1]).toMatchObject({ globalTrayId: 248, trayId: 3, label: 'Ext-8', extruderId: 0 });
+    expect(loaded[2]).toMatchObject({ globalTrayId: 255, trayId: 1, label: 'Ext-1', extruderId: 0 });
+  });
+
   it('keeps a compatible support slot in the provisional plan when another channel is picked manually', () => {
     const status = createPrinterStatus(
       [{ id: 0, tray: [{ id: 0, tray_type: 'PLA', tray_color: 'FFFFFFFF' }] }],

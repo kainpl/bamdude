@@ -21,27 +21,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from backend.app.utils.tray_ids import EXTERNAL_AMS_ID, external_print_tool, external_tray_id, is_zmulti, unit_type
+from backend.app.utils.tray_ids import (
+    EXTERNAL_AMS_ID,
+    external_print_tool,
+    external_tray_id,
+    is_zmulti,
+    state_is_direct_rack,
+    unit_type,
+)
 
 
 def _on_direct_rack(state) -> bool:
-    """Whether the state is a direct-connected rack's (H3C, P3C) — the holder says so, or a rack AMS / dock is reported.
-
-    The H3C's own frames carry no holder, so its rack AMS (stamped type) or a
-    nozzle entry with a dock (``addr_id``) is the evidence the state holds.
-    """
-    rack_type = getattr(state, "direct_rack_type", None)
-    if isinstance(rack_type, int):
-        return rack_type > 0
-    raw = getattr(state, "raw_data", None) or {}
-    units = raw.get("ams") if isinstance(raw, dict) else None
-    if isinstance(units, dict):
-        units = units.get("ams")
-    for unit in units if isinstance(units, list) else []:
-        pair = unit_type(unit)
-        if pair is not None and is_zmulti(pair[1]):
-            return True
-    return any(isinstance(n, dict) and n.get("addr_id") is not None for n in getattr(state, "nozzle_rack", None) or [])
+    """Whether the state is a direct-connected rack's (H3C, P3C): ``tray_ids.state_is_direct_rack``."""
+    return state_is_direct_rack(state)
 
 
 def _rack_hotend(state, addr: int) -> dict | None:

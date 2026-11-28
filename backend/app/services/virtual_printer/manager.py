@@ -71,6 +71,9 @@ VIRTUAL_PRINTER_MODELS = {
     "O1C": "H2C",  # H2C
     "O1C2": "H2C",  # H2C (dual nozzle variant)
     "O1S": "H2S",  # H2S
+    # H3 / P3 Series — a direct-connected hotend rack (mirrored BS configs N10 / N11)
+    "N10": "H3C",  # H3C
+    "N11": "P3C",  # P3C
 }
 
 # Serial number prefixes for each model (based on Bambu Lab serial number format)
@@ -105,6 +108,9 @@ MODEL_SERIAL_PREFIXES = {
     "O1C": "09400A",  # H2C
     "O1C2": "09400A",  # H2C (dual nozzle variant)
     "O1S": "09400A",  # H2S
+    # H3 / P3 Series: the first 3 chars are the mirrored config's ``sn_prefix``
+    "N10": "32X00A",  # H3C
+    "N11": "33100A",  # P3C
 }
 
 # Reverse mapping: display name → SSDP model code (for auto-inheriting from printer model)
@@ -242,7 +248,7 @@ def _nozzle_offset_mode(slicer_opts: dict | None, system_opts: dict | None) -> s
     return "on"
 
 
-def _captured_ams_mapping(slicer_opts: dict | None, *, dual_nozzle: bool, vp_name: str) -> str | None:
+def _captured_ams_mapping(slicer_opts: dict | None, *, dual_nozzle: bool, vp_name: str, layout=None) -> str | None:
     """The slicer's own AMS pick as the JSON a queue row stores, or None when it made none.
 
     The slicer writes an external spool into the flat ``ams_mapping`` as ``-1`` -- the value it also
@@ -252,10 +258,14 @@ def _captured_ams_mapping(slicer_opts: dict | None, *, dual_nozzle: bool, vp_nam
     was routed automatically, possibly to an AMS tray. The holder is put back first (254 / 255, the
     values the rest of BamDude stores), for the printer that will print the job, and only then is
     "every entry is -1" read as the slicer saying it resolved nothing.
+
+    ``layout`` is that printer's tray numbering: a direct rack (H3C, P3C) keeps each PrintTool's
+    input as its own id. An A2L AMS-Lite tray (flat local slot, ``{16, n}``) gets its global id
+    first, as the printer's own echo does (``resolve_lite_trays_in_mapping``).
     """
     import json
 
-    from backend.app.services.bambu_mqtt import resolve_external_spools_in_mapping
+    from backend.app.services.bambu_mqtt import resolve_external_spools_in_mapping, resolve_lite_trays_in_mapping
 
     if slicer_opts is None:
         return None
@@ -274,7 +284,9 @@ def _captured_ams_mapping(slicer_opts: dict | None, *, dual_nozzle: bool, vp_nam
             detail = json.loads(detail)
         except json.JSONDecodeError:
             detail = None
-    resolved = resolve_external_spools_in_mapping(raw, detail, dual_nozzle)
+    resolved = resolve_external_spools_in_mapping(
+        resolve_lite_trays_in_mapping(raw, detail), detail, dual_nozzle, layout
+    )
     # Still all -1: the slicer resolved nothing. Stored, it would read as an explicit pick.
     if not any(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in resolved):
         return None
@@ -516,9 +528,15 @@ class VirtualPrinterInstance:
         printer) and a fallback to another printer drop it and leave the positions to the
         dispatcher's own rack assignment. On every other model the array names extruders, which are
         the same on each printer of the model -- kept.
+
+        A direct-connected rack (H3C, P3C) never: there the tray decides the PrintTool and Bambu
+        Studio sends no ``nozzle_mapping`` (N01 stage B).
         """
         from backend.app.utils.printer_models import is_nozzle_rack_model
+        from backend.app.utils.tray_ids import model_is_direct_rack
 
+        if model_is_direct_rack(model):
+            return False
         if not is_nozzle_rack_model(model):
             return True
         return self.target_printer_id is not None and printer_id == self.target_printer_id
@@ -1332,8 +1350,13 @@ class VirtualPrinterInstance:
                 chosen_model = _printers.effective_model_for(printer_id)
                 ams_mapping_json: str | None = None
                 if self.save_ams_mapping:
+                    from backend.app.services.printer_manager import tray_layout_of
+
                     ams_mapping_json = _captured_ams_mapping(
-                        slicer_opts, dual_nozzle=is_dual_nozzle_model(chosen_model), vp_name=self.name
+                        slicer_opts,
+                        dual_nozzle=is_dual_nozzle_model(chosen_model),
+                        vp_name=self.name,
+                        layout=tray_layout_of(printer_id, _printers, chosen_model),
                     )
 
                 nozzle_mapping_json: str | None = None

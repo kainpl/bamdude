@@ -787,6 +787,9 @@ class PrinterStatus(BaseModel):
     # PrintTools, one external input each (utils/tray_ids.TrayLayout).
     direct_rack: bool = False
     rack_size: int = 0
+    # A direct rack: ``tray_now`` 255 is PrintTool 1's input, not "nothing" — the
+    # toolhead's ``snow`` said so (utils/tray_ids.TrayLayout.main_input_loaded).
+    direct_rack_input_loaded: bool = False
     # Runout / filament-replacement guidance (upstream #2587). Populated only while
     # the print is PAUSED. Both are global tray IDs (utils/tray_ids) so the
     # frontend can highlight them with the same logic it uses for tray_now:

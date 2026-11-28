@@ -21,18 +21,18 @@ function normalizeModel(model: string | null | undefined): string {
 // but still support auto bed-leveling / flow calibration.
 const AUTO_BED_FLOW_MODELS: ReadonlySet<string> = new Set([
   // Display names (normalized)
-  'A2L', 'P2S', 'H2S', 'H2C', 'H2D', 'H2DPRO', 'X2D',
+  'A2L', 'P2S', 'H2S', 'H2C', 'H2D', 'H2DPRO', 'X2D', 'H3C', 'P3C',
   // Internal codes
-  'N9', 'N7', 'O1S', 'O1C', 'O1C2', 'O1D', 'O1E', 'O2D', 'N6',
+  'N9', 'N7', 'O1S', 'O1C', 'O1C2', 'O1D', 'O1E', 'O2D', 'N6', 'N10', 'N11',
 ]);
 
-// Nozzle-offset auto — dual-nozzle models only (a nozzle *offset* only exists
-// with two nozzles).
+// Nozzle-offset auto — the models with more than one hotend: the dual-nozzle
+// heads and the direct-connected racks (H3C, P3C).
 const AUTO_NOZZLE_OFFSET_MODELS: ReadonlySet<string> = new Set([
   // Display names (normalized)
-  'H2C', 'H2D', 'H2DPRO', 'X2D',
+  'H2C', 'H2D', 'H2DPRO', 'X2D', 'H3C', 'P3C',
   // Internal codes
-  'O1C', 'O1C2', 'O1D', 'O1E', 'O2D', 'N6',
+  'O1C', 'O1C2', 'O1D', 'O1E', 'O2D', 'N6', 'N10', 'N11',
 ]);
 
 export function supportsAutoBedLeveling(model: string | null | undefined): boolean {
@@ -73,4 +73,12 @@ const DUAL_NOZZLE_MODELS = new Set(['H2D', 'H2DPRO', 'H2C', 'X2D']);
 export function isDualNozzleModel(model: string | null | undefined): boolean {
   if (!model) return false;
   return DUAL_NOZZLE_MODELS.has(model.toUpperCase().replace(/[\s-]/g, ''));
+}
+
+// A direct-connected hotend rack (H3C, P3C): one toolhead, a hotend per PrintTool.
+const DIRECT_RACK_MODELS = new Set(['H3C', 'P3C', 'N10', 'N11', 'BAMBULABH3C', 'BAMBULABP3C']);
+
+/** Whether the model has a nozzle offset to calibrate: a dual-nozzle head or a direct rack (Bambu Studio). */
+export function hasNozzleOffset(model: string | null | undefined): boolean {
+  return isDualNozzleModel(model) || DIRECT_RACK_MODELS.has(normalizeModel(model));
 }

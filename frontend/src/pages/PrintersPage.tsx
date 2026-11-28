@@ -204,6 +204,7 @@ import {
   isZmulti,
   layoutAmsType,
   slotCommandWithheld,
+  namesLoadedSource,
   slotKey,
   trayLayoutOf,
   unitName,
@@ -2580,16 +2581,18 @@ const PrinterCard = memo(function PrinterCard({
 
   // Cache tray_now to prevent flickering when undefined values come in
   // Valid tray IDs: 0-253 for AMS, 254 for external spool
-  // tray_now=255 means "no tray loaded" (Bambu protocol sentinel) - never active
+  // tray_now=255 means "no tray loaded" (Bambu protocol sentinel) - never active,
+  // except on a direct rack whose snow said PrintTool 1's input (utils/trayIds).
   const cachedTrayNow = useRef<number | undefined>(undefined);
   const currentTrayNow = status?.tray_now;
-  // Update cache: 255 means "no tray" so clear cache; valid values get cached
-  if (currentTrayNow !== undefined && currentTrayNow !== 255) {
+  const currentTrayLoaded = namesLoadedSource(trayLayoutOf(status), currentTrayNow);
+  // Update cache: "no tray" clears the cache; valid values get cached
+  if (currentTrayNow !== undefined && currentTrayLoaded) {
     cachedTrayNow.current = currentTrayNow;
   } else if (currentTrayNow === 255) {
     cachedTrayNow.current = undefined;
   }
-  const effectiveTrayNow = (currentTrayNow !== undefined && currentTrayNow !== 255)
+  const effectiveTrayNow = (currentTrayNow !== undefined && currentTrayLoaded)
     ? currentTrayNow
     : cachedTrayNow.current;
 
@@ -5856,7 +5859,7 @@ const PrinterCard = memo(function PrinterCard({
                                           };
                                         })()}
                                         configureSlot={{
-                                          enabled: hasPermission('printers:control') && !slotCommandsWithheld,
+                                          enabled: hasPermission('printers:control'),
                                           onConfigure: () => setConfigureSlotModal({
                                             amsId: ams.id,
                                             trayId: slotIdx,
@@ -5877,7 +5880,7 @@ const PrinterCard = memo(function PrinterCard({
                                         emptyKind={emptyKind}
                                         {...blankSpool}
                                         configureSlot={{
-                                          enabled: hasPermission('printers:control') && !slotCommandsWithheld,
+                                          enabled: hasPermission('printers:control'),
                                           onConfigure: () => setConfigureSlotModal({
                                             amsId: ams.id,
                                             trayId: slotIdx,
@@ -6700,7 +6703,7 @@ const PrinterCard = memo(function PrinterCard({
                                         };
                                       })()}
                                       configureSlot={{
-                                        enabled: hasPermission('printers:control') && !extCommandsWithheld,
+                                        enabled: hasPermission('printers:control'),
                                         onConfigure: () => setConfigureSlotModal({
                                           amsId: 255,
                                           trayId: slotTrayId,
@@ -6720,7 +6723,7 @@ const PrinterCard = memo(function PrinterCard({
                                     <EmptySlotHoverCard
                                       {...blankSpool}
                                       configureSlot={{
-                                        enabled: hasPermission('printers:control') && !extCommandsWithheld,
+                                        enabled: hasPermission('printers:control'),
                                         onConfigure: () => setConfigureSlotModal({
                                           amsId: 255,
                                           trayId: slotTrayId,
@@ -7698,6 +7701,7 @@ const PrinterCard = memo(function PrinterCard({
         amsExtruderMap={cachedAmsExtruderMap.current ?? status?.ams_extruder_map}
         firmwareGroups={status?.ams_backup_groups}
         isDualNozzle={printer.nozzle_count === 2 || status?.temperatures?.nozzle_2 !== undefined}
+        directRack={status?.direct_rack === true}
         canToggle={hasPermission('printers:update')}
         pending={amsBackupToggleMutation.isPending}
         onToggle={(next) => amsBackupToggleMutation.mutate(next)}

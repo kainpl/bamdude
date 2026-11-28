@@ -713,6 +713,13 @@
   "r3": "n/a",
   "rule": "frozen"
  },
+ "backend/app/migrations/m275_rack_queue_rows_review.py::seed": {
+  "class": "migration",
+  "lock": "migration",
+  "owner": "init_db",
+  "r3": "n/a",
+  "rule": "frozen"
+ },
  "backend/app/services/archive.py::ArchiveService._attach_3mf_to_archive_locked": {
   "class": "L2e (via _backfill_job_plates, before the path lock)",
   "lock": "L2e",

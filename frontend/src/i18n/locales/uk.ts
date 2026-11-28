@@ -1442,6 +1442,7 @@ export default {
     nozzleHighFlow: 'Високий потік',
     nozzleStandardFlow: 'Стандартний',
     nozzleTpuHighFlow: 'TPU високий потік',
+    nozzleTpu285: 'TPU285',
     // Firmware
     firmware: 'Прошивка',
     // Discovery
@@ -11378,6 +11379,10 @@ export default {
       viewHistory: 'Переглянути історію',
       calibrateAnother: 'Відкалібрувати щось ще',
       close: 'Закрити',
+    },
+    rackPrinted: {
+      heading: 'Надруковано',
+      body: 'BamDude поки не зберігає результати калібрування на принтерах H3C і P3C. Зчитайте значення з пластини й введіть його на принтері.',
     },
     resume: {
       title: 'Незавершена калібровка',

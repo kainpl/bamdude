@@ -6,9 +6,9 @@ The scan (``tray_number_scan``) finds hand-written tray arithmetic in
 ``254 +``, ``// 4``, ``% 4``, ``& 3``, ``>> 2``, ``>> 8``, ``& 0xFF``,
 ``- 254``, ``- 128``, ``>= 254``, ``< 254``, ``>= 128``, ``128 <= x <= 135``,
 ``chr(65 + …)``. Each finding is moved to the helper or named below with the
-stage that owns it (N01 B: dispatch; C: slot commands, load / unload, RFID,
-drying; D: runout / HMS) and why. An exemption that no longer matches a
-finding fails too: a landed stage removes its rows.
+stage that owns it (N01 C: load / unload, RFID, K-profile, drying; D: runout /
+HMS) and why. An exemption that no longer matches a finding fails too: a
+landed stage removes its rows (stage B — dispatch and the slot setting — has).
 
 The frontend twin is ``frontend/src/__tests__/utils/trayNumbersHaveOneHome.test.ts``.
 """
@@ -25,27 +25,11 @@ HOME = "backend/app/utils/tray_ids.py"
 
 #: ``(file, function)`` → ``(stage, reason)``.
 EXEMPT: dict[tuple[str, str], tuple[str, str]] = {
-    # --- stage B: dispatch -------------------------------------------------
-    ("backend/app/services/bambu_mqtt.py", "BambuMQTTClient.start_print"): ("B", "ams_mapping / ams_mapping2 build"),
-    ("backend/app/services/print_scheduler.py", "PrintScheduler._build_loaded_filaments"): (
-        "B",
-        "routing's loaded-filament list",
-    ),
-    ("backend/app/services/print_scheduler.py", "PrintScheduler._slot_priority"): ("B", "routing slot order"),
-    ("backend/app/services/auto_queue_ams.py", "build_loaded_filaments"): ("B", "AutoQueue loaded-filament list"),
-    ("backend/app/services/background_dispatch.py", "_calibration_targets"): ("B", "K-binding targets at dispatch"),
-    ("backend/app/services/filament_preflight.py", "_has_explicit_external_mapping"): (
-        "B",
-        "dispatch guard: external slot of the plan",
-    ),
-    ("backend/app/services/printer_feed_snapshot.py", "snapshot_from_state"): ("B", "routing feed snapshot"),
-    # --- stage C: slot commands, load / unload, RFID, drying ----------------
+    # --- stage C: load / unload, RFID, K-profile, drying -----------------------
     ("backend/app/services/bambu_mqtt.py", "change_filament_wire_ids"): ("C", "load command wire ids"),
     ("backend/app/services/bambu_mqtt.py", "a2l_lite_wire_ids"): ("C", "A2L outbound wire ids"),
     ("backend/app/services/bambu_mqtt.py", "BambuMQTTClient._rfid_refresh_refusal"): ("C", "RFID refresh"),
     ("backend/app/services/bambu_mqtt.py", "BambuMQTTClient._publish_rfid_gcode"): ("C", "RFID M620 R<n>"),
-    ("backend/app/services/bambu_mqtt.py", "BambuMQTTClient.ams_set_filament_setting"): ("C", "slot setting"),
-    ("backend/app/services/bambu_mqtt.py", "BambuMQTTClient.reset_ams_slot"): ("C", "slot reset"),
     ("backend/app/services/bambu_mqtt.py", "BambuMQTTClient.extrusion_cali_sel"): ("C", "K-profile select"),
     ("backend/app/services/bambu_mqtt.py", "BambuMQTTClient.extrusion_cali_set"): ("C", "K value set"),
     ("backend/app/api/routes/printers.py", "configure_ams_slot"): ("C", "extrusion_cali_set tray id"),

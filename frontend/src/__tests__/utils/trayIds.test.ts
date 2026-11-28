@@ -11,7 +11,9 @@ import {
   externalSlotIndex,
   externalTrayId,
   globalTrayId,
+  namesLoadedSource,
   slotKey,
+  trayLayoutOf,
   unitName,
   type TrayLayout,
 } from '../../utils/trayIds';
@@ -25,6 +27,7 @@ function layout(name: string): TrayLayout {
     units: spec.units.map(([uid, kind]) => [uid, kind] as [number, number]),
     directRack: spec.direct_rack,
     rackSize: spec.rack_size,
+    mainInputLoaded: false,
   };
 }
 
@@ -73,5 +76,21 @@ describe('amsHelpers delegate to trayIds', () => {
   it('puts no L/R badge on a direct rack', () => {
     expect(amsSideBadge(0, { '0': 1 }, {}, false)).toEqual({ kind: 'nozzle', side: 'L' });
     expect(amsSideBadge(0, { '0': 1 }, {}, false, true)).toBeNull();
+  });
+});
+
+describe('trayIds — tray_now 255 on a direct rack (N01 stage B)', () => {
+  const h3c = { ams: [{ id: 32, ams_type: 6 }], direct_rack: true, rack_size: 9 };
+
+  it('255 is the PrintTool 1 input only when the snow said so', () => {
+    expect(namesLoadedSource(trayLayoutOf({ ...h3c, direct_rack_input_loaded: true }), 255)).toBe(true);
+    expect(namesLoadedSource(trayLayoutOf({ ...h3c, direct_rack_input_loaded: false }), 255)).toBe(false);
+    expect(namesLoadedSource(trayLayoutOf(h3c), 34)).toBe(true);
+  });
+
+  it('255 stays "nothing" elsewhere, whatever the flag', () => {
+    expect(namesLoadedSource(trayLayoutOf({ ams: [], direct_rack_input_loaded: true }), 255)).toBe(false);
+    expect(namesLoadedSource(trayLayoutOf({ ams: [] }), 254)).toBe(true);
+    expect(namesLoadedSource(trayLayoutOf({ ams: [] }), undefined)).toBe(false);
   });
 });

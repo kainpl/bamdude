@@ -8,9 +8,9 @@
  * holds a numbering form — `* 4 +`, `<< 8 |`, `254 +`, `+ 254`, `/ 4)`, `% 4`,
  * `& 3`, `>> 2`, `>> 8`, `& 0xFF`, `- 254`, `- 128`, `>= 254`, `< 254`,
  * `>= 128`, `128 <= … <= 135`, `fromCharCode(65 +` — is a finding. A finding
- * is moved to the helper, or named below with the stage that owns it (N01 B:
- * dispatch, C: slot commands, drying) and why. An entry that no longer matches
- * anything fails too, so the list shrinks as the stages land.
+ * is moved to the helper, or named below with the stage that owns it (N01 C:
+ * K-profile, drying) and why. An entry that no longer matches anything fails
+ * too, so the list shrinks as the stages land (stage B — dispatch — has).
  */
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -41,16 +41,9 @@ const FORMS: Array<[string, RegExp]> = [
 
 /** `file :: form` → the stage that owns it and why it is still here. */
 const EXEMPT: Record<string, string> = {
-  // N01 stage B — dispatch: the print dialog's mapping, routing labels, the rack picker.
-  'hooks/useFilamentMapping.ts :: - 254': 'B: external slots of the print mapping (dispatch)',
-  'components/PrintModal/RoutingChannelDetails.tsx :: >= 128': 'B: routing channel labels (dispatch)',
-  'components/PrintModal/RoutingChannelDetails.tsx :: / 4)': 'B: routing channel labels (dispatch)',
-  'components/PrintModal/RoutingChannelDetails.tsx :: % 4': 'B: routing channel labels (dispatch)',
-  // N01 stage C — slot commands, filament calibration and drying.
-  'components/calibration/CalibrationPresetPage.tsx :: * 4 +':
-    'C: filament calibration tray numbers (the start is refused on a direct rack, calibration_service)',
-  'components/ConfigureAmsSlotModal.tsx :: - 128': 'C: slot configuration (printer command)',
-  'components/ConfigureAmsSlotModal.tsx :: >= 128': 'C: slot configuration (printer command)',
+  // N01 stage C — K-profile, drying.
+  'components/ConfigureAmsSlotModal.tsx :: - 128': 'C: K-profile of a slot (extrusion_cali_set tray id)',
+  'components/ConfigureAmsSlotModal.tsx :: >= 128': 'C: K-profile of a slot (extrusion_cali_set tray id)',
   'components/DryingScheduleModal.tsx :: >= 128': 'C: drying ceiling per unit',
   'utils/scheduledDrying.ts :: >= 128': 'C: drying schedule unit label',
   'utils/scheduledDrying.ts :: - 128': 'C: drying schedule unit label',

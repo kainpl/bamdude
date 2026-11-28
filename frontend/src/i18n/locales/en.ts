@@ -1418,6 +1418,7 @@ export default {
     nozzleHighFlow: 'High Flow',
     nozzleStandardFlow: 'Standard',
     nozzleTpuHighFlow: 'TPU High Flow',
+    nozzleTpu285: 'TPU285',
     // Firmware
     firmware: 'Firmware',
     // Discovery
@@ -11139,6 +11140,10 @@ export default {
       viewHistory: 'View history',
       calibrateAnother: 'Calibrate another',
       close: 'Close',
+    },
+    rackPrinted: {
+      heading: 'Printed',
+      body: 'BamDude does not save calibration results on H3C and P3C printers yet. Read the value off the plate and enter it on the printer.',
     },
     resume: {
       title: 'Unfinished calibration',

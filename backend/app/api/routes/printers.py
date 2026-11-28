@@ -1934,6 +1934,7 @@ async def _build_printer_status(
         ),
         direct_rack=layout.direct_rack,
         rack_size=layout.rack_size,
+        direct_rack_input_loaded=layout.main_input_loaded,
         ams_status_main=state.ams_status_main,
         ams_status_sub=state.ams_status_sub,
         mc_print_sub_stage=state.mc_print_sub_stage,
@@ -3528,7 +3529,10 @@ async def configure_ams_slot(
     client = printer_manager.get_client(printer_id)
     if not client:
         raise HTTPException(status_code=400, detail="Printer not connected")
-    _refuse_direct_rack_slot(printer_id, None, ams_id, tray_id)
+    # A rack AMS slot / a direct rack's input (H3C, P3C) takes its filament setting
+    # in Studio's form (N01 stage B); its K-profile waits for stage C (below).
+    _refuse_slot_outside_layout(printer_id, ams_id, tray_id)
+    rack_slot = direct_rack_gate.is_rack_slot(tray_layout_of(printer_id, printer_manager), ams_id, tray_id)
 
     # ONE identity path (spec A §5.2): the family catalog builds the payload.
     # ``tray_info_idx`` (when given) is a family id straight from the picker;
@@ -3614,7 +3618,10 @@ async def configure_ams_slot(
     # Method 1: Select existing calibration profile by cali_idx
     # Do NOT include setting_id - BambuStudio never sends it in extrusion_cali_sel,
     # and including it causes the firmware to mislink the profile on X1C/P1S.
-    if not client.extrusion_cali_sel(
+    if rack_slot:
+        # Keyed by ``nozzle_pos`` on a direct rack (Studio): N01 stage C. Not sent, and said so.
+        warnings.append("k_profile_not_sent")
+    elif not client.extrusion_cali_sel(
         ams_id=ams_id,
         tray_id=tray_id,
         cali_idx=cali_idx,
@@ -3629,7 +3636,7 @@ async def configure_ams_slot(
     # the existing profile's metadata (extruder_id, nozzle_id, name, setting_id),
     # corrupting it - e.g., overwriting a High Flow extruder 1 profile with
     # hardcoded extruder_id=0 and nozzle_id=HS00.
-    if k_value > 0 and cali_idx < 0:
+    if k_value > 0 and cali_idx < 0 and not rack_slot:
         # Calculate global tray ID for extrusion_cali_set
         if ams_id <= 3:
             global_tray_id = ams_id * 4 + tray_id
@@ -3727,7 +3734,7 @@ async def reset_ams_slot(
     if not client:
         raise HTTPException(status_code=400, detail="Printer not connected")
 
-    _refuse_direct_rack_slot(printer_id, None, ams_id, tray_id)
+    _refuse_slot_outside_layout(printer_id, ams_id, tray_id)
     if is_printer_busy(printer_id):
         # The slot's filament setting is what the job on the printer feeds from.
         # The dialog disables the button, but this route is reachable by an API
@@ -5320,6 +5327,13 @@ def _refuse_direct_rack_slot(printer_id: int, model: str | None, ams_id: int, tr
     """
     if direct_rack_gate.slot_command_refused(tray_layout_of(printer_id, printer_manager, model), ams_id, tray_id):
         raise direct_rack_gate.refusal()
+
+
+def _refuse_slot_outside_layout(printer_id: int, ams_id: int, tray_id: int) -> None:
+    """422 for a slot a direct rack does not have (a P3C's input 247), as the assignment doors answer."""
+    layout = tray_layout_of(printer_id, printer_manager)
+    if layout.direct_rack and not layout.accepts_slot(ams_id, tray_id):
+        raise HTTPException(422, "This printer has no such slot")
 
 
 def _is_valid_load_tray_id(tray_id: int) -> bool:

@@ -71,6 +71,17 @@ from backend.app.utils.ams_drying import is_countdown_parked, only_parked_timers
 from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.filament_types import canonical_filament_type
 from backend.app.utils.material_keys import resolve_material_key
+from backend.app.utils.tray_ids import (
+    AMS_HT_FIRST_ID,
+    EXTERNAL_DEPUTY_ID,
+    EXTERNAL_MAIN_ID,
+    NO_LAYOUT,
+    TrayLayout,
+    external_slot_index,
+    is_ams_ht_id,
+    legacy_tray_index,
+    state_is_direct_rack,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +179,17 @@ async def basis_of(db: AsyncSession, item: PrintQueueItem) -> str:
 _canonical_filament_type = canonical_filament_type
 
 
+def _deferral_message(exc) -> str:
+    """A routing deferral as the queue row reads it: the sentence, plus a direct rack's PrintTool numbers.
+
+    Only ``print_tools`` travels from the deferral's facts — the channel details a
+    row has always gone without stay out of its one line.
+    """
+    params = getattr(exc, "params", None) or {}
+    extra = {"print_tools": params["print_tools"]} if params.get("print_tools") else {}
+    return routing_detail(exc.reason, **extra)["message"]
+
+
 def _installed_nozzle_diameters(status) -> list[float]:
     """Parse the installed nozzle diameters from a PrinterState (upstream #1899).
 
@@ -177,8 +199,23 @@ def _installed_nozzle_diameters(status) -> list[float]:
     list means "the printer hasn't told us its nozzle hardware" — callers must
     treat that as unknown, not as a mismatch, so we never block a print on
     missing data.
+
+    A direct-connected rack (H3C, P3C): every hotend in the rack, not only the
+    one on the toolhead — any of them prints the PrintTool its tray leads to.
     """
     diameters: list[float] = []
+    if state_is_direct_rack(status):
+        for entry in getattr(status, "nozzle_rack", None) or []:
+            if not isinstance(entry, dict) or entry.get("addr_id") is None:
+                continue
+            try:
+                value = float(entry.get("diameter") or 0)
+            except (TypeError, ValueError):
+                continue
+            if value > 0 and value not in diameters:
+                diameters.append(value)
+        if diameters:
+            return diameters
     for nozzle in getattr(status, "nozzles", None) or []:
         raw = getattr(nozzle, "nozzle_diameter", "") or ""
         try:
@@ -896,7 +933,7 @@ class PrintScheduler:
                         else:
                             mark_busy(printer_id, "verdict_changed")
                         continue
-                    await self._wait(db, item, "filament_unavailable", routing_detail(exc.reason)["message"])
+                    await self._wait(db, item, "filament_unavailable", _deferral_message(exc))
                     continue
                 # ⚠️ The plan is NOT written onto ``item`` here: this is the tick's
                 # session, and the final claim commits the plan in a session of its
@@ -1026,13 +1063,18 @@ class PrintScheduler:
 
         # Get ams_extruder_map for dual-nozzle printers (H2D, H2D Pro)
         ams_extruder_map = status.raw_data.get("ams_extruder_map", {})
+        # How this printer numbers its trays (``utils/tray_ids``): a rack AMS is 28 + k /
+        # 37 + k, a direct rack's input its own id (247-255), one extruder.
+        layout = (
+            tray_layout_of(printer_id, printer_manager) if printer_id is not None else TrayLayout.from_state(status)
+        )
 
         # Parse AMS units from raw_data
         ams_data = status.raw_data.get("ams", [])
         for ams_unit in ams_data:
             ams_id = int(ams_unit.get("id", 0))
             trays = ams_unit.get("tray", [])
-            is_ht = 128 <= ams_id <= 135  # the unit id, not how many trays it listed
+            is_ht = is_ams_ht_id(ams_id)  # the unit id, not how many trays it listed
 
             for tray in trays:
                 tray_type = tray.get("tray_type")
@@ -1053,9 +1095,8 @@ class PrintScheduler:
                         )
                     # Normalize color: remove alpha, add hash
                     color = self._normalize_color(tray_color)
-                    # Calculate global tray ID
-                    # AMS-HT units have IDs starting at 128 with a single tray
-                    global_tray_id = ams_id if ams_id >= 128 else ams_id * 4 + tray_id
+                    # Calculate global tray ID (``utils/tray_ids``, the one home)
+                    global_tray_id = layout.global_tray_id(ams_id, tray_id)
 
                     filaments.append(
                         {
@@ -1067,27 +1108,31 @@ class PrintScheduler:
                             "is_ht": is_ht,
                             "is_external": False,
                             "global_tray_id": global_tray_id,
-                            "extruder_id": ams_extruder_map.get(str(ams_id)),
+                            "extruder_id": 0 if layout.direct_rack else ams_extruder_map.get(str(ams_id)),
                             "remain": tray.get("remain", -1),
                         }
                     )
 
         # Check external spool(s) (vt_tray is a list)
-        for idx, vt in enumerate(status.raw_data.get("vt_tray") or []):
+        for vt in status.raw_data.get("vt_tray") or []:
             if vt.get("tray_type"):
                 color = self._normalize_color(vt.get("tray_color", ""))
-                tray_id = int(vt.get("id", 254))
+                tray_id = int(vt.get("id", EXTERNAL_DEPUTY_ID))
                 filaments.append(
                     {
                         "type": vt["tray_type"],
                         "color": color,
                         "tray_info_idx": vt.get("tray_info_idx", ""),
                         "ams_id": -1,
-                        "tray_id": idx,
+                        # The index the input is stored under (254 -> 0, 255 -> 1,
+                        # 247-253 -> 2-8), not its position in the list.
+                        "tray_id": external_slot_index(tray_id),
                         "is_ht": False,
                         "is_external": True,
                         "global_tray_id": tray_id,
-                        "extruder_id": (255 - tray_id) if ams_extruder_map else None,
+                        "extruder_id": (
+                            0 if layout.direct_rack else (EXTERNAL_MAIN_ID - tray_id) if ams_extruder_map else None
+                        ),
                         "remain": vt.get("remain", -1),
                     }
                 )
@@ -1261,9 +1306,9 @@ class PrintScheduler:
         """
         if ams_id is None or ams_id < 0:
             return 10_000
-        if ams_id >= 128:
-            return 1_000 + (ams_id - 128) * 4 + (tray_id or 0)
-        return ams_id * 4 + (tray_id or 0)
+        if is_ams_ht_id(ams_id):
+            return 1_000 + legacy_tray_index(ams_id - AMS_HT_FIRST_ID, tray_id or 0)
+        return NO_LAYOUT.global_tray_id(ams_id, tray_id or 0)
 
     @staticmethod
     def _prefer_lowest_sort_key(f: dict, overrides: dict[int, float] | None) -> tuple[int, float, int]:
@@ -3606,19 +3651,7 @@ class PrintScheduler:
             if exc.reason in SOURCE_FAILURES:
                 await self._fail_source_item(db, item, exc.reason, basis=basis)
             else:
-                await self._wait(db, item, "filament_unavailable", routing_detail(exc.reason)["message"])
-            return False
-
-        from backend.app.services import direct_rack_gate
-
-        if direct_rack_gate.print_refused(tray_layout_of(printer.id, printer_manager, printer.model)):
-            # A direct-connected rack (H3C, P3C): the job waits, by name, until N01 stage B.
-            await self._wait(
-                db,
-                item,
-                direct_rack_gate.UNSUPPORTED_CODE,
-                routing_detail(direct_rack_gate.UNSUPPORTED_CODE)["message"],
-            )
+                await self._wait(db, item, "filament_unavailable", _deferral_message(exc))
             return False
 
         try:
@@ -3627,7 +3660,7 @@ class PrintScheduler:
             if exc.reason in SOURCE_FAILURES:
                 await self._fail_source_item(db, item, exc.reason, basis=basis)
                 return False
-            await self._wait(db, item, "filament_unavailable", routing_detail(exc.reason)["message"])
+            await self._wait(db, item, "filament_unavailable", _deferral_message(exc))
             return False
         # The plan travels as plain values into the claim's own commit (D-R5): written on
         # this tick session it would be a dirty row the claim's writer waits behind, or

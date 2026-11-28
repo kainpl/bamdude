@@ -96,6 +96,12 @@ def explain_channels(req, policy, snapshot, result):
                     "status": "compatible" if fits else "unknown" if unknown else "incompatible",
                     "reason": why,
                     "color_matches": bool(required_color and required_color == normalized_color(source.rule_color)),
+                    # A direct rack (H3C, P3C): the source as people read it (``AMS-3H 5``,
+                    # ``Ext-3``) and the PrintTool it prints through — the server's words,
+                    # the dialog computes none. None on every other printer.
+                    "label": snapshot.layout.rack_label(source.id),
+                    "print_tool": source.rack_addr + 1 if source.rack_addr is not None else None,
+                    "feed_block": source.feed_block,
                 }
             )
         checks.sort(
@@ -113,6 +119,8 @@ def explain_channels(req, policy, snapshot, result):
                 "material": slot["type"],
                 "profile": slot.get("tray_info_idx"),
                 "selected_source_id": selected,
+                # A direct rack's notices about this channel (manual feed), worded here.
+                "notices": [render_notice(notice) for notice in result.notices if notice.get("slot") == sid],
                 "status": channel_result.status if channel_result else None,
                 "reason": routing_detail(channel_result.reason) if channel_result and channel_result.reason else None,
                 "sources": [
@@ -123,6 +131,13 @@ def explain_channels(req, policy, snapshot, result):
             }
         )
     return channels
+
+
+def render_notice(notice: dict) -> dict:
+    """A plan's notice (``filament_routing.rack_notices``) as the operator reads it: code, facts, sentence."""
+    code = notice.get("code", "")
+    params = {k: v for k, v in notice.items() if k != "code" and v is not None}
+    return routing_detail(f"notice.{code}", **params) | {"code": code}
 
 
 async def visible_source(db, data, user):
@@ -188,6 +203,8 @@ async def printer_routing_preview(db, data, user):
                 "reason": None,
                 "channels": [],
                 "dual_nozzle": False,
+                "direct_rack": False,
+                "notices": [],
             }
             printer = await db.get(Printer, target.printer_id)
             if printer is None or printer.archived:
@@ -245,6 +262,10 @@ async def printer_routing_preview(db, data, user):
                     reason=routing_detail(result.reason, **result.params) if result.reason else None,
                     channels=explain_channels(req, policy, snapshot, result),
                     dual_nozzle=is_dual_nozzle_model(snapshot.model),
+                    # A direct rack (H3C, P3C): one toolhead, never "two nozzles";
+                    # the plan's notices (manual feed, two sources on one PrintTool).
+                    direct_rack=snapshot.direct_rack,
+                    notices=[render_notice(notice) for notice in result.notices],
                 )
             results.append(answer)
     return {"targets": results}

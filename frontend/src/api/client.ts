@@ -1606,6 +1606,8 @@ export interface PrinterStatus {
   // A direct-connected nozzle rack (H3C, P3C): one toolhead, rack_size PrintTools.
   direct_rack?: boolean;
   rack_size?: number;
+  /** A direct rack: tray_now 255 is PrintTool 1's input (the toolhead's snow said so), not "nothing". */
+  direct_rack_input_loaded?: boolean;
   // Runout / filament-replacement guidance. Populated only while PAUSED.
   // Global tray IDs (ams_id*4+slot, 128-135 = AMS-HT, 254 = external), matching
   // the same numbering as tray_now so the AMS graphic can highlight them.
@@ -8028,6 +8030,18 @@ export interface PrinterRoutingSourceCheck {
   status: 'compatible' | 'incompatible' | 'unknown';
   color_matches: boolean;
   reason: { code: string; message: string } | null;
+  /** A direct rack (H3C, P3C): the source as the server words it (`AMS-3H 5`, `Ext-3`); null elsewhere. */
+  label?: string | null;
+  /** A direct rack: the PrintTool (1-based) this source prints through. */
+  print_tool?: number | null;
+  /** A direct rack: why an automatic plan would not take it (`manual_feed`, `blocked_by_external`, `blocked_by_rack`). */
+  feed_block?: string | null;
+}
+/** What the operator should know before a direct rack's plan prints — never a reason to wait. */
+export interface RoutingNotice {
+  code: string;
+  message: string;
+  params?: Record<string, unknown>;
 }
 export interface PrinterRoutingChannel {
   slot_id: number;
@@ -8038,6 +8052,7 @@ export interface PrinterRoutingChannel {
   reason: { code: string; message: string } | null;
   sources: PrinterRoutingSourceCheck[];
   omitted_sources: number;
+  notices?: RoutingNotice[];
 }
 export interface PrinterRoutingPreview {
   targets: {
@@ -8048,6 +8063,8 @@ export interface PrinterRoutingPreview {
     reason: { code: string; message: string } | null;
     channels?: PrinterRoutingChannel[];
     dual_nozzle?: boolean;
+    direct_rack?: boolean;
+    notices?: RoutingNotice[];
   }[];
 }
 export interface RoutingPreview {
@@ -10766,7 +10783,8 @@ export interface CalibrationSessionOut {
   nozzle_diameter: number;
   nozzle_volume_type: string;
   extruder_id: number;
-  status: 'running' | 'awaiting_user_input' | 'saved' | 'cancelled' | 'failed';
+  /** `printed`: an H3C / P3C calibration printed; its value is entered on the printer (no save step yet). */
+  status: 'running' | 'awaiting_user_input' | 'saved' | 'printed' | 'cancelled' | 'failed';
   stage: number;
   coarse_ratio: number | null;
   parent_session_id: number | null;

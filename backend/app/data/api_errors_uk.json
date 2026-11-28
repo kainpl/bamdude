@@ -1523,6 +1523,6 @@
   "Only an administrator can add a printer to a limited group": "Лише адміністратор може додати принтер, коли ви в обмеженій групі",
   "The Administrators group cannot be limited to printers": "Групу Administrators не можна обмежити принтерами",
   "This changes which printers a limited group reaches; ask an administrator": "Це змінює, які принтери бачить обмежена група; зверніться до адміністратора",
-  "Printing and tray commands on H3C and P3C printers are not supported yet": "Друк і команди лотків на принтерах H3C і P3C ще не підтримуються",
+  "Loading, unloading, RFID, drying, K-profile and automatic calibration commands on H3C and P3C printers are not supported yet": "Завантаження, вивантаження, RFID, сушіння, K-профіль і автоматичне калібрування на принтерах H3C і P3C ще не підтримуються",
   "This printer has no such slot": "У цього принтера немає такого лотка"
 }

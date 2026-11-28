@@ -48,6 +48,9 @@ export type WizardStep =
   | 'fineSave'
   | 'autoSave'
   | 'towerFinish'
+  // An H3C / P3C calibration printed: no save step until N01 stage C (the value
+  // is read off the plate and entered on the printer).
+  | 'rackPrinted'
   | 'finish';
 
 export interface ComputeNextStepInput {
@@ -70,6 +73,7 @@ export function computeNextStep(current: WizardStep, ctx: ComputeNextStepInput):
     case 'preset':
       return ctx.sessionStarted ? 'running' : 'preset';
     case 'running':
+      if (ctx.sessionStatus === 'printed') return 'rackPrinted';
       if (ctx.sessionStatus === 'saved' && ctx.isTowerMode) return 'towerFinish';
       if (ctx.sessionStatus !== 'awaiting_user_input') return 'running';
       if (ctx.method === 'auto') return 'autoSave';
@@ -86,6 +90,7 @@ export function computeNextStep(current: WizardStep, ctx: ComputeNextStepInput):
     case 'autoSave':
       return ctx.savedRows ? 'finish' : current;
     case 'towerFinish':
+    case 'rackPrinted':
     case 'finish':
       return current;
     default:
@@ -298,7 +303,7 @@ export function useFilamentCalibration(printerId: number, enabled: boolean) {
       qc.invalidateQueries({ queryKey: ['calibration', 'active', printerId] });
       return;
     }
-    if (s.status !== 'awaiting_user_input' && s.status !== 'saved') return;
+    if (s.status !== 'awaiting_user_input' && s.status !== 'saved' && s.status !== 'printed') return;
     const mode = s.cali_mode as CaliMode;
     // When resuming from a prior session (user reopened the modal
     // after a reload), ``input.method`` is undefined — fall back to

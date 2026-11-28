@@ -177,9 +177,10 @@ export function FilamentCalibrationModal({ isOpen, onClose, printerId }: Props) 
           />
         )}
 
-        {cali.step === 'finish' && (
+        {(cali.step === 'finish' || cali.step === 'rackPrinted') && (
           <CalibrationFinishPage
-            savedRows={cali.savedRows}
+            savedRows={cali.step === 'finish' ? cali.savedRows : []}
+            printedOnRack={cali.step === 'rackPrinted'}
             onCalibrateAnother={() => {
               cali.setSessionId(null);
               cali.setStep('start');

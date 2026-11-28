@@ -31,7 +31,7 @@
   "printer_off_missing_filament": "Printer is switched off, and what it holds cannot run this job, so it is not switched on.",
   "model_unavailable": "Printer model is unknown.",
   "model_mismatch": "The sliced printer model does not match.",
-  "direct_rack_unsupported": "Printing on H3C and P3C printers is not supported yet.",
+  "direct_rack_unsupported": "Loading, unloading, RFID, drying, K-profiles and automatic calibration on H3C and P3C printers are not supported yet.",
   "nozzle_state_unavailable": "Waiting for nozzle state.",
   "nozzle_mismatch": "Nozzle size or physical binding does not match.",
   "color_unavailable": "The required color cannot be verified.",
@@ -67,7 +67,8 @@
   "detail": {
     "wanted_and_loaded": "Channel {slot} needs {wanted}; loaded: {loaded}.",
     "wanted_nothing_loaded": "Channel {slot} needs {wanted}; nothing is loaded.",
-    "wanted_only": "Channel {slot} needs {wanted}."
+    "wanted_only": "Channel {slot} needs {wanted}.",
+    "print_tools": "PrintTool: {print_tools}."
   },
   "auto_eject_conflict": "Finish G-code auto-eject conflicts with printer Swap Mode",
   "plate_calibration_required": "Plate-check calibration is required",
@@ -96,5 +97,19 @@
   "printer_not_connected": "The printer was not connected when the print would start, so it was not started.",
   "start_refused": "The printer did not take the start command, so the print was not started.",
   "stale_execution_claim": "This stale queue claim cannot be retried or cloned. Check its execution archive.",
-  "already_returned_to_auto_queue": "This print has already returned to AutoQueue and cannot be retried, cloned or repeated. Open its AutoQueue job instead."
+  "already_returned_to_auto_queue": "This print has already returned to AutoQueue and cannot be retried, cloned or repeated. Open its AutoQueue job instead.",
+  "rack_busy": "The printer's hotend rack is moving. The print waits until it stops.",
+  "rack_no_hotend": "No PrintTool is installed on the printer's rack. Install a compatible hotend and try again.",
+  "rack_tool_detached": "A PrintTool is detached from the printer's rack. Install it before printing.",
+  "rack_not_calibrated": "None of the printer's PrintTools has completed Docking Calibration. Calibrate the rack and try again.",
+  "rack_hotend_mismatch": "No hotend on the printer's rack matches the nozzle size and flow this filament was sliced for.",
+  "rack_manual_feed_only": "The fitting slot is not fed automatically. Load its PrintTool by hand, or pin the slot for this print.",
+  "rack_feed_blocked": "The fitting slot's PrintTool holds filament it cannot unload automatically. Pull it out by hand, or pin the slot for this print.",
+  "dynamic_nozzle_map_unsupported": "This file was sliced with a dynamic nozzle map, which H3C and P3C printers cannot print. Re-slice it without one.",
+  "rack_mapping_recreate": "This job's slot mapping was saved before H3C and P3C support. Delete the job and create it again.",
+  "notice": {
+    "manual_feed": "{source} is not fed automatically: load PrintTool {print_tool} before printing, or the print will pause for the filament.",
+    "feed_blocked": "PrintTool {print_tool} holds filament it cannot unload automatically: pull it out by hand before printing {source}.",
+    "shared_print_tool": "{sources} are both selected for PrintTool {print_tool}. One of them cannot unload automatically, so the filament will have to be changed by hand."
+  }
 }

@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from backend.app.services.printer_feed_snapshot import FeedSource, PrinterFeedSnapshot
+from backend.app.utils.direct_rack import MANUAL_FEED, PRELOAD, hotend_matches, hotend_spec_matches, retracts_itself
 from backend.app.utils.filament_types import (
     SUPPORT_SLOT_TYPES,
     canonical_filament_type,
@@ -16,6 +17,7 @@ from backend.app.utils.filament_types import (
 from backend.app.utils.model_compatibility import model_compatibility
 from backend.app.utils.printer_configs import requires_left_tpu_firmware_check
 from backend.app.utils.printer_models import is_dual_nozzle_model, normalize_model_name
+from backend.app.utils.tray_ids import EXTERNAL_DEPUTY_ID, EXTERNAL_MAIN_ID
 
 if TYPE_CHECKING:
     from backend.app.services.filament_requirements import PrintRequirements
@@ -89,6 +91,12 @@ class RoutingPlan:
     snapshot_marker: tuple[int, str]
     assignments: dict[int, FeedSource]
     color_matches: int
+    #: Planned on a direct rack (H3C, P3C): the tray decides the PrintTool and
+    #: ``use_ams`` follows Bambu Studio's rule (below).
+    direct_rack: bool = False
+    #: What the operator should know before this plan prints (a direct rack's
+    #: manual feed, two sources on one PrintTool) — never a reason to wait.
+    notices: tuple[dict, ...] = ()
 
     @property
     def remaining_rank(self) -> float:
@@ -105,6 +113,11 @@ class RoutingPlan:
 
     @property
     def use_ams(self) -> bool:
+        if self.direct_rack:
+            # Bambu Studio: false only when every mapped tray is 254 / 255
+            # (``SelectMachine.cpp:2931-2953``) — a print from input 248 alone is
+            # still ``use_ams: true``. Not ``layout.is_external``: that is upstream's form.
+            return not all(s.id in (EXTERNAL_DEPUTY_ID, EXTERNAL_MAIN_ID) for s in self.assignments.values())
         return any(s.kind == "ams" for s in self.assignments.values())
 
 
@@ -120,6 +133,8 @@ class RoutingResult:
     #: refused one ABS plate for weeks under a sentence blaming the material,
     #: while every one of them had ABS and differed only in the profile id.
     params: dict = field(default_factory=dict)
+    #: The plan's notices (``RoutingPlan.notices``), for the dialog and the queue row.
+    notices: tuple[dict, ...] = ()
 
 
 #: Sources listed in a refusal before it stops naming them one by one.
@@ -139,7 +154,9 @@ def _refusal_params(sid: int, target_type: str, variant: str | None, snapshot: P
     for source in sources[:_LISTED_SOURCES]:
         description = describe_source(source.material, source.rule_variant)
         if source.kind == "external":
-            label = "Ext-R" if source.id == 255 else "Ext-L" if dual else "Ext"
+            label = snapshot.layout.rack_label(source.id) or (
+                "Ext-R" if source.id == 255 else "Ext-L" if dual else "Ext"
+            )
             description = f"{label}: {description}"
         listed.append(description)
     loaded = ", ".join(listed)
@@ -192,6 +209,13 @@ def effective_slots(requirements: "PrintRequirements", policy: RoutingPolicy) ->
         if override.get("color"):
             slot["color"] = override["color"]
         slot["strict"] = policy.force_color_match or bool(override.get("force_color_match"))
+        if "nozzle_diameter" not in slot and isinstance(getattr(requirements, "nozzle_constraints", None), dict):
+            # A slice without per-filament hotend data (another slicer): the
+            # project's diameter for its nozzle, flow any — what a direct rack's
+            # hotend is checked against (spec N01 B §5.2). Not used elsewhere.
+            project = _required_diameter(requirements, slot_nozzle(slot))
+            if project is not None and project > 0:
+                slot["project_nozzle_diameter"] = project
     return slots
 
 
@@ -245,7 +269,9 @@ def channel_refusal(
     """What refuses one channel whatever is loaded: its nozzle diameter, or a forced colour it cannot name."""
     sid = slot["slot_id"]
     nozzle = slot_nozzle(slot)
-    diameter = _required_diameter(requirements, nozzle)
+    # A direct rack: the diameter is asked of the hotend each source leads to
+    # (``source_fits``), not of one head — the head holds whichever was last fetched.
+    diameter = None if snapshot.direct_rack else _required_diameter(requirements, nozzle)
     if diameter is not None:
         installed = snapshot.nozzle_diameters.get(nozzle)
         if not installed:
@@ -254,6 +280,136 @@ def channel_refusal(
             return RoutingResult("incompatible", "nozzle_mismatch", slots=(sid,))
     if slot["strict"] and normalized_color(slot.get("color")) is None:
         return RoutingResult("unknown", "color_unavailable", slots=(sid,))
+    return None
+
+
+def rack_preconditions(requirements: "PrintRequirements", snapshot: PrinterFeedSnapshot) -> RoutingResult | None:
+    """What refuses a whole job on a direct rack (H3C, P3C) — Bambu Studio's blocking statuses.
+
+    ``SelectMachine::update_show_status``: a dynamic nozzle-map slice cannot be
+    sent (it waits for a V1 reply that needs a Filament Track Switch); a moving
+    rack waits; no hotend at all, a tool missing from its holder, or no dock
+    docking-calibrated refuses. Facts the printer has not reported yet refuse
+    nothing here — the per-channel rule waits on them instead.
+    """
+    if not snapshot.direct_rack:
+        return None
+    if requirements.nozzle_constraints.get("dynamic_nozzle_map"):
+        return RoutingResult("incompatible", "dynamic_nozzle_map_unsupported")
+    rack = snapshot.rack
+    if rack.busy:
+        return RoutingResult("unknown", "rack_busy")
+    if not rack.known:
+        return RoutingResult("unknown", "nozzle_state_unavailable")
+    if not rack.any_hotend:
+        return RoutingResult("incompatible", "rack_no_hotend")
+    if rack.any_detached:
+        tools = [h.print_tool for h in rack.hotends if h.detached]
+        return RoutingResult("incompatible", "rack_tool_detached", params={"print_tools": ", ".join(map(str, tools))})
+    if rack.any_dock_calibrated is False:
+        return RoutingResult("incompatible", "rack_not_calibrated")
+    return None
+
+
+def _rack_source_fits(
+    slot: dict, source: FeedSource, snapshot: PrinterFeedSnapshot, pin: dict | None
+) -> tuple[bool, str | None, bool] | None:
+    """A direct rack's part of ``source_fits``: Bambu Studio's candidate rule and hotend spec.
+
+    The source must be bound to an existing hotend (``FeedSource.rack_addr``,
+    ``utils/direct_rack.candidate_print_tools``) whose diameter and flow are the
+    ones the filament was sliced for. An automatic plan takes no tray Studio's
+    ``QuerySlotFeedBlock`` blocks (manual feed, filament from an external or the
+    rack AMS already in the hotend); an operator's pin may, but never onto a
+    hotend whose dock is not docking-calibrated. ``None``: nothing refused here.
+    """
+    hotend = snapshot.rack.hotend(source.rack_addr)
+    if hotend is None or not hotend.exists:
+        return False, None, False
+    diameter = slot.get("nozzle_diameter") or slot.get("project_nozzle_diameter")
+    if not hotend_matches(hotend, diameter, slot.get("volume_type")):
+        return False, "rack_hotend_mismatch", False
+    if pin is not None:
+        if hotend.dock_calibrated is False:
+            return False, "rack_not_calibrated", False
+        return None
+    if source.feed_block == PRELOAD:
+        # A hotend's own rack slot that is not its bound one: only a pin takes it.
+        return False, None, False
+    if source.feed_block is not None:
+        return False, ("rack_manual_feed_only" if source.feed_block == MANUAL_FEED else "rack_feed_blocked"), False
+    return None
+
+
+def rack_notices(plan_assignments: dict[int, FeedSource], snapshot: PrinterFeedSnapshot) -> tuple[dict, ...]:
+    """What a direct-rack plan's operator should know (Bambu Studio's warnings that the plan keeps).
+
+    ``manual_feed``: a pinned tray the printer will not feed by itself (or one a
+    loaded hotend blocks) — the print will pause for a hand. ``shared_print_tool``:
+    two different sources on one PrintTool where one cannot unload itself — the
+    print will stop for a manual change (the owner's decision: as Studio, send).
+    """
+    notices: list[dict] = []
+    if not snapshot.direct_rack:
+        return tuple(notices)
+    layout = snapshot.layout
+    by_tool: dict[int, dict[int, FeedSource]] = {}
+    for sid, source in sorted(plan_assignments.items()):
+        if source.rack_addr is not None:
+            by_tool.setdefault(source.rack_addr, {})[source.id] = source
+        if source.feed_block is not None and source.feed_block != PRELOAD:
+            notices.append(
+                {
+                    "code": "manual_feed" if source.feed_block == MANUAL_FEED else "feed_blocked",
+                    "slot": sid,
+                    "source": layout.rack_label(source.id) or str(source.id),
+                    "print_tool": (source.rack_addr + 1) if source.rack_addr is not None else None,
+                }
+            )
+    for addr, sources in sorted(by_tool.items()):
+        if len(sources) > 1 and not all(retracts_itself(tid, layout) for tid in sources):
+            notices.append(
+                {
+                    "code": "shared_print_tool",
+                    "print_tool": addr + 1,
+                    "sources": ", ".join(layout.rack_label(tid) or str(tid) for tid in sorted(sources)),
+                }
+            )
+    return tuple(notices)
+
+
+def calibration_hotend_refusal(
+    snapshot: PrinterFeedSnapshot, tray: int | None, diameter: float | None, flow: str | None
+) -> str | None:
+    """Why a calibration print of ``tray`` may not go to a direct rack, or None.
+
+    A calibration row is exempt from routing, and its archive carries no
+    nozzle diameter, so the hotend the tray leads to is asked here — at the
+    session's start and again at dispatch (the hotend may be swapped while the
+    row waits): it must exist, have its dock docking-calibrated, and have the
+    session's diameter and flow (``flow`` in our vocabulary). The rack's own
+    blocking statuses come first.
+    """
+    if not snapshot.direct_rack:
+        return None
+    rack = snapshot.rack
+    if rack.busy:
+        return "rack_busy"
+    if not rack.known:
+        return "nozzle_state_unavailable"
+    if not rack.any_hotend:
+        return "rack_no_hotend"
+    if rack.any_detached:
+        return "rack_tool_detached"
+    source = next((s for s in snapshot.sources if s.id == tray), None) if tray is not None else None
+    hotend = rack.hotend(source.rack_addr) if source is not None else None
+    # Exact flow: a calibration is of ONE hotend, so "Hybrid" (a slice's "several
+    # flows") is no wildcard here — a TPU285 hotend, which the wizard has no flow
+    # for, is refused rather than calibrated as something else.
+    if hotend is None or (flow or "") != hotend.flow or not hotend_spec_matches(hotend, diameter, flow):
+        return "rack_hotend_mismatch"
+    if hotend.dock_calibrated is False:
+        return "rack_not_calibrated"
     return None
 
 
@@ -270,6 +426,16 @@ def backup_twins(source_id: int, snapshot: PrinterFeedSnapshot) -> frozenset[int
     """
     if snapshot.backup_enabled is not True or any(s.id == source_id for s in snapshot.sources):
         return frozenset()
+    layout = snapshot.layout
+    if layout.direct_rack:
+        # Never an external input (247-255 here), and never a tray on another
+        # PrintTool: the tray decides the PrintTool, so a twin there is another hotend.
+        tool = layout.print_tool(source_id)
+        return frozenset(
+            m
+            for m in snapshot.backup_membership.get(source_id, ())
+            if m != source_id and not layout.is_external(m) and layout.print_tool(m) == tool
+        )
     return frozenset(m for m in snapshot.backup_membership.get(source_id, ()) if m != source_id and m < 254)
 
 
@@ -369,6 +535,10 @@ def source_fits(
     variant = slot.get("tray_info_idx")
     if variant and source.rule_variant and variant != source.rule_variant and not policy.allow_base_material_match:
         return False, "variant_mismatch", False
+    if snapshot.direct_rack:
+        rack_verdict = _rack_source_fits(slot, source, snapshot, pin)
+        if rack_verdict is not None:
+            return rack_verdict
     if not source.nozzles:
         return False, "nozzle_state_unavailable", True
     if nozzle not in source.nozzles:
@@ -384,7 +554,9 @@ def source_fits(
     ):
         unknown = snapshot.left_tpu_firmware is None
         return False, ("tpu_left_firmware_unavailable" if unknown else "tpu_left_firmware_unsupported"), unknown
-    if source.kind == "external" and nozzle_counts[nozzle] > 1:
+    # Each external input of a direct rack is its own PrintTool, so several
+    # channels on extruder 0 do not share one input path there.
+    if source.kind == "external" and nozzle_counts[nozzle] > 1 and not snapshot.direct_rack:
         return False, "feed_topology_mismatch", False
     color = normalized_color(source.rule_color)
     if slot["strict"] and color != normalized_color(slot.get("color")):
@@ -410,12 +582,18 @@ def resolve_filament_routing(
     are re-read from ``item.ams_mapping``, and a twin written there would
     become its pin for good.
     """
-    refusal = feed_preconditions(requirements, policy, snapshot, exact_model=exact_model)
+    refusal = feed_preconditions(requirements, policy, snapshot, exact_model=exact_model) or rack_preconditions(
+        requirements, snapshot
+    )
     if refusal is not None:
         return refusal
     slots = effective_slots(requirements, policy)
     if slots is None:
         return RoutingResult("unknown", "override_slot_not_used")
+    # Bambu Studio lets two filaments of a direct rack's plate take one tray
+    # (``_run_hotend_rack_color_mapping``: slots may be shared); everywhere else a
+    # plan names distinct sources.
+    distinct = not snapshot.direct_rack
     nozzle_counts = channel_nozzle_counts(slots)
     left_tpu_check = requires_left_tpu_firmware_check(snapshot.model)
     present = {source.id for source in snapshot.sources}
@@ -468,6 +646,10 @@ def resolve_filament_routing(
         candidates = []
         unknown = False
         reason = "material_mismatch"
+        # A direct rack: the PrintTools whose fitting tray only a hand can feed —
+        # the refusal names them ("load PrintTool n, or pin the slot").
+        held_tools: set[int] = set()
+        held_reason = None
         for source in snapshot.sources:
             fits, why, unsure = source_fits(
                 slot,
@@ -483,6 +665,10 @@ def resolve_filament_routing(
             unknown |= unsure
             if why is not None:
                 reason = why
+            if why in ("rack_manual_feed_only", "rack_feed_blocked") and source.rack_addr is not None:
+                held_tools.add(source.rack_addr + 1)
+                # A tray only a hand can feed is named before one a loaded hotend blocks.
+                held_reason = "rack_manual_feed_only" if why == "rack_manual_feed_only" else held_reason or why
             if fits:
                 candidates.append(source)
         if not candidates:
@@ -490,17 +676,19 @@ def resolve_filament_routing(
                 # The chosen slot is empty and no backup twin could stand in —
                 # the one sentence that is true, whatever a twin was refused for.
                 reason = "pinned_source_empty"
+            elif held_reason is not None:
+                # A fitting tray exists, only a hand can feed it: that is the sentence,
+                # not whichever other tray was turned down last.
+                reason = held_reason
             unknown |= (
                 (not snapshot.ams_known and policy.feed_policy != "external_only")
                 or (not snapshot.external_known and policy.feed_policy != "ams_only")
                 or snapshot.incomplete
             )
-            return RoutingResult(
-                "unknown" if unknown else "incompatible",
-                reason,
-                slots=(sid,),
-                params=_refusal_params(sid, target_type, slot.get("tray_info_idx"), snapshot),
-            )
+            params = _refusal_params(sid, target_type, slot.get("tray_info_idx"), snapshot)
+            if held_tools:
+                params["print_tools"] = ", ".join(map(str, sorted(held_tools)))
+            return RoutingResult("unknown" if unknown else "incompatible", reason, slots=(sid,), params=params)
         options[sid] = candidates
     # Most constrained first. Search complete assignments; a flexible channel
     # must not consume the only source of a pinned/strict one.
@@ -534,10 +722,10 @@ def resolve_filament_routing(
             if total > best_score:
                 best, best_score = dict(chosen), total
             return
-        available = {sid: [s for s in options[sid] if s.id not in used] for sid in remaining}
+        available = {sid: [s for s in options[sid] if not distinct or s.id not in used] for sid in remaining}
         if any(not sources for sources in available.values()):
             return
-        if len({s.id for sources in available.values() for s in sources}) < len(remaining):
+        if distinct and len({s.id for sources in available.values() for s in sources}) < len(remaining):
             return
         if total + sum(max(score(sid, s) for s in sources) for sid, sources in available.items()) <= best_score:
             return
@@ -551,8 +739,10 @@ def resolve_filament_routing(
     if best is None:
         return RoutingResult("incompatible", "distinct_sources_required", slots=tuple(order))
     identity = requirements.source_identity
+    notices = rack_notices(best, snapshot)
     return RoutingResult(
         "compatible",
+        notices=notices,
         plan=RoutingPlan(
             snapshot.printer_id,
             requirements.resolved_plate_id,
@@ -568,5 +758,7 @@ def resolve_filament_routing(
                 int(colors[sid] is not None and colors[sid] == normalized_color(s.rule_color))
                 for sid, s in best.items()
             ),
+            direct_rack=snapshot.direct_rack,
+            notices=notices,
         ),
     )

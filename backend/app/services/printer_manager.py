@@ -1736,6 +1736,13 @@ class PrinterManager:
             return client.tray_layout()
         return TrayLayout.build(None, model=model or (self._models.get(printer_id) if printer_id is not None else None))
 
+    def rack_state(self, printer_id: int | None):
+        """A direct rack's hotends and holder (``utils/direct_rack``); ``NO_RACK`` without a live client or rack."""
+        from backend.app.utils.direct_rack import NO_RACK
+
+        client = self._clients.get(printer_id) if printer_id is not None else None
+        return client.rack_state() if client is not None else NO_RACK
+
     def effective_model_for(self, printer_id: int, model: str | None = None) -> str | None:
         """Model for file compatibility; physical model stays in the printer row.
 
@@ -1887,6 +1894,7 @@ class PrinterManager:
         submission_id: str | None = None,
         routing_guard=None,
         printer_life: int | None = None,
+        calibration: bool = False,
     ) -> bool:
         """Start a print on a connected printer.
 
@@ -1935,6 +1943,7 @@ class PrinterManager:
                 timelapse_storage=timelapse_storage,
                 **({"submission_id": submission_id} if submission_id is not None else {}),
                 **({"routing_guard": routing_guard} if routing_guard is not None else {}),
+                **({"calibration": True} if calibration else {}),
             )
         return False
 
@@ -2408,6 +2417,18 @@ def tray_layout_of(printer_id: int | None, manager=None, model: str | None = Non
     except Exception:
         return NO_LAYOUT
     return layout if isinstance(layout, TrayLayout) else NO_LAYOUT
+
+
+def rack_state_of(printer_id: int | None, manager=None):
+    """A printer's direct rack through ``manager`` (the global one when None); ``NO_RACK`` when unknown or a stand-in."""
+    from backend.app.utils.direct_rack import NO_RACK, RackState
+
+    source = printer_manager if manager is None else manager
+    try:
+        rack = source.rack_state(printer_id)
+    except Exception:
+        return NO_RACK
+    return rack if isinstance(rack, RackState) else NO_RACK
 
 
 def _trays_on_extruder(
@@ -3118,6 +3139,8 @@ def printer_state_to_dict(
         # PrintTools with an external input each (utils/tray_ids.TrayLayout).
         "direct_rack": layout.direct_rack,
         "rack_size": layout.rack_size,
+        # ``tray_now`` 255 is PrintTool 1's input (the toolhead's snow said so).
+        "direct_rack_input_loaded": layout.main_input_loaded,
         # AMS Filament Backup (auto_switch_filament): True/False/None (#1766)
         "ams_auto_switch_filament": state.ams_auto_switch_filament,
         # Firmware-reported backup groups (``filam_bak``); None is distinct

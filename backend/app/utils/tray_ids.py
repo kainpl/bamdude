@@ -182,6 +182,20 @@ def unit_type(unit: object) -> tuple[int, AmsType] | None:
     return uid, ams_type_of(uid, from_info if from_info is not None else explicit)
 
 
+def unit_extruder(info: object) -> int | None:
+    """The extruder a unit's ``info`` binds it to (bits 8-11, ``DevAms``), None when unreadable."""
+    if isinstance(info, bool):
+        return None
+    if isinstance(info, int):
+        raw = info
+    else:
+        try:
+            raw = int(str(info), 16)
+        except (TypeError, ValueError):
+            return None
+    return (raw >> 8) & 0xF
+
+
 def stamp_ams_type(unit: dict) -> None:
     """Write the type the unit's ``info`` names onto it as ``ams_type``.
 
@@ -448,6 +462,42 @@ def direct_rack_type_from_holder(holder: object) -> int | None:
     return None
 
 
+def state_is_direct_rack(state: object) -> bool:
+    """Whether a printer state is a direct-connected rack's (H3C, P3C), told from the state alone.
+
+    The holder says so when it was seen; the H3C's own frames carry none, so a
+    rack AMS (its stamped type) or a nozzle entry with a dock (``addr_id``) is
+    the evidence the state holds.
+    """
+    rack_type = getattr(state, "direct_rack_type", None)
+    if isinstance(rack_type, int) and not isinstance(rack_type, bool):
+        return rack_type > 0
+    raw = getattr(state, "raw_data", None) or {}
+    units = raw.get("ams") if isinstance(raw, Mapping) else None
+    if isinstance(units, Mapping):
+        units = units.get("ams")
+    for unit in units if isinstance(units, list) else []:
+        pair = unit_type(unit)
+        if pair is not None and is_zmulti(pair[1]):
+            return True
+    nozzles = getattr(state, "nozzle_rack", None)
+    return any(isinstance(n, Mapping) and n.get("addr_id") is not None for n in nozzles or [])
+
+
+def names_loaded_source(tray: object, state: object) -> bool:
+    """Whether a ``tray_now`` value names a loaded filament source: 0-254 anywhere.
+
+    255 is "nothing loaded" — except on a direct rack whose toolhead ``snow`` said
+    PrintTool 1's input (255) is the tray now (``PrinterState.direct_rack_input_loaded``,
+    written only by that parse).
+    """
+    if not isinstance(tray, int) or isinstance(tray, bool):
+        return False
+    if 0 <= tray <= EXTERNAL_DEPUTY_ID:
+        return True
+    return tray == NO_TRAY and getattr(state, "direct_rack_input_loaded", False) is True
+
+
 def model_is_direct_rack(model: str | None) -> bool:
     """The mirrored config's word on a direct rack: ``default_nozzle_count > 2`` (Studio's ``Ext-n`` test)."""
     return model_nozzle_count(model) > _DIRECT_RACK_NOZZLE_COUNT
@@ -466,12 +516,15 @@ class TrayLayout:
 
     ``units``: its AMS units as ``(ams_id, type)``. ``direct_rack``: a single
     toolhead with a direct-connected rack of ``rack_size`` PrintTools, one
-    external input each (never "two nozzles").
+    external input each (never "two nozzles"). ``main_input_loaded``: on a
+    direct rack, PrintTool 1's input (255) is the tray now — the toolhead's
+    ``snow`` 0xFF00, which a bare ``tray_now`` 255 cannot tell from "nothing".
     """
 
     units: tuple[tuple[int, AmsType], ...] = ()
     direct_rack: bool = False
     rack_size: int = 0
+    main_input_loaded: bool = False
 
     @classmethod
     def build(
@@ -481,12 +534,14 @@ class TrayLayout:
         *,
         rack_type: int | None = None,
         model: str | None = None,
+        main_input_loaded: bool = False,
     ) -> TrayLayout:
         """Layout of a unit list and an external-input list, a holder's rack type and the model.
 
         Direct rack: the holder's rack type when one was seen, else the model's
         config. Rack size: the number of external inputs when more than two are
-        known, else the config's nozzle count.
+        known, else the config's nozzle count. ``main_input_loaded`` counts only
+        on a direct rack.
         """
         pairs: list[tuple[int, AmsType]] = []
         seen: set[int] = set()
@@ -500,7 +555,9 @@ class TrayLayout:
         if direct:
             externals = [v for v in vt_trays or () if v is not None]
             size = len(externals) if len(externals) > _DIRECT_RACK_NOZZLE_COUNT else model_nozzle_count(model)
-        return cls(units=tuple(pairs), direct_rack=direct, rack_size=size)
+        return cls(
+            units=tuple(pairs), direct_rack=direct, rack_size=size, main_input_loaded=direct and main_input_loaded
+        )
 
     @classmethod
     def from_state(cls, state: object, model: str | None = None) -> TrayLayout:
@@ -516,11 +573,13 @@ class TrayLayout:
             if isinstance(vt_trays, Mapping):
                 vt_trays = [vt_trays]
         rack_type = getattr(state, "direct_rack_type", None) if state is not None else None
+        input_loaded = getattr(state, "direct_rack_input_loaded", False) if state is not None else False
         return cls.build(
             units if isinstance(units, list) else None,
             vt_trays if isinstance(vt_trays, list) else None,
             rack_type=rack_type if isinstance(rack_type, int) else None,
             model=model,
+            main_input_loaded=input_loaded is True,
         )
 
     def ams_type(self, ams_id: int) -> AmsType:
@@ -625,12 +684,12 @@ class TrayLayout:
     def is_journal_tray(self, tray_id: int) -> bool:
         """Whether a ``tray_now`` value names a physical filament source rather than "nothing loaded".
 
-        255 is always out: it is also "nothing loaded", and every colour change
-        passes through it (the journal's rule on every printer; on a direct rack
-        it is PrintTool 1's input as well, attributed at completion instead).
+        255 is "nothing loaded", and every colour change passes through it — out
+        on every printer, except on a direct rack whose toolhead ``snow`` says
+        PrintTool 1's input (255) is loaded (``main_input_loaded``).
         """
         if tray_id == NO_TRAY:
-            return False
+            return self.direct_rack and self.main_input_loaded
         if self.direct_rack:
             if self.rack_slot(tray_id) is not None:
                 return True

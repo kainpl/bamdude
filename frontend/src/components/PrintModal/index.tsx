@@ -50,7 +50,7 @@ import { mappingWithManualChoices, targetHasManualMapping } from './mappingInten
 import { PlateSelector } from './PlateSelector';
 import { PrinterSelector } from './PrinterSelector';
 import { PrintOptionsPanel } from './PrintOptions';
-import { autoCalibrationCaps, isDualNozzleModel } from '../../utils/printerCapabilities';
+import { autoCalibrationCaps, hasNozzleOffset } from '../../utils/printerCapabilities';
 import { ScheduleOptionsPanel } from './ScheduleOptions';
 import { SwapMacrosPanel } from './SwapMacros';
 import { SwapSourceNotice } from './SwapSourceNotice';
@@ -543,10 +543,14 @@ export function PrintModal({
   // nozzle_count so a printer without a stored model still resolves correctly.
   const showDualNozzleOptions = useMemo(() => {
     if (isAutoMode) {
-      return isDualNozzleModel(autoModeOptions.target_model);
+      return hasNozzleOffset(autoModeOptions.target_model);
     }
     if (!printers || selectedPrinters.length === 0) return false;
-    return selectedPrinters.some((id) => printers.find((p) => p.id === id)?.nozzle_count === 2);
+    // A direct rack (H3C, P3C) has a hotend per PrintTool, so an offset too (Bambu Studio).
+    return selectedPrinters.some((id) => {
+      const printer = printers.find((p) => p.id === id);
+      return printer?.nozzle_count === 2 || hasNozzleOffset(printer?.model);
+    });
   }, [isAutoMode, autoModeOptions.target_model, printers, selectedPrinters]);
 
   // ⚠️ Which selected printers cannot record a timelapse, asked HERE because
@@ -3204,6 +3208,7 @@ export function PrintModal({
                 routingReason={targetRoutingMessage(targetPreview(effectivePrinterId!, selectedPlate))}
                 routingChannels={targetPreview(effectivePrinterId!, selectedPlate)?.channels}
                 routingDualNozzle={targetPreview(effectivePrinterId!, selectedPlate)?.dual_nozzle}
+                routingNotices={targetPreview(effectivePrinterId!, selectedPlate)?.notices}
                 onManualMappingChange={(mappings) => { setMappingReviewed(true); setManualMappings(mappings); }}
                 requireExactColor={autoModeOptions.force_color_match}
                 defaultExpanded={!!initialSelectedPrinterIds?.length || (settings?.per_printer_mapping_expanded ?? false)}
@@ -3231,6 +3236,7 @@ export function PrintModal({
                   routingReason={targetRoutingMessage(targetPreview(effectivePrinterId!, plateId))}
                   routingChannels={targetPreview(effectivePrinterId!, plateId)?.channels}
                   routingDualNozzle={targetPreview(effectivePrinterId!, plateId)?.dual_nozzle}
+                  routingNotices={targetPreview(effectivePrinterId!, plateId)?.notices}
                   onManualMappingChange={(mappings) => {
                     setMappingReviewed(true);
                     setManualMappingsByPlate((prev) => ({ ...prev, [plateId]: mappings }));
