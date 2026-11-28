@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 #: here dropped the mapping of whichever archive shared the deleted printer's number.
 _ID_KEYED = (
     ("backend.app.services.printer_manager", "printer_manager._awaiting_plate_clear"),
+    # N02: a printer's WLED mapping, plate flag and runtime; a dropped runtime's cleanup() cancels its tasks.
+    ("backend.app.services.wled", "wled_manager._configs"),
+    ("backend.app.services.wled", "wled_manager._require_plate_clear"),
+    ("backend.app.services.wled", "wled_manager._runtime"),
     ("backend.app.services.printer_manager", "printer_manager._last_trays"),
     ("backend.app.services.slot_unlink_hold", "_holds"),
     ("backend.app.services.slot_unlink_hold", "_recheck_tasks"),

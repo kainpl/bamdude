@@ -1056,6 +1056,8 @@ class PrinterManager:
             life = self._printer_lives.get(printer_id, 0)
             self._schedule_async(self._persist_awaiting_plate_clear(printer_id, awaiting, publish=changed, life=life))
             self._schedule_async(self._broadcast_status_change(printer_id))
+            # WLED (N02, upstream #3124): a gate change produces no MQTT push, so the light is told here, on every call.
+            self._tell_wled(printer_id)
 
     async def arm_awaiting_plate_clear(self, printer_id: int, archive_id: int) -> str | None:
         """Persist a new plate-clear gate before exposing it to the scheduler.
@@ -1108,6 +1110,20 @@ class PrinterManager:
             self._schedule_async(self._broadcast_status_change(printer_id))
             if changed:
                 self._schedule_async(self._emit_plate_clear_state(printer_id, False))
+                # The plate answer's release never passes through the setter (N02 A11): WLED is told here too.
+                self._tell_wled(printer_id)
+
+    def _tell_wled(self, printer_id: int) -> None:
+        """Give WLED the printer's current state after a plate-gate change (N02). Never fails the caller."""
+        state = self.get_status(printer_id)
+        if not state:
+            return
+        try:
+            from backend.app.services.wled import wled_manager
+
+            wled_manager.handle_status(printer_id, state, awaiting_plate_clear=self.is_awaiting_plate_clear(printer_id))
+        except Exception:  # noqa: BLE001
+            logger.debug("WLED plate-gate update failed for printer %s", printer_id, exc_info=True)
 
     async def _emit_plate_clear_state(self, printer_id: int, awaiting: bool) -> None:
         info = self.get_printer(printer_id)

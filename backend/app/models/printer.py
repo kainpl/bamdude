@@ -150,6 +150,9 @@ class Printer(Base):
     # ``priority`` (m271, upstream #2915): lowest first, NULL last, ties by id. Read for
     # routing only by ``services/printer_pick_order.py``.
     dispatch_priority: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Optional WLED preset mapping (m273, upstream #3124): WLED owns every visual effect, BamDude only
+    # switches presets. Acted on only by ``services/wled.py``.
+    wled_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     runtime_seconds: Mapped[int] = mapped_column(default=0)  # Accumulated active runtime (RUNNING state only; #1521)
     last_runtime_update: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True

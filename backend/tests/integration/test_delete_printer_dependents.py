@@ -314,8 +314,9 @@ def test_every_fk_to_printers_is_accounted_for():
     # whole point is having exactly one. ``test_printer_tag_routes`` covers
     # that the rows actually go. Scheduled drying's two tables likewise go through
     # ``scheduled_drying.forget_printer`` —
-    # ``test_scheduled_drying_rows_go_with_the_printer`` below proves it.
-    by_owning_service = {"printer_tag_links", "drying_schedules", "scheduled_dryings"}
+    # ``test_scheduled_drying_rows_go_with_the_printer`` below proves it. A limited group's printer list (N62) goes
+    # through ``core/printer_scope.forget_printer_access`` — ``test_a_deleted_printer_leaves_every_group`` below.
+    by_owning_service = {"printer_tag_links", "drying_schedules", "scheduled_dryings", "group_printers"}
 
     unhandled = set()
     for table in Base.metadata.tables.values():
@@ -356,3 +357,29 @@ async def test_scheduled_drying_rows_go_with_the_printer(async_client: AsyncClie
     assert response.status_code == 200, response.text
     assert (await db_session.execute(select(DryingSchedule))).first() is None
     assert (await db_session.execute(select(ScheduledDrying))).first() is None
+
+
+async def test_a_deleted_printer_leaves_every_group(async_client: AsyncClient, printer_factory, db_session):
+    """N62: a limited group that picked the printer forgets it; another printer of that group stays picked."""
+    from backend.app.models.group import Group, group_printers
+
+    printer = await printer_factory(model="X1C")
+    other = await printer_factory(model="X1C")
+    group = Group(name="Team picked", permissions=[], restrict_printers=True)
+    db_session.add(group)
+    await db_session.flush()
+    await db_session.execute(
+        group_printers.insert(),
+        [{"group_id": group.id, "printer_id": printer.id}, {"group_id": group.id, "printer_id": other.id}],
+    )
+    await db_session.commit()
+
+    response = await async_client.delete(f"/api/v1/printers/{printer.id}?delete_archives=true")
+
+    assert response.status_code == 200, response.text
+    rows = (
+        (await db_session.execute(select(group_printers.c.printer_id).where(group_printers.c.group_id == group.id)))
+        .scalars()
+        .all()
+    )
+    assert rows == [other.id]

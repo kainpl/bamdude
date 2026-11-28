@@ -1039,6 +1039,65 @@ describe('SettingsPage', () => {
     });
   });
 
+  describe('WLED tab (N02, upstream #3124)', () => {
+    const asUser = (permissions: string[]) => server.use(
+      http.get('/api/v1/auth/me', () => HttpResponse.json({
+        id: 26, username: 'wled-user', role: 'user', is_admin: false, is_active: true, groups: [], permissions,
+      })),
+    );
+    const serveWledPrinter = (onPresetRequest: () => void) => server.use(
+      http.get('/api/v1/printers/', () => HttpResponse.json([{
+        id: 1, name: 'Printer 1', wled_config: {
+          enabled: true, base_url: 'http://wled.local', presets: { printing: 3 }, finished_timeout_seconds: 0,
+        },
+      }])),
+      http.post('/api/v1/printers/1/wled/presets', () => {
+        onPresetRequest();
+        return HttpResponse.json([{ id: 3, name: 'Printing' }]);
+      }),
+    );
+    function Actor() { return <span>{useAuth().user?.username}</span>; }
+
+    it('shows WLED and loads presets with printers:update', async () => {
+      asUser(['settings:read', 'printers:update']);
+      let presetRequests = 0;
+      serveWledPrinter(() => { presetRequests += 1; });
+      render(<><Actor /><SettingsPage /></>);
+      await screen.findByText('wled-user');
+      await userEvent.click(await screen.findByRole('button', { name: 'WLED' }));
+      expect(await screen.findByText('1 presets loaded')).toBeInTheDocument();
+      expect(document.getElementById('card-wled')).not.toBeNull();
+      expect(presetRequests).toBeGreaterThan(0);
+    }, 15_000);
+
+    it('hides WLED from navigation and search without printers:update', async () => {
+      asUser(['settings:read']);
+      let presetRequests = 0;
+      serveWledPrinter(() => { presetRequests += 1; });
+      render(<><Actor /><SettingsPage /></>);
+      await screen.findByText('wled-user');
+      await act(() => new Promise(resolve => setTimeout(resolve, 150)));
+      expect(screen.queryByRole('button', { name: 'WLED' })).toBeNull();
+      await userEvent.type(screen.getByPlaceholderText(/Search settings/), 'wled');
+      expect(screen.queryByText('WLED')).toBeNull();
+      expect(document.getElementById('card-wled')).toBeNull();
+      expect(presetRequests).toBe(0);
+    }, 15_000);
+
+    it('redirects an unauthorized WLED deep link without mounting or loading presets', async () => {
+      asUser(['settings:read']);
+      window.history.replaceState({}, '', '/settings?tab=wled');
+      let presetRequests = 0;
+      serveWledPrinter(() => { presetRequests += 1; });
+      render(<><Actor /><SettingsPage /></>);
+      await screen.findByText('wled-user');
+      await waitFor(() => expect(window.location.search).toBe(''));
+      expect(screen.queryByRole('button', { name: 'WLED' })).toBeNull();
+      expect(document.getElementById('card-wled')).toBeNull();
+      expect(presetRequests).toBe(0);
+    }, 15_000);
+  });
+
   describe('Auto-queue routing — auto_queue_rebalance_models', () => {
     const LABEL = 'Rebalance across printer models';
 

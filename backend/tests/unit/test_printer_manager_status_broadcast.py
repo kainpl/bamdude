@@ -257,3 +257,46 @@ class TestEndToEndUnderRunningLoop:
         printer_id_arg, payload_arg = send_status.await_args.args
         assert printer_id_arg == 7
         assert payload_arg["awaiting_plate_clear"] is False
+
+
+class TestBothPlateDoorsTellWLED:
+    """N02 A11: a gate change produces no MQTT push, so both doors tell WLED (upstream tells it from the setter)."""
+
+    def _armed(self, manager):
+        manager._loop = MagicMock()
+        manager._loop.is_running.return_value = True
+        return MagicMock(name="state")
+
+    def test_the_setter_tells_wled_on_every_call(self, manager):
+        state = self._armed(manager)
+        with (
+            patch.object(manager, "_schedule_async"),
+            patch.object(manager, "get_status", return_value=state),
+            patch("backend.app.services.wled.wled_manager.handle_status") as handle,
+        ):
+            manager.set_awaiting_plate_clear(7, True)
+            manager.set_awaiting_plate_clear(7, True)
+        assert [c.args for c in handle.call_args_list] == [(7, state), (7, state)]
+        assert all(c.kwargs == {"awaiting_plate_clear": True} for c in handle.call_args_list)
+
+    def test_the_setter_tells_wled_nothing_without_a_running_loop(self, manager):
+        manager._loop = None
+        with (
+            patch.object(manager, "get_status", return_value=MagicMock()),
+            patch("backend.app.services.wled.wled_manager.handle_status") as handle,
+        ):
+            manager.set_awaiting_plate_clear(7, True)
+        handle.assert_not_called()
+
+    def test_the_release_confirmation_tells_wled_when_the_gate_was_armed(self, manager):
+        state = self._armed(manager)
+        manager._awaiting_plate_clear.add(7)
+        with (
+            patch.object(manager, "_schedule_async"),
+            patch.object(manager, "get_status", return_value=state),
+            patch("backend.app.services.wled.wled_manager.handle_status") as handle,
+        ):
+            manager.confirm_awaiting_plate_clear_released(7)
+            manager.confirm_awaiting_plate_clear_released(7)
+        assert [c.args for c in handle.call_args_list] == [(7, state)]
+        assert handle.call_args.kwargs == {"awaiting_plate_clear": False}

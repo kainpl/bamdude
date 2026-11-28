@@ -1,7 +1,8 @@
 from datetime import datetime
 from typing import Literal
+from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
+from pydantic import BaseModel, Field, computed_field, field_serializer, field_validator, model_validator
 
 from backend.app.schemas.archive import ArchivePartDefective, ArchivePartRow
 from backend.app.schemas.auto_stock_spool import AutoStockSpoolPolicy
@@ -61,6 +62,108 @@ class BackupCompatibilityApplyRequest(BaseModel):
     """Bulk re-advertise. Preview by default — a real apply must be asked for."""
 
     dry_run: bool = True
+
+
+# ---- WLED (N02, upstream #3124): the per-printer preset mapping; ``services/wled.py`` acts on it ----
+
+
+def _mask_url_login(url: str | None) -> str | None:
+    """A stored URL with its login secret masked (upstream ``schemas/printer.py``, N02 A6).
+
+    One URL, not a log line: the login runs to the last ``@`` before the
+    first ``/`` after the scheme, whitespace, ``?`` and ``#`` included (when
+    in doubt it is masked). The user part up to the first ``:`` survives;
+    without a ``:`` the login may be a token and goes whole. Used for the
+    stored WLED URL only: input refuses a login, so only a row written
+    another way can carry one.
+    """
+    if not url or "://" not in url:
+        return url
+    start = url.index("://") + 3
+    slash = url.find("/", start)
+    end = len(url) if slash == -1 else slash
+    if "@" not in url[start:end]:
+        return url
+    login, host = url[start:end].rsplit("@", 1)
+    shown = f"{login.split(':', 1)[0]}:[REDACTED]" if ":" in login else "[REDACTED]"
+    return f"{url[:start]}{shown}@{host}{url[end:]}"
+
+
+class WLEDPresets(BaseModel):
+    idle: int | None = Field(default=None, ge=1, le=250)
+    prepare: int | None = Field(default=None, ge=1, le=250)
+    printing: int | None = Field(default=None, ge=1, le=250)
+    paused: int | None = Field(default=None, ge=1, le=250)
+    finished: int | None = Field(default=None, ge=1, le=250)
+    error: int | None = Field(default=None, ge=1, le=250)
+    queue_waiting: int | None = Field(default=None, ge=1, le=250)
+    filament_problem: int | None = Field(default=None, ge=1, le=250)
+    hms_error: int | None = Field(default=None, ge=1, le=250)
+    offline: int | None = Field(default=None, ge=1, le=250)
+
+
+class WLEDStoredConfig(BaseModel):
+    enabled: bool = False
+    base_url: str | None = None
+    presets: WLEDPresets = Field(default_factory=WLEDPresets)
+    finished_timeout_seconds: int | None = Field(default=None, ge=0, le=86400)
+
+    @field_serializer("base_url")
+    def _mask_stored_url_login(self, value: str | None) -> str | None:
+        return _mask_url_login(value)
+
+
+class WLEDConfig(WLEDStoredConfig):
+    base_url: str | None = Field(default=None, max_length=500)
+
+    @field_validator("base_url")
+    @classmethod
+    def _validate_base_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().rstrip("/")
+        if not normalized:
+            return None
+
+        from backend.app.api.routes._url_safety import assert_safe_lan_service_url
+
+        assert_safe_lan_service_url(normalized, label="WLED URL")
+        parsed = urlparse(normalized)
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("WLED URL must not include credentials")
+        return normalized
+
+    @model_validator(mode="after")
+    def _require_base_url_when_enabled(self):
+        if self.enabled and not self.base_url:
+            raise ValueError("base_url is required when WLED is enabled")
+        return self
+
+
+class WLEDPreset(BaseModel):
+    id: int
+    name: str
+
+
+class WLEDPresetListRequest(BaseModel):
+    base_url: str = Field(max_length=500)
+
+    @field_validator("base_url")
+    @classmethod
+    def _validate_base_url(cls, value: str) -> str:
+        normalized = WLEDConfig._validate_base_url(value)
+        if not normalized:
+            raise ValueError("base_url is required")
+        return normalized
+
+
+class WLEDPresetTestRequest(WLEDPresetListRequest):
+    preset_id: int = Field(ge=1, le=250)
+
+
+class WLEDConnectionInfo(BaseModel):
+    name: str | None = None
+    version: str | None = None
 
 
 class PrinterBase(BaseModel):
@@ -126,6 +229,7 @@ class PrinterCreate(PrinterBase):
     # ignored, and the switch came back off. Same shape as the PATCH: the
     # namespace is written whole or not at all (then the column default).
     ams_policies: AmsPoliciesPatch | None = None
+    wled_config: WLEDConfig | None = None
 
 
 class PlateDetectionROI(BaseModel):
@@ -166,6 +270,8 @@ class PrinterUpdate(IgnoresNullForRequiredColumns):
     # Place in the AutoQueue printer order when it is "priority" (upstream #2915): lowest first.
     # A nullable column: an explicit null clears it (the printer goes last).
     dispatch_priority: int | None = Field(default=None, ge=0, le=100000)
+    # Input shape validates the URL (N02); a nullable column, so an explicit null clears it.
+    wled_config: WLEDConfig | None = None
     external_camera_url: str | None = None
     external_camera_type: str | None = None
     external_camera_enabled: bool | None = None
@@ -201,6 +307,8 @@ class PrinterResponse(PrinterBase):
     archived: bool = False
     # Not in PrinterBase: set in Edit Printer only, as upstream (#2915).
     dispatch_priority: int | None = None
+    # The stored shape (N02): one bad stored URL cannot break GET /printers, and a stored login is masked.
+    wled_config: WLEDStoredConfig | None = None
     # The persisted intent, not the live handler — which is what the support
     # bundle's checkbox list wants: "what did the operator switch on".
     mqtt_recording: bool = False

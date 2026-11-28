@@ -36,6 +36,7 @@ NOT_A_PRINTER = {
     "acknowledge_queue_change": "a boolean acknowledgement of reviewed Auto Queue removal, not a printer reference",
     "include_paused_queues": "an order's boolean planning preference, not a printer or queue reference",
     "enqueue_position": "where in the queue a new job goes: 'end' or 'next'",
+    "queue_waiting": "the WLED preset id shown while a printer waits for its plate (wled_config.presets), not a queue",
     "printer_reachable": "a label bridge reporting whether ITS label printer answers",
     "printer_models": "model names a maintenance type applies to, not printers",
     "printer_model": "a model name, not a printer",

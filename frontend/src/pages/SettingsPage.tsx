@@ -1,6 +1,6 @@
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import { NumberInput } from '../components/NumberInput';
-import { Loader2, Archive, MapPin, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles, MonitorPlay, Tag, Clock, ListOrdered } from 'lucide-react';
+import { Loader2, Archive, MapPin, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles, MonitorPlay, Tag, Clock, ListOrdered, Lightbulb } from 'lucide-react';
 import { availableEngines, hasEngineChoice, resolveEngine, type SliceEngineId } from '../lib/sliceEngines';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
@@ -16,6 +16,7 @@ import { formatDateOnly, type DateFormat } from '../utils/date';
 import { getCurrencySymbol, SUPPORTED_CURRENCIES } from '../utils/currency';
 import type { AppSettings, AppSettingsUpdate, APIKey, CameraLightPolicy, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, Macro, MacroCreate, MacroUpdate, ZigbeeDevice } from '../api/client';
 import { Card, CardContent, CardHeader } from '../components/Card';
+import { WLEDSettings } from '../components/WLEDSettings';
 import { LoadingBlock } from '../components/LoadingBlock';
 import { CopyButton } from '../components/CopyButton';
 import { Button } from '../components/Button';
@@ -92,7 +93,7 @@ import { adoptUntouchedServerChanges } from '../utils/settingsReconcile';
 import { invalidateOrderViews, invalidateQueueViews } from '../utils/queryInvalidation';
 import { summarizePlugEnergy } from '../utils/plugEnergySummary';
 
-const validTabs = ['general', 'slicing', 'printing', 'camera', 'filament', 'notifications', 'plugs', 'network', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
+const validTabs = ['general', 'slicing', 'printing', 'camera', 'filament', 'notifications', 'plugs', 'network', 'wled', 'virtual-printer', 'apikeys', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
 type UsersSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc' | 'security' | 'printer-access';
 /** ⚠️ Everything about labels lives under `marking` — the designs AND the
@@ -188,6 +189,7 @@ const TAB_I18N_KEY: Record<TabType, string> = {
   notifications: 'notifications',
   plugs: 'smartPlugs',
   network: 'network',
+  wled: 'wled',
   'virtual-printer': 'virtualPrinter',
   apikeys: 'apiKeys',
   'failure-detection': 'failureDetection',
@@ -205,7 +207,13 @@ function SettingsSearchBar({ onSelect }: SettingsSearchBarProps) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const allEntries = useMemo(() => getSettingsSearchEntries(), []);
+  // WLED (N02) is a printers:update tab: it is not searchable without that right.
+  const { hasPermission, loading: authLoading } = useAuth();
+  const canManageWled = !authLoading && hasPermission('printers:update');
+  const allEntries = useMemo(
+    () => getSettingsSearchEntries().filter((entry) => entry.tab !== 'wled' || canManageWled),
+    [canManageWled],
+  );
 
   const labelFor = useCallback(
     (entry: ReturnType<typeof getSettingsSearchEntries>[number]) => {
@@ -288,7 +296,9 @@ export function SettingsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { t, i18n } = useTranslation();
   const { showToast } = useToast();
-  const { authEnabled, user, isAdmin, hasPermission } = useAuth();
+  const { authEnabled, user, isAdmin, hasPermission, loading: authLoading } = useAuth();
+  // WLED (N02, upstream #3124): a printers:update tab.
+  const canManageWled = !authLoading && hasPermission('printers:update');
   const {
     mode, resolvedMode,
     darkStyle, darkBackground, darkAccent,
@@ -355,6 +365,12 @@ export function SettingsPage() {
     }
     setSearchParams(searchParams, { replace: true });
   };
+
+  // A WLED tab the reader may not use (a deep link, or the right revoked meanwhile) goes back to General.
+  useEffect(() => {
+    if (!authLoading && activeTab === 'wled' && !canManageWled) handleTabChange('general');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoading, activeTab, canManageWled]);
 
   // The card an address or a pointer asked for, scrolled to once it is drawn
   // (the tab renders only after the settings arrive).
@@ -1952,6 +1968,19 @@ export function SettingsPage() {
             {t('settings.tabs.network')}
             <span className={`w-2 h-2 rounded-full ${mqttStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
           </button>
+          {canManageWled && (
+            <button
+              onClick={() => handleTabChange('wled')}
+              className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+                activeTab === 'wled'
+                  ? 'text-bambu-green border-bambu-green'
+                  : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+              }`}
+            >
+              <Lightbulb className="w-4 h-4" />
+              {t('settings.tabs.wled')}
+            </button>
+          )}
           <button
             onClick={() => handleTabChange('virtual-printer')}
             className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
@@ -4302,6 +4331,8 @@ export function SettingsPage() {
       {/* ══════ /PRINTING TAB ══════ */}
 
       {/* ══════ NETWORK TAB ══════ */}
+      {activeTab === 'wled' && canManageWled && <WLEDSettings />}
+
       {activeTab === 'network' && localSettings && (
       <div className="flex flex-col lg:flex-row gap-4">
         {/* Left Column - External URL & FTP Retry */}
