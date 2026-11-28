@@ -157,6 +157,19 @@ DEFAULT_TEMPLATES = [
         ),
     },
     {
+        # The same switch as ``ams_drying_suspended`` (upstream #3478): the unit
+        # never heated, so the advice is the timer and the power, not the threshold.
+        "event_type": "ams_drying_not_heating",
+        "name": "AMS Auto-Drying Not Heating",
+        "title_template": "Auto-drying stopped",
+        "body_template": (
+            "{printer} {ams_label}: stopped automatic drying. The printer accepted {cycles} drying commands in "
+            "a row, but each time the drying timer stood still and the unit did not heat. Clear the timer with "
+            "Stop Drying on the printer card and check the AMS power; automatic drying resumes once humidity "
+            "is back at or below {threshold}%."
+        ),
+    },
+    {
         "event_type": "scheduled_drying_started",
         "name": "Scheduled Drying Started",
         "title_template": "Drying started",

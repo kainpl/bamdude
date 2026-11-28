@@ -3066,6 +3066,8 @@ class NotificationService:
         threshold: float,
         cycles: int,
         db: AsyncSession,
+        *,
+        never_heated: bool = False,
     ):
         """Auto-drying has given up on one AMS unit.
 
@@ -3073,6 +3075,10 @@ class NotificationService:
         on by default and fires at most once per suspension. Silence here reads
         as "still drying" — and the humidity alarm the operator is already
         getting says the opposite of what actually happened.
+
+        ``never_heated`` sends the message for a unit whose printer accepted the
+        drying commands but never heated (upstream #3478). Same provider switch
+        and same delivery event: either way BamDude has stopped drying that unit.
         """
         providers = await self._get_providers_for_event(db, "on_ams_drying_suspended", printer_id)
         if not providers:
@@ -3086,7 +3092,8 @@ class NotificationService:
             "cycles": str(cycles),
         }
 
-        title, message = await self._build_message_from_template(db, "ams_drying_suspended", variables)
+        template = "ams_drying_not_heating" if never_heated else "ams_drying_suspended"
+        title, message = await self._build_message_from_template(db, template, variables)
         await self._send_to_providers(
             providers,
             title,

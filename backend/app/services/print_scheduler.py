@@ -279,6 +279,20 @@ _DRYING_CLAIM_GRACE_SECONDS = 120.0
 # loop. ⚠️ Neither may ever stop a RUNNING cycle — both only gate starting one.
 _AUTO_DRY_REARM_COOLDOWN_SECONDS = 30 * 60
 _AUTO_DRY_MAX_UNPRODUCTIVE_CYCLES = 2
+# A cycle whose timer stood still (upstream #3478): the firmware took the
+# command and left the heater off, so dry_time stays put with dry_status Off.
+# It tells nothing about humidity, so it has its own counter; this many in a
+# row suspends the unit with a message that says the unit did not heat, not
+# that the threshold is too low.
+_AUTO_DRY_MAX_NEVER_HEATED_CYCLES = 2
+
+
+def _never_heated(unit_state: dict[str, object]) -> int:
+    """Cycles in a row whose timer stood still on this unit (upstream #3478)."""
+    count = unit_state.get("never_heated")
+    return count if isinstance(count, int) else 0
+
+
 # The sustained-humidity wait (upstream #2518): auto-drying arms a start nobody
 # scheduled only after the unit has read above its threshold for this long -
 # one reading is what opening the AMS lid looks like. The default must agree
@@ -2130,11 +2144,22 @@ class PrintScheduler:
                         self.forget_auto_dry_cycle(pid, ams_id)
                         # ⚠️ Unlike a stop a person or a dispatch sent, this one IS a
                         # strike: the printer would not run the cycle, and nothing
-                        # else ends a start + stop pair every cooldown for ever. Two
-                        # in a row suspend the unit and say so, as two cycles that
-                        # dried nothing do; a dry reading lifts it the same way.
+                        # else ends a start + stop pair every cooldown for ever. It
+                        # says nothing about humidity, so it is counted apart from the
+                        # cycles that dried nothing (upstream #3478); two in a row
+                        # suspend the unit with the not-heating message, and a dry
+                        # reading lifts it as it lifts any suspension.
                         if unit_state is not None:
-                            unit_state["unproductive"] = int(unit_state.get("unproductive", 0)) + 1
+                            never_heated = _never_heated(unit_state) + 1
+                            unit_state["never_heated"] = never_heated
+                            logger.warning(
+                                "Auto-drying: printer %d AMS %d - drying cycle not running: the timer stands still "
+                                "at %dm with the status Off, %d in a row",
+                                pid,
+                                ams_id,
+                                dry_time,
+                                never_heated,
+                            )
                     continue
 
                 if dry_time > 0:
@@ -2172,6 +2197,8 @@ class PrintScheduler:
                     # The next streak starts fresh and runs THROUGH the re-arm
                     # cooldown below: the two waits overlap, they never add up.
                     self._auto_dry_above.pop(unit_key, None)
+                    # A cycle that ran to its end heated: the parked streak is over.
+                    unit_state.pop("never_heated", None)
                     if humidity is not None and humidity > humidity_threshold:
                         best = unit_state.get("best_end_humidity")
                         if isinstance(best, int) and humidity < best:
@@ -2219,6 +2246,7 @@ class PrintScheduler:
                         unit_state.pop("suspended", None)
                         unit_state.pop("unproductive", None)
                         unit_state.pop("best_end_humidity", None)
+                        unit_state.pop("never_heated", None)
                     # One real reading at or below the threshold ends the
                     # streak. A missing reading says nothing and leaves it; a
                     # long silence is the observation gap's to judge.
@@ -2272,13 +2300,31 @@ class PrintScheduler:
 
                 if unit_state is not None:
                     if unit_state.get("suspended"):
+                        # Either cause may have suspended it, so the line names none.
                         logger.debug(
-                            "Auto-drying: printer %d AMS %d skipped - suspended, %d cycles left humidity "
-                            "above the %d%% threshold",
+                            "Auto-drying: printer %d AMS %d skipped - suspended until humidity is back at or "
+                            "below the %d%% threshold",
                             pid,
                             ams_id,
-                            int(unit_state.get("unproductive", 0)),
                             humidity_threshold,
+                        )
+                        continue
+
+                    never_heated = _never_heated(unit_state)
+                    if never_heated >= _AUTO_DRY_MAX_NEVER_HEATED_CYCLES:
+                        unit_state["suspended"] = True
+                        logger.warning(
+                            "Auto-drying: printer %d AMS %d - suspending automatic drying. The printer accepted "
+                            "%d drying commands in a row, but each time the timer stood still and the unit did "
+                            "not heat. Clear the timer with Stop Drying on the printer card and check the AMS power; "
+                            "automatic drying resumes once humidity is back at or below the %d%% threshold.",
+                            pid,
+                            ams_id,
+                            never_heated,
+                            humidity_threshold,
+                        )
+                        await self._notify_auto_drying_suspended(
+                            db, pid, ams_id, humidity, humidity_threshold, never_heated, never_heated=True
                         )
                         continue
 
@@ -2472,8 +2518,13 @@ class PrintScheduler:
         humidity: int,
         threshold: int,
         cycles: int,
+        *,
+        never_heated: bool = False,
     ) -> None:
         """Tell the user auto-drying has given up on one AMS unit.
+
+        ``never_heated`` picks the message for cycles the printer accepted but
+        never ran (upstream #3478) instead of cycles that left humidity high.
 
         Fires once per suspension — the caller sets ``suspended`` before calling
         and every later pass short-circuits on it — because the whole point is
@@ -2496,6 +2547,7 @@ class PrintScheduler:
                 float(threshold),
                 cycles,
                 db,
+                never_heated=never_heated,
             )
         except Exception as e:  # noqa: BLE001 - see the docstring
             logger.warning("Failed to send auto-drying suspended notification: %s", e)

@@ -99,6 +99,11 @@
     "title_template": "Auto-drying stopped",
     "body_template": "{printer} {ams_label}: {cycles} drying cycles in a row ended at {humidity}%, still above the {threshold}% threshold. An AMS reads higher while warm, so this threshold cannot be reached here. Automatic drying is paused for this unit until the reading comes down."
   },
+  "ams_drying_not_heating": {
+    "name": "AMS Auto-Drying Not Heating",
+    "title_template": "Auto-drying stopped",
+    "body_template": "{printer} {ams_label}: stopped automatic drying. The printer accepted {cycles} drying commands in a row, but each time the drying timer stood still and the unit did not heat. Clear the timer with Stop Drying on the printer card and check the AMS power; automatic drying resumes once humidity is back at or below {threshold}%."
+  },
   "scheduled_drying_started": {
     "name": "Scheduled Drying Started",
     "title_template": "Drying started",

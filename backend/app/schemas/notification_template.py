@@ -130,6 +130,7 @@ EVENT_VARIABLES: dict[str, list[str]] = {
     "plate_not_empty": ["printer", "timestamp", "app_name"],
     "filament_deficit": ["printer", "print_name", "needed", "slot", "available", "missing", "timestamp", "app_name"],
     "ams_drying_suspended": ["printer", "ams_label", "cycles", "humidity", "threshold", "timestamp", "app_name"],
+    "ams_drying_not_heating": ["printer", "ams_label", "cycles", "humidity", "threshold", "timestamp", "app_name"],
     "scheduled_drying_started": [
         "printer",
         "ams_label",
@@ -208,6 +209,15 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "cycles": "3",
         "humidity": "62",
         "threshold": "40",
+        "timestamp": "2024-01-15 14:30",
+        "app_name": "BamDude",
+    },
+    "ams_drying_not_heating": {
+        "printer": "Bambu P2S",
+        "ams_label": "HT-A",
+        "cycles": "2",
+        "humidity": "75",
+        "threshold": "60",
         "timestamp": "2024-01-15 14:30",
         "app_name": "BamDude",
     },

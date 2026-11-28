@@ -12978,7 +12978,7 @@ export default {
     amsTemperatureHighDescription: 'Температура звичайного AMS перевищує поріг',
     amsDryingSuspended: 'Автосушіння призупинено',
     amsDryingSuspendedBadge: 'Сушіння на паузі',
-    amsDryingSuspendedDescription: 'Автосушіння здалося на юніті, бо вологість перестала спадати',
+    amsDryingSuspendedDescription: 'Автосушіння здалося на юніті: вологість перестала спадати або юніт так і не почав грітися',
     scheduledDryingStarted: 'Сушку за розкладом розпочато',
     scheduledDryingStartedDescription: 'Заплановане вами сушіння AMS розпочалось',
     scheduledDryingCompleted: 'Сушку за розкладом завершено',

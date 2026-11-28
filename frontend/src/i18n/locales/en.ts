@@ -12739,7 +12739,7 @@ export default {
     amsTemperatureHighDescription: 'Regular AMS temperature exceeds threshold',
     amsDryingSuspended: 'Auto-Drying Suspended',
     amsDryingSuspendedBadge: 'Drying paused',
-    amsDryingSuspendedDescription: 'Auto-drying gave up on a unit because the humidity stopped falling',
+    amsDryingSuspendedDescription: 'Auto-drying gave up on a unit: the humidity stopped falling, or the unit never started heating',
     scheduledDryingStarted: 'Scheduled Drying Started',
     scheduledDryingStartedDescription: 'A drying you scheduled has started on an AMS',
     scheduledDryingCompleted: 'Scheduled Drying Finished',

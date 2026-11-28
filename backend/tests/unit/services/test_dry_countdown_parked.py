@@ -378,19 +378,22 @@ class TestAutoDryingAndAParkedUnit:
         history = auto._dry_unit_history[(1, 0)]
         assert "running" not in history
         assert isinstance(history["ended_at"], float)  # the ordinary re-arm cooldown is running
-        # A cycle the printer would not run is a strike: nothing else bounds the retry.
-        assert history["unproductive"] == 1
+        # A cycle the printer would not run is a strike: nothing else bounds the retry. It says
+        # nothing about humidity, so it has its own counter (upstream #3478).
+        assert history["never_heated"] == 1
+        assert history.get("unproductive", 0) == 0
 
         # The timer is gone on the next report; still wet, but inside the cooldown.
         auto.pm.send_drying_command.reset_mock()
         auto.pm.get_status.return_value = _status(_wet(dry_time=0))
         await auto._check_auto_drying(_settings_db(), [], set())
         auto.pm.send_drying_command.assert_not_called()
-        assert history["unproductive"] == 1  # the stop is counted once, not again when the timer goes
+        assert history["never_heated"] == 1  # the stop is counted once, not again when the timer goes
+        assert history.get("unproductive", 0) == 0
 
     @pytest.mark.asyncio
     async def test_a_unit_the_printer_keeps_parking_is_suspended_and_reported(self, auto):
-        """Two cycles in a row the printer parked: the existing suspension and its
+        """Two cycles in a row the printer parked: the suspension and its not-heating
         notification end the start + stop pair, and a dry reading lifts it as ever."""
         auto._notify_auto_drying_suspended = AsyncMock()
         parked = _status(_wet(dry_time=720, dry_countdown_stalled=True))
@@ -408,7 +411,8 @@ class TestAutoDryingAndAParkedUnit:
             await auto._check_auto_drying(_settings_db(), [], set())  # parked: stopped
             cooled_off()
         assert [len(s) for s in starts] == [1, 2]
-        assert auto._dry_unit_history[(1, 0)]["unproductive"] == 2
+        assert auto._dry_unit_history[(1, 0)]["never_heated"] == 2
+        assert auto._dry_unit_history[(1, 0)].get("unproductive", 0) == 0
 
         auto.pm.send_drying_command.reset_mock()
         auto.pm.get_status.return_value = idle
@@ -418,12 +422,16 @@ class TestAutoDryingAndAParkedUnit:
         auto.pm.send_drying_command.assert_not_called()
         assert auto._dry_unit_history[(1, 0)]["suspended"] is True
         auto._notify_auto_drying_suspended.assert_awaited_once()
+        # The unit did not heat: the message says so, not «the threshold cannot be reached».
+        assert auto._notify_auto_drying_suspended.await_args.kwargs["never_heated"] is True
+        assert auto._notify_auto_drying_suspended.await_args.args[-1] == 2
 
         # Humidity back at or below the threshold resumes it, as for any suspension.
         auto.pm.get_status.return_value = _status(_wet(dry_time=0, humidity_raw="20"))
         await auto._check_auto_drying(_settings_db(), [], set())
         assert not auto._dry_unit_history[(1, 0)].get("suspended")
         assert "unproductive" not in auto._dry_unit_history[(1, 0)]
+        assert "never_heated" not in auto._dry_unit_history[(1, 0)]
 
     @pytest.mark.asyncio
     async def test_a_stop_by_a_person_or_a_dispatch_is_still_no_strike(self, auto):
@@ -432,6 +440,65 @@ class TestAutoDryingAndAParkedUnit:
         auto.forget_auto_dry_cycle(1, 0)
 
         assert auto._dry_unit_history[(1, 0)]["unproductive"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_stop_by_a_person_leaves_the_parked_count_as_it_is(self, auto):
+        """A cycle cut short proves neither that the unit heats nor that it does not."""
+        auto._dry_unit_history[(1, 0)] = {"never_heated": 1, "suspended": False, "ended_at": None, "running": True}
+
+        auto.forget_auto_dry_cycle(1, 0)
+
+        assert auto._dry_unit_history[(1, 0)]["never_heated"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_parked_strike_and_a_cycle_that_dried_nothing_do_not_add_up(self, auto):
+        """Two counters, as upstream #3478: one of each is not two in a row."""
+        auto._notify_auto_drying_suspended = AsyncMock()
+        auto._armed_dry_cycles[(1, 0)] = time.monotonic() - 600
+        auto._dry_unit_history[(1, 0)] = {
+            "unproductive": 1,
+            "best_end_humidity": 80,
+            "suspended": False,
+            "ended_at": None,
+            "running": True,
+        }
+        auto.pm.get_status.return_value = _status(_wet(dry_time=720, dry_countdown_stalled=True))
+        await auto._check_auto_drying(_settings_db(), [], set())  # parked: stopped, one strike
+
+        auto._dry_unit_history[(1, 0)]["ended_at"] = time.monotonic() - ps._AUTO_DRY_REARM_COOLDOWN_SECONDS - 1
+        auto.pm.send_drying_command.reset_mock()
+        auto.pm.get_status.return_value = _status(_wet(dry_time=0))
+        await auto._check_auto_drying(_settings_db(), [], set())
+
+        history = auto._dry_unit_history[(1, 0)]
+        assert (history["unproductive"], history["never_heated"]) == (1, 1)
+        assert not history.get("suspended")
+        auto._notify_auto_drying_suspended.assert_not_awaited()
+        assert [c for c in auto.pm.send_drying_command.call_args_list if c.kwargs.get("mode") == 1]  # re-armed
+
+    @pytest.mark.asyncio
+    async def test_a_cycle_that_runs_to_its_end_resets_the_parked_count(self, auto):
+        auto._dry_unit_history[(1, 0)] = {"never_heated": 1, "suspended": False, "ended_at": None, "running": True}
+        auto.pm.get_status.return_value = _status(_wet(dry_time=0))
+
+        await auto._check_auto_drying(_settings_db(), [], set())
+
+        assert "never_heated" not in auto._dry_unit_history[(1, 0)]
+
+    @pytest.mark.asyncio
+    async def test_the_not_heating_suspension_gives_the_not_heating_advice(self, auto, caplog):
+        auto._notify_auto_drying_suspended = AsyncMock()
+        auto._dry_unit_history[(1, 0)] = {"never_heated": 2, "suspended": False, "ended_at": None}
+        auto.pm.get_status.return_value = _status(_wet(dry_time=0))
+
+        with caplog.at_level("WARNING", logger=ps.logger.name):
+            await auto._check_auto_drying(_settings_db(), [], set())
+
+        assert auto._dry_unit_history[(1, 0)]["suspended"] is True
+        text = caplog.text
+        assert "did not heat" in text and "Stop Drying on the printer card" in text
+        assert "Raise the threshold" not in text
+        auto.pm.send_drying_command.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_manual_parked_timer_beside_an_armed_unit_is_left_alone(self, auto):
