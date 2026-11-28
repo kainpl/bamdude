@@ -153,6 +153,7 @@ import { ConfirmModal } from '../components/ConfirmModal';
 import { FileManagerModal } from '../components/FileManagerModal';
 import { useEmbeddedCamera } from '../contexts/EmbeddedCameraContext';
 import { CameraWall } from '../components/CameraWall';
+import { saveCamWallControlsMode, savedCamWallControlsMode, type CamWallControlsMode } from '../components/camWallControls';
 import { CAM_WALL_TILE_SIZE_KEY, DEFAULT_CAM_WALL_TILE_SIZE } from '../utils/camWallTileSize';
 import { MQTTDebugModal } from '../components/MQTTDebugModal';
 import { CalibrationModal } from '../components/CalibrationModal';
@@ -9608,6 +9609,8 @@ export function PrintersPage() {
     const saved = localStorage.getItem('camWallStatusMode');
     return saved === 'off' || saved === 'compact' || saved === 'full' ? saved : 'full';
   });
+  // When a tile shows its pause / stop / light buttons (upstream #3479), per browser.
+  const [camWallControlsMode, setCamWallControlsMode] = useState<CamWallControlsMode>(savedCamWallControlsMode);
   // Derive viewMode from cardSize: S=compact, M/L/XL=expanded
   const viewMode: ViewMode = cardSize === 1 ? 'compact' : 'expanded';
   // Search/filter state (upstream #852)
@@ -10929,6 +10932,14 @@ export function PrintersPage() {
             setCamWallStatusMode(next);
             localStorage.setItem('camWallStatusMode', next);
           }}
+          // The tile asks printers:control itself; an offline printer gets none.
+          showControls
+          controlsMode={camWallControlsMode}
+          onChangeControlsMode={(next) => {
+            setCamWallControlsMode(next);
+            saveCamWallControlsMode(next);
+          }}
+          timeFormat={settings?.time_format || 'system'}
         />
       ) : groupedPrinters ? (
         /* Grouped by location or by tag */
