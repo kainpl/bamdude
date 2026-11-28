@@ -5,12 +5,17 @@
  * through the card's API calls. None for an offline printer or a kiosk (token) wall.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render as renderBare, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
+import { MemoryRouter } from 'react-router';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../utils';
 import { server } from '../mocks/server';
+import { api } from '../../api/client';
+import { ToastProvider } from '../../contexts/ToastContext';
 import { CameraTile } from '../../components/CameraTile';
 import { CameraWall, type CameraWallStatus } from '../../components/CameraWall';
+import { CamWallPage } from '../../pages/CamWallPage';
 import { printerSource } from '../../utils/cameraSource';
 
 let canControl = true;
@@ -61,6 +66,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  localStorage.removeItem('camWallControls');
 });
 
 describe('tile information (full overlay)', () => {
@@ -87,6 +93,11 @@ describe('tile information (full overlay)', () => {
     expect(screen.getByTitle('Nozzle')).toHaveTextContent('220° / 180°');
     expect(screen.getByTitle('Bed')).toHaveTextContent('60°');
     expect(screen.getByTitle('Chamber')).toHaveTextContent('34°');
+  });
+
+  it('shows the heaters on an idle printer too', () => {
+    tile({ printerState: 'IDLE', remainingMin: null });
+    expect(screen.getByTitle('Bed')).toHaveTextContent('60°');
   });
 
   it('leaves out a heater the printer does not report', () => {
@@ -208,7 +219,11 @@ describe('tile controls', () => {
     serveStatus(PRINTING);
     const { unmount } = renderWall({ controlsMode: 'hover' });
     await screen.findByRole('button', { name: 'Stop' });
-    expect(screen.getByTestId('camwall-tile-controls').className).toContain('opacity-0');
+    const hover = screen.getByTestId('camwall-tile-controls').className;
+    expect(hover).toContain('opacity-0');
+    expect(hover).toContain('group-hover:opacity-100');
+    // No hover on a touch screen: shown there all the same.
+    expect(hover).toContain('[@media(hover:none)]:opacity-100');
     unmount();
 
     renderWall({ controlsMode: 'always' });
@@ -229,5 +244,54 @@ describe('tile controls', () => {
     renderWall({ showControls: false });
     fireEvent.click(screen.getByTitle('Cam wall settings'));
     expect(screen.queryByRole('radiogroup', { name: 'Tile controls' })).not.toBeInTheDocument();
+  });
+});
+
+describe('the /camwall page', () => {
+  function renderPage(path: string) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    return renderBare(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={[path]}>
+          <ToastProvider>
+            <CamWallPage />
+          </ToastProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it('has no controls on a kiosk, also where the browser could control printers', async () => {
+    vi.spyOn(api, 'getCamWallPrinters').mockResolvedValue([
+      {
+        id: 7,
+        name: 'X1C-Lab',
+        camera_rotation: 0,
+        connected: true,
+        state: 'RUNNING',
+        progress: 42,
+        remaining_time: 33,
+        layer_num: 1,
+        total_layers: 2,
+        hms_errors: [],
+      },
+    ] as never);
+    vi.spyOn(api, 'getCamWallCameras').mockResolvedValue([]);
+    renderPage('/camwall?token=bblt_abcdefgh_secretsecretsecret');
+
+    expect(await screen.findByText('X1C-Lab')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /chamber light/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument();
+  });
+
+  it('signed in, follows the choice saved in this browser', async () => {
+    localStorage.setItem('camWallControls', 'always');
+    vi.spyOn(api, 'getPrinters').mockResolvedValue([{ id: 7, name: 'X1C-Lab', camera_rotation: 0 }] as never);
+    vi.spyOn(api, 'getCameras').mockResolvedValue([]);
+    vi.spyOn(api, 'getPrinterStatus').mockResolvedValue({ ...PRINTING, hms_errors: [] } as never);
+    renderPage('/camwall');
+
+    await screen.findByRole('button', { name: 'Pause' });
+    expect(screen.getByTestId('camwall-tile-controls').className).not.toContain('opacity-0');
   });
 });
