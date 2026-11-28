@@ -45,6 +45,7 @@ PRIMARY_KEYS = {("printers", "id"), ("printer_queues", "id")}
 # an AUTOINCREMENT counter, so they never need to raise it (spec §B).
 ADDED_AFTER_PID: set[tuple[str, str]] = {
     ("group_printers", "printer_id"),  # N62: a group's picked printers (m270)
+    ("maintenance_history", "printer_id"),  # N09: the printer a reset was for (m274)
 }
 
 
@@ -63,7 +64,8 @@ def test_the_registry_names_every_model_column_that_references_a_printer_or_its_
         for fk in table.foreign_keys
         if fk.column.table.name in ("printers", "printer_queues") and fk.column.name == "id"
     }
-    assert len(referencing) == 36  # 34 on printers.id (group_printers since m270), 2 on printer_queues.id
+    # 35 on printers.id (group_printers since m270, maintenance_history since m274), 2 on printer_queues.id
+    assert len(referencing) == 37
     current = {(c.table, c.column) for c in CARRIERS if c.kind == "int" and c.removed is None}
     assert current - WITHOUT_FK - PRIMARY_KEYS == referencing - ADDED_AFTER_PID
 

@@ -279,6 +279,14 @@
     "ondelete": "SET NULL",
     "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
   },
+  "maintenance_history.printer_id": {
+    "table": "maintenance_history",
+    "column": "printer_id",
+    "nullable": true,
+    "target": "printers.id",
+    "ondelete": "SET NULL",
+    "policy": "N09: retain the maintenance history under the printer's kept name; the printer delete detaches it explicitly (content_delete_rows.forget_printer_in_maintenance_history) - SQLite keeps FK actions off"
+  },
   "telegram_chats.user_id": {
     "table": "telegram_chats",
     "column": "user_id",

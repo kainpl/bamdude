@@ -9893,23 +9893,28 @@ export interface PrinterMaintenanceOverview {
 
 export interface MaintenanceHistory {
   id: number;
-  printer_maintenance_id: number;
+  // NULL once the item, or its printer, is gone: the entry stays (N09).
+  printer_maintenance_id: number | null;
   performed_at: string;
   hours_at_maintenance: number;
   notes: string | null;
 }
 
+// One History-tab entry, with the names as they were at the reset (N09): they outlive
+// the printer, the task and the performer.
 export interface MaintenanceHistoryEntry {
   id: number;
+  printer_maintenance_id: number | null;
+  printer_id: number | null;
   performed_at: string;
   hours_at_maintenance: number;
   notes: string | null;
   printer_name: string | null;
   maintenance_type_name: string | null;
   performed_by_user_id: number | null;
-  performed_by_username: string | null;
   performed_by_chat_id: number | null;
-  performed_by_chat_label: string | null;
+  // The user's name, else the Telegram chat's label; null when nobody is known.
+  performed_by_name: string | null;
 }
 
 export interface MaintenanceHistoryPage {
@@ -14637,6 +14642,14 @@ export const api = {
     if (printerId) params.set('printer_id', String(printerId));
     return request<MaintenanceHistoryPage>(`/maintenance/history?${params}`);
   },
+  // N09: cleanup — entries older than N days (of one printer, or of all in reach), or one entry.
+  clearMaintenanceHistory: (olderThanDays: number, printerId?: number) => {
+    const params = new URLSearchParams({ older_than_days: String(olderThanDays) });
+    if (printerId) params.set('printer_id', String(printerId));
+    return request<{ deleted: number }>(`/maintenance/history?${params}`, { method: 'DELETE' });
+  },
+  deleteMaintenanceHistoryEntry: (entryId: number) =>
+    request<{ deleted: number }>(`/maintenance/history/${entryId}`, { method: 'DELETE' }),
   getMaintenanceSummary: (options?: { signal?: AbortSignal }) => request<MaintenanceSummary>('/maintenance/summary', { signal: options?.signal }),
   setPrinterHours: (printerId: number, totalHours: number) =>
     request<{ printer_id: number; total_hours: number; archive_hours: number; offset_hours: number }>(

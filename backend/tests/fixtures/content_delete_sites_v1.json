@@ -716,14 +716,6 @@
       "site": [
         "api/routes/printers.py::_delete_printer_queue_rows",
         "sqlalchemy.delete",
-        "backend.app.models.maintenance.MaintenanceHistory"
-      ],
-      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references (G03 B: moved into its lane-holding helper, A21 / A22)"
-    },
-    {
-      "site": [
-        "api/routes/printers.py::_delete_printer_queue_rows",
-        "sqlalchemy.delete",
         "backend.app.models.maintenance.PrinterMaintenance"
       ],
       "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references (G03 B: moved into its lane-holding helper, A21 / A22)"
@@ -1455,6 +1447,14 @@
         "model"
       ],
       "owner_policy": "C-I1: flush-only domain phase; root owns all gates and commit; exact child policies"
+    },
+    {
+      "site": [
+        "services/content_delete_rows.py::delete_maintenance_history",
+        "sqlalchemy.delete",
+        "backend.app.models.maintenance.MaintenanceHistory"
+      ],
+      "owner_policy": "N09: the cleanup doors' one delete (DELETE /maintenance/history by age, DELETE /maintenance/history/{entry_id}); flush-only, the route owns the printer scope and the commit; the items and their last reset stay. The printer delete no longer deletes history: it detaches it (detach_maintenance_history, forget_printer_in_maintenance_history)"
     },
     {
       "site": [
@@ -2263,6 +2263,14 @@
         "backend.app.models.spoolman_slot_assignment.SpoolmanSlotAssignment"
       ],
       "owner_policy": "Outside C parent purge: services/spoolman_spool_identity.py::clear_all empties the Spoolman bindings and K links when the Spoolman database changes, inside SourceChange.decide's transaction under the source guard (owner decision 2026-11-27); any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/spoolman_spool_identity.py::release_archived_slots",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: services/spoolman_spool_identity.py::release_archived_slots releases a printer's Spoolman slot rows whose spool Spoolman reports archived (upstream 23d04c864), only for the spool the row was proved for (verdict same/unknown), at a print's tail after its charges, under the slot-ledger doors (slot_write, mode_on, the printer's assignment lock) and only while the printer reports no print, asked again under the lock; its own session and commit. Any new or changed locator requires adjudication"
     },
     {
       "site": [

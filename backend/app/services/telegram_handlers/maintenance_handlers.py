@@ -173,12 +173,27 @@ async def cb_maintenance_done(callback: CallbackQuery, tg_chat: TelegramChat | N
 
         current_hours = await get_printer_total_hours(db, item.printer_id)
 
+        # The names as they are now: they outlive the printer, the task, the user and the
+        # chat (N09). A chat bound to a user carries the user's name, as the History tab did.
+        from backend.app.models.printer import Printer
+        from backend.app.models.user import User
+
+        printer_name = await db.scalar(select(Printer.name).where(Printer.id == item.printer_id))
+        user_name = (
+            await db.scalar(select(User.username).where(User.id == db_chat.user_id))
+            if db_chat and db_chat.user_id
+            else None
+        )
         history = MaintenanceHistory(
             printer_maintenance_id=item.id,
+            printer_id=item.printer_id,
+            printer_name=printer_name or "",
+            maintenance_type_name=item.maintenance_type.name if item.maintenance_type else "",
             performed_at=datetime.now(timezone.utc),
             hours_at_maintenance=current_hours,
             performed_by_chat_id=db_chat.id if db_chat else None,
             performed_by_user_id=db_chat.user_id if db_chat and db_chat.user_id else None,
+            performed_by_name=user_name or (db_chat.label if db_chat else None),
         )
         db.add(history)
 

@@ -59,6 +59,8 @@ import { formatDateTime } from '../utils/date';
 import { useAuth } from '../contexts/AuthContext';
 import { getMaintenanceWikiUrl } from '../utils/maintenanceWikiUrls';
 import { MaintenanceToolbar } from '../components/Maintenance/MaintenanceToolbar';
+import { PerformMaintenanceModal } from '../components/Maintenance/PerformMaintenanceModal';
+import { ClearHistoryModal } from '../components/Maintenance/ClearHistoryModal';
 
 // Icon mapping for maintenance types
 const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -1291,11 +1293,56 @@ function HistorySection({ t, printerId }: { t: (key: string, opts?: Record<strin
   const total = data?.total ?? 0;
   const lastPage = data?.last_page ?? 1;
 
-  const getPerformedBy = useCallback((entry: MaintenanceHistoryEntry): string => {
-    if (entry.performed_by_username) return entry.performed_by_username;
-    if (entry.performed_by_chat_label) return entry.performed_by_chat_label;
-    return '-';
-  }, []);
+  // The name kept at the reset (N09): it outlives the user and the chat.
+  const getPerformedBy = useCallback((entry: MaintenanceHistoryEntry): string => entry.performed_by_name || '-', []);
+
+  // N09: cleanup by age and one entry at a time, with maintenance:delete.
+  const { hasPermission } = useAuth();
+  const { showToast } = useToast();
+  const queryClient = useQueryClient();
+  const canDelete = hasPermission('maintenance:delete');
+  const [clearing, setClearing] = useState(false);
+  const [deleting, setDeleting] = useState<MaintenanceHistoryEntry | null>(null);
+  const refreshHistory = () => queryClient.invalidateQueries({ queryKey: ['maintenanceHistory'] });
+  const clearMutation = useMutation({
+    mutationFn: (days: number) => api.clearMaintenanceHistory(days, filterPrinterId),
+    onSuccess: (result) => {
+      setClearing(false);
+      setPage(1);
+      refreshHistory();
+      showToast(t('maintenance.clearHistory.done', { count: result.deleted }));
+    },
+    onError: (error: Error) => showToast(error.message, 'error'),
+  });
+  const deleteMutation = useMutation({
+    mutationFn: (entryId: number) => api.deleteMaintenanceHistoryEntry(entryId),
+    onSuccess: () => {
+      setDeleting(null);
+      refreshHistory();
+      showToast(t('maintenance.historyEntryDeleted'));
+    },
+    onError: (error: Error) => showToast(error.message, 'error'),
+  });
+  const filterPrinterName = filterPrinterId ? printers?.find((printer) => printer.id === filterPrinterId)?.name : undefined;
+
+  const downloadExport = async (format: 'xlsx' | 'csv') => {
+    try {
+      const token = getAuthToken();
+      const params = new URLSearchParams({ format });
+      if (filterPrinterId) params.set('printer_id', String(filterPrinterId));
+      const res = await fetch(`/api/v1/maintenance/history/export?${params}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) throw new Error('Export failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = res.headers.get('content-disposition')?.match(/filename="(.+)"/)?.[1] || `maintenance_history.${format}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch { /* ignore */ }
+  };
 
   const toggleSort = (field: HistorySortField) => {
     if (sortField === field) {
@@ -1366,28 +1413,30 @@ function HistorySection({ t, printerId }: { t: (key: string, opts?: Record<strin
           </Select>
           <span>{total} {t('common.total')}</span>
           <button
-            onClick={async () => {
-              try {
-                const token = getAuthToken();
-                const exportUrl = filterPrinterId ? `/api/v1/maintenance/history/export?printer_id=${filterPrinterId}` : '/api/v1/maintenance/history/export';
-                const res = await fetch(exportUrl, {
-                  headers: token ? { Authorization: `Bearer ${token}` } : {},
-                });
-                if (!res.ok) throw new Error('Export failed');
-                const blob = await res.blob();
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = res.headers.get('content-disposition')?.match(/filename="(.+)"/)?.[1] || 'maintenance_history.xlsx';
-                a.click();
-                URL.revokeObjectURL(url);
-              } catch { /* ignore */ }
-            }}
+            onClick={() => void downloadExport('xlsx')}
             className="p-1.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
             title={t('maintenance.historyExport')}
+            aria-label={t('maintenance.historyExport')}
           >
             <Download className="w-4 h-4" />
           </button>
+          <button
+            onClick={() => void downloadExport('csv')}
+            className="px-1.5 py-1 rounded text-xs font-medium text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary transition-colors"
+            title={t('maintenance.historyExportCsv')}
+          >
+            CSV
+          </button>
+          {canDelete && (
+            <button
+              onClick={() => setClearing(true)}
+              className="flex items-center gap-1 px-1.5 py-1 rounded text-xs text-bambu-gray hover:text-red-400 hover:bg-bambu-dark-tertiary transition-colors"
+              title={t('maintenance.clearHistory.title')}
+            >
+              <Trash2 className="w-4 h-4" />
+              {t('maintenance.clearHistory.button')}
+            </button>
+          )}
         </div>
         {lastPage > 1 && (
           <div className="flex items-center gap-1">
@@ -1425,6 +1474,7 @@ function HistorySection({ t, printerId }: { t: (key: string, opts?: Record<strin
                     {t('maintenance.historyPerformedBy')}<SortIcon field="user" />
                   </th>
                   <th className="px-4 py-3 font-medium">{t('maintenance.historyNotes')}</th>
+                  {canDelete && <th className="px-4 py-3" aria-label={t('common.actions')} />}
                 </tr>
               </thead>
               <tbody>
@@ -1440,6 +1490,18 @@ function HistorySection({ t, printerId }: { t: (key: string, opts?: Record<strin
                     <td className="px-4 py-3 text-bambu-gray max-w-[200px]">
                       {entry.notes ? <span className="truncate block" title={entry.notes}>{entry.notes}</span> : '-'}
                     </td>
+                    {canDelete && (
+                      <td className="px-2 py-3 text-right">
+                        <button
+                          onClick={() => setDeleting(entry)}
+                          className="p-1.5 rounded text-bambu-gray hover:text-red-400 hover:bg-bambu-dark-tertiary transition-colors"
+                          title={t('maintenance.deleteHistoryEntry')}
+                          aria-label={t('maintenance.deleteHistoryEntry')}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -1447,6 +1509,28 @@ function HistorySection({ t, printerId }: { t: (key: string, opts?: Record<strin
           </div>
         </CardContent>
       </Card>
+      {clearing && (
+        <ClearHistoryModal
+          printerName={filterPrinterName}
+          busy={clearMutation.isPending}
+          onConfirm={(days) => clearMutation.mutate(days)}
+          onCancel={() => setClearing(false)}
+        />
+      )}
+      {deleting && (
+        <ConfirmModal
+          title={t('maintenance.deleteHistoryEntry')}
+          message={t('maintenance.deleteHistoryEntryMessage', {
+            task: deleting.maintenance_type_name ?? '-',
+            printer: deleting.printer_name ?? '-',
+          })}
+          confirmText={t('common.delete')}
+          variant="danger"
+          isLoading={deleteMutation.isPending}
+          onConfirm={() => deleteMutation.mutate(deleting.id)}
+          onCancel={() => setDeleting(null)}
+        />
+      )}
     </div>
   );
 }
@@ -1529,12 +1613,17 @@ export function MaintenancePage() {
     queryFn: macrosApi.getMacroMeta,
   });
 
+  // N09: a reset asks first and takes an optional comment.
+  const [performTarget, setPerformTarget] = useState<MaintenanceStatus | null>(null);
+
   const performMutation = useMutation({
     mutationFn: ({ id, notes }: { id: number; notes?: string }) =>
       api.performMaintenance(id, notes),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['maintenanceOverview'] });
       queryClient.invalidateQueries({ queryKey: ['maintenanceSummary'] });
+      queryClient.invalidateQueries({ queryKey: ['maintenanceHistory'] });
+      setPerformTarget(null);
       showToast(t('maintenance.maintenanceComplete'));
     },
     onError: (error: Error) => {
@@ -1636,7 +1725,8 @@ export function MaintenancePage() {
   });
 
   const handlePerform = (id: number) => {
-    performMutation.mutate({ id });
+    const item = overview?.flatMap((printer) => printer.maintenance_items).find((candidate) => candidate.id === id);
+    if (item) setPerformTarget(item);
   };
 
   const handleToggle = (id: number, enabled: boolean) => {
@@ -1721,6 +1811,15 @@ export function MaintenancePage() {
 
   return (
     <div className="p-4 space-y-4">
+      {performTarget && (
+        <PerformMaintenanceModal
+          taskName={performTarget.maintenance_type_name}
+          printerName={performTarget.printer_name}
+          busy={performMutation.isPending}
+          onConfirm={(notes) => performMutation.mutate({ id: performTarget.id, notes })}
+          onCancel={() => setPerformTarget(null)}
+        />
+      )}
       {/* Header */}
       <div className="space-y-3">
         <div>

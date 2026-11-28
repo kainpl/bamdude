@@ -97,14 +97,18 @@ class MaintenanceHistoryBase(BaseModel):
 
 class MaintenanceHistoryResponse(MaintenanceHistoryBase):
     id: int
-    printer_maintenance_id: int
+    # NULL once the item, or its printer, is gone: the entry stays (N09).
+    printer_maintenance_id: int | None = None
+    printer_id: int | None = None
+    # The names as they were at the reset.
+    printer_name: str = ""
+    maintenance_type_name: str = ""
     performed_at: datetime
     hours_at_maintenance: float
-    # Who performed
+    # Who performed: the user's name, else the Telegram chat's label, as kept at the reset.
     performed_by_user_id: int | None = None
-    performed_by_username: str | None = None
     performed_by_chat_id: int | None = None
-    performed_by_chat_label: str | None = None
+    performed_by_name: str | None = None
 
     class Config:
         from_attributes = True
@@ -157,4 +161,14 @@ class PrinterMaintenanceOverview(BaseModel):
 class PerformMaintenanceRequest(BaseModel):
     """Request to mark maintenance as performed."""
 
-    notes: str | None = None
+    # An optional comment (N09, upstream 8afcb3fbd): trimmed before the limit is checked, and a
+    # blank one is no comment.
+    notes: str | None = Field(default=None, max_length=10000)
+
+    @field_validator("notes", mode="before")
+    @classmethod
+    def _trim_notes(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value

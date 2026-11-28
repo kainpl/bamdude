@@ -10,10 +10,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequirePermission, acting_user
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
-from backend.app.core.printer_scope import request_printer_scope
+from backend.app.core.printer_scope import allows, request_printer_scope, where_strict
 from backend.app.models.maintenance import MaintenanceHistory, MaintenanceType, PrinterMaintenance
 from backend.app.models.printer import Printer
 from backend.app.models.user import User
@@ -29,6 +29,7 @@ from backend.app.schemas.maintenance import (
     PrinterMaintenanceUpdate,
 )
 from backend.app.schemas.printer_location import PrinterLocationOut
+from backend.app.services.content_delete_rows import delete_maintenance_history, detach_maintenance_history
 from backend.app.services.notification_service import notification_service
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.printer_models import get_rod_type
@@ -150,14 +151,27 @@ def _scope_printers(query, request):
 
 
 def _scope_history(query, request):
-    scope = request_printer_scope(request)
-    if scope is None:
-        return query
-    return query.where(
-        MaintenanceHistory.printer_maintenance_id.in_(
-            select(PrinterMaintenance.id).where(PrinterMaintenance.printer_id.in_(scope))
-        )
-    )
+    # N09: the entry's own printer. An entry of a deleted printer (printer_id NULL) is seen
+    # only without a printer scope (where_strict), as upstream.
+    clause = where_strict(request_printer_scope(request), MaintenanceHistory.printer_id)
+    return query if clause is None else query.where(clause)
+
+
+def _history_entry(h: MaintenanceHistory) -> dict:
+    """One entry as the History tab lists it: the names as they were at the reset."""
+    return {
+        "id": h.id,
+        "printer_maintenance_id": h.printer_maintenance_id,
+        "printer_id": h.printer_id,
+        "performed_at": h.performed_at.isoformat() if h.performed_at else None,
+        "hours_at_maintenance": h.hours_at_maintenance,
+        "notes": h.notes,
+        "printer_name": h.printer_name or None,
+        "maintenance_type_name": h.maintenance_type_name or None,
+        "performed_by_user_id": h.performed_by_user_id,
+        "performed_by_chat_id": h.performed_by_chat_id,
+        "performed_by_name": h.performed_by_name,
+    }
 
 
 async def get_printer_total_hours(db: AsyncSession, printer_id: int) -> float:
@@ -298,6 +312,13 @@ async def delete_maintenance_type(
         await db.commit()
         return {"status": "deleted"}
 
+    # The items go with the type (ORM cascade); their history stays (N09).
+    item_ids = (
+        (await db.execute(select(PrinterMaintenance.id).where(PrinterMaintenance.maintenance_type_id == type_id)))
+        .scalars()
+        .all()
+    )
+    await detach_maintenance_history(db, item_ids)
     await db.delete(maint_type)
     await db.commit()
     return {"status": "deleted"}
@@ -684,6 +705,7 @@ async def remove_maintenance_item(
     if item.maintenance_type.is_system:
         raise HTTPException(status_code=400, detail="Cannot remove system maintenance types")
 
+    await detach_maintenance_history(db, [item.id])  # the history stays (N09)
     await db.delete(item)
     await db.commit()
 
@@ -694,6 +716,7 @@ async def remove_maintenance_item(
 async def perform_maintenance(
     item_id: int,
     data: PerformMaintenanceRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.MAINTENANCE_UPDATE),
 ):
@@ -714,12 +737,20 @@ async def perform_maintenance(
     # Get current hours
     current_hours = await get_printer_total_hours(db, item.printer_id)
 
-    # Create history entry
+    # An API key's reset is its owner's (N09, upstream 8afcb3fbd); no credential is nobody.
+    performer = await acting_user(request, db, current_user)
+
+    # Create history entry, with the names as they are now: they outlive the printer, the
+    # task and the user (N09).
     history = MaintenanceHistory(
         printer_maintenance_id=item.id,
+        printer_id=item.printer_id,
+        printer_name=printer.name or "",
+        maintenance_type_name=item.maintenance_type.name or "",
         hours_at_maintenance=current_hours,
         notes=data.notes,
-        performed_by_user_id=current_user.id if current_user else None,
+        performed_by_user_id=performer.id if performer else None,
+        performed_by_name=performer.username if performer else None,
     )
     db.add(history)
 
@@ -776,34 +807,27 @@ async def perform_maintenance(
 async def export_maintenance_history(
     request: Request,
     printer_id: int | None = Query(default=None),
+    format: str = Query(default="xlsx", pattern="^(xlsx|csv)$"),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.MAINTENANCE_READ),
 ):
-    """Export maintenance history as Excel (.xlsx), optionally filtered by printer."""
+    """Export maintenance history as Excel (.xlsx) or CSV, optionally filtered by printer."""
     import io
     from datetime import datetime as dt
 
     from fastapi.responses import StreamingResponse
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
-    from sqlalchemy.orm import selectinload
 
-    query = (
-        select(MaintenanceHistory)
-        .options(
-            selectinload(MaintenanceHistory.performed_by_user),
-            selectinload(MaintenanceHistory.performed_by_chat),
-            selectinload(MaintenanceHistory.printer_maintenance).selectinload(PrinterMaintenance.maintenance_type),
-            selectinload(MaintenanceHistory.printer_maintenance).selectinload(PrinterMaintenance.printer),
-        )
-        .order_by(MaintenanceHistory.performed_at.desc())
-    )
+    query = select(MaintenanceHistory).order_by(MaintenanceHistory.performed_at.desc())
     if printer_id is not None:
-        query = query.join(
-            PrinterMaintenance, MaintenanceHistory.printer_maintenance_id == PrinterMaintenance.id
-        ).where(PrinterMaintenance.printer_id == printer_id)
+        query = query.where(MaintenanceHistory.printer_id == printer_id)
     result = await db.execute(_scope_history(query, request))
     items = result.scalars().all()
+
+    headers = ["Date", "Printer", "Type", "Hours", "Performed by", "Notes"]
+    if format == "csv":
+        return _history_csv(items, headers, f"maintenance_history_{dt.now().strftime('%Y%m%d')}.csv")
 
     wb = Workbook()
     ws = wb.active
@@ -813,32 +837,17 @@ async def export_maintenance_history(
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="00AE42", end_color="00AE42", fill_type="solid")
 
-    headers = ["Date", "Printer", "Type", "Hours", "Performed by", "Notes"]
     for col_idx, header in enumerate(headers, 1):
         cell = ws.cell(row=1, column=col_idx, value=header)
         cell.font = header_font
         cell.fill = header_fill
 
     for row_idx, h in enumerate(items, 2):
-        printer_name = (
-            h.printer_maintenance.printer.name if h.printer_maintenance and h.printer_maintenance.printer else ""
-        )
-        type_name = (
-            h.printer_maintenance.maintenance_type.name
-            if h.printer_maintenance and h.printer_maintenance.maintenance_type
-            else ""
-        )
-        performed_by = (
-            h.performed_by_user.username
-            if h.performed_by_user
-            else (h.performed_by_chat.label if h.performed_by_chat else "")
-        )
-
         ws.cell(row=row_idx, column=1, value=h.performed_at)
-        ws.cell(row=row_idx, column=2, value=printer_name)
-        ws.cell(row=row_idx, column=3, value=type_name)
+        ws.cell(row=row_idx, column=2, value=h.printer_name or "")
+        ws.cell(row=row_idx, column=3, value=h.maintenance_type_name or "")
         ws.cell(row=row_idx, column=4, value=round(h.hours_at_maintenance, 1))
-        ws.cell(row=row_idx, column=5, value=performed_by)
+        ws.cell(row=row_idx, column=5, value=h.performed_by_name or "")
         ws.cell(row=row_idx, column=6, value=h.notes or "")
 
     # Auto-width columns
@@ -875,67 +884,30 @@ async def get_all_maintenance_history(
     _: User | None = RequirePermission(Permission.MAINTENANCE_READ),
 ):
     """Get all maintenance history, optionally filtered by printer."""
-    from backend.app.models.user import User as UserModel
-
     # Count with optional printer filter
     count_query = select(func.count()).select_from(MaintenanceHistory)
     if printer_id is not None:
-        count_query = count_query.join(PrinterMaintenance).where(PrinterMaintenance.printer_id == printer_id)
+        count_query = count_query.where(MaintenanceHistory.printer_id == printer_id)
     count_result = await db.execute(_scope_history(count_query, request))
     total = count_result.scalar() or 0
 
-    # Build order clause
-    if sort_by == "user":
-        order_col = UserModel.username
-        query = select(MaintenanceHistory).outerjoin(UserModel, MaintenanceHistory.performed_by_user_id == UserModel.id)
-    else:
-        order_col = MaintenanceHistory.performed_at
-        query = select(MaintenanceHistory)
-
+    # The names kept at the reset (N09): a user's later rename or deletion changes nothing.
+    order_col = MaintenanceHistory.performed_by_name if sort_by == "user" else MaintenanceHistory.performed_at
     order = order_col.asc() if sort_dir == "asc" else order_col.desc()
-
-    # Apply printer filter
+    query = select(MaintenanceHistory)
     if printer_id is not None:
-        if sort_by != "user":  # user sort already has a join
-            query = query.join(PrinterMaintenance, MaintenanceHistory.printer_maintenance_id == PrinterMaintenance.id)
-        else:
-            query = query.join(PrinterMaintenance, MaintenanceHistory.printer_maintenance_id == PrinterMaintenance.id)
-        query = query.where(PrinterMaintenance.printer_id == printer_id)
+        query = query.where(MaintenanceHistory.printer_id == printer_id)
 
     result = await db.execute(
         _scope_history(query, request)
-        .options(
-            selectinload(MaintenanceHistory.performed_by_user),
-            selectinload(MaintenanceHistory.performed_by_chat),
-            selectinload(MaintenanceHistory.printer_maintenance).selectinload(PrinterMaintenance.maintenance_type),
-            selectinload(MaintenanceHistory.printer_maintenance).selectinload(PrinterMaintenance.printer),
-        )
-        .order_by(order)
+        .order_by(order, MaintenanceHistory.id.desc())
         .offset((page - 1) * per_page)
         .limit(per_page)
     )
     items = result.scalars().all()
 
     return {
-        "items": [
-            {
-                "id": h.id,
-                "performed_at": h.performed_at.isoformat() if h.performed_at else None,
-                "hours_at_maintenance": h.hours_at_maintenance,
-                "notes": h.notes,
-                "printer_name": h.printer_maintenance.printer.name
-                if h.printer_maintenance and h.printer_maintenance.printer
-                else None,
-                "maintenance_type_name": h.printer_maintenance.maintenance_type.name
-                if h.printer_maintenance and h.printer_maintenance.maintenance_type
-                else None,
-                "performed_by_user_id": h.performed_by_user_id,
-                "performed_by_username": h.performed_by_user.username if h.performed_by_user else None,
-                "performed_by_chat_id": h.performed_by_chat_id,
-                "performed_by_chat_label": h.performed_by_chat.label if h.performed_by_chat else None,
-            }
-            for h in items
-        ],
+        "items": [_history_entry(h) for h in items],
         "total": total,
         "page": page,
         "per_page": per_page,
@@ -950,33 +922,86 @@ async def get_maintenance_history(
     _: User | None = RequirePermission(Permission.MAINTENANCE_READ),
 ):
     """Get maintenance history for a specific item."""
-    from sqlalchemy.orm import selectinload
-
     result = await db.execute(
         select(MaintenanceHistory)
-        .options(
-            selectinload(MaintenanceHistory.performed_by_user),
-            selectinload(MaintenanceHistory.performed_by_chat),
-        )
         .where(MaintenanceHistory.printer_maintenance_id == item_id)
         .order_by(MaintenanceHistory.performed_at.desc())
     )
-    items = result.scalars().all()
+    return [MaintenanceHistoryResponse.model_validate(h) for h in result.scalars().all()]
 
-    return [
-        MaintenanceHistoryResponse(
-            id=h.id,
-            printer_maintenance_id=h.printer_maintenance_id,
-            performed_at=h.performed_at,
-            hours_at_maintenance=h.hours_at_maintenance,
-            notes=h.notes,
-            performed_by_user_id=h.performed_by_user_id,
-            performed_by_username=h.performed_by_user.username if h.performed_by_user else None,
-            performed_by_chat_id=h.performed_by_chat_id,
-            performed_by_chat_label=h.performed_by_chat.label if h.performed_by_chat else None,
+
+@router.delete("/history")
+async def clear_maintenance_history(
+    request: Request,
+    older_than_days: int = Query(ge=1, le=36500),
+    printer_id: int | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.MAINTENANCE_DELETE),
+):
+    """Delete history entries older than N days, of one printer or of all in reach (N09).
+
+    The tasks stay as they are: their last reset is untouched.
+    """
+    from datetime import timedelta
+
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=older_than_days)
+    conditions = [MaintenanceHistory.performed_at < cutoff]
+    if printer_id is not None:
+        conditions.append(MaintenanceHistory.printer_id == printer_id)
+    clause = where_strict(request_printer_scope(request), MaintenanceHistory.printer_id)
+    if clause is not None:
+        conditions.append(clause)
+    deleted = await delete_maintenance_history(db, *conditions)
+    await db.commit()
+    return {"deleted": deleted}
+
+
+@router.delete("/history/{entry_id}")
+async def delete_maintenance_history_entry(
+    entry_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.MAINTENANCE_DELETE),
+):
+    """Delete one history entry (N09). An entry of a deleted printer only without a printer scope."""
+    entry = await db.get(MaintenanceHistory, entry_id)
+    scope = request_printer_scope(request)
+    if entry is None or (scope is not None and (entry.printer_id is None or not allows(scope, entry.printer_id))):
+        raise HTTPException(status_code=404, detail="Maintenance history entry not found")
+    deleted = await delete_maintenance_history(db, MaintenanceHistory.id == entry_id)
+    await db.commit()
+    return {"deleted": deleted}
+
+
+def _history_csv(items, headers: list[str], filename: str):
+    """The CSV export (N09): the xlsx's columns, formula-like cells as text, and a BOM so
+    Excel reads the file as UTF-8 (Ukrainian names otherwise open garbled)."""
+    import csv
+    import io
+
+    from fastapi.responses import Response
+
+    from backend.app.utils.spreadsheet import csv_literal
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(headers)
+    for h in items:
+        writer.writerow(
+            [
+                h.performed_at.isoformat(sep=" ", timespec="seconds") if h.performed_at else "",
+                csv_literal(h.printer_name or ""),
+                csv_literal(h.maintenance_type_name or ""),
+                round(h.hours_at_maintenance, 1),
+                csv_literal(h.performed_by_name or ""),
+                csv_literal(h.notes or ""),
+            ]
         )
-        for h in items
-    ]
+    return Response(
+        content="\ufeff" + buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": build_content_disposition(filename)},
+    )
 
 
 @router.get("/summary")

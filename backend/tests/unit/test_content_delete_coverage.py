@@ -67,7 +67,7 @@ def test_all_36_user_edges_keep_the_reviewed_literal_policy():
     assert len(actual) == 36  # N56: library_folders.created_by_id
 
 
-def test_all_111_parent_fk_edges_and_secondaries_have_a_literal_disposition():
+def test_all_112_parent_fk_edges_and_secondaries_have_a_literal_disposition():
     import_all_models()
     policy = json.loads((APP / "data/content_delete_fk_reference_policy.json").read_text(encoding="utf-8"))
     parents = {
@@ -87,7 +87,8 @@ def test_all_111_parent_fk_edges_and_secondaries_have_a_literal_disposition():
         if fk.column.table.name in parents
     }
     assert actual == {key: (row["target"], row["nullable"], row["ondelete"]) for key, row in policy.items()}
-    assert len(actual) == 111  # N56: library_folders.created_by_id; N62: group_printers.printer_id
+    # N56: library_folders.created_by_id; N62: group_printers.printer_id; N09: maintenance_history.printer_id
+    assert len(actual) == 112
     assert all(row["policy"] for row in policy.values())
 
 

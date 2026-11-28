@@ -1313,7 +1313,7 @@ async def _delete_printer_queue_rows(printer_id: int, delete_archives: bool, bin
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from backend.app.models.auto_queue import AutoQueueItem
-    from backend.app.models.maintenance import MaintenanceHistory, PrinterMaintenance
+    from backend.app.models.maintenance import PrinterMaintenance
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.models.printer_queue import PrinterQueue
     from backend.app.services.queue_counters import companion_auto_ids, detach_print_queue_refs, lock_auto_rows
@@ -1388,17 +1388,21 @@ async def _delete_printer_queue_rows(printer_id: int, delete_archives: bool, bin
                     .execution_options(synchronize_session=False)
                 )
 
-        # Delete maintenance history and items for this printer
-        # (SQLite doesn't enforce FK cascades, so do it explicitly)
+        # The maintenance items go with the printer; their history stays, under the names it
+        # kept at each reset (N09). SQLite doesn't enforce FK actions, so both are explicit.
+        from backend.app.services.content_delete_rows import (
+            detach_maintenance_history,
+            forget_printer_in_maintenance_history,
+        )
+
         maintenance_ids = (
             (await db.execute(select(PrinterMaintenance.id).where(PrinterMaintenance.printer_id == printer_id)))
             .scalars()
             .all()
         )
+        await detach_maintenance_history(db, maintenance_ids)
+        await forget_printer_in_maintenance_history(db, printer_id)
         if maintenance_ids:
-            await db.execute(
-                sql_delete(MaintenanceHistory).where(MaintenanceHistory.printer_maintenance_id.in_(maintenance_ids))
-            )
             await db.execute(sql_delete(PrinterMaintenance).where(PrinterMaintenance.printer_id == printer_id))
 
         # N62: the printer leaves every group that picked it (SQLite keeps foreign keys off).

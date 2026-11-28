@@ -101,6 +101,53 @@ async def library_rows(db, file: LibraryFile, *, reason=queue_source_release.REA
     return result
 
 
+async def detach_maintenance_history(db, printer_maintenance_ids) -> None:
+    """The history of maintenance items about to go stays, without its item (N09).
+
+    Its names were kept at the reset; ``SET NULL`` as the FK says, written here because
+    SQLite keeps foreign keys off. Before the caller deletes the items.
+    """
+    from backend.app.models.maintenance import MaintenanceHistory
+
+    ids = sorted(set(printer_maintenance_ids))
+    if ids:
+        await db.execute(
+            update(MaintenanceHistory)
+            .where(MaintenanceHistory.printer_maintenance_id.in_(ids))
+            .values(printer_maintenance_id=None)
+            .execution_options(synchronize_session=False)
+        )
+
+
+async def forget_printer_in_maintenance_history(db, printer_id: int) -> None:
+    """The history of a printer about to go stays, under the name it had (N09).
+
+    A printer number is never handed out again (m262); ``SET NULL`` keeps the FK on
+    PostgreSQL and both backends alike. Before the caller deletes the printer.
+    """
+    from backend.app.models.maintenance import MaintenanceHistory
+
+    await db.execute(
+        update(MaintenanceHistory)
+        .where(MaintenanceHistory.printer_id == printer_id)
+        .values(printer_id=None)
+        .execution_options(synchronize_session=False)
+    )
+
+
+async def delete_maintenance_history(db, *conditions) -> int:
+    """Delete history rows matching ``conditions`` — the cleanup doors' one delete (N09).
+
+    The items stay as they are (``last_performed_*`` untouched). Returns the rows deleted.
+    """
+    from backend.app.models.maintenance import MaintenanceHistory
+
+    result = await db.execute(
+        delete(MaintenanceHistory).where(*conditions).execution_options(synchronize_session=False)
+    )
+    return result.rowcount or 0
+
+
 async def folder_rows(db, folder_ids):
     """Disposable folder links, after its files have all been trashed/detached."""
     from backend.app.models.library_scan import LibraryScanJob
