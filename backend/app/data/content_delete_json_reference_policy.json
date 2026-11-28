@@ -14,6 +14,11 @@
     "column": "ams_policies",
     "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
   },
+  "printers.wled_config": {
+    "table": "printers",
+    "column": "wled_config",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
   "print_archives.extra_data": {
     "table": "print_archives",
     "column": "extra_data",
