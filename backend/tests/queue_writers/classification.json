@@ -713,7 +713,7 @@
   "r3": "n/a",
   "rule": "frozen"
  },
- "backend/app/migrations/m274_rack_queue_rows_review.py::seed": {
+ "backend/app/migrations/m275_rack_queue_rows_review.py::seed": {
   "class": "migration",
   "lock": "migration",
   "owner": "init_db",

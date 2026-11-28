@@ -402,7 +402,7 @@ def _mapped_trays(item) -> list[int]:
 async def _direct_rack_exempt_check(db, item, snapshot) -> None:
     """A direct rack (H3C, P3C): what an exempt row (calibration, raw G-code) is still asked.
 
-    * A row ``m274`` marked — its mapping was saved before H3C / P3C support,
+    * A row ``m275`` marked — its mapping was saved before H3C / P3C support,
       and it has no dialog to be confirmed in — waits until it is re-created
       (``rack_mapping_recreate``): sent as it is, 128 + k would go out as an
       AMS-HT that does not exist.

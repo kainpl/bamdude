@@ -31,7 +31,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-version = 274
+version = 275
 name = "rack_queue_rows_review"
 
 #: The model names an H3C / P3C row of ``printers.model`` carries, normalised
@@ -136,7 +136,7 @@ async def seed(session_factory):
         await db.commit()
         if cleared or marked:
             logger.info(
-                "m274: H3C / P3C queue rows saved before stage A — %d plan(s) cleared, %d sent to review",
+                "m275: H3C / P3C queue rows saved before stage A — %d plan(s) cleared, %d sent to review",
                 cleared,
                 marked,
             )

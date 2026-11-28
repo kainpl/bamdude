@@ -1,11 +1,11 @@
-"""m274 — H3C / P3C queue rows saved before stage A go to review; nothing is guessed (N01 stage B).
+"""m275 — H3C / P3C queue rows saved before stage A go to review; nothing is guessed (N01 stage B).
 
 A pending row on an H3C / P3C printer whose ``ams_mapping`` still names 128-138:
 an automatic one loses its stale plan, every other one is marked
 ``review_required`` (pinned, an old row without an intent, a calibration, raw
 G-code). Other printers, other states and other values are untouched, and a
 second run changes nothing. The PostgreSQL arm is
-``tests/integration/test_m274_postgres.py``.
+``tests/integration/test_m275_postgres.py``.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from backend.app.migrations.m274_rack_queue_rows_review import seed
+from backend.app.migrations.m275_rack_queue_rows_review import seed
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue

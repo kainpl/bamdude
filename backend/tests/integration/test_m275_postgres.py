@@ -1,4 +1,4 @@
-"""m274 on PostgreSQL: H3C / P3C rows saved before stage A cleared or sent to review, nothing else touched.
+"""m275 on PostgreSQL: H3C / P3C rows saved before stage A cleared or sent to review, nothing else touched.
 
 The tables are the minimum the seed reads (``printers``, ``print_queue``,
 ``queue_sources``, ``print_archives``, ``library_files``), with PostgreSQL's
@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from backend.app.migrations import m274_rack_queue_rows_review as m274
+from backend.app.migrations import m275_rack_queue_rows_review as m275
 from backend.tests.integration.test_postgres_scenarios import (
     _async_url,
     _pg_url,
@@ -36,7 +36,7 @@ async def engine():
     await eng.dispose()
 
 
-async def test_m274_on_postgres(engine):
+async def test_m275_on_postgres(engine):
     async with engine.begin() as conn:
         await conn.execute(text("CREATE TABLE printers (id SERIAL PRIMARY KEY, model VARCHAR(50))"))
         await conn.execute(text("CREATE TABLE queue_sources (id SERIAL PRIMARY KEY, format VARCHAR(10))"))
@@ -63,8 +63,8 @@ async def test_m274_on_postgres(engine):
             ),
             {"auto": AUTO},
         )
-    await m274.seed(async_sessionmaker(engine, expire_on_commit=False))
-    await m274.seed(async_sessionmaker(engine, expire_on_commit=False))  # a rerun changes nothing
+    await m275.seed(async_sessionmaker(engine, expire_on_commit=False))
+    await m275.seed(async_sessionmaker(engine, expire_on_commit=False))  # a rerun changes nothing
     async with engine.connect() as conn:
         rows = {
             r.id: (r.ams_mapping, r.filament_routing)
