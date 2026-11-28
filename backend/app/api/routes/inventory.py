@@ -73,7 +73,7 @@ from backend.app.schemas.spool_usage import (
     SpoolUsageSpoolRef,
     SpoolUsageTotals,
 )
-from backend.app.services import forecast_engine, inventory_service, spool_usage_service
+from backend.app.services import direct_rack_gate, forecast_engine, inventory_service, spool_usage_service
 from backend.app.services.ams_slot_presence import firmware_says_empty, spool_present
 from backend.app.services.filament_needs import Needs
 from backend.app.services.location_service import (
@@ -104,6 +104,7 @@ from backend.app.services.tag_conflict import tag_already_linked
 from backend.app.utils.filament_remaining import grams_used
 from backend.app.utils.spreadsheet import csv_literal
 from backend.app.utils.tag_normalization import normalize_tag_uid, normalize_tray_uuid
+from backend.app.utils.tray_ids import external_tray_id
 
 logger = logging.getLogger(__name__)
 
@@ -259,10 +260,21 @@ async def apply_spool_to_slot_via_mqtt(
     fallback when the spool's slicer_filament can't be resolved. Adapted from
     upstream Bambuddy `b42aaca5` (#1247).
     """
-    from backend.app.services.printer_manager import printer_manager
+    from backend.app.services.printer_manager import printer_manager, tray_layout_of
 
     client = printer_manager.get_client(printer_id)
     if client is None:
+        return False
+    if direct_rack_gate.slot_command_refused(tray_layout_of(printer_id, printer_manager), ams_id, tray_id):
+        # Not sent, nothing registered: the assignment waits (N01 stage C).
+        logger.info(
+            "Spool %d on printer %d AMS%d-T%d not configured: %s",
+            spool.id,
+            printer_id,
+            ams_id,
+            tray_id,
+            direct_rack_gate.UNSUPPORTED_MESSAGE,
+        )
         return False
 
     state = printer_manager.get_status(printer_id)
@@ -3030,11 +3042,18 @@ async def assign_spool(
     return response
 
 
+def _slot_needs_layout_check(layout, ams_id: int, tray_id: int) -> bool:
+    """Whether a requested slot is checked against the printer's layout: a direct rack's, or a rack-only slot form."""
+    from backend.app.utils.tray_ids import EXTERNAL_AMS_ID, is_zmulti
+
+    return layout.direct_rack or is_zmulti(layout.ams_type(ams_id)) or (ams_id == EXTERNAL_AMS_ID and tray_id >= 2)
+
+
 async def _assign_spool(
     data: SpoolAssignmentCreate, db: AsyncSession, preset_owner: User | None, *, locked: set[int] | None = None
 ):
     from backend.app.services import spool_single_slot
-    from backend.app.services.printer_manager import printer_manager
+    from backend.app.services.printer_manager import printer_manager, tray_layout_of
 
     keep = (data.printer_id, data.ams_id, data.tray_id)
     locked = {data.printer_id} if locked is None else locked
@@ -3043,6 +3062,15 @@ async def _assign_spool(
         if preset_owner is not None and preset_owner.has_permission(Permission.CLOUD_AUTH.value)
         else None
     )
+
+    # 0. The slot must be one this printer has (utils/tray_ids): a rack AMS
+    # slot within the rack, a rack's external input within its PrintTools.
+    # Other printers are as before — no slot of theirs is refused here.
+    layout = tray_layout_of(data.printer_id, printer_manager)
+    if _slot_needs_layout_check(layout, data.ams_id, data.tray_id) and not layout.accepts_slot(
+        data.ams_id, data.tray_id
+    ):
+        raise HTTPException(422, "This printer has no such slot")
 
     # 1. Validate spool exists and is not archived
     if data.label_key is not None:
@@ -3082,7 +3110,7 @@ async def _assign_spool(
         if data.ams_id == 255:
             # External slot: look up tray from vt_tray by global ID
             vt_tray = state.raw_data.get("vt_tray") or []
-            ext_id = data.tray_id + 254  # 0→254, 1→255
+            ext_id = external_tray_id(data.tray_id)  # 0→254, 1→255, 2..8→247..253
             for vt in vt_tray:
                 if isinstance(vt, dict) and int(vt.get("id", 254)) == ext_id:
                     fingerprint_color = vt.get("tray_color", "")
@@ -3266,8 +3294,24 @@ async def _assign_spool(
     slot_is_definitely_empty = firmware_says_empty(tray_has_spool, tray_state)
     configured = False
     pending_config = slot_is_definitely_empty
+    # A rack AMS slot / a rack's external input is not configured on the printer
+    # yet (services/direct_rack_gate, N01 stage C): the row is kept and waits,
+    # as for an empty slot.
+    rack_refused = direct_rack_gate.slot_command_refused(layout, data.ams_id, data.tray_id)
+    if rack_refused:
+        logger.info(
+            "Assignment kept unconfigured: spool %d → printer %d AMS%d-T%d (%s)",
+            spool.id,
+            data.printer_id,
+            data.ams_id,
+            data.tray_id,
+            direct_rack_gate.UNSUPPORTED_MESSAGE,
+        )
+        pending_config = True
 
-    if slot_is_definitely_empty:
+    if rack_refused:
+        pass
+    elif slot_is_definitely_empty:
         logger.info(
             "Pre-configured assignment: spool %d → printer %d AMS%d-T%d (firmware reports empty state=%s, will configure on insert)",
             spool.id,

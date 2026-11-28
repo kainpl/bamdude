@@ -23,6 +23,13 @@ from backend.app.services.spoolman import (
 from backend.app.services.spoolman_spool_identity import FROM_ROWS, ChargeCheck
 from backend.app.services.spoolman_weights import spool_net_weight, spool_price_per_gram
 from backend.app.utils.filament_remaining import usable_remain_percent
+from backend.app.utils.tray_ids import (
+    external_slot_index,
+    global_tray_id as stored_global_tray,
+    is_external_id,
+    slot_key as tray_slot_key,
+    unit_type,
+)
 from backend.app.utils.tray_split import CompletionSnapshot, PrintedBound, printed_bound, sole_owner, split_weight
 
 logger = logging.getLogger(__name__)
@@ -64,20 +71,19 @@ def _every_global_tray(tray_remain_start: dict | None, ams_trays: dict | None) -
             ams_id, tray_id = (int(part) for part in str(slot_key).split("-", 1))
         except ValueError:
             continue
-        ids.add(254 + tray_id if ams_id == 255 else ams_id if ams_id >= 128 else ams_id * 4 + tray_id)
+        ids.add(stored_global_tray(ams_id, tray_id))
     return ids
 
 
-def _global_tray_id_to_ams_slot(global_tray_id: int) -> tuple[int, int]:
-    """Convert global tray id to (ams_id, tray_id) tuple for fallback tag generation."""
-    # External spool slots use IDs 254/255 and map to ams_id=255 tray_id=0/1.
-    if global_tray_id >= 254:
-        return 255, max(0, global_tray_id - 254)
-    # AMS-HT units are addressed by ams_id directly and have a single tray.
-    if global_tray_id >= 128:
-        return global_tray_id, 0
-    # Standard AMS units: four trays each.
-    return global_tray_id // 4, global_tray_id % 4
+def _global_tray_id_to_ams_slot(tray: int) -> tuple[int, int]:
+    """Convert global tray id to (ams_id, tray_id) tuple for fallback tag generation.
+
+    ``utils/tray_ids.slot_key``: an external input under ams 255 (254 -> 0,
+    255 -> 1, a direct rack's 247-253 -> 2-8), an AMS-HT its own id with one
+    tray, a rack AMS (28-36 / 37-45) its unit 32 / 33, a standard AMS four
+    trays each.
+    """
+    return tray_slot_key(tray)
 
 
 def _get_fallback_spool_tag(printer_serial: str, global_tray_id: int) -> str:
@@ -258,11 +264,11 @@ def build_ams_tray_lookup(raw_data: dict) -> dict[int, dict]:
     ams_data = raw_data.get("ams", [])
     for ams_unit in ams_data:
         ams_id = int(ams_unit.get("id", 0))
+        pair = unit_type(ams_unit)
         for tray in ams_unit.get("tray", []):
             tray_id = int(tray.get("id", 0))
-            # AMS-HT units have IDs starting at 128 with a single tray
-            global_tray_id = ams_id if ams_id >= 128 else ams_id * 4 + tray_id
-            lookup[global_tray_id] = {
+            # AMS-HT units are their own id, a rack AMS by its type (utils/tray_ids)
+            lookup[stored_global_tray(ams_id, tray_id, pair[1] if pair else None)] = {
                 "tray_uuid": tray.get("tray_uuid", ""),
                 "tag_uid": tray.get("tag_uid", ""),
                 "tray_type": tray.get("tray_type", ""),
@@ -322,8 +328,8 @@ def _snapshot_tray_remain(raw_data: dict) -> dict[str, dict]:
         if not isinstance(vt, dict):
             continue
         vt_id = int(vt.get("id", 254))
-        # 254 → (255, 0), 255 → (255, 1) — matches usage_tracker's encoding.
-        vt_tray_id = vt_id - 254
+        # 254 → (255, 0), 255 → (255, 1), 247-253 → (255, 2-8) — usage_tracker's encoding.
+        vt_tray_id = external_slot_index(vt_id)
         remain = usable_remain_percent(vt.get("remain"))
         if remain is not None:
             snapshot[f"255-{vt_tray_id}"] = {
@@ -1273,7 +1279,7 @@ async def _report_spool_usage_for_slots(
 
         global_tray_id = _resolve_global_tray_id(slot_id, slot_to_tray, ams_trays)
         tray_info = ams_trays.get(global_tray_id)
-        if not tray_info and global_tray_id >= 254:
+        if not tray_info and is_external_id(global_tray_id):
             # An external holder the printer did not list at print start (empty, or never
             # configured there): no tag to read, but a spool may be bound to the holder —
             # and if none is, the grams are reported, not dropped (audit D4).
@@ -1282,7 +1288,7 @@ async def _report_spool_usage_for_slots(
             logger.debug("[SPOOLMAN] Slot %s: no tray at global_tray_id %s", slot_id, global_tray_id)
             continue
 
-        is_external = global_tray_id >= 254
+        is_external = is_external_id(global_tray_id)
         tray_type = tray_info.get("tray_type", "")
         logger.debug(
             "[SPOOLMAN] Slot %s resolved to global_tray_id %s (tray_type=%s, external=%s)",
@@ -2434,14 +2440,8 @@ async def _report_remain_delta_for_slots(
             continue
 
         # Skip slots already handled by the 3MF path. Encoding mirrors
-        # build_ams_tray_lookup: VT trays land at 254/255, AMS-HT keeps
-        # its native id (>=128), regular AMS slots are ams_id*4+tray_id.
-        if ams_id == 255:
-            global_tray_id = 254 + tray_id
-        elif ams_id >= 128:
-            global_tray_id = ams_id
-        else:
-            global_tray_id = ams_id * 4 + tray_id
+        # build_ams_tray_lookup (utils/tray_ids.global_tray_id).
+        global_tray_id = stored_global_tray(ams_id, tray_id)
         if global_tray_id in handled_global_tray_ids:
             continue
 

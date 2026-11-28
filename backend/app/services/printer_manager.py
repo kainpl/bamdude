@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.printer import Printer
-from backend.app.schemas.printer import AirductFan, AMSTray, AmsTrayActual, AMSUnit
+from backend.app.schemas.printer import AirductFan, AMSDryingZone, AMSTray, AmsTrayActual, AMSUnit
 from backend.app.services import ams_advertised_overlay as _overlay, print_mapping_projection as _print_mapping
 from backend.app.services.bambu_mqtt import (
     FAN_CTRL,
@@ -37,6 +37,16 @@ from backend.app.utils.printer_configs import airduct_fan_label, get_device_supp
 from backend.app.utils.printer_storage import storage_capability_for
 from backend.app.utils.temperature_limits import limits_for
 from backend.app.utils.timelapse import capability_for as timelapse_capability_for
+from backend.app.utils.tray_ids import (
+    TrayLayout,
+    external_slot_index,
+    global_tray_id,
+    is_ams_ht_id,
+    is_zmulti,
+    split_wire_slot,
+    unit_type,
+    wire_local_slot,
+)
 
 #: ``(printer_id, record life)`` of the client session whose callback this task runs (``_run_for_client``).
 #: A callback that awaited across a deletion of its record must not reach the printer created with the
@@ -1699,6 +1709,17 @@ class PrinterManager:
         """Get the cached model for a printer."""
         return self._models.get(printer_id)
 
+    def tray_layout(self, printer_id: int | None, model: str | None = None) -> TrayLayout:
+        """How a printer numbers its trays (``utils/tray_ids``): its live units, rack and model.
+
+        With no live client the model's config still says whether it is a
+        direct-connected rack, so a stored slot keeps its meaning offline.
+        """
+        client = self._clients.get(printer_id) if printer_id is not None else None
+        if client is not None:
+            return client.tray_layout()
+        return TrayLayout.build(None, model=model or (self._models.get(printer_id) if printer_id is not None else None))
+
     def effective_model_for(self, printer_id: int, model: str | None = None) -> str | None:
         """Model for file compatibility; physical model stays in the printer row.
 
@@ -2356,6 +2377,23 @@ def nozzle_wiring(state: PrinterState) -> dict | None:
     return state.ams_extruder_map
 
 
+def tray_layout_of(printer_id: int | None, manager=None, model: str | None = None) -> TrayLayout:
+    """A printer's tray numbering through ``manager`` (the global one when None); no layout when unknown.
+
+    For readers that are handed a manager: anything that is not a
+    ``TrayLayout`` (a stand-in) is no layout, which every other printer reads
+    the same without.
+    """
+    from backend.app.utils.tray_ids import NO_LAYOUT
+
+    source = printer_manager if manager is None else manager
+    try:
+        layout = source.tray_layout(printer_id, model) if model is not None else source.tray_layout(printer_id)
+    except Exception:
+        return NO_LAYOUT
+    return layout if isinstance(layout, TrayLayout) else NO_LAYOUT
+
+
 def _trays_on_extruder(
     raw_slot: int,
     ams_layout: list[tuple[int, bool]],
@@ -2377,7 +2415,7 @@ def _trays_on_extruder(
         if nozzle != active_extruder:
             continue
         if not is_ht:
-            trays.add(ams_id * 4 + raw_slot)
+            trays.add(global_tray_id(ams_id, raw_slot))
         elif raw_slot == 0:
             trays.add(ams_id)
     return trays
@@ -2389,6 +2427,7 @@ def resolve_expected_tray(
     mapping_raw: object,
     active_extruder: int | None = None,
     ams_extruder_map: dict | None = None,
+    layout: TrayLayout | None = None,
 ) -> int | None:
     """Globalise a raw firmware ``tray_tar``/``tray_pre`` value for the runout UI.
 
@@ -2414,27 +2453,33 @@ def resolve_expected_tray(
 
     Returns ``None`` for anything it can't place, so the caller surfaces a
     "check the printer" message instead of pointing at the wrong slot.
+
+    On a direct-connected rack (``layout.direct_rack``) the MQTT layer has
+    already made the value global (``BambuMQTTClient._direct_rack_tray``); it
+    is returned when it names one of the printer's sources.
     """
     if raw_slot is None or raw_slot in (255, -1):
         return None
+    if layout is not None and layout.direct_rack:
+        return raw_slot if layout.is_journal_tray(raw_slot) else None
     if raw_slot == 254:
         return 254
-    if 128 <= raw_slot <= 135:
+    if is_ams_ht_id(raw_slot):
         return raw_slot
     if 0 <= raw_slot <= 3:
         regular = [ams_id for ams_id, is_ht in ams_layout if not is_ht]
         if len(regular) == 1:
-            return regular[0] * 4 + raw_slot
+            return global_tray_id(regular[0], raw_slot)
         if len(regular) > 1:
             candidates: set[int] = set()
             for value in mapping_raw if isinstance(mapping_raw, list) else []:
-                if not isinstance(value, int) or value >= 65535:
+                split = split_wire_slot(value) if isinstance(value, int) else None
+                if split is None:
                     continue
-                ams_hw_id = value >> 8
-                slot = value & 0xFF
-                if 0 <= ams_hw_id <= 3 and (slot & 0x03) == raw_slot:
-                    candidates.add(ams_hw_id * 4 + raw_slot)
-                elif 128 <= ams_hw_id <= 135 and raw_slot == 0:
+                ams_hw_id, slot = split
+                if 0 <= ams_hw_id <= 3 and wire_local_slot(slot) == raw_slot:
+                    candidates.add(global_tray_id(ams_hw_id, raw_slot))
+                elif is_ams_ht_id(ams_hw_id) and raw_slot == 0:
                     candidates.add(ams_hw_id)
             if len(candidates) == 1:
                 return candidates.pop()
@@ -2710,7 +2755,18 @@ def ams_units_for(
 
         # An AMS-HT is its unit id 128-135, never "a unit that listed one tray":
         # a regular AMS that listed one of its trays was drawn as an AMS-HT.
-        is_ams_ht = 128 <= ams_id_int <= 135
+        is_ams_ht = is_ams_ht_id(ams_id_int)
+        # The unit's AMS type (``info`` bits 0-3, sticky; else told from the id).
+        type_pair = unit_type(ams_data)
+        ams_type = int(type_pair[1]) if type_pair is not None else None
+        is_rack_ams = is_zmulti(ams_type)
+        zones = _drying_zones(ams_data) if is_rack_ams else []
+        if is_rack_ams and humidity_value is None:
+            # A rack AMS reports temperature and humidity per zone (Studio BS62
+            # falls back to the zones; upstream saw none on the unit itself).
+            ambient = next((z for z in zones if not z.can_dry), zones[0] if zones else None)
+            if ambient is not None:
+                humidity_value = ambient.humidity
 
         # Active-cycle filament + target temperature for the drying badge:
         # the cached target of the last send_drying_command first, then the
@@ -2761,9 +2817,98 @@ def ams_units_for(
                 dry_filament=dry_filament,
                 # Module type: "ams", "n3f", "n3s" (from get_version)
                 module_type=str(ams_data.get("module_type") or ""),
+                ams_type=ams_type,
+                slot_count=len(trays),
+                is_rack_ams=is_rack_ams,
+                drying_zones=zones,
             )
         )
+        if is_rack_ams and units[-1].temp is None and zones:
+            ambient = next((z for z in zones if not z.can_dry), zones[0])
+            units[-1].temp = ambient.temp
     return units
+
+
+def _drying_zones(ams_data: dict) -> list[AMSDryingZone]:
+    """A rack AMS's ``zone_info`` (Studio ``DevAmsZone``), for showing only.
+
+    A zone can dry iff it holds exactly two slots (``DevAmsZone::SupportDrying``);
+    its drying phase is ``info`` bits 4-7, as a unit's.
+    """
+    zones: list[AMSDryingZone] = []
+    for zone in ams_data.get("zone_info") or []:
+        if not isinstance(zone, dict):
+            continue
+        slots: list[int] = []
+        for raw in zone.get("zone_slots") or []:
+            try:
+                slot = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if slot >= 0 and slot not in slots:
+                slots.append(slot)
+        dry_status = 0
+        try:
+            dry_status = (int(str(zone["info"]), 16) >> 4) & 0xF if zone.get("info") is not None else 0
+        except (TypeError, ValueError):
+            dry_status = 0
+        humidity = ams_humidity_percent(zone)
+        try:
+            zone_id = int(zone.get("zone_id", len(zones)))
+        except (TypeError, ValueError):
+            zone_id = len(zones)
+        try:
+            dry_time = int(zone.get("dry_time") or 0)
+        except (TypeError, ValueError):
+            dry_time = 0
+        zones.append(
+            AMSDryingZone(
+                zone_id=zone_id,
+                slots=slots,
+                temp=_ams_temp(zone.get("temp")),
+                humidity=int(round(humidity)) if humidity is not None else None,
+                dry_status=dry_status,
+                dry_time=dry_time,
+                can_dry=len(slots) == 2,
+            )
+        )
+    return zones
+
+
+def nozzle_rack_entries(state: PrinterState) -> list[dict]:
+    """The nozzle rack of a printer state, in the schema's names (``NozzleRackSlot``), for both payloads.
+
+    Maps the raw MQTT names (type / diameter) to the schema's. A push replaces
+    the whole rack, so every field travels each time — without
+    ``filament_type`` every push dropped the slot's material label (upstream
+    808e461c5). A direct rack's ``addr_id`` also gives the PrintTool number.
+    """
+    entries: list[dict] = []
+    for n in state.nozzle_rack or []:
+        addr_id = n.get("addr_id")
+        entries.append(
+            {
+                "id": n.get("id", 0),
+                "nozzle_type": n.get("type", ""),
+                "nozzle_diameter": n.get("diameter", ""),
+                "wear": n.get("wear"),
+                "stat": n.get("stat"),
+                "max_temp": n.get("max_temp", 0),
+                "serial_number": n.get("serial_number", ""),
+                "filament_color": n.get("filament_color", ""),
+                "filament_id": n.get("filament_id", ""),
+                "filament_type": n.get("filament_type", ""),
+                "print_time_s": n.get("print_time_s"),
+                "switch_count": n.get("switch_count"),
+                "addr_id": addr_id,
+                "print_tool": addr_id + 1 if isinstance(addr_id, int) else None,
+                "current_temp": n.get("current_temp"),
+                "target_temp": n.get("target_temp"),
+                "temp_status": n.get("temp_status"),
+                "bind_ams": n.get("bind_ams"),
+            }
+        )
+    return entries
 
 
 def vt_trays_for(state: PrinterState, resolve_slot_k=None) -> list[AMSTray]:
@@ -2783,8 +2928,9 @@ def vt_trays_for(state: PrinterState, resolve_slot_k=None) -> list[AMSTray]:
         vt_cali_idx = vt_data.get("cali_idx")
         tray_id = int(vt_data.get("id", 254))
         if vt_k_value is None:
-            # External holder: 254 is Ext-L, 255 Ext-R; the resolver takes the 0/1 side.
-            vt_k_value = resolve_slot_k(vt_cali_idx, 255, tray_id - 254)
+            # External holder: 254 is Ext-L, 255 Ext-R (a direct rack's 247-253
+            # too); the resolver takes the stored index.
+            vt_k_value = resolve_slot_k(vt_cali_idx, 255, external_slot_index(tray_id))
 
         # The external spool carries the same colour fields as an AMS tray —
         # BS parses them in both places, so a multi-colour spool on the
@@ -2847,6 +2993,7 @@ def printer_state_to_dict(
     # The state attribute first, as the REST shaper reads it: ``raw_data`` is
     # replaced during MQTT updates and the map is briefly missing from it.
     ams_extruder_map = state.ams_extruder_map or raw_data.get("ams_extruder_map", {})
+    layout = TrayLayout.from_state(state, model)
 
     # Filter out chamber temp for models that don't have a real sensor
     # P1P, P1S, A1, A1Mini report meaningless chamber_temper values
@@ -2934,6 +3081,7 @@ def printer_state_to_dict(
                 raw_data.get("mapping"),
                 state.active_extruder,
                 nozzle_wiring(state),
+                layout,
             )
             if state.state == "PAUSE"
             else None
@@ -2945,10 +3093,15 @@ def printer_state_to_dict(
                 raw_data.get("mapping"),
                 state.active_extruder,
                 nozzle_wiring(state),
+                layout,
             )
             if state.state == "PAUSE"
             else None
         ),
+        # A direct-connected nozzle rack (H3C, P3C): one toolhead, ``rack_size``
+        # PrintTools with an external input each (utils/tray_ids.TrayLayout).
+        "direct_rack": layout.direct_rack,
+        "rack_size": layout.rack_size,
         # AMS Filament Backup (auto_switch_filament): True/False/None (#1766)
         "ams_auto_switch_filament": state.ams_auto_switch_filament,
         # Firmware-reported backup groups (``filam_bak``); None is distinct
@@ -3051,25 +3204,7 @@ def printer_state_to_dict(
         "active_extruder": state.active_extruder,
         # H2C nozzle rack (tool-changer dock positions)
         # Map raw MQTT field names (type/diameter) to schema names (nozzle_type/nozzle_diameter)
-        "nozzle_rack": [
-            {
-                "id": n.get("id", 0),
-                "nozzle_type": n.get("type", ""),
-                "nozzle_diameter": n.get("diameter", ""),
-                "wear": n.get("wear"),
-                "stat": n.get("stat"),
-                "max_temp": n.get("max_temp", 0),
-                "serial_number": n.get("serial_number", ""),
-                "filament_color": n.get("filament_color", ""),
-                "filament_id": n.get("filament_id", ""),
-                # A push replaces the whole rack, so without this every one
-                # dropped the slot's material label (upstream 808e461c5).
-                "filament_type": n.get("filament_type", ""),
-                "print_time_s": n.get("print_time_s"),
-                "switch_count": n.get("switch_count"),
-            }
-            for n in (state.nozzle_rack or [])
-        ],
+        "nozzle_rack": nozzle_rack_entries(state),
         # AMS drying support
         "supports_drying": supports_drying(model, state.firmware_version),
         "supports_drying_while_printing": supports_drying_while_printing(model, state.firmware_version),

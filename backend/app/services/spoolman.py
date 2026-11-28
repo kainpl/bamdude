@@ -19,6 +19,15 @@ from backend.app.services.color_catalog_lookup import (
     tray_product_line,
 )
 from backend.app.utils.color_utils import color_match_key, spoolman_color_hex
+from backend.app.utils.tray_ids import (
+    AmsType,
+    ams_type_of,
+    external_label,
+    external_tray_id,
+    is_zmulti,
+    unit_letter,
+    unit_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1582,16 +1591,20 @@ class SpoolmanClient:
 
     def convert_ams_slot_to_location(self, ams_id: int, tray_id: int) -> str:
         """Return a human-readable location string (e.g. "AMS A1") for the given AMS slot."""
-        if ams_id >= 254:
+        if ams_id in (254, 255):
+            # A direct rack's PrintTool inputs (stored index 2..8) are named as Studio does.
+            if 2 <= tray_id <= 8:
+                return f"External Spool {external_label(external_tray_id(tray_id))}"
             return "External Spool"
 
-        if 128 <= ams_id <= 135:
+        kind = ams_type_of(ams_id)
+        if kind == AmsType.N3S:
             # AMS-HT units use IDs 128-135
-            ht_letter = chr(ord("A") + (ams_id - 128))
-            return f"AMS-HT {ht_letter}{tray_id + 1}"
+            return f"AMS-HT {unit_letter(ams_id)}{tray_id + 1}"
+        if is_zmulti(kind):
+            return f"{unit_name(ams_id, kind)} {tray_id + 1}"
 
-        ams_letter = chr(ord("A") + ams_id)
-        return f"AMS {ams_letter}{tray_id + 1}"
+        return f"AMS {unit_letter(ams_id)}{tray_id + 1}"
 
     def is_bambu_lab_spool(self, tray_uuid: str, tag_uid: str = "", tray_info_idx: str = "") -> bool:
         """Return True if tray_uuid or tag_uid identifies a Bambu Lab spool; tray_info_idx is ignored."""

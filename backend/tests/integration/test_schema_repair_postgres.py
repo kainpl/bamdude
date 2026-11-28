@@ -340,7 +340,8 @@ def canonical_check_cases():
         ),
         "ck_spoolman_kp_extruder_range": ({"extruder": 2}, {"extruder": 0}),
         "ck_spoolman_slot_ams_id_range": ({"ams_id": 8}, {"ams_id": 0}),
-        "ck_spoolman_slot_tray_id_range": ({"tray_id": 4}, {"tray_id": 0}),
+        # m272: the tray bound depends on the unit (4-8 only for a rack AMS / an external input).
+        "ck_spoolman_slot_tray_id_range": ({"ams_id": 0, "tray_id": 4}, {"ams_id": 0, "tray_id": 0}),
         "ck_stock_issue_lines_quantity": ({"quantity": 0}, {"quantity": 1}),
     }
     checks = [

@@ -34,6 +34,7 @@ from backend.app.services.notification_credentials import (
 )
 from backend.app.services.notification_events import SENSOR_ALERT_FIELDS
 from backend.app.services.notify_client import NotifyClient, NotifyError, notify_credentials, notify_supports_photos
+from backend.app.utils import tray_ids
 
 logger = logging.getLogger(__name__)
 
@@ -2355,10 +2356,7 @@ class NotificationService:
                     tray_id = u.get("tray_id", 0)
                     material = u.get("material", "Unknown") or "Unknown"
                     used = u.get("weight_used", 0)
-                    if ams_id >= 128:
-                        slot_label = "Ext"
-                    else:
-                        slot_label = f"AMS-{chr(65 + ams_id)} T{tray_id + 1}"
+                    slot_label = tray_ids.usage_slot_label(ams_id, tray_id)
                     parts.append(f"{slot_label} {material}: {used:.1f}g")
                 variables["filament_details"] = " | ".join(parts)
             elif archive_data.get("filament_slots"):

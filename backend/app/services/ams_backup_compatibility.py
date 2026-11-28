@@ -18,6 +18,7 @@ from backend.app.services.spool_tag_matcher import is_valid_tag
 from backend.app.utils import filament_catalog as catalog
 from backend.app.utils.filament_types import SUPPORT_SLOT_TYPES
 from backend.app.utils.rgba import normalize_opaque_rgba
+from backend.app.utils.tray_ids import AmsType, ams_type_of
 
 NAMESPACE = "backup_compatibility"
 DEFAULT_CANONICAL_COLOR = "000000FF"
@@ -164,7 +165,8 @@ def live_tray_for(state, ams_id: int, tray_id: int) -> dict | None:
         for tray in trays:
             if str(tray.get("id")) == str(tray_id):
                 return tray
-        return trays[0] if ams_id >= 128 and len(trays) == 1 else None
+        single_slot = ams_type_of(ams_id, unit.get("ams_type")) == AmsType.N3S
+        return trays[0] if single_slot and len(trays) == 1 else None
     return None
 
 

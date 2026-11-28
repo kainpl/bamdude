@@ -501,13 +501,18 @@ def _plan_dict(plan: SlotAssignmentPlan) -> dict:
     }
 
 
-def _slot_label(ams_id: int, tray_id: int) -> str:
+def _slot_label(ams_id: int, tray_id: int, layout=None) -> str:
     from backend.app.services.spool_assignment_notifications import _slot_label_from_global_tray  # noqa: PLC0415
+    from backend.app.utils.tray_ids import NO_LAYOUT  # noqa: PLC0415
 
-    return _slot_label_from_global_tray(ams_id if ams_id >= 128 else ams_id * 4 + tray_id)
+    layout = layout or NO_LAYOUT
+    return _slot_label_from_global_tray(layout.global_tray_id(ams_id, tray_id), layout)
 
 
 async def bulk_apply(db, printer, client, *, dry_run: bool) -> dict:
+    from backend.app.services.printer_manager import tray_layout_of  # noqa: PLC0415
+
+    label_layout = tray_layout_of(printer.id)
     walk = await iter_slot_projections(db, printer)
     candidates = walk.candidates
     remembered = overlay.entries_for(printer.id)
@@ -537,7 +542,7 @@ async def bulk_apply(db, printer, client, *, dry_run: bool) -> dict:
             {
                 "ams_id": c.ams_id,
                 "tray_id": c.tray_id,
-                "slot": _slot_label(c.ams_id, c.tray_id),
+                "slot": _slot_label(c.ams_id, c.tray_id, label_layout),
                 "source": c.source,
                 "spool": c.spool_label,
                 "actual": _plan_dict(c.projection.actual),

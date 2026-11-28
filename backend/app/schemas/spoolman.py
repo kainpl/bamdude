@@ -6,17 +6,27 @@ from pydantic import AfterValidator, BaseModel, Field, model_validator
 def _slot_ams_id(value: int) -> int:
     """The units ``spoolman_slot_assignments`` accepts (its CHECK is the authority).
 
-    0–7 standard AMS, 128–191 AMS-HT, 255 the external holder. Anything else
-    reached the INSERT and came back as a 500 — after Spoolman had already been
-    written on the link route (upstream c2bc41a5e).
+    0–7 standard AMS, 32 / 33 a rack AMS (AMS 3H / 3P), 128–191 AMS-HT, 255 the
+    external holder. Anything else reached the INSERT and came back as a 500 —
+    after Spoolman had already been written on the link route (upstream
+    c2bc41a5e).
     """
-    if 0 <= value <= 7 or 128 <= value <= 191 or value == 255:
+    if 0 <= value <= 7 or value in (32, 33) or 128 <= value <= 191 or value == 255:
         return value
-    raise ValueError("ams_id must be 0-7 (AMS), 128-191 (AMS-HT) or 255 (external)")
+    raise ValueError("ams_id must be 0-7 (AMS), 32-33 (rack AMS), 128-191 (AMS-HT) or 255 (external)")
 
 
 SlotAmsId = Annotated[int, AfterValidator(_slot_ams_id)]
-SlotTrayId = Annotated[int, Field(ge=0, le=3)]
+# The widest slot the table admits (a rack AMS / a direct rack's external input);
+# ``slot_tray_in_range`` narrows it per unit as the CHECK does.
+SlotTrayId = Annotated[int, Field(ge=0, le=8)]
+
+
+def slot_tray_in_range(ams_id: int, tray_id: int) -> None:
+    """``ck_spoolman_slot_tray_id_range``, asked before the INSERT: trays 0-3, up to 8 for 32 / 33 / 255."""
+    if tray_id <= 3 or (ams_id in (32, 33, 255) and tray_id <= 8):
+        return
+    raise ValueError("tray_id must be 0-3 (0-8 for a rack AMS or an external input)")
 
 
 class SpoolmanFilamentPatch(BaseModel):

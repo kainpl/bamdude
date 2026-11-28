@@ -200,6 +200,7 @@ build when the rule is broken. `Vault: inv-x` is the maintainer's note
 
 ### Filament, AMS, spools and slicing · [full text](docs/development/invariants/filament-and-slicing.md)
 
+- **A tray number is computed in one place** — `utils/tray_ids.py` and its twin `frontend/src/utils/trayIds.ts`. The unit's type comes from its `info` (sticky, else its id); a direct-connected rack (H3C, P3C) from `device.holder.info2`, else `default_nozzle_count > 2`; externals are stored `(255, 0..8)`. A direct rack takes no printer command or print until N01 B/C (`services/direct_rack_gate.py`). Guard: `test_tray_numbers_have_one_home.py` + `trayNumbersHaveOneHome.test.ts`. Vault: `inv-tray-number-one-home`.
 - **Filament attribution believes the DISPATCHED mapping, never the live one.** Priority in `usage_tracker._track_from_3mf`: stored print-cmd `ams_mapping` → queue item's → live `mapping` → colour → `tray_now`; don't reorder. Sessions belong to an archive by `archive_identity`, never by name.
 - **Spoolman no-3MF tracking.** Remain% snapshot at start; rows store `filament_usage=[]`, readers use `filament_usage or []`.
 - **An advertised AMS profile is not the spool.** One projection, one publisher; everything about the spool reads `services/ams_advertised_overlay.py`.

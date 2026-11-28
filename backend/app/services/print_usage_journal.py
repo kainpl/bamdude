@@ -23,6 +23,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.print_usage_event import PrintUsageEvent
+from backend.app.utils.tray_ids import TrayLayout, global_tray_id, is_external_id, slot_key, unit_type
 
 logger = logging.getLogger(__name__)
 
@@ -355,7 +356,7 @@ async def _write_replay_fact(db: AsyncSession, printer_id: int, archive_id: int,
             ids=ids,
         )
     elif fact.kind == "held_assignment":
-        ams_id, tray_id = _global_tray_to_ams_slot(fact.tray)
+        ams_id, tray_id = _global_tray_to_ams_slot(fact.tray, _layout(printer_id))
         await note_assignment_change(
             db,
             printer_id=printer_id,
@@ -484,7 +485,13 @@ def _closes_tail(event, origin: int) -> bool:
     tray = event.global_tray_id
     if event.event == EVENT_TRAY_CHANGE and tray == UNKNOWN_FEED:
         return True  # nobody saw how the tail went on: the chronology says unknown from here
-    return event.event == EVENT_TRAY_CHANGE and tray is not None and 0 <= tray < 254 and tray != origin
+    return (
+        event.event == EVENT_TRAY_CHANGE
+        and tray is not None
+        and tray >= 0
+        and not is_external_id(tray)
+        and tray != origin
+    )
 
 
 def tail_episodes(events: list, tray: int | None = None) -> list[TailEpisode]:
@@ -840,11 +847,15 @@ async def ensure_tail_recorded(
 
 
 def _global_tray(ams_id: int, tray_id: int) -> int:
-    if ams_id >= 254:
-        return 254 + tray_id
-    if ams_id >= 128:
-        return ams_id
-    return ams_id * 4 + tray_id
+    """The global tray of a stored slot (``utils/tray_ids.global_tray_id``)."""
+    return global_tray_id(ams_id, tray_id)
+
+
+def _layout(printer_id: int | None) -> TrayLayout:
+    """The printer's tray numbering, live or from its model (``printer_manager.tray_layout_of``)."""
+    from backend.app.services.printer_manager import tray_layout_of
+
+    return tray_layout_of(printer_id)
 
 
 class RunoutResult(StrEnum):
@@ -868,16 +879,12 @@ def _kind_upgrade(previous, current):
     )
 
 
-def _global_tray_to_ams_slot(global_tray_id: int) -> tuple[int, int]:
+def _global_tray_to_ams_slot(tray: int, layout: TrayLayout | None = None) -> tuple[int, int]:
     """Decode a global tray id to the ``(ams_id, tray_id)`` the assignment
-    tables are keyed by — same encoding as ``spoolman_tracking``:
-    254/255 → external (ams 255, tray 0/1), >=128 → AMS-HT (own id, tray 0),
-    else a four-slot AMS unit."""
-    if global_tray_id >= 254:
-        return 255, global_tray_id - 254
-    if global_tray_id >= 128:
-        return global_tray_id, 0
-    return global_tray_id // 4, global_tray_id % 4
+    tables are keyed by — same encoding as ``spoolman_tracking``
+    (``utils/tray_ids.slot_key``): an external input under ams 255, an AMS-HT
+    its own id, a rack AMS by the printer's layout, else a four-slot AMS unit."""
+    return slot_key(tray, layout)
 
 
 def _slot_occupied_now(printer_id: int, global_tray_id: int | None) -> bool | None:
@@ -945,7 +952,7 @@ async def freeze_spool_ids(db: AsyncSession, printer_id: int, global_tray_id: in
     from backend.app.models.spool_assignment import SpoolAssignment
     from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 
-    ams_id, tray_id = _global_tray_to_ams_slot(global_tray_id)
+    ams_id, tray_id = _global_tray_to_ams_slot(global_tray_id, _layout(printer_id))
 
     spool_id = (
         await db.execute(
@@ -1013,6 +1020,8 @@ def _is_stale_refill_runout(event, earlier: list) -> bool:
         or getattr(event, "slot_occupied", None) is not True
     ):
         return False
+    # The unit of a tray, by the printer's numbering: a rack AMS's slots are one unit.
+    layout = _layout(getattr(event, "printer_id", None))
     history = [
         e
         for e in earlier
@@ -1046,7 +1055,7 @@ def _is_stale_refill_runout(event, earlier: list) -> bool:
             and previous.id < e.id < loaded.id
             and e.global_tray_id is not None
             and e.global_tray_id != tray
-            and e.global_tray_id // 4 == tray // 4
+            and layout.slot_key(e.global_tray_id)[0] == layout.slot_key(tray)[0]
             and previous.layer_num <= e.layer_num <= previous.layer_num + 1
         ),
         None,
@@ -1372,12 +1381,7 @@ async def note_manual_replacement_intent(
         return False
     archive_id = window["archive_id"]
 
-    if ams_id >= 254:
-        global_tray = 254 + tray_id
-    elif ams_id >= 128:
-        global_tray = ams_id
-    else:
-        global_tray = ams_id * 4 + tray_id
+    global_tray = _global_tray(ams_id, tray_id)
 
     spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, global_tray)
     logger.info(
@@ -1436,6 +1440,8 @@ def slot_presence_by_tray(raw_data) -> dict[int, bool]:
             ams_id = int(unit.get("id"))
         except (TypeError, ValueError):
             continue
+        pair = unit_type(unit)
+        unit_kind = pair[1] if pair is not None else None
         for tray in unit.get("tray") or []:
             # A missing or None reading is "unknown", never "empty".
             if not isinstance(tray, dict) or tray.get("exists") is None:
@@ -1445,8 +1451,8 @@ def slot_presence_by_tray(raw_data) -> dict[int, bool]:
             except (TypeError, ValueError):
                 continue
             # A single-spool AMS-HT IS its own global tray (128..135); ordinary
-            # units flatten as unit*4 + slot.
-            presence[ams_id if ams_id >= 128 else ams_id * 4 + tray_id] = bool(tray.get("exists"))
+            # units flatten as unit*4 + slot, a rack AMS by its type (utils/tray_ids).
+            presence[global_tray_id(ams_id, tray_id, unit_kind)] = bool(tray.get("exists"))
     return presence
 
 
@@ -1533,12 +1539,7 @@ async def note_assignment_change(
     if archive_id is None:
         return
 
-    if ams_id >= 254:
-        global_tray = 254 + tray_id
-    elif ams_id >= 128:
-        global_tray = ams_id
-    else:
-        global_tray = ams_id * 4 + tray_id
+    global_tray = _global_tray(ams_id, tray_id)
 
     events = await load_events(db, printer_id, archive_id)
     # The LAST runout on the tray — episodes are closed in order, and a second

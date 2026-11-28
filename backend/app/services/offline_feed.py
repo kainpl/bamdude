@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from backend.app.services.ams_advertised_overlay import slot_key
 from backend.app.services.filament_routing import RoutingPolicy, effective_slots, normalized_color
 from backend.app.utils.filament_types import SUPPORT_SLOT_TYPES, filament_types_compatible, routing_filament_type
+from backend.app.utils.tray_ids import external_slot_index, is_external_id
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +50,10 @@ BoundSpool = tuple[tuple[str, ...], str | None]
 
 _KINDS = {"auto": ("ams", "external"), "ams_only": ("ams",), "external_only": ("external",)}
 
-# Assignments key the external holder as ams_id 255, tray 0/1; the printer
-# reports it as vt_tray 254/255.
+# Assignments key the external holder as ams_id 255, tray 0/1 (a direct rack's
+# inputs 2-8); the printer reports it as vt_tray 254/255 (247-253) —
+# utils/tray_ids.external_slot_index.
 _EXTERNAL_AMS_ID = 255
-_EXTERNAL_TRAY_BASE = 254
 
 
 @dataclass(frozen=True)
@@ -97,8 +98,8 @@ def _reported_slots(reading: dict) -> dict[tuple[int, int], tuple[str, dict]]:
                 slots[slot_key(uid, tid)] = ("ams", tray)
     for tray in reading.get("vt_tray") or []:
         tid = _integer(tray.get("id")) if isinstance(tray, dict) else None
-        if tid is not None and tid >= _EXTERNAL_TRAY_BASE:
-            slots[(_EXTERNAL_AMS_ID, tid - _EXTERNAL_TRAY_BASE)] = ("external", tray)
+        if tid is not None and is_external_id(tid):
+            slots[(_EXTERNAL_AMS_ID, external_slot_index(tid))] = ("external", tray)
     return slots
 
 

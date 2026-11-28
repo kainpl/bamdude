@@ -48,6 +48,7 @@ from backend.app.services.printer_manager import (
     printer_manager,
     supports_drying,
     supports_drying_while_printing,
+    tray_layout_of,
 )
 from backend.app.services.printer_occupancy import (
     PrinterOccupancyConflict,
@@ -3606,6 +3607,13 @@ class PrintScheduler:
                 await self._fail_source_item(db, item, exc.reason, basis=basis)
             else:
                 await self._wait(db, item, "filament_unavailable", routing_detail(exc.reason)["message"])
+            return False
+
+        from backend.app.services import direct_rack_gate
+
+        if direct_rack_gate.print_refused(tray_layout_of(printer.id, printer_manager, printer.model)):
+            # A direct-connected rack (H3C, P3C): the job waits, by name, until N01 stage B.
+            await self._wait(db, item, direct_rack_gate.UNSUPPORTED_CODE, direct_rack_gate.UNSUPPORTED_MESSAGE)
             return False
 
         try:

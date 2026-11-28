@@ -45,7 +45,7 @@ import { resolveSpoolColorName } from '../utils/colors';
 import { useColorCatalogVersion } from '../hooks/useColorCatalogVersion';
 import { getCurrencySymbol } from '../utils/currency';
 import { formatDateInput, parseUTCDate, type DateFormat } from '../utils/date';
-import { formatSlotLabel } from '../utils/amsHelpers';
+import { formatSlotLabel, isAmsHtUnit } from '../utils/amsHelpers';
 import { aggregateGroupSpool } from '../utils/inventoryGrouping';
 import { parseSpoolLabel } from '../utils/spoolLabel';
 import {
@@ -499,7 +499,7 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
     if (!assignment) return <span className="text-sm text-bambu-gray">-</span>;
     const printerLabel = assignment.printer_name || `Printer ${assignment.printer_id}`;
     const isExternal = assignment.ams_id === 254 || assignment.ams_id === 255;
-    const isHt = !isExternal && assignment.ams_id >= 128;
+    const isHt = !isExternal && isAmsHtUnit(assignment.ams_id);
     const slotLabel = formatSlotLabel(assignment.ams_id, assignment.tray_id, isHt, isExternal);
     return (
       <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-100 dark:bg-purple-500/20 text-purple-700 dark:text-purple-400">
@@ -729,7 +729,7 @@ const columnSortValues: Record<string, (spool: InventorySpool, assignmentMap: Re
     const a = am[s.id];
     if (!a) return '';
     const isExt = a.ams_id === 254 || a.ams_id === 255;
-    const isHt = !isExt && a.ams_id >= 128;
+    const isHt = !isExt && isAmsHtUnit(a.ams_id);
     const label = a.ams_label ? ` (${a.ams_label})` : '';
     return `${a.printer_name || ''} ${formatSlotLabel(a.ams_id, a.tray_id, isHt, isExt)}${label}`;
   },

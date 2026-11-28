@@ -114,7 +114,7 @@ async def compute_usage_projection(db: AsyncSession, printer_id: int, printer_ma
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.services.print_file_analysis import get_print_file_analysis
     from backend.app.services.print_usage_journal import active_archive_id, load_events, without_stale_refill_runouts
-    from backend.app.services.usage_tracker import _decode_mqtt_mapping, journal_boundaries_for_tray
+    from backend.app.services.usage_tracker import _decode_mqtt_mapping, _printer_layout, journal_boundaries_for_tray
 
     if printer_manager is None:
         from backend.app.services.printer_manager import printer_manager as _pm
@@ -249,7 +249,7 @@ async def compute_usage_projection(db: AsyncSession, printer_id: int, printer_ma
             slot_to_tray = None
     if not slot_to_tray:
         raw = getattr(state, "raw_data", None) or {}
-        slot_to_tray = _decode_mqtt_mapping(raw.get("mapping"))
+        slot_to_tray = _decode_mqtt_mapping(raw.get("mapping"), _printer_layout(printer_manager, printer_id))
 
     # All database/analysis awaits are behind us. A source-ready or run change
     # during any one of them invalidates the old analysis, not just its total.

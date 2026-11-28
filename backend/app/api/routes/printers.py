@@ -64,6 +64,7 @@ from backend.app.schemas.timelapse import TimelapseStorage
 from backend.app.services import (
     ams_advertised_overlay,
     archive_parts,
+    direct_rack_gate,
     drying_preflight,
     print_mapping_projection,
     scheduled_drying,
@@ -125,6 +126,7 @@ from backend.app.services.printer_manager import (
     get_derived_status_name,
     get_stage_name,
     is_printer_busy,
+    nozzle_rack_entries,
     nozzle_wiring,
     printer_manager,
     resolve_expected_tray,
@@ -133,6 +135,7 @@ from backend.app.services.printer_manager import (
     supports_chamber_temp,
     supports_drying,
     supports_drying_while_printing,
+    tray_layout_of,
     vt_trays_for,
 )
 from backend.app.services.printer_status_context import current_archive_ids, printers_with_waiting_rows
@@ -150,6 +153,7 @@ from backend.app.utils.printer_storage import storage_capability_for
 from backend.app.utils.slot_nozzle import slot_nozzle
 from backend.app.utils.temperature_limits import is_within, limits_for
 from backend.app.utils.timelapse import capability_for as timelapse_capability_for
+from backend.app.utils.tray_ids import TrayLayout
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/printers", tags=["printers"])
@@ -1676,24 +1680,10 @@ async def _build_printer_status(
         for n in (state.nozzles or [])
     ]
 
-    # H2C nozzle rack (tool-changer dock positions)
-    nozzle_rack = [
-        NozzleRackSlot(
-            id=n.get("id", 0),
-            nozzle_type=n.get("type", ""),
-            nozzle_diameter=n.get("diameter", ""),
-            wear=n.get("wear"),
-            stat=n.get("stat"),
-            max_temp=n.get("max_temp", 0),
-            serial_number=n.get("serial_number", ""),
-            filament_color=n.get("filament_color", ""),
-            filament_id=n.get("filament_id", ""),
-            filament_type=n.get("filament_type", ""),
-            print_time_s=n.get("print_time_s"),
-            switch_count=n.get("switch_count"),
-        )
-        for n in (state.nozzle_rack or [])
-    ]
+    # Nozzle rack: the H2C's docks or a direct rack's PrintTools — one shaper
+    # for this answer and the WebSocket push.
+    nozzle_rack = [NozzleRackSlot(**entry) for entry in nozzle_rack_entries(state)]
+    layout = TrayLayout.from_state(state, printer.model)
 
     # Convert print options to response format
     print_options = PrintOptionsResponse(
@@ -1730,9 +1720,8 @@ async def _build_printer_status(
     ams_extruder_map = state.ams_extruder_map or {}
     logger.debug("API returning ams_mapping: %s, ams_extruder_map: %s", ams_mapping, ams_extruder_map)
 
-    # tray_now from MQTT is already a global tray ID: (ams_id * 4) + slot_id
-    # Per OpenBambuAPI docs: 254 = external spool, 255 = no filament, otherwise global tray ID
-    # No conversion needed - just use the raw value directly
+    # tray_now from MQTT is already a global tray ID (utils/tray_ids; the MQTT
+    # layer globalises a bare slot). 255 = no filament.
     tray_now = state.tray_now
     logger.debug("Using tray_now directly as global ID: %s", tray_now)
 
@@ -1837,6 +1826,7 @@ async def _build_printer_status(
                 raw_data.get("mapping"),
                 state.active_extruder,
                 nozzle_wiring(state),
+                layout,
             )
             if state.state == "PAUSE"
             else None
@@ -1848,10 +1838,13 @@ async def _build_printer_status(
                 raw_data.get("mapping"),
                 state.active_extruder,
                 nozzle_wiring(state),
+                layout,
             )
             if state.state == "PAUSE"
             else None
         ),
+        direct_rack=layout.direct_rack,
+        rack_size=layout.rack_size,
         ams_status_main=state.ams_status_main,
         ams_status_sub=state.ams_status_sub,
         mc_print_sub_stage=state.mc_print_sub_stage,
@@ -3142,6 +3135,7 @@ async def start_drying(
     printer = result.scalar_one_or_none()
     if not printer:
         raise HTTPException(404, "Printer not found")
+    _refuse_direct_rack_slot(printer_id, printer.model, ams_id)
 
     # Server-side guard: reject if this model/firmware doesn't support drying
     live_state = printer_manager.get_status(printer_id)
@@ -3208,6 +3202,7 @@ async def stop_drying(
     printer = result.scalar_one_or_none()
     if not printer:
         raise HTTPException(404, "Printer not found")
+    _refuse_direct_rack_slot(printer_id, printer.model, ams_id)
 
     # Screen-only models ignore stop just as they ignore start — a cycle running on a
     # P1S was started at the printer and has to be ended there too (#2533).
@@ -3442,6 +3437,7 @@ async def configure_ams_slot(
     client = printer_manager.get_client(printer_id)
     if not client:
         raise HTTPException(status_code=400, detail="Printer not connected")
+    _refuse_direct_rack_slot(printer_id, None, ams_id, tray_id)
 
     # ONE identity path (spec A §5.2): the family catalog builds the payload.
     # ``tray_info_idx`` (when given) is a family id straight from the picker;
@@ -3640,6 +3636,7 @@ async def reset_ams_slot(
     if not client:
         raise HTTPException(status_code=400, detail="Printer not connected")
 
+    _refuse_direct_rack_slot(printer_id, None, ams_id, tray_id)
     if is_printer_busy(printer_id):
         # The slot's filament setting is what the job on the printer feeds from.
         # The dialog disables the button, but this route is reachable by an API
@@ -5194,6 +5191,7 @@ async def refresh_ams_slot(
     client = printer_manager.get_client(printer_id)
     if not client:
         raise HTTPException(400, "Printer not connected")
+    _refuse_direct_rack_slot(printer_id, printer.model, ams_id, slot_id)
 
     success, message = client.ams_refresh_tray(ams_id, slot_id)
     if not success:
@@ -5221,6 +5219,16 @@ async def refresh_ams_slot(
 _LOAD_TRAY_ID_ERROR = (
     "tray_id must be 0..15 (AMS slot), 24..27 (A2L AMS-Lite), 128..135 (AMS-HT), 254 (external / Ext-L), or 255 (Ext-R)"
 )
+
+
+def _refuse_direct_rack_slot(printer_id: int, model: str | None, ams_id: int, tray_id: int | None = None) -> None:
+    """409 ``direct_rack_unsupported`` for a command on a rack AMS slot or a direct rack's external input.
+
+    ``services/direct_rack_gate``: such commands arrive with N01 stage C; the
+    client refuses them too, this names the reason to the caller.
+    """
+    if direct_rack_gate.slot_command_refused(tray_layout_of(printer_id, printer_manager, model), ams_id, tray_id):
+        raise direct_rack_gate.refusal()
 
 
 def _is_valid_load_tray_id(tray_id: int) -> bool:
@@ -5270,6 +5278,8 @@ async def ams_load_filament(
     switch whose presence is not yet confirmed after a reconnect, and a load
     that names no hotend.
     """
+    if direct_rack_gate.tray_command_refused(tray_layout_of(printer_id, printer_manager), tray_id):
+        raise direct_rack_gate.refusal()
     if not _is_valid_load_tray_id(tray_id):
         raise HTTPException(400, _LOAD_TRAY_ID_ERROR)
 
@@ -5331,6 +5341,12 @@ async def ams_unload_filament(
     Nozzle temperature is derived from `state.temperatures` with a PLA-safe
     fallback when the nozzle is cold.
     """
+    unload_layout = tray_layout_of(printer_id, printer_manager)
+    if unload_layout.direct_rack:
+        live = printer_manager.get_status(printer_id)
+        source = tray_id if tray_id is not None else getattr(live, "tray_now", None)
+        if direct_rack_gate.tray_command_refused(unload_layout, source):
+            raise direct_rack_gate.refusal()
     if tray_id is not None and not _is_valid_load_tray_id(tray_id):
         raise HTTPException(400, _LOAD_TRAY_ID_ERROR)
 

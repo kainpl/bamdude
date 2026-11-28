@@ -40,6 +40,7 @@ from sqlalchemy import delete, select
 
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+from backend.app.utils.tray_ids import external_tray_id, global_tray_id
 
 logger = logging.getLogger(__name__)
 
@@ -65,12 +66,12 @@ class Released:
 
 
 def global_tray(ams_id: int, tray_id: int) -> int:
-    """The printer-wide tray number of a slot: AMS-HT is its unit id, the external holder 254/255."""
-    if ams_id == 255:
-        return 254 + tray_id
-    if ams_id >= 128:
-        return ams_id
-    return ams_id * 4 + tray_id
+    """The printer-wide tray number of a stored slot (``utils/tray_ids.global_tray_id``).
+
+    AMS-HT is its unit id, an external input its own id (``(255, n)``), a rack
+    AMS 28 + slot / 37 + slot — told from the unit id, which needs no printer.
+    """
+    return global_tray_id(ams_id, tray_id)
 
 
 def slot_feeds_running_print(printer_id: int, ams_id: int, tray_id: int) -> bool:
@@ -433,7 +434,7 @@ def _live_tray(slot: Slot) -> dict | None:
     raw = getattr(state, "raw_data", None) or {}
     if ams_id == 255:
         for vt in raw.get("vt_tray") or []:
-            if isinstance(vt, dict) and str(vt.get("id")) == str(254 + tray_id):
+            if isinstance(vt, dict) and str(vt.get("id")) == str(external_tray_id(tray_id)):
                 return vt
         return None
     ams = raw.get("ams") or []

@@ -520,6 +520,7 @@ export default {
       "dispatch_failed": "Preparation failed",
       "storage_full": "Timelapse storage is full",
       "farm_recovery_hold": 'New starts are paused while the farm recovers',
+      "direct_rack_unsupported": 'Printing on H3C and P3C printers is not supported yet',
       "source_capture": "Waiting to copy the source",
       "unknown": "Waiting for a check"
     },
@@ -1368,6 +1369,16 @@ export default {
     activeNozzle: 'Active: {{nozzle}} nozzle',
     amsSwitchInletTooltip: 'Filament Track Switch IN-{{inlet}} — feeds both nozzles',
     nozzleRack: 'Nozzle Rack',
+    // A direct-connected rack (H3C, P3C): its rack AMS and PrintTools — shown, not commanded yet.
+    rackAms: {
+      dryZone: 'Drying zone: slots {{slots}}',
+      zoneTemp: '{{temp}}°C',
+      zoneHumidity: '{{humidity}}%',
+      printTool: 'PrintTool',
+      hotendTemp: 'Temperature',
+      toolheadLabel: 'Nozzle · PrintTool {{tool}}',
+      noHotend: 'No hotend on the toolhead',
+    },
     nozzleDocked: 'Docked',
     nozzleMounted: 'Mounted',
     nozzleActive: 'Active',

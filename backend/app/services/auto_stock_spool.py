@@ -18,6 +18,7 @@ from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.schemas.auto_stock_spool import AutoStockSpoolPolicy, StockSpoolGroup
 from backend.app.services.ams_slot_presence import spool_present
 from backend.app.services.spool_tag_matcher import is_valid_tag
+from backend.app.utils.tray_ids import external_slot_index, external_tray_id, global_tray_id as stored_global_tray
 
 logger = logging.getLogger(__name__)
 NAMESPACE = "auto_stock_spool"
@@ -152,7 +153,8 @@ async def claim_on_insertion(
                 (
                     t
                     for t in current.raw_data.get("vt_tray", []) or []
-                    if isinstance(t, dict) and t.get("id") in (254 + tray_id, str(254 + tray_id))
+                    if isinstance(t, dict)
+                    and t.get("id") in (external_tray_id(tray_id), str(external_tray_id(tray_id)))
                 ),
                 None,
             )
@@ -169,7 +171,7 @@ async def claim_on_insertion(
                 or not tray.get("tray_type")
             )
         )
-        or (not external and (ams_id >= 254 or spool_present(tray) is not True))
+        or (not external and (ams_id in (254, 255) or spool_present(tray) is not True))
     ):
         return {"reason": "presence_unknown"}
     if is_valid_tag(tray.get("tag_uid"), tray.get("tray_uuid")):
@@ -211,7 +213,7 @@ async def claim_on_insertion(
             return {"reason": "assignment_priority"}
         archive_id = await active_archive_id(db, printer_id)
         events = await load_events(db, printer_id, archive_id) if archive_id else []
-        global_tray = 254 + tray_id if external else ams_id if ams_id >= 128 else ams_id * 4 + tray_id
+        global_tray = stored_global_tray(255 if external else ams_id, tray_id)
         last = next(
             (
                 e
@@ -364,8 +366,8 @@ async def claim_on_external_resume(db, *, printer_id: int, event: dict, manager)
     outcome = await claim_on_insertion(
         db,
         printer_id=printer_id,
-        event={**event, "ams_id": 255, "tray_id": runout.global_tray_id - 254, "archive_id": archive_id},
+        event={**event, "ams_id": 255, "tray_id": external_slot_index(runout.global_tray_id), "archive_id": archive_id},
         manager=manager,
         external_runout=runout,
     )
-    return {**outcome, "ams_id": 255, "tray_id": runout.global_tray_id - 254}
+    return {**outcome, "ams_id": 255, "tray_id": external_slot_index(runout.global_tray_id)}

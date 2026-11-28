@@ -192,6 +192,21 @@ import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { ConnectionDiagnosticModal, DiagnosticChecklist } from '../components/ConnectionDiagnostic';
 import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, getEmptySlotKind, resolveSlotNozzleDiameter, resolveSlotNozzleFlow, amsSideBadge, formatSlotLabel, isAmsHtUnit, trayForSlot, amsHasLoadedTray } from '../utils/amsHelpers';
+import {
+  EXTERNAL_DEPUTY_ID,
+  externalLabel,
+  externalPrintTool,
+  externalSlotIndex,
+  externalsByPrintTool,
+  isAmsHtId,
+  isExternal,
+  isZmulti,
+  layoutAmsType,
+  slotCommandWithheld,
+  slotKey,
+  trayLayoutOf,
+  unitName,
+} from '../utils/trayIds';
 import { FeedDirectionModal } from '../components/FeedDirectionModal';
 import { getPrinterImage, getWifiStrength, hasDoorSensor, isPrinterCurrentlyDispatchable, mapModelCode } from '../utils/printer';
 import { modelCompatibility } from '../utils/modelCompatibility';
@@ -377,7 +392,9 @@ function NozzleSlotHoverCard({ slot, index, activeStatus, filamentName, children
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isEmpty = !slot.nozzle_diameter && !slot.nozzle_type;
-  const isMounted = slot.stat === 1;
+  // On a toolhead = an id below 0x10 (Studio: a high nibble of 1 is the rack;
+  // `stat` 1 means "data reliable", not "mounted" — upstream 0ca2a9b54).
+  const isMounted = slot.id >= 0 && slot.id < 16;
 
   useEffect(() => {
     if (isVisible && triggerRef.current && cardRef.current) {
@@ -473,6 +490,22 @@ function NozzleSlotHoverCard({ slot, index, activeStatus, filamentName, children
                     {activeStatus ? t('printers.nozzleActive') : isMounted ? t('printers.nozzleMounted') : t('printers.nozzleDocked')}
                   </span>
                 </div>
+
+                {/* A direct rack (H3C, P3C): the PrintTool and the hotend's own temperature */}
+                {slot.print_tool != null && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-[length:var(--pc-t10,10px)] uppercase tracking-wider text-bambu-gray font-medium">{t('printers.rackAms.printTool')}</span>
+                    <span className="text-xs text-white font-semibold">{slot.print_tool}</span>
+                  </div>
+                )}
+                {slot.print_tool != null && slot.current_temp != null && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-[length:var(--pc-t10,10px)] uppercase tracking-wider text-bambu-gray font-medium">{t('printers.rackAms.hotendTemp')}</span>
+                    <span className="text-xs text-white font-semibold">
+                      {Math.round(slot.current_temp)}°{slot.target_temp ? ` / ${Math.round(slot.target_temp)}°` : ''}
+                    </span>
+                  </div>
+                )}
 
                 {/* Wear (hide if null) */}
                 {slot.wear != null && (
@@ -737,8 +770,11 @@ function rackChipClass(cardSize: number): string {
   }
 }
 
-function NozzleRackCard({ slots, filamentInfo, cardSize = 2 }: { slots: import('../api/client').NozzleRackSlot[]; filamentInfo?: Record<string, { name: string; k: number | null }>; cardSize?: number }) {
+function NozzleRackCard({ slots, filamentInfo, cardSize = 2, directRackSize = 0 }: { slots: import('../api/client').NozzleRackSlot[]; filamentInfo?: Record<string, { name: string; k: number | null }>; cardSize?: number; directRackSize?: number }) {
   const { t } = useTranslation();
+  if (directRackSize > 0) {
+    return <DirectRackCard slots={slots} filamentInfo={filamentInfo} cardSize={cardSize} rackSize={directRackSize} />;
+  }
   // Rack nozzles only (IDs >= 2) - excludes L/R hotend nozzles (IDs 0, 1).
   // H2C rack slot IDs are fixed at 16..21. When a nozzle is picked up into the
   // hotend the firmware omits that rack ID entirely, so we must map by the fixed
@@ -801,6 +837,67 @@ function NozzleRackCard({ slots, filamentInfo, cardSize = 2 }: { slots: import('
                 </span>
               </div>
             </NozzleSlotHoverCard>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A direct-connected rack (H3C, P3C): one chip per PrintTool, by the hotend's
+ * fixed dock (`addr_id`), so the hotend on the toolhead keeps its number. The
+ * number is the PrintTool a person reads (addr + 1); the toolhead's hotend is
+ * marked; each hotend's own temperature is in its hover card. Shown, not
+ * commanded (N01 stage C).
+ */
+function DirectRackCard({ slots, filamentInfo, cardSize, rackSize }: { slots: import('../api/client').NozzleRackSlot[]; filamentInfo?: Record<string, { name: string; k: number | null }>; cardSize: number; rackSize: number }) {
+  const { t } = useTranslation();
+  const positions = Array.from({ length: rackSize }, (_, addr) => slots.find(s => s.addr_id === addr) ?? null);
+  return (
+    <div className="text-center px-2.5 py-1.5 bg-bambu-dark rounded-lg flex-[0_1_auto] flex flex-col justify-center">
+      <p className="text-[length:var(--pc-t9,9px)] text-bambu-gray mb-1">{t('printers.nozzleRack')}</p>
+      <div className="flex flex-wrap gap-[3px] justify-center">
+        {positions.map((slot, addr) => {
+          const isEmpty = !slot || (!slot.nozzle_diameter && !slot.nozzle_type);
+          const onToolhead = !!slot && slot.id >= 0 && slot.id < 16;
+          const filamentBg = slot && !isEmpty ? parseFilamentColor(slot.filament_color) : null;
+          const lightBg = filamentBg && slot ? isLightColor(slot.filament_color) : false;
+          const chip = (
+            <div className="flex flex-col items-center gap-0.5">
+              <div
+                className={`${rackChipClass(cardSize)} rounded flex items-center justify-center cursor-default transition-colors border-b-2 ${
+                  onToolhead ? 'ring-1 ring-bambu-green ' : ''
+                }${
+                  isEmpty
+                    ? 'bg-bambu-dark-tertiary/20 border-bambu-dark-tertiary/20'
+                    : 'bg-bambu-dark-tertiary/40 border-bambu-dark-tertiary/40'
+                }`}
+                style={filamentBg ? { backgroundColor: filamentBg } : undefined}
+                title={onToolhead ? t('printers.nozzleMounted') : undefined}
+              >
+                <span
+                  data-rack-diameter
+                  className={`font-semibold ${isEmpty ? 'text-bambu-gray/30' : lightBg ? 'text-black/80' : 'text-white'}`}
+                  style={filamentBg && !lightBg ? { textShadow: '0 1px 3px rgba(0,0,0,0.9)' } : undefined}
+                >
+                  {isEmpty ? '-' : (slot?.nozzle_diameter || '?')}
+                </span>
+              </div>
+              <span
+                data-rack-position
+                className={`text-[length:var(--pc-t8,8px)] leading-none tabular-nums ${onToolhead ? 'text-bambu-green' : 'text-bambu-gray/70'}`}
+              >
+                {addr + 1}
+              </span>
+            </div>
+          );
+          return slot ? (
+            <NozzleSlotHoverCard key={`addr-${addr}`} slot={slot} index={addr} filamentName={slot.filament_id ? filamentInfo?.[slot.filament_id]?.name : undefined}>
+              {chip}
+            </NozzleSlotHoverCard>
+          ) : (
+            <div key={`addr-${addr}`}>{chip}</div>
           );
         })}
       </div>
@@ -1033,16 +1130,12 @@ function TemperatureIndicator({ temp, goodThreshold = 28, fairThreshold = 35, on
 // The unit id is the source of truth (128-135 = AMS-HT), never how many trays a
 // unit listed: a regular AMS can report only some of them. The second argument
 // is kept so the call sites need not change.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept so the call sites need not change
-function getAmsLabel(amsId: number | string, _trayCount?: number): string {
+function getAmsLabel(amsId: number | string, _trayCount?: number, amsType?: number | null): string {
   // Ensure amsId is a number (backend might send string)
   const id = typeof amsId === 'string' ? parseInt(amsId, 10) : amsId;
   const safeId = isNaN(id) ? 0 : id;
-  const isHt = isAmsHtUnit(safeId);
-  // AMS-HT uses IDs starting at 128, regular AMS uses 0-3
-  const normalizedId = safeId >= 128 ? safeId - 128 : safeId;
-  const letter = String.fromCharCode(65 + normalizedId); // 0=A, 1=B, 2=C, 3=D
-  return isHt ? `HT-${letter}` : `AMS-${letter}`;
+  // AMS-A.., HT-A.., AMS-3H / AMS-3P (utils/trayIds.unitName).
+  return unitName(safeId, amsType);
 }
 
 
@@ -2522,13 +2615,16 @@ const PrinterCard = memo(function PrinterCard({
   // HMS modal. null when the slot can't be placed → honest fallback copy.
   const formatRunoutSlotLabel = (globalId: number | null): string | null => {
     if (globalId === null) return null;
-    if (globalId === 254) return t('printers.expectedSlot.external');
-    if (globalId >= 128 && globalId <= 135) {
+    const runoutLayout = trayLayoutOf(status);
+    if (isExternal(runoutLayout, globalId)) {
+      // A direct rack names its inputs by PrintTool (Ext-n); elsewhere one external.
+      return runoutLayout.directRack ? externalLabel(globalId) : t('printers.expectedSlot.external');
+    }
+    if (isAmsHtId(globalId)) {
       return amsLabels?.[globalId] || getAmsLabel(globalId, 1);
     }
-    const amsId = Math.floor(globalId / 4);
-    const slot = globalId % 4;
-    const amsName = amsLabels?.[amsId] || getAmsLabel(amsId, 4);
+    const [amsId, slot] = slotKey(runoutLayout, globalId);
+    const amsName = amsLabels?.[amsId] || getAmsLabel(amsId, 4, layoutAmsType(runoutLayout, amsId));
     return t('printers.expectedSlot.label', { ams: amsName, slot: slot + 1 });
   };
   const runoutGuidance = status?.state === 'PAUSE'
@@ -4688,13 +4784,22 @@ const PrinterCard = memo(function PrinterCard({
               const rightNozzleSlot = status.nozzle_rack?.find(s => s.id === 0);
               // Single-nozzle models (H2D, H2C): use the primary nozzle (id 0)
               const singleNozzleSlot = rightNozzleSlot || leftNozzleSlot;
+              // A direct rack (H3C, P3C): the toolhead's hotend is the entry with id 0;
+              // its PrintTool is addr + 1. No hotend on the toolhead -> Studio's hint.
+              const toolheadPrintTool = status.direct_rack ? rightNozzleSlot?.print_tool ?? null : null;
+              const toolheadEmpty = !!status.direct_rack && status.ext_has_nozzle?.[0] === false;
+              const nozzleLabel = toolheadPrintTool != null
+                ? t('printers.rackAms.toolheadLabel', { tool: toolheadPrintTool })
+                : t('printers.temperatures.nozzle');
 
               return (
                 <div className="flex items-stretch gap-1.5 flex-wrap">
                   {/* Nozzle temp - combined for dual nozzle */}
                   <div className="text-center px-2 py-1.5 bg-bambu-dark rounded-lg flex-1 flex flex-col justify-center items-center">
                     <HeaterThermometer className="w-[var(--pc-i35,0.875rem)] h-[var(--pc-i35,0.875rem)] mb-0.5" color="text-orange-400" isHeating={nozzleHeating} />
-                    {status.temperatures.nozzle_2 !== undefined ? (
+                    {toolheadEmpty ? (
+                      <p className="text-[length:var(--pc-t9,9px)] text-bambu-gray">{t('printers.rackAms.noHotend')}</p>
+                    ) : status.temperatures.nozzle_2 !== undefined ? (
                       <>
                         <p className="text-[length:var(--pc-t9,9px)] text-bambu-gray">L / R</p>
                         <p className="text-[length:var(--pc-t11,11px)] text-white">
@@ -4704,7 +4809,7 @@ const PrinterCard = memo(function PrinterCard({
                     ) : singleNozzleSlot ? (
                       <NozzleSlotHoverCard slot={singleNozzleSlot} index={0} activeStatus filamentName={singleNozzleSlot.filament_id ? filamentInfo?.[singleNozzleSlot.filament_id]?.name : undefined}>
                         <div className="cursor-default">
-                          <p className="text-[length:var(--pc-t9,9px)] text-bambu-gray">{t('printers.temperatures.nozzle')}</p>
+                          <p className="text-[length:var(--pc-t9,9px)] text-bambu-gray">{nozzleLabel}</p>
                           <p className="text-[length:var(--pc-t11,11px)] text-white">
                             {Math.round(status.temperatures.nozzle || 0)}°C
                           </p>
@@ -4795,8 +4900,11 @@ const PrinterCard = memo(function PrinterCard({
                       </div>
                     </DualNozzleHoverCard>
                   )}
-                  {/* H2C nozzle rack (tool-changer dock) - only show when rack nozzles exist (IDs >= 2) */}
-                  {status.nozzle_rack && status.nozzle_rack.some(s => s.id >= 2) && (
+                  {/* H2C nozzle rack (tool-changer dock) - only show when rack nozzles exist (IDs >= 2);
+                      a direct rack (H3C, P3C) - its rack_size PrintTools, by dock */}
+                  {status.direct_rack && (status.rack_size ?? 0) > 0 ? (
+                    <NozzleRackCard slots={status.nozzle_rack ?? []} filamentInfo={filamentInfo} cardSize={cardSize} directRackSize={status.rack_size ?? 0} />
+                  ) : status.nozzle_rack && status.nozzle_rack.some(s => s.id >= 2) && (
                     <NozzleRackCard slots={status.nozzle_rack} filamentInfo={filamentInfo} cardSize={cardSize} />
                   )}
                 </div>
@@ -5128,6 +5236,9 @@ const PrinterCard = memo(function PrinterCard({
               // was drawn in the HT column, and one that listed none vanished.
               const regularAms = amsData.filter(ams => !isAmsHtUnit(ams.id));
               const htAms = amsData.filter(ams => isAmsHtUnit(ams.id));
+              // How this printer numbers its trays (utils/trayIds): a rack AMS
+              // (AMS 3H / 3P) and a direct rack's PrintTool inputs.
+              const trayLayout = trayLayoutOf(status);
               // ⚠️ The external spool can only be hidden while some AMS remains
               // to fill the row. On an A1 mini or a bare P1P it IS the whole
               // filament section, so the toggle is not offered there — and a
@@ -5203,10 +5314,19 @@ const PrinterCard = memo(function PrinterCard({
                       <div className="grid grid-cols-[repeat(auto-fill,minmax(max(min(100%,calc(var(--pc-i4,1rem)*14)),calc((100%_-_0.75rem)/2)),1fr))] gap-3">
                         {regularAms.map((ams) => {
                         const mappedExtruderId = amsExtruderMap[String(ams.id)];
-                        const sideBadge = amsSideBadge(ams.id, amsExtruderMap, amsSwitchInlet, ftsInstalled);
+                        const sideBadge = amsSideBadge(ams.id, amsExtruderMap, amsSwitchInlet, ftsInstalled, trayLayout.directRack);
+                        // A rack AMS (AMS 3H / 3P): one slot per PrintTool, the whole row,
+                        // its drying zones framed — and no printer action on its slots yet
+                        // (services/direct_rack_gate, N01 stage C).
+                        const isRackAms = isZmulti(layoutAmsType(trayLayout, ams.id));
+                        const slotCommandsWithheld = slotCommandWithheld(trayLayout, ams.id);
+                        const slotIndices = isRackAms
+                          ? Array.from({ length: Math.max(ams.slot_count ?? ams.tray.length, trayLayout.rackSize, 1) }, (_, i) => i)
+                          : [0, 1, 2, 3];
+                        const dryZone = (ams.drying_zones ?? []).find(zone => zone.can_dry);
 
                         return (
-                          <div key={ams.id} className="min-w-0 p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30">
+                          <div key={ams.id} className={`min-w-0 p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30${isRackAms ? ' col-span-full' : ''}`}>
                             {/* Header: Label + Stats (no icon) */}
                             <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 mb-2">
                               <div className="flex min-w-0 max-w-full items-center gap-1.5">
@@ -5263,7 +5383,7 @@ const PrinterCard = memo(function PrinterCard({
                                   {/* Drying button - only for AMS 2 Pro (n3f) and AMS-HT (n3s).
                                       Screen-only models (P1 series) keep the control but can't be
                                       commanded: it stays disabled and says why (#2533). */}
-                                  {(status.supports_drying || !!status.drying_screen_only) && (ams.module_type === 'n3f' || ams.module_type === 'n3s') && hasPermission('printers:control') && (
+                                  {(status.supports_drying || !!status.drying_screen_only) && (ams.module_type === 'n3f' || ams.module_type === 'n3s') && !isRackAms && hasPermission('printers:control') && (
                                     <button
                                       disabled={!!status.drying_screen_only}
                                       onClick={(e) => {
@@ -5348,9 +5468,23 @@ const PrinterCard = memo(function PrinterCard({
                                 )}
                               </div>
                             )}
-                            {/* Slots grid: 4 columns - always render 4 slots */}
-                            <div className="grid grid-cols-4 gap-1.5">
-                              {[0, 1, 2, 3].map((slotIdx) => {
+                            {/* A rack AMS's drying zone — shown, not commanded (stage C). */}
+                            {isRackAms && dryZone && (
+                              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mb-1.5 text-[length:var(--pc-t9,9px)] text-bambu-gray">
+                                <span className="inline-block w-2 h-2 rounded-sm ring-1 ring-amber-500/60" />
+                                <span>
+                                  {t('printers.rackAms.dryZone', { slots: dryZone.slots.map(s => s + 1).join(', ') })}
+                                </span>
+                                {dryZone.temp != null && <span>{t('printers.rackAms.zoneTemp', { temp: Math.round(dryZone.temp) })}</span>}
+                                {dryZone.humidity != null && <span>{t('printers.rackAms.zoneHumidity', { humidity: dryZone.humidity })}</span>}
+                              </div>
+                            )}
+                            {/* Slots grid: 4 columns (always 4 slots); a rack AMS one slot per
+                                PrintTool, wrapping on a narrow card */}
+                            <div className={isRackAms
+                              ? 'grid grid-cols-[repeat(auto-fill,minmax(calc(var(--pc-i4,1rem)*3),1fr))] gap-1.5'
+                              : 'grid grid-cols-4 gap-1.5'}>
+                              {slotIndices.map((slotIdx) => {
                                 // The tray of this slot by its id (may be undefined if the
                                 // unit listed only some); the position decides only when
                                 // the ids do not tell the trays apart — see trayForSlot.
@@ -5361,8 +5495,10 @@ const PrinterCard = memo(function PrinterCard({
                                 // "?" rather than "-" so it's not mistaken for an empty slot (#1694).
                                 const emptyKind = getEmptySlotKind(tray);
                                 // Check if this is the currently loaded tray
-                                // Global tray ID = ams.id * 4 + slot index (for standard AMS)
-                                const globalTrayId = ams.id * 4 + slotIdx;
+                                // Global tray ID (utils/trayIds): ams.id * 4 + slot for a standard AMS,
+                                // 28 + slot / 37 + slot for a rack AMS
+                                const globalTrayId = getGlobalTrayId(ams.id, slotIdx, false, ams.ams_type);
+                                const inDryZone = isRackAms && !!dryZone?.slots.includes(slotIdx);
                                 const isActive = effectiveTrayNow === globalTrayId;
                                 // Runout guidance (upstream #2587): the slot the paused
                                 // print now expects filament in, and the one that ran out.
@@ -5465,7 +5601,9 @@ const PrinterCard = memo(function PrinterCard({
                                           ? 'ring-2 ring-red-500/60 ring-offset-1 ring-offset-bambu-dark'
                                           : isActive
                                             ? 'ring-2 ring-bambu-green ring-offset-1 ring-offset-bambu-dark'
-                                            : ''
+                                            : inDryZone
+                                              ? 'ring-1 ring-amber-500/60'
+                                              : ''
                                     }`}
                                   >
                                     {activePrintSlotLabel && (
@@ -5528,8 +5666,9 @@ const PrinterCard = memo(function PrinterCard({
                                         <RefreshCw className="w-[var(--pc-i4,1rem)] h-[var(--pc-i4,1rem)] text-bambu-green animate-spin" />
                                       </div>
                                     )}
-                                    {/* Menu button - appears on hover, hidden when printer busy */}
-                                    {status?.state !== 'RUNNING' && (
+                                    {/* Menu button - appears on hover, hidden when printer busy (and on a
+                                        rack AMS, whose slot commands are not sent yet) */}
+                                    {status?.state !== 'RUNNING' && !slotCommandsWithheld && (
                                       <button
                                         onClick={(e) => {
                                           e.stopPropagation();
@@ -5593,7 +5732,7 @@ const PrinterCard = memo(function PrinterCard({
                                           onClick={(e) => {
                                             e.stopPropagation();
                                             if (!hasPermission('printers:control')) return;
-                                            amsUnloadMutation.mutate(ams.id * 4 + slotIdx);
+                                            amsUnloadMutation.mutate(getGlobalTrayId(ams.id, slotIdx, false, ams.ams_type));
                                             setAmsSlotMenu(null);
                                           }}
                                           disabled={amsUnloadMutation.isPending || !hasPermission('printers:control')}
@@ -5716,7 +5855,7 @@ const PrinterCard = memo(function PrinterCard({
                                           };
                                         })()}
                                         configureSlot={{
-                                          enabled: hasPermission('printers:control'),
+                                          enabled: hasPermission('printers:control') && !slotCommandsWithheld,
                                           onConfigure: () => setConfigureSlotModal({
                                             amsId: ams.id,
                                             trayId: slotIdx,
@@ -5737,7 +5876,7 @@ const PrinterCard = memo(function PrinterCard({
                                         emptyKind={emptyKind}
                                         {...blankSpool}
                                         configureSlot={{
-                                          enabled: hasPermission('printers:control'),
+                                          enabled: hasPermission('printers:control') && !slotCommandsWithheld,
                                           onConfigure: () => setConfigureSlotModal({
                                             amsId: ams.id,
                                             trayId: slotIdx,
@@ -6280,13 +6419,19 @@ const PrinterCard = memo(function PrinterCard({
 
                     {/* External spool(s): a row of their own, one compact tile */}
                       {status.vt_tray.length > 0 && showExternalSpool && (
-                        <div className={`max-w-full min-w-0 p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30 ${status.vt_tray.length === 1 ? 'w-[calc(var(--pc-i4,1rem)*6)]' : 'w-[calc(var(--pc-i4,1rem)*10)]'}`}>
+                        <div className={`max-w-full min-w-0 p-2.5 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary/30 ${trayLayout.directRack ? 'w-full' : status.vt_tray.length === 1 ? 'w-[calc(var(--pc-i4,1rem)*6)]' : 'w-[calc(var(--pc-i4,1rem)*10)]'}`}>
                           <div className="flex items-center justify-center gap-1 mb-2">
                             <span className="text-[length:var(--pc-t10,10px)] text-white font-medium">{t('printers.external')}</span>
                           </div>
-                          <div className={`grid ${status.vt_tray.length > 1 ? 'grid-cols-2' : 'grid-cols-1'} gap-1.5`}>
-                            {[...status.vt_tray].sort((a, b) => (a.id ?? 254) - (b.id ?? 254)).map((extTray) => {
+                          {/* A direct rack: one input per PrintTool, Ext-1..Ext-N in PrintTool order. */}
+                          <div className={`grid ${trayLayout.directRack ? 'grid-cols-[repeat(auto-fill,minmax(calc(var(--pc-i4,1rem)*3),1fr))]' : status.vt_tray.length > 1 ? 'grid-cols-2' : 'grid-cols-1'} gap-1.5`}>
+                            {(trayLayout.directRack
+                              ? externalsByPrintTool(status.vt_tray.map(tray => ({ ...tray, id: tray.id ?? EXTERNAL_DEPUTY_ID })))
+                              : [...status.vt_tray].sort((a, b) => (a.id ?? 254) - (b.id ?? 254))
+                            ).map((extTray) => {
                               const extTrayId = extTray.id ?? 254;
+                              // A direct rack's input takes no printer command yet (stage C).
+                              const extCommandsWithheld = slotCommandWithheld(trayLayout, 255);
                               // On dual-nozzle (H2C/H2D), tray_now=254 means "external spool"
                               // generically - use active_extruder to determine L vs R:
                               // extruder 1=left → Ext-L (id=254), extruder 0=right → Ext-R (id=255)
@@ -6294,10 +6439,13 @@ const PrinterCard = memo(function PrinterCard({
                                 ? (extTrayId === 254 && status.active_extruder === 1) ||
                                   (extTrayId === 255 && status.active_extruder === 0)
                                 : effectiveTrayNow === extTrayId;
-                              const slotTrayId = extTrayId - 254; // 0 or 1
-                              const extLabel = isDualNozzle
-                                ? (extTrayId === 254 ? t('printers.extL') : t('printers.extR'))
-                                : '';
+                              // The stored index: 0 / 1, a direct rack's 247-253 -> 2-8 (utils/trayIds)
+                              const slotTrayId = externalSlotIndex(extTrayId);
+                              const extLabel = trayLayout.directRack
+                                ? externalLabel(extTrayId)
+                                : isDualNozzle
+                                  ? (extTrayId === 254 ? t('printers.extL') : t('printers.extR'))
+                                  : '';
                               const extCloudInfo = extTray.tray_info_idx ? filamentInfo?.[extTray.tray_info_idx] : null;
 
                               const extTrayTag = (extTray.tray_uuid || extTray.tag_uid || getFallbackSpoolTag(printer.serial_number, 255, slotTrayId))?.toUpperCase();
@@ -6362,7 +6510,7 @@ const PrinterCard = memo(function PrinterCard({
                                     ctype={extTray.ctype}
                                     trayType={extTray.tray_type}
                                     isEmpty={isEmpty}
-                                    slotNumber={isDualNozzle ? (extTrayId === 254 ? 'L' : 'R') : slotTrayId + 1}
+                                    slotNumber={trayLayout.directRack ? externalPrintTool(extTrayId) : isDualNozzle ? (extTrayId === 254 ? 'L' : 'R') : slotTrayId + 1}
                                     pendingColor={blankSpool.assigned?.colorHex}
                                   />
                                   <div className={`text-[length:var(--pc-t9,9px)] font-bold truncate ${isEmpty ? 'text-white/40' : 'text-white'}`}>
@@ -6388,10 +6536,10 @@ const PrinterCard = memo(function PrinterCard({
                                   {/* Slot-options menu (#891 — Load/Unload from the printer card).
                                    * For external spools the global tray_id IS extTrayId (254=Ext-L
                                    * single-extruder/H2D-left, 255=Ext-R H2D-right) — different from
-                                   * the inline AMS slots where the tray_id is computed from
-                                   * ams.id*4 + slotIdx. Hidden while RUNNING, mirroring the
-                                   * AMS-slot popover gating above. */}
-                                  {status?.state !== 'RUNNING' && (
+                                   * the inline AMS slots where the tray_id is computed from the
+                                   * unit's numbering (utils/trayIds). Hidden while RUNNING, mirroring the
+                                   * AMS-slot popover gating above, and on a direct rack. */}
+                                  {status?.state !== 'RUNNING' && !extCommandsWithheld && (
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation();
@@ -6551,7 +6699,7 @@ const PrinterCard = memo(function PrinterCard({
                                         };
                                       })()}
                                       configureSlot={{
-                                        enabled: hasPermission('printers:control'),
+                                        enabled: hasPermission('printers:control') && !extCommandsWithheld,
                                         onConfigure: () => setConfigureSlotModal({
                                           amsId: 255,
                                           trayId: slotTrayId,
@@ -6571,7 +6719,7 @@ const PrinterCard = memo(function PrinterCard({
                                     <EmptySlotHoverCard
                                       {...blankSpool}
                                       configureSlot={{
-                                        enabled: hasPermission('printers:control'),
+                                        enabled: hasPermission('printers:control') && !extCommandsWithheld,
                                         onConfigure: () => setConfigureSlotModal({
                                           amsId: 255,
                                           trayId: slotTrayId,

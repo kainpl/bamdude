@@ -1,3 +1,4 @@
+import { EXTERNAL_DEPUTY_ID, externalSlotIndex, externalsByPrintTool } from '../utils/trayIds';
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -95,15 +96,19 @@ export function AssignToSlotModal({ spool, spoolmanMode, onClose, onAssigned }: 
         slots: ams.tray.map((tray, index) => ({ trayId: tray.id ?? index, tray })),
       };
     });
-    const external = [...(status.vt_tray ?? [])].sort((a, b) => (a.id ?? 254) - (b.id ?? 254));
+    // A direct rack (H3C, P3C): one input per PrintTool, Ext-1 first.
+    const withIds = (status.vt_tray ?? []).map((tray) => ({ ...tray, id: tray.id ?? EXTERNAL_DEPUTY_ID }));
+    const external = status.direct_rack
+      ? externalsByPrintTool(withIds)
+      : [...withIds].sort((a, b) => a.id - b.id);
     if (external.length > 0) {
       list.push({
         amsId: 255,
         label: getAmsLabel(255, external.length),
         isHt: false,
         external: true,
-        // The printer card's addressing: the holder's id 254 / 255 → tray 0 / 1.
-        slots: external.map((tray) => ({ trayId: (tray.id ?? 254) - 254, tray })),
+        // The printer card's addressing: the holder's id 254 / 255 → tray 0 / 1 (a direct rack's 247-253 → 2-8).
+        slots: external.map((tray) => ({ trayId: externalSlotIndex(tray.id), tray })),
       });
     }
     return list;
