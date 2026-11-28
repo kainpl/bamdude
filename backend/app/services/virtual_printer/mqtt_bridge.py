@@ -46,6 +46,7 @@ import socket
 from typing import TYPE_CHECKING
 
 from backend.app.services.bambu_mqtt import apply_tray_exist_bits, unit_reported_absent
+from backend.app.utils.tray_ids import unit_type
 
 if TYPE_CHECKING:
     from backend.app.services.bambu_mqtt import BambuMQTTClient
@@ -284,7 +285,10 @@ def _merge_ams_dict(prev_ams: dict, new_ams: dict) -> dict:
     # ``ams_exist_bits`` say the unit was unplugged: the printer card drops it on
     # the same rule, so the slicer and the card agree (upstream ad62d1063).
     for uid, prev_unit in prev_by_id.items():
-        if uid not in seen_ids and not unit_reported_absent(uid, new_units, new_ams.get("ams_exist_bits")):
+        prev_type = unit_type(prev_unit) if isinstance(prev_unit, dict) else None
+        if uid not in seen_ids and not unit_reported_absent(
+            uid, new_units, new_ams.get("ams_exist_bits"), prev_type[1] if prev_type else None
+        ):
             merged_units.append(prev_unit)
     merged["ams"] = merged_units
     return merged

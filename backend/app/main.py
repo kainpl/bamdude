@@ -175,6 +175,7 @@ from backend.app.services.timelapse_files import (
     remote_source,
     remove_recording_after_attach,
 )
+from backend.app.utils import tray_ids
 from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.failure_reasons import OTHER as FAILURE_OTHER, USER_CANCELLED
 from backend.app.utils.filament_remaining import grams_used
@@ -2299,9 +2300,11 @@ async def _current_tray_frozen(db, printer_id: int, state) -> tuple[int | None, 
     accounting, so an unresolvable tray simply yields Nones.
     """
     from backend.app.services.print_usage_journal import freeze_spool_ids
+    from backend.app.services.printer_manager import tray_layout_of
 
     tn = getattr(state, "tray_now", 255)
-    if not ((0 <= tn <= 15) or (24 <= tn <= 27) or (128 <= tn <= 135) or tn == 254):
+    # The trays the journal accepts (utils/tray_ids.TrayLayout.is_journal_tray).
+    if not tray_layout_of(printer_id, printer_manager).is_journal_tray(tn):
         return None, None, None
     try:
         spool_id, spoolman_spool_id = await freeze_spool_ids(db, printer_id, tn)
@@ -2498,7 +2501,11 @@ async def _handle_resume_edge(printer_id: int, state: PrinterState, *, stock_res
                         outcome["reason"],
                     )
                     if outcome["reason"] == "assigned":
-                        tray, spool_id, spoolman_spool_id = 254 + outcome["tray_id"], outcome["spool_id"], None
+                        tray, spool_id, spoolman_spool_id = (
+                            tray_ids.external_tray_id(outcome["tray_id"]),
+                            outcome["spool_id"],
+                            None,
+                        )
                     else:
                         tray, spool_id, spoolman_spool_id = await _current_tray_frozen(db, printer_id, state)
                     # As the pause edge: written under the record's hold, proved again under it.
@@ -3425,12 +3432,7 @@ def _slot_feeds_print(status, ams_id: int, tray_id: int) -> bool:
     """
     if status is None:
         return False
-    if ams_id == 255:
-        global_id = 254 + tray_id
-    elif ams_id >= 128:
-        global_id = ams_id
-    else:
-        global_id = ams_id * 4 + tray_id
+    global_id = tray_ids.global_tray_id(ams_id, tray_id)
     if getattr(status, "tray_now", None) == global_id:
         return True
     slots = getattr(status, "extruder_slots", None) or {}
@@ -3639,7 +3641,7 @@ async def _on_ams_change(printer_id: int, ams_data: list, *, built_in_owned: boo
                 known = assignment.spool
                 partial_return = (
                     protect_partial_returns
-                    and assignment.ams_id < 254
+                    and assignment.ams_id != tray_ids.EXTERNAL_AMS_ID
                     and known is not None
                     and ((known.weight_used or 0) > 0 or known.last_used is not None or known.added_full is False)
                 )
@@ -3647,7 +3649,7 @@ async def _on_ams_change(printer_id: int, ams_data: list, *, built_in_owned: boo
                 if assignment.ams_id == 255:
                     ps = printer_manager.get_status(printer_id)
                     vt_tray_raw = ps.raw_data.get("vt_tray", []) if ps else []
-                    ext_id = assignment.tray_id + 254  # 0→254, 1→255
+                    ext_id = tray_ids.external_tray_id(assignment.tray_id)  # 0→254, 1→255, 2..8→247..253
                     current_tray = None
                     for vt in vt_tray_raw:
                         if isinstance(vt, dict) and int(vt.get("id", 254)) == ext_id:
@@ -11979,12 +11981,12 @@ async def record_ams_history():
                         if not _ams_has_filament(ams_data):
                             continue
 
-                        # Generate AMS label and determine if it's AMS-HT (A, B, C, D or HT-A for AMS-Lite/Hub)
-                        is_ams_ht = ams_id >= 128
-                        if is_ams_ht:
-                            ams_label = f"HT-{chr(65 + (ams_id - 128))}"
-                        else:
-                            ams_label = f"AMS-{chr(65 + ams_id)}"
+                        # Generate AMS label and determine if it's AMS-HT (A, B, C, D or HT-A for AMS-Lite/Hub;
+                        # AMS-3H / AMS-3P for a rack AMS) — utils/tray_ids.unit_name.
+                        unit_pair = tray_ids.unit_type(ams_data)
+                        unit_kind = unit_pair[1] if unit_pair else None
+                        is_ams_ht = tray_ids.ams_type_of(ams_id, unit_kind) == tray_ids.AmsType.N3S
+                        ams_label = tray_ids.unit_name(ams_id, unit_kind)
 
                         # Resolve per-filament humidity threshold for this AMS
                         # unit (#1605). Falls back to the global ams_humidity_fair
@@ -13052,15 +13054,12 @@ async def _application_lifespan(app: FastAPI):
         feel random to users.
         """
         try:
+            from backend.app.services.printer_manager import tray_layout_of
             from backend.app.services.spool_assignment_notifications import _slot_label_from_global_tray
 
-            if ams_id == 255:
-                global_id = 254 + tray_id
-            elif ams_id >= 128:
-                global_id = ams_id
-            else:
-                global_id = ams_id * 4 + tray_id
-            slot_label = _slot_label_from_global_tray(global_id)
+            verified_layout = tray_layout_of(printer_id, printer_manager)
+            global_id = verified_layout.global_tray_id(ams_id, tray_id)
+            slot_label = _slot_label_from_global_tray(global_id, verified_layout)
 
             printer_info = printer_manager.get_printer(printer_id)
             printer_name = printer_info.name if printer_info else f"Printer {printer_id}"
@@ -13183,6 +13182,7 @@ async def _application_lifespan(app: FastAPI):
                 # silent (could equally be a jam).
                 if kind != "ambiguous":
                     try:
+                        from backend.app.services.printer_manager import tray_layout_of
                         from backend.app.services.spool_assignment_notifications import (
                             _slot_label_from_global_tray,
                         )
@@ -13191,7 +13191,11 @@ async def _application_lifespan(app: FastAPI):
                         await notification_service.on_filament_runout(
                             printer_id=printer_id,
                             printer_name=printer_info.name if printer_info else f"Printer {printer_id}",
-                            slot=_slot_label_from_global_tray(tray_global) if tray_global is not None else "?",
+                            slot=(
+                                _slot_label_from_global_tray(tray_global, tray_layout_of(printer_id, printer_manager))
+                                if tray_global is not None
+                                else "?"
+                            ),
                             kind=kind or "pause",
                             db=db,
                         )

@@ -1185,6 +1185,23 @@ export interface AMSUnit {
   dry_target_temp: number | null; // Active-cycle target °C (Bambu doesn't echo this)
   dry_filament: string | null;    // Active-cycle filament name we sent
   module_type: string;    // "ams", "n3f", "n3s"
+  // Studio's DevAmsType (utils/trayIds.AmsType): 1 AMS, 2 Lite, 3 AMS 2 Pro,
+  // 4 AMS-HT, 5 A2L Lite, 6 AMS 3H, 7 AMS 3P. Null when never reported.
+  ams_type?: number | null;
+  slot_count?: number;       // slots the unit reported (a rack AMS: one per PrintTool)
+  is_rack_ams?: boolean;     // AMS 3H / AMS 3P
+  drying_zones?: AMSDryingZone[]; // rack AMS only — shown, not acted on
+}
+
+/** One drying zone of a rack AMS (Studio's DevAmsZone). */
+export interface AMSDryingZone {
+  zone_id: number;
+  slots: number[];          // the unit's slots (0-based) in this zone
+  temp: number | null;
+  humidity: number | null;  // percent
+  dry_status: number;
+  dry_time: number;
+  can_dry: boolean;         // exactly two slots
 }
 
 export interface NozzleInfo {
@@ -1208,6 +1225,13 @@ export interface NozzleRackSlot {
   // null when the firmware does not report them.
   print_time_s?: number | null;  // seconds printed ("p_t")
   switch_count?: number | null;  // times switched into use ("c_t")
+  // A direct-connected rack (H3C, P3C); null elsewhere.
+  addr_id?: number | null;       // the dock 0..N-1
+  print_tool?: number | null;    // addr_id + 1, as a person reads it
+  current_temp?: number | null;  // this hotend's own temperature
+  target_temp?: number | null;
+  temp_status?: number | null;   // 0 idle, 1 heating, 2 keeping, 3 cooling
+  bind_ams?: number[] | null;    // sub-AMS units bound to this hotend
 }
 
 export interface PrintOptions {
@@ -1577,6 +1601,9 @@ export interface PrinterStatus {
   ams_preload_version?: number | null;
   // Currently loaded tray (global tray ID, 255 = no filament loaded, 254 = external spool)
   tray_now: number;
+  // A direct-connected nozzle rack (H3C, P3C): one toolhead, rack_size PrintTools.
+  direct_rack?: boolean;
+  rack_size?: number;
   // Runout / filament-replacement guidance. Populated only while PAUSED.
   // Global tray IDs (ams_id*4+slot, 128-135 = AMS-HT, 254 = external), matching
   // the same numbering as tray_now so the AMS graphic can highlight them.

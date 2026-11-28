@@ -101,6 +101,9 @@ STATUS_FIELDS = frozenset(
         "tray_now",
         "expected_tray",
         "previous_tray",
+        # A direct-connected nozzle rack and its size: the shape of the card, no names.
+        "direct_rack",
+        "rack_size",
         "ams_auto_switch_filament",
         "ams_backup_groups",
         "ams_extruder_map",

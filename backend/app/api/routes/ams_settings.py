@@ -37,6 +37,7 @@ from backend.app.schemas.ams_settings import (
 )
 from backend.app.services.ams_capabilities import compute_ams_supports
 from backend.app.services.printer_manager import printer_manager
+from backend.app.utils.tray_ids import AmsType, ams_type_of, is_zmulti, unit_letter, unit_name
 
 # BS ``is_in_upgrading()`` — DevUpgrade.cpp maps exactly these five
 # ``upgrade_state.status`` values to UpgradingInProgress. Anything else (IDLE,
@@ -118,13 +119,16 @@ async def debug_ams_state(
     }
 
 
-def _ams_label(ams_id: int) -> str:
-    """Mirror frontend's amsHelpers.formatSlotLabel for the unit selector."""
+def _ams_label(ams_id: int, ams_type: object = None) -> str:
+    """Mirror frontend's amsHelpers.formatSlotLabel for the unit selector (``utils/tray_ids``)."""
     if ams_id == 255:
         return "External"
-    if ams_id >= 128:
-        return f"HT-{chr(ord('A') + (ams_id - 128))}"
-    return f"AMS {chr(ord('A') + ams_id)}"
+    kind = ams_type_of(ams_id, ams_type)
+    if kind == AmsType.N3S:
+        return f"HT-{unit_letter(ams_id)}"
+    if is_zmulti(kind):
+        return unit_name(ams_id, kind)
+    return f"AMS {unit_letter(ams_id)}"
 
 
 @router.get("/{printer_id}/ams/settings", response_model=AmsSettingsGetResponse)
@@ -174,7 +178,7 @@ async def get_ams_settings(
             ams_id = int(raw_id)
         except (TypeError, ValueError):
             continue
-        ams_units.append(AmsUnitInfo(ams_id=ams_id, label=_ams_label(ams_id)))
+        ams_units.append(AmsUnitInfo(ams_id=ams_id, label=_ams_label(ams_id, entry.get("ams_type"))))
 
     # Options come from the device, exactly as BS builds its combo box from
     # ``GetSuppotedFirmwares()`` (AMSSetting.cpp). The names are the printer's

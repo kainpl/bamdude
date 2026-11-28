@@ -265,6 +265,19 @@ def air_print_detection_position(model: str | None) -> str | None:
     return val if isinstance(val, str) else None
 
 
+def default_nozzle_count(model: str | None) -> int:
+    """``default_nozzle_count`` of the model's mirrored config; 0 when the model or the field is unknown.
+
+    More than two is a direct-connected nozzle rack (H3C 9, P3C 7) — the test
+    Bambu Studio itself uses to label the external inputs ``Ext-n``.
+    """
+    cfg = load_printer_config(model)
+    print_block = cfg.get("print") if isinstance(cfg, dict) else None
+    if not isinstance(print_block, dict):
+        return 0
+    return max(0, _as_int(print_block.get("default_nozzle_count"), 0))
+
+
 def get_device_support_flags(model: str | None, firmware_version: str | None = None) -> dict:
     """The ``support_*`` device-capability flags for a model (from the config's
     ``print`` block). Empty dict when no config matches (unknown model).

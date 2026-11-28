@@ -12,7 +12,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { DEFAULT_SPOOL_DISPLAY_TEMPLATE, formatSpoolDisplayName } from '../utils/spoolName';
 import { exactSpoolId, filterSpoolsByQuery } from '../utils/inventorySearch';
-import { formatSlotLabel } from '../utils/amsHelpers';
+import { formatSlotLabel, isAmsHtUnit } from '../utils/amsHelpers';
 import { compareByOrder, parseSpoolSortOrder } from '../utils/spoolSort';
 import { getSwatchStyle, resolveSpoolColorName } from '../utils/colors';
 
@@ -411,7 +411,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   const missText = (miss: SpoolPickerMiss): string => {
     if (miss.reason === 'other_slot' && miss.ams_id != null && miss.tray_id != null) {
       const external = miss.ams_id === 254 || miss.ams_id === 255;
-      const slot = formatSlotLabel(miss.ams_id, miss.tray_id, miss.ams_id >= 128 && !external, external);
+      const slot = formatSlotLabel(miss.ams_id, miss.tray_id, isAmsHtUnit(miss.ams_id) && !external, external);
       return t('inventory.pickerMiss.otherSlot', {
         id: miss.spool_id,
         where: miss.printer_name ? `${miss.printer_name} · ${slot}` : slot,
@@ -620,7 +620,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
           {isOpen && showScanner && !spoolmanEnabled && hasPermission('inventory:read') && hasPermission('inventory:update') && (
             <SpoolLabelScanner
               key={`${printerId}:${amsId}:${trayId}`}
-              target={trayInfo?.location || formatSlotLabel(amsId, trayId, amsId >= 128, amsId === 254 || amsId === 255)}
+              target={trayInfo?.location || formatSlotLabel(amsId, trayId, isAmsHtUnit(amsId), amsId === 254 || amsId === 255)}
               onClose={() => setShowScanner(false)}
               onScan={(selection) => {
                 setScannedSpool(selection);

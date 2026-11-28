@@ -25,20 +25,21 @@ from backend.app.services.usage_tracker import (
     _resolve_spool_id_for_tray,
     _spool_color_to_hex,
 )
+from backend.app.utils.tray_ids import slot_key
 
 logger = logging.getLogger(__name__)
 
 
-def _global_to_ams_tray(global_id: int) -> tuple[int, int]:
-    """Invert a bamdude global tray id → ``(ams_id, tray_id)``.
+def _global_to_ams_tray(global_id: int, layout=None) -> tuple[int, int]:
+    """Invert a bamdude global tray id → the ``(ams_id, tray_id)`` an assignment is stored under.
 
-    Mirrors the encoding in ``usage_tracker._decode_mqtt_mapping``: regular AMS
-    is ``ams_id * 4 + tray``; AMS-HT (``>= 128``) and external (254/255) carry a
-    single slot per unit, so the id *is* the ams_id with tray 0.
+    ``utils/tray_ids.slot_key``: regular AMS ``ams_id * 4 + tray``; an AMS-HT
+    is its own unit with tray 0; an external input sits under ams 255 with its
+    index (254 -> 0, 255 -> 1) — it used to come out as ``(254, 0)``, a slot no
+    assignment is stored under, so an external spool's colour was never found;
+    a rack AMS by the printer's layout.
     """
-    if global_id >= 128:
-        return global_id, 0
-    return global_id // 4, global_id % 4
+    return slot_key(global_id, layout)
 
 
 def _plate_filaments(archive: PrintArchive) -> list[dict]:
@@ -117,7 +118,9 @@ async def apply_loaded_spool_colors(
         global_id = mapping[gi]
         if not isinstance(global_id, int) or global_id < 0:
             continue
-        ams_id, tray_id = _global_to_ams_tray(global_id)
+        from backend.app.services.printer_manager import tray_layout_of
+
+        ams_id, tray_id = _global_to_ams_tray(global_id, tray_layout_of(printer_id))
         hex_ = await _spool_hex_for_slot(db, printer_id, ams_id, tray_id)
         if hex_:
             results.append({"slot_id": slot_id, "color": hex_})

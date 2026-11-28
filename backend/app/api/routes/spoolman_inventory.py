@@ -53,6 +53,7 @@ from backend.app.schemas.spoolman import (
     SlotTrayId,
     SpoolmanFilamentPatch,
     SpoolmanSlotAssignmentEnriched,
+    slot_tray_in_range,
 )
 from backend.app.services import (
     spool_drying,
@@ -486,6 +487,12 @@ class SpoolSlotAssignmentRequest(BaseModel):
     # The human answered the mid-pause prompt with "this is a replacement" —
     # journal a manual runout boundary (see inventory.SpoolAssignmentCreate).
     mid_print_replacement: bool = False
+
+    @model_validator(mode="after")
+    def _tray_within_unit(self) -> SpoolSlotAssignmentRequest:
+        # The CHECK's per-unit bound (m272): trays 4-8 only on a rack AMS or an external input.
+        slot_tray_in_range(self.ams_id, self.tray_id)
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -1844,6 +1851,15 @@ async def assign_spoolman_slot(
     printer = result.scalar_one_or_none()
     if not printer:
         raise HTTPException(status_code=404, detail="Printer not found")
+    # The printer's own slots (utils/tray_ids): a P3C's rack is seven, not the nine the table admits.
+    from backend.app.api.routes.inventory import _slot_needs_layout_check
+    from backend.app.services.printer_manager import tray_layout_of
+
+    slot_layout = tray_layout_of(body.printer_id, None, printer.model)
+    if _slot_needs_layout_check(slot_layout, body.ams_id, body.tray_id) and not slot_layout.accepts_slot(
+        body.ams_id, body.tray_id
+    ):
+        raise HTTPException(422, "This printer has no such slot")
 
     # Verify the Spoolman spool exists before committing to local DB.
     # This prevents ghost rows pointing at non-existent spool IDs. The binding
@@ -2310,7 +2326,7 @@ async def unassign_spoolman_slot(
 async def get_spoolman_slot_assignment(
     printer_id: int = Query(..., gt=0),
     ams_id: SlotAmsId = Query(...),
-    tray_id: int = Query(..., ge=0, le=3),
+    tray_id: int = Query(..., ge=0, le=8),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
 ) -> dict | None:

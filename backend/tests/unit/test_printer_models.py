@@ -114,6 +114,12 @@ class TestX2DModel:
         assert get_camera_port("N6") == 322
         assert get_camera_port("X2D") == 322
 
+    @pytest.mark.parametrize("model", ["H3C", "N10", "P3C", "N11"])
+    def test_h3c_p3c_camera_is_rtsp(self, model):
+        """Their mirrored ipcam blocks are the H2C's (N01 stage A, acceptance A1-02)."""
+        assert supports_rtsp(model) is True
+        assert get_camera_port(model) == 322
+
     def test_x2d_not_in_carbon_rod_set(self):
         """Regression guard: X2D has hardened steel rods, not carbon (#988).
 

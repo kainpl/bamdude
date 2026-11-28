@@ -5,7 +5,7 @@ import logging
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -21,7 +21,7 @@ from backend.app.models.settings import Settings
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.models.user import User
-from backend.app.schemas.spoolman import SlotAmsId, SlotTrayId
+from backend.app.schemas.spoolman import SlotAmsId, SlotTrayId, slot_tray_in_range
 from backend.app.services import (
     spoolman_activity,
     spoolman_binding_fence,
@@ -944,6 +944,13 @@ class LinkSpoolRequest(BaseModel):
     # The slot ledger's own range: refused before the tag is written to Spoolman.
     ams_id: SlotAmsId | None = None
     tray_id: SlotTrayId | None = None
+
+    @model_validator(mode="after")
+    def _tray_within_unit(self) -> "LinkSpoolRequest":
+        # The CHECK's per-unit bound (m272): trays 4-8 only on a rack AMS or an external input.
+        if self.ams_id is not None and self.tray_id is not None:
+            slot_tray_in_range(self.ams_id, self.tray_id)
+        return self
 
 
 @router.post("/spools/{spool_id}/link")

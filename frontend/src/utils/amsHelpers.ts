@@ -3,6 +3,16 @@
  * These functions handle color normalization, slot labeling, and tray ID calculations
  * for AMS, AMS-HT, and external spool configurations.
  */
+import {
+  amsTypeOf,
+  externalLabel,
+  externalTrayId,
+  globalTrayId,
+  isAmsHtId,
+  isZmulti,
+  unitLetter,
+  unitName,
+} from './trayIds';
 import { parseUTCDate } from './date';
 
 /**
@@ -49,12 +59,16 @@ export function amsSideBadge(
   amsExtruderMap: Record<string, number>,
   amsSwitchInlet: Record<string, 'A' | 'B'>,
   ftsInstalled: boolean,
+  directRack = false,
 ): { kind: 'inlet'; inlet: 'A' | 'B' } | { kind: 'nozzle'; side: 'L' | 'R' } | null {
+  // A direct-connected rack (H3C, P3C) is one toolhead: no unit sits on a side.
+  if (directRack) return null;
   const inlet = amsSwitchInlet[String(amsId)];
   if (inlet) return { kind: 'inlet', inlet };
 
   const mapped = amsExtruderMap[String(amsId)];
-  const extruderId = mapped !== undefined ? mapped : ftsInstalled ? undefined : amsId >= 128 ? amsId - 128 : amsId;
+  const extruderId =
+    mapped !== undefined ? mapped : ftsInstalled ? undefined : isAmsHtId(amsId) ? localHtIndex(amsId) : amsId;
   if (extruderId === 1) return { kind: 'nozzle', side: 'L' };
   if (extruderId === 0) return { kind: 'nozzle', side: 'R' };
   return null;
@@ -69,7 +83,12 @@ export function amsSideBadge(
  */
 export function isAmsHtUnit(amsId: number | string): boolean {
   const id = typeof amsId === 'string' ? parseInt(amsId, 10) : amsId;
-  return id >= 128 && id <= 135;
+  return isAmsHtId(id);
+}
+
+/** The AMS-HT's position among the HT units (128 -> 0): the guess an unmapped dual printer's badge falls back to. */
+function localHtIndex(amsId: number): number {
+  return unitLetter(amsId).charCodeAt(0) - 65;
 }
 
 /**
@@ -93,13 +112,13 @@ export function trayForSlot<T extends { id: number }>(trays: T[], slotIdx: numbe
  * fed from (extruder_slots) — tray_now names only the active nozzle's.
  */
 export function amsHasLoadedTray(
-  ams: { id: number; tray: { id: number; state?: number | null }[] } | undefined,
+  ams: { id: number; ams_type?: number | null; tray: { id: number; state?: number | null }[] } | undefined,
   trayNow: number | null | undefined,
   extruderSlots: Record<string, { ams_id: number | null; has_filament: boolean }> | null | undefined,
 ): boolean {
   if (!ams) return false;
   if (ams.tray.some(tray => tray.state === 11)) return true;
-  if (trayNow != null && ams.tray.some(tray => getGlobalTrayId(ams.id, tray.id, false) === trayNow)) return true;
+  if (trayNow != null && ams.tray.some(tray => globalTrayId(ams.id, tray.id, ams.ams_type) === trayNow)) return true;
   return Object.values(extruderSlots ?? {}).some(slot => slot.ams_id === ams.id && slot.has_filament);
 }
 
@@ -110,8 +129,7 @@ export function amsHasLoadedTray(
  * pass as the tray count; it no longer has a say and is kept only so they need
  * not change.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept so the call sites need not change
-export function getAmsLabel(amsId: number | string, _trayCount?: number): string {
+export function getAmsLabel(amsId: number | string, _trayCount?: number, amsType?: number | null): string {
   const id = typeof amsId === 'string' ? parseInt(amsId, 10) : amsId;
   const safeId = isNaN(id) ? 0 : id;
   if (safeId === 255) return 'External';
@@ -119,10 +137,8 @@ export function getAmsLabel(amsId: number | string, _trayCount?: number): string
   // ingest (see bambu_mqtt.normalize_am_unit_id). No regular AMS uses id 6, so
   // this is a safe, self-scoping label for the Lite's 4-slot unit.
   if (safeId === 6) return 'AMS Lite';
-  const isHt = isAmsHtUnit(safeId);
-  const normalizedId = safeId >= 128 ? safeId - 128 : safeId;
-  const letter = String.fromCharCode(65 + normalizedId);
-  return isHt ? `HT-${letter}` : `AMS-${letter}`;
+  // AMS-A.., HT-A.., AMS-3H / AMS-3P (utils/trayIds.unitName).
+  return unitName(safeId, amsType);
 }
 
 /**
@@ -279,12 +295,15 @@ export function formatSlotLabel(
   amsId: number,
   trayId: number,
   isHt: boolean,
-  isExternal: boolean
+  isExternal: boolean,
+  amsType?: number | null,
 ): string {
-  if (isExternal) return 'Ext';
-  // Convert AMS ID to letter (A, B, C, D)
-  // AMS-HT uses IDs starting at 128
-  const letter = String.fromCharCode(65 + (amsId >= 128 ? amsId - 128 : amsId));
+  // A direct rack's PrintTool inputs (stored index 2..8) are Ext-n; the 0/1 holders stay "Ext".
+  if (isExternal) return trayId >= 2 && trayId <= 8 ? externalLabel(externalTrayId(trayId)) : 'Ext';
+  // A rack AMS (AMS 3H / 3P): its short name and the slot, 3H-1..
+  if (isZmulti(amsTypeOf(amsId, amsType))) return `${unitName(amsId, amsType).replace('AMS-', '')}-${trayId + 1}`;
+  // Convert AMS ID to letter (A, B, C, D); AMS-HT uses IDs starting at 128
+  const letter = unitLetter(amsId);
   if (isHt) return `HT-${letter}`;
   return `${letter}${trayId + 1}`;
 }
@@ -361,9 +380,13 @@ export function resolveSlotNozzleFlow(
 type SlotNozzleStatus = {
   nozzles?: { nozzle_diameter?: string; nozzle_flow?: string }[];
   ams_extruder_map?: Record<string, number>;
+  direct_rack?: boolean;
 };
 
 function slotNozzle(status: SlotNozzleStatus | null | undefined, amsId: number, extruderId?: number) {
+  // A direct rack's slot feeds a PrintTool, not "the main nozzle": unknown here,
+  // never the mounted hotend's (backend utils/slot_nozzle).
+  if (status?.direct_rack) return undefined;
   const nozzles = status?.nozzles;
   if (!nozzles || nozzles.length === 0) return undefined;
   const extruderIdx = extruderId ?? status?.ams_extruder_map?.[String(amsId)] ?? 0;
@@ -383,12 +406,13 @@ function slotNozzle(status: SlotNozzleStatus | null | undefined, amsId: number, 
 export function getGlobalTrayId(
   amsId: number,
   trayId: number,
-  isExternal: boolean
+  isExternal: boolean,
+  amsType?: number | null,
 ): number {
-  if (isExternal) return 254 + trayId;
-  // AMS-HT units have IDs starting at 128 with a single tray - use ID directly
-  if (amsId >= 128) return amsId;
-  return amsId * 4 + trayId;
+  // utils/trayIds: an external input its own id (stored index 0/1 -> 254/255,
+  // 2..8 -> 247..253), an AMS-HT its unit id, a rack AMS 28+ / 37+, else ams*4+slot.
+  if (isExternal) return externalTrayId(trayId);
+  return globalTrayId(amsId, trayId, amsType);
 }
 
 /**

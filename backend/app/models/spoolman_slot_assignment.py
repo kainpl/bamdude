@@ -35,17 +35,23 @@ class SpoolmanSlotAssignment(Base):
 
     __table_args__ = (
         UniqueConstraint("printer_id", "ams_id", "tray_id", name="uq_spoolman_slot_assignment"),
-        # 0-7: standard AMS units. 128-191: AMS-HT (H2C / H2D — each AMS-HT
-        # unit uses its own ams_id in that range, single tray per unit).
-        # 255: external / virtual tray. Matches the value range the internal
-        # ``spool_assignment`` table already accepts. Widened in m074 to fix
-        # upstream Bambuddy #1274 — AMS-HT slot links were dying with
+        # 0-7: standard AMS units. 32 / 33: a direct rack's AMS 3H / AMS 3P
+        # (H3C / P3C, m272). 128-191: AMS-HT (H2C / H2D — each AMS-HT unit
+        # uses its own ams_id in that range, single tray per unit). 255:
+        # external / virtual tray. Widened in m074 to fix upstream Bambuddy
+        # #1274 — AMS-HT slot links were dying with
         # ``CHECK constraint failed: ck_spoolman_slot_ams_id_range``.
         CheckConstraint(
-            "(ams_id >= 0 AND ams_id <= 7) OR (ams_id >= 128 AND ams_id <= 191) OR ams_id = 255",
+            "(ams_id >= 0 AND ams_id <= 7) OR ams_id IN (32, 33) OR (ams_id >= 128 AND ams_id <= 191) OR ams_id = 255",
             name="ck_spoolman_slot_ams_id_range",
         ),
-        CheckConstraint("tray_id >= 0 AND tray_id <= 3", name="ck_spoolman_slot_tray_id_range"),
+        # Trays 0-3; a rack AMS and a direct rack's external inputs (stored as
+        # (255, 0..8), utils/tray_ids) up to 8 — the widest rack. A P3C's
+        # seven is checked in code (TrayLayout.accepts_slot), m272.
+        CheckConstraint(
+            "tray_id >= 0 AND (tray_id <= 3 OR (ams_id IN (32, 33, 255) AND tray_id <= 8))",
+            name="ck_spoolman_slot_tray_id_range",
+        ),
     )
 
 

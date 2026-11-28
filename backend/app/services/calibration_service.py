@@ -735,6 +735,17 @@ class CalibrationService:
                 f"mode can dispatch to the printer."
             )
 
+        # A direct-connected rack (H3C, P3C) takes no print yet — and a filament
+        # calibration is one: the auto path publishes over MQTT outside the
+        # dispatcher, naming its trays by the page's numbers, the manual one
+        # would queue a row that can only wait. Refused before a session exists,
+        # so nothing blocks the next start (services/direct_rack_gate, N01 B/C).
+        from backend.app.services import direct_rack_gate
+        from backend.app.services.printer_manager import tray_layout_of
+
+        if direct_rack_gate.print_refused(tray_layout_of(printer_id, printer_manager)):
+            raise direct_rack_gate.DirectRackUnsupported()
+
         # Concurrent guard — one active session per printer
         existing = (
             await db.execute(

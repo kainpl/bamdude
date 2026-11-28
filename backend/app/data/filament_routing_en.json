@@ -31,6 +31,7 @@
   "printer_off_missing_filament": "Printer is switched off, and what it holds cannot run this job, so it is not switched on.",
   "model_unavailable": "Printer model is unknown.",
   "model_mismatch": "The sliced printer model does not match.",
+  "direct_rack_unsupported": "Printing on H3C and P3C printers is not supported yet.",
   "nozzle_state_unavailable": "Waiting for nozzle state.",
   "nozzle_mismatch": "Nozzle size or physical binding does not match.",
   "color_unavailable": "The required color cannot be verified.",

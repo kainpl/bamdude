@@ -393,6 +393,18 @@ class AMSTray(BaseModel):
         return routing_filament_type(self.tray_type, self.tray_info_idx) or None
 
 
+class AMSDryingZone(BaseModel):
+    """One drying zone of a rack AMS (AMS 3H / 3P), Studio's ``DevAmsZone`` — shown, not acted on."""
+
+    zone_id: int = 0
+    slots: list[int] = []  # the unit's slots (0-based) in this zone
+    temp: float | None = None
+    humidity: int | None = None  # percent
+    dry_status: int = 0  # ``info`` bits 4-7, as a unit's
+    dry_time: int = 0  # minutes remaining
+    can_dry: bool = False  # exactly two slots (``DevAmsZone::SupportDrying``)
+
+
 class AMSUnit(BaseModel):
     id: int
     humidity: int | None = None
@@ -409,6 +421,12 @@ class AMSUnit(BaseModel):
     dry_target_temp: int | None = None  # Active-cycle target °C (Bambu doesn't echo this)
     dry_filament: str | None = None  # Active-cycle filament name we sent
     module_type: str = ""  # "ams", "n3f", "n3s"
+    # Studio's ``DevAmsType`` (``info`` bits 0-3; utils/tray_ids.AmsType): 1 AMS,
+    # 2 Lite, 3 AMS 2 Pro, 4 AMS-HT, 5 A2L Lite, 6 AMS 3H, 7 AMS 3P.
+    ams_type: int | None = None
+    slot_count: int = 0  # slots the unit reported (a rack AMS has one per PrintTool)
+    is_rack_ams: bool = False  # AMS 3H / AMS 3P
+    drying_zones: list[AMSDryingZone] = []  # rack AMS only
 
 
 class NozzleInfoResponse(BaseModel):
@@ -418,7 +436,12 @@ class NozzleInfoResponse(BaseModel):
 
 
 class NozzleRackSlot(BaseModel):
-    """H2C nozzle rack slot (6-position tool-changer dock)."""
+    """A nozzle rack hotend: the H2C's six docks, or a direct-connected rack's (H3C, P3C) PrintTools.
+
+    ``id`` below 0x10 is a hotend on a toolhead, 0x10 and up one in the rack
+    (Studio ``DevNozzleSystem``); ``addr_id`` is a direct rack's fixed dock
+    0..N-1, shown as PrintTool ``addr_id + 1``.
+    """
 
     id: int = 0
     nozzle_type: str = ""
@@ -433,6 +456,13 @@ class NozzleRackSlot(BaseModel):
     # The nozzle's own counters, as BambuStudio reads them (None = not reported):
     print_time_s: int | None = None  # seconds this nozzle has printed ("p_t")
     switch_count: int | None = None  # times it was switched into use ("c_t")
+    # A direct-connected rack (None elsewhere):
+    addr_id: int | None = None  # the dock 0..N-1
+    print_tool: int | None = None  # addr_id + 1, as a person reads it
+    current_temp: float | None = None  # this hotend's own temperature
+    target_temp: float | None = None
+    temp_status: int | None = None  # 0 idle, 1 heating, 2 keeping, 3 cooling (``stat`` bits 3-4)
+    bind_ams: list[int] | None = None  # sub-AMS units bound to this hotend
 
 
 class AirductFan(BaseModel):
@@ -642,12 +672,16 @@ class PrinterStatus(BaseModel):
     extruder_slots: dict[str, ExtruderSlotResponse] = {}
     # BS ``ams_preload_version`` (``fun2`` bits 21-22), None until reported.
     ams_preload_version: int | None = None
-    # Currently loaded tray (global ID): 254 = external spool, 255 = no filament
+    # Currently loaded tray (global ID, utils/tray_ids): an external input's own
+    # id (254/255; 247-255 on a direct rack), 255 = no filament
     tray_now: int = 255
+    # A direct-connected nozzle rack (H3C, P3C): one toolhead with ``rack_size``
+    # PrintTools, one external input each (utils/tray_ids.TrayLayout).
+    direct_rack: bool = False
+    rack_size: int = 0
     # Runout / filament-replacement guidance (upstream #2587). Populated only while
-    # the print is PAUSED. Both are globalised tray IDs (ams_id*4+slot, or 128-135
-    # for AMS-HT, or 254 for external) so the frontend can highlight them with the
-    # same logic it uses for tray_now:
+    # the print is PAUSED. Both are global tray IDs (utils/tray_ids) so the
+    # frontend can highlight them with the same logic it uses for tray_now:
     #   expected_tray = the slot the firmware now expects filament in (from tray_tar).
     #                   None when idle, not paused, or the slot can't be resolved
     #                   (multi-AMS ambiguity) — the UI then says "check the printer".

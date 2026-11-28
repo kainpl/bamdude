@@ -530,6 +530,7 @@ export default {
       "dispatch_failed": "Збій підготовки",
       "storage_full": "Носій для таймлапсу заповнений",
       "farm_recovery_hold": 'Нові запуски призупинено під час відновлення ферми',
+      "direct_rack_unsupported": 'Друк на принтерах H3C і P3C ще не підтримується',
       "source_capture": "Очікує копіювання джерела",
       "unknown": "Очікує перевірки"
     },
@@ -1392,6 +1393,16 @@ export default {
     activeNozzle: 'Активне: сопло {{nozzle}}',
     amsSwitchInletTooltip: 'Перемикач тракту філаменту, вхід IN-{{inlet}} — подає на обидва сопла',
     nozzleRack: 'Стійка сопел',
+    // Стійка прямого під'єднання (H3C, P3C): її AMS і PrintTool — показ, без команд поки що.
+    rackAms: {
+      dryZone: 'Зона сушіння: лотки {{slots}}',
+      zoneTemp: '{{temp}}°C',
+      zoneHumidity: '{{humidity}}%',
+      printTool: 'PrintTool',
+      hotendTemp: 'Температура',
+      toolheadLabel: 'Сопло · PrintTool {{tool}}',
+      noHotend: 'Сопло не встановлено',
+    },
     nozzleDocked: 'Закріплене',
     nozzleMounted: 'Встановлене',
     nozzleActive: 'Активне',

@@ -50,6 +50,8 @@ ACTIONABLE_REASONS = frozenset(
         "previous_print_failed",
         # The printer's queue is halted (paused/error after a failed or cancelled print): only Resume helps.
         "queue_halted",
+        # A direct-connected rack (H3C, P3C) takes no print yet: only another printer helps.
+        "direct_rack_unsupported",
         "pinned_source_empty",
         "invalid_plate_id",
         "invalid_plate_metadata",

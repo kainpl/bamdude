@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from backend.app.utils.tray_ids import AmsType, ams_type_of
+
 
 @dataclass(frozen=True)
 class OverlayEntry:
@@ -51,7 +53,7 @@ def slot_key(ams_id: int, tray_id: int) -> tuple[int, int]:
     disagree; the callers that build a key themselves (routing's
     ``printer_feed_snapshot``) ask for it by name.
     """
-    return (ams_id, 0 if ams_id >= 128 else tray_id)
+    return (ams_id, 0 if ams_type_of(ams_id) == AmsType.N3S else tray_id)
 
 
 def _norm_color(value) -> str:

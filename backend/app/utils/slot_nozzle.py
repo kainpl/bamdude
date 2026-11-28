@@ -21,6 +21,36 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from backend.app.utils.tray_ids import EXTERNAL_AMS_ID, external_print_tool, external_tray_id, is_zmulti, unit_type
+
+
+def _on_direct_rack(state) -> bool:
+    """Whether the state is a direct-connected rack's (H3C, P3C) — the holder says so, or a rack AMS / dock is reported.
+
+    The H3C's own frames carry no holder, so its rack AMS (stamped type) or a
+    nozzle entry with a dock (``addr_id``) is the evidence the state holds.
+    """
+    rack_type = getattr(state, "direct_rack_type", None)
+    if isinstance(rack_type, int):
+        return rack_type > 0
+    raw = getattr(state, "raw_data", None) or {}
+    units = raw.get("ams") if isinstance(raw, dict) else None
+    if isinstance(units, dict):
+        units = units.get("ams")
+    for unit in units if isinstance(units, list) else []:
+        pair = unit_type(unit)
+        if pair is not None and is_zmulti(pair[1]):
+            return True
+    return any(isinstance(n, dict) and n.get("addr_id") is not None for n in getattr(state, "nozzle_rack", None) or [])
+
+
+def _rack_hotend(state, addr: int) -> dict | None:
+    """The hotend docked at (or picked from) rack address ``addr``, as ``nozzle_rack`` reports it."""
+    for entry in getattr(state, "nozzle_rack", None) or []:
+        if isinstance(entry, dict) and entry.get("addr_id") == addr:
+            return entry
+    return None
+
 
 def slot_extruder(state, ams_id: int, tray_id: int) -> int | None:
     """The extruder an AMS slot feeds, or None when the printer does not say.
@@ -31,6 +61,9 @@ def slot_extruder(state, ams_id: int, tray_id: int) -> int | None:
     holder names its side directly: tray 0 is Ext-L (extruder 1), tray 1 is
     Ext-R (extruder 0).
     """
+    if _on_direct_rack(state):
+        # One toolhead: a slot feeds a PrintTool, not "an extruder" (Studio).
+        return None
     extruder_map = getattr(state, "ams_extruder_map", None)
     if not extruder_map:
         return None
@@ -41,6 +74,14 @@ def slot_extruder(state, ams_id: int, tray_id: int) -> int | None:
         return int(mapped) if mapped is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _units(state) -> list:
+    raw = getattr(state, "raw_data", None) or {}
+    units = raw.get("ams") if isinstance(raw, dict) else None
+    if isinstance(units, dict):
+        units = units.get("ams")
+    return units if isinstance(units, list) else []
 
 
 @dataclass(frozen=True)
@@ -81,7 +122,28 @@ def slot_nozzle(state, ams_id: int, tray_id: int) -> SlotNozzle:
 
     A mapped hotend that has not reported a diameter yet falls back to the main
     nozzle, for the diameter and the flow alike — both describe one nozzle.
+
+    On a direct-connected rack a rack AMS slot ``k`` feeds PrintTool ``k`` and
+    an external input ``v`` PrintTool ``255 - v``: that hotend's own diameter.
+    Any other slot there (a bound sub-AMS) feeds a PrintTool only the binding
+    names (N01 stage B/C): unknown — the default, never the mounted hotend's.
     """
+    if _on_direct_rack(state):
+        addr: int | None = None
+        pair = None
+        if ams_id == EXTERNAL_AMS_ID:
+            addr = external_print_tool(external_tray_id(tray_id)) - 1
+        else:
+            for unit in _units(state):
+                found = unit_type(unit)
+                if found is not None and found[0] == ams_id:
+                    pair = found
+                    break
+            if pair is not None and is_zmulti(pair[1]):
+                addr = tray_id
+        hotend = _rack_hotend(state, addr) if addr is not None else None
+        diameter = str((hotend or {}).get("diameter") or "") or "0.4"
+        return SlotNozzle(extruder=None, diameter=diameter, flow=None)
     extruder = slot_extruder(state, ams_id, tray_id)
     nozzles = list(getattr(state, "nozzles", None) or [])
     nozzle = None

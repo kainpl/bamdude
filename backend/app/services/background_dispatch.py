@@ -1971,6 +1971,15 @@ class BackgroundDispatchService:
         drift. Never call it without the lock: it reads the dispatcher's own
         in-memory job lists.
         """
+        from backend.app.services import direct_rack_gate
+        from backend.app.services.printer_manager import tray_layout_of
+
+        if direct_rack_gate.print_refused(tray_layout_of(printer_id, printer_manager)):
+            # A direct-connected rack (H3C, P3C) takes no print until N01 stage B.
+            raise DispatchEnqueueRejected(
+                direct_rack_gate.UNSUPPORTED_MESSAGE, code=direct_rack_gate.UNSUPPORTED_CODE, printer_id=printer_id
+            )
+
         if self.has_work_for_printer(printer_id):
             raise DispatchEnqueueRejected(f"Printer {printer_name} already has a background dispatch in progress")
 
@@ -2474,7 +2483,16 @@ class BackgroundDispatchService:
         from backend.app.services.farm_startup_guard import farm_startup_guard
 
         farm_startup_guard.require()
+        from backend.app.services import direct_rack_gate
         from backend.app.services.print_scheduler import scheduler as print_scheduler
+        from backend.app.services.printer_manager import tray_layout_of
+
+        # The one dispatch layer: whatever reached it, a direct-connected rack
+        # (H3C, P3C) is not sent a print until N01 stage B. The queue and the
+        # direct door refuse earlier and by name; this is the floor.
+        if direct_rack_gate.print_refused(tray_layout_of(job.printer_id, printer_manager)):
+            await self._refuse_dispatch(job, direct_rack_gate.UNSUPPORTED_MESSAGE)
+            return
 
         # Strict mode (opt-in): a DIRECT print whose printer's stagger group has
         # no free slot is refused here, before it would otherwise wait for one.

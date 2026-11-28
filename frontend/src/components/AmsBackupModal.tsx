@@ -21,6 +21,7 @@
  * Theme-aware via CSS variables, matching AMSHistoryModal — adapts to every
  * background variant the user has picked.
  */
+import { amsTypeOf, isZmulti, unitLetter, unitName } from '../utils/trayIds';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -67,9 +68,10 @@ interface AmsBackupModalProps {
 function formatSlotLabel(amsId: number, slotIdx: number, _totalTraysOnUnit?: number): string {
   // The unit id decides: a regular AMS that listed one tray is not an AMS-HT.
   const isHt = isAmsHtUnit(amsId);
-  const normalizedId = amsId >= 128 ? amsId - 128 : amsId;
-  const letter = String.fromCharCode(65 + normalizedId);
-  return isHt ? `HT·${slotIdx + 1}` : `${letter}·${slotIdx + 1}`;
+  // A rack AMS (AMS 3H / 3P): 3H·n / 3P·n (utils/trayIds).
+  const kind = amsTypeOf(amsId);
+  if (isZmulti(kind)) return `${unitName(amsId, kind).replace('AMS-', '')}·${slotIdx + 1}`;
+  return isHt ? `HT·${slotIdx + 1}` : `${unitLetter(amsId)}·${slotIdx + 1}`;
 }
 
 /** Pick a readable text colour for a given filament hex. */

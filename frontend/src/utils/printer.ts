@@ -11,6 +11,9 @@ export function getPrinterImage(model: string | null | undefined): string {
   if (m.includes('h2dpro') || m.includes('h2d-pro')) return '/img/printers/h2dpro.png';
   if (m.includes('h2d')) return '/img/printers/h2d.png';
   if (m.includes('h2c')) return '/img/printers/h2c.png';
+  // Bambu Studio's own thumbnails (printer_thumbnail_N10 / _N11, BS v02.09).
+  if (m.includes('h3c') || m === 'n10') return '/img/printers/h3c.png';
+  if (m.includes('p3c') || m === 'n11') return '/img/printers/p3c.png';
   if (m.includes('h2s')) return '/img/printers/h2d.png';
   if (m.includes('p2s')) return '/img/printers/p2s.png';
   if (m.includes('p1s')) return '/img/printers/p1s.png';

@@ -87,7 +87,7 @@ def build_slot_k_resolver(state) -> Callable[[int | None, int, int], float | Non
 
     Built once per serialization pass and closed over the state, so the REST
     and WebSocket views of the same card cannot answer differently. For the
-    external holder pass ``ams_id=255`` and the 0/1 tray index (``vt id - 254``).
+    external holder pass ``ams_id=255`` and its stored index (``tray_ids.external_slot_index``).
     """
     # (extruder, cali_idx) -> {nozzle_diameter: k}. More than one inner entry
     # means two nozzles' tables both claim this index on this extruder.
