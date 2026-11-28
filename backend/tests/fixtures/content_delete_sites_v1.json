@@ -2266,6 +2266,14 @@
     },
     {
       "site": [
+        "services/spoolman_spool_identity.py::release_archived_slots",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: services/spoolman_spool_identity.py::release_archived_slots releases a printer's Spoolman slot rows whose spool Spoolman reports archived (upstream 23d04c864), only for the spool the row was proved for (verdict same/unknown), at a print's tail after its charges, under the slot-ledger doors (slot_write, mode_on, the printer's assignment lock) and only while the printer reports no print, asked again under the lock; its own session and commit. Any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
         "services/spoolman_spool_identity.py::remove_refuted",
         "sqlalchemy.delete",
         "backend.app.models.spoolman_k_profile.SpoolmanKProfile"
