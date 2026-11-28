@@ -7,6 +7,7 @@ import time
 import zipfile
 import zlib
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from sqlalchemy import delete, select
@@ -59,6 +60,10 @@ from backend.app.schemas.printer import (
     PrinterUpdate,
     PrintOptionsResponse,
     WaitingPrintOut,
+    WLEDConnectionInfo,
+    WLEDPreset,
+    WLEDPresetListRequest,
+    WLEDPresetTestRequest,
 )
 from backend.app.schemas.timelapse import TimelapseStorage
 from backend.app.services import (
@@ -142,6 +147,7 @@ from backend.app.services.printer_tag_service import (
     remove_links,
     replace_links,
 )
+from backend.app.services.wled import WLEDResponseError, wled_manager
 from backend.app.utils.fila_switch import extruder_slots_payload, inlet_bindings, switch_ready
 from backend.app.utils.model_compatibility import compatibility_matrix, effective_model_for_state, model_compatibility
 from backend.app.utils.printer_configs import is_bed_slinger
@@ -318,11 +324,69 @@ async def create_printer(
     await ensure_printer_queue(db, printer.id)
     await db.commit()
 
+    # WLED (N02): the new printer's mapping and its own plate flag (A1), before its first status push.
+    wled_manager.configure_printer(printer.id, printer.wled_config)
+    wled_manager.set_require_plate_clear(printer.id, printer.require_plate_clear)
+
     # Connect to the printer
     if printer.is_active:
         await printer_manager.connect_printer(printer)
 
     return printer
+
+
+# ---- WLED (N02, upstream #3124): read presets, test the connection or one preset — never saves anything ----
+
+
+@router.post("/{printer_id}/wled/presets", response_model=list[WLEDPreset])
+async def list_wled_presets(
+    printer_id: int,
+    request: WLEDPresetListRequest,
+    _=RequirePermission(Permission.PRINTERS_UPDATE),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read existing presets from WLED without changing its configuration."""
+    if not await db.scalar(select(Printer.id).where(Printer.id == printer_id)):
+        raise HTTPException(404, "Printer not found")
+    try:
+        return await wled_manager.list_presets(request.base_url)
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(502, f"WLED returned HTTP {exc.response.status_code}") from exc
+    except (httpx.HTTPError, WLEDResponseError) as exc:
+        raise HTTPException(502, "Could not load WLED presets") from exc
+
+
+@router.post("/{printer_id}/wled/test-connection", response_model=WLEDConnectionInfo)
+async def test_wled_connection(
+    printer_id: int,
+    request: WLEDPresetListRequest,
+    _=RequirePermission(Permission.PRINTERS_UPDATE),
+    db: AsyncSession = Depends(get_db),
+):
+    """Check WLED connectivity and return its optional identity."""
+    if not await db.scalar(select(Printer.id).where(Printer.id == printer_id)):
+        raise HTTPException(404, "Printer not found")
+    try:
+        return await wled_manager.get_info(request.base_url)
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(502, f"WLED returned HTTP {exc.response.status_code}") from exc
+    except (httpx.HTTPError, WLEDResponseError) as exc:
+        raise HTTPException(502, "Could not connect to WLED") from exc
+
+
+@router.post("/{printer_id}/wled/test-preset")
+async def test_wled_preset(
+    printer_id: int,
+    request: WLEDPresetTestRequest,
+    _=RequirePermission(Permission.PRINTERS_UPDATE),
+    db: AsyncSession = Depends(get_db),
+):
+    """Activate one validated preset without changing stored configuration."""
+    if not await db.scalar(select(Printer.id).where(Printer.id == printer_id)):
+        raise HTTPException(404, "Printer not found")
+    if not await wled_manager.test_preset(printer_id, request.base_url, request.preset_id):
+        raise HTTPException(502, "Could not activate WLED preset")
+    return {"success": True}
 
 
 @router.get("/{printer_id}/usage-projection")
@@ -707,11 +771,28 @@ async def update_printer(
     if "name" in update_data:
         printer_manager.update_printer_name(printer_id, printer.name)
 
+    # WLED (N02, upstream #3124): a saved mapping reloads and shows the current state at once.
+    if "wled_config" in update_data:
+        wled_manager.configure_printer(printer_id, printer.wled_config)
+        state = printer_manager.get_status(printer_id)
+        if state and printer.is_active:
+            wled_manager.handle_status(
+                printer_id,
+                state,
+                awaiting_plate_clear=printer_manager.is_awaiting_plate_clear(printer_id),
+            )
+    # A1: the printer's own plate flag; like upstream's settings hook, nothing is re-applied.
+    if "require_plate_clear" in update_data:
+        wled_manager.set_require_plate_clear(printer_id, printer.require_plate_clear)
+
     # Reconnect if connection settings changed
     if connection_changed:
         printer_manager.disconnect_printer(printer_id)
         if printer.is_active:
             await printer_manager.connect_printer(printer)
+        elif "is_active" in update_data:
+            # Parked: the session ends with no status callback, so WLED is told (upstream #3124).
+            wled_manager.handle_offline(printer_id)
 
     # A proxy Virtual Printer forwards to the address it was started with. The sync notices a new
     # one and restarts that proxy, but nothing ran it on this edit: the proxy went on forwarding to
@@ -990,6 +1071,8 @@ async def archive_printer(
     await scheduled_drying.forget_printer(db, printer_id, archived=True)
     await db.refresh(printer)
     printer_manager.disconnect_printer(printer_id)
+    # A12: archiving ends the session with no status callback — WLED shows offline until unarchive reconnects.
+    wled_manager.handle_offline(printer_id)
     # The advertised-profile overlay and the once-per-process rebuild mark are
     # deliberately LEFT in place: archiving is reversible and the slots still
     # hold what we published, so an unarchive finds the masks it left. The
@@ -2102,6 +2185,8 @@ async def disconnect_printer(
 
     logger.info("Manual disconnect requested for printer %d (%s)", printer.id, printer.name)
     printer_manager.disconnect_printer(printer_id)
+    # No status callback follows a manual disconnect: WLED is told (upstream #3124).
+    wled_manager.handle_offline(printer_id)
     return {"connected": False}
 
 
