@@ -36,6 +36,9 @@ class PrintArchive(Base):
         # «Not checked yet» is the rare NULL among stamped rows: the list's filter
         # and the reminder sweep (once a minute) find it without walking the table (m248).
         Index("ix_print_archives_outcome_checked_at", "outcome_checked_at"),
+        # «Idle the longest» reads each printer's newest finished print every AutoQueue pass
+        # (C01, m271): without it the read walked the printers' whole archive.
+        Index("ix_print_archives_printer_completed", "printer_id", "completed_at"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

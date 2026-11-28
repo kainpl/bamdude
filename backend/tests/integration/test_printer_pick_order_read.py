@@ -102,3 +102,34 @@ async def test_lru_is_not_read_under_another_order(db_session, printer_factory, 
     printer = await printer_factory()
     await archive_factory(printer.id, status="completed", completed_at=_naive(NOW - timedelta(minutes=10)))
     assert (await read_pick_order(db_session, now=NOW)).facts[printer.id].last_finished is None
+
+
+async def test_the_last_finish_is_read_through_the_printer_index(db_session, printer_factory):
+    """Acceptance r1 A1-01: «idle the longest» is read every AutoQueue pass; the newest finish of each printer comes
+    from ``(printer_id, completed_at)`` — never a walk over the printers' whole archive."""
+    from sqlalchemy import event
+
+    if db_session.bind.dialect.name != "sqlite":
+        pytest.skip("the plan is read with SQLite's EXPLAIN QUERY PLAN")
+    await _order(db_session, "least_recently_used")
+    await printer_factory()
+    captured = []
+
+    def grab(conn, cursor, statement, parameters, context, executemany):
+        if "print_archives" in statement:
+            captured.append((statement, parameters))
+
+    engine = db_session.bind.sync_engine
+    event.listen(engine, "before_cursor_execute", grab)
+    try:
+        await read_pick_order(db_session, now=NOW)
+    finally:
+        event.remove(engine, "before_cursor_execute", grab)
+    assert captured, "the read asked the archive"
+    statement, parameters = captured[-1]
+    connection = await db_session.connection()
+    plan = " | ".join(
+        str(row[-1]) for row in (await connection.exec_driver_sql("EXPLAIN QUERY PLAN " + statement, parameters)).all()
+    )
+    assert "ix_print_archives_printer_completed" in plan, plan
+    assert "TEMP B-TREE" not in plan, plan

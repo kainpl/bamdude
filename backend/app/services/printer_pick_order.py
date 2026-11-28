@@ -1,6 +1,6 @@
 """Which printer an AutoQueue job takes among printers equally fit for it (C01, upstream #3480 / #2915).
 
-The operator chooses the order in Settings › Queue (``model_dispatch_order``):
+The operator chooses the order in Settings › Printing (``model_dispatch_order``):
 
 * ``fewest_hours`` (the default) — the least worn machine first, so the farm's work and wear
   spread instead of all landing on the lowest printer id;
@@ -37,7 +37,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 SETTING_KEY = "model_dispatch_order"
@@ -104,38 +104,41 @@ async def read_pick_order(db: AsyncSession, *, now: datetime) -> PickOrder:
 
     stored = await db.scalar(select(Settings.value).where(Settings.key == SETTING_KEY))
     order = stored if stored in ORDERS else DEFAULT
+    # Each printer's newest finished print, one row per printer: walked down
+    # ``ix_print_archives_printer_completed`` until the first row that is a print, never a grouped
+    # maximum over the printer's whole archive (acceptance r1 A1-01). Read only when the order uses it.
+    last_finish = (
+        select(PrintArchive.completed_at)
+        .where(
+            PrintArchive.printer_id == Printer.id,
+            PrintArchive.completed_at.is_not(None),
+            PrintArchive.status != "archived",
+            not_dispatch_failure(),
+            dispatched_archive_filter(),
+        )
+        .order_by(PrintArchive.completed_at.desc())
+        .limit(1)
+        .correlate(Printer)
+        .scalar_subquery()
+        if order == "least_recently_used"
+        else literal(None)
+    )
     rows = (
         await db.execute(
-            select(Printer.id, Printer.runtime_seconds, Printer.print_hours_offset, Printer.dispatch_priority).where(
-                Printer.is_active.is_(True), Printer.archived.is_(False)
-            )
+            select(
+                Printer.id,
+                Printer.runtime_seconds,
+                Printer.print_hours_offset,
+                Printer.dispatch_priority,
+                last_finish.label("last_finish"),
+            ).where(Printer.is_active.is_(True), Printer.archived.is_(False))
         )
     ).all()
-    finished: dict[int, float] = {}
-    if order == "least_recently_used" and rows:
-        reference = _utc(now)
-        last = (
-            await db.execute(
-                select(PrintArchive.printer_id, func.max(PrintArchive.completed_at))
-                .where(
-                    PrintArchive.printer_id.in_([row.id for row in rows]),
-                    PrintArchive.completed_at.is_not(None),
-                    PrintArchive.status != "archived",
-                    not_dispatch_failure(),
-                    dispatched_archive_filter(),
-                )
-                .group_by(PrintArchive.printer_id)
-            )
-        ).all()
-        finished = {
-            printer_id: (_utc(moment) - reference).total_seconds()
-            for printer_id, moment in last
-            if printer_id is not None and moment is not None
-        }
+    reference = _utc(now)
     facts = {
         row.id: PickFacts(
             hours=(row.runtime_seconds or 0) / 3600.0 + (row.print_hours_offset or 0.0),
-            last_finished=finished.get(row.id),
+            last_finished=None if row.last_finish is None else (_utc(row.last_finish) - reference).total_seconds(),
             priority=row.dispatch_priority,
         )
         for row in rows
