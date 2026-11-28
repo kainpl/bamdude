@@ -185,7 +185,9 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   // in the x1c-2 assign list), and assigning would silently steal it from
   // the other printer's slot.
   const { data: allSpoolmanAssignments } = useQuery({
-    queryKey: ['spoolman-slot-assignments-all'],
+    // Under the per-slot key (upstream 23d04c864): every slot invalidation refreshes it
+    // too, so a spool just assigned is not offered for a second slot.
+    queryKey: ['spoolman-slot-assignments', 'all'],
     queryFn: () => api.getSpoolmanSlotAssignments(),
     enabled: isOpen && !!spoolmanEnabled,
   });

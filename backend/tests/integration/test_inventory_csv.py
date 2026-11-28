@@ -37,8 +37,8 @@ class TestInventoryCsvExport:
         assert response.headers["content-type"].startswith("text/csv")
         body = response.text
         lines = body.strip().splitlines()
-        # Header row uses the fixed schema.
-        assert lines[0].split(",")[0] == "material"
+        # Header row uses the fixed schema; the spool's number comes first (C32).
+        assert lines[0].split(",")[:2] == ["id", "material"]
         assert "rgba" in lines[0]
         # Data row present, rgba written without leading '#'.
         assert "Polymaker" in body
@@ -59,7 +59,7 @@ class TestInventoryCsvExport:
         assert response.status_code == 200, response.text
         assert response.content[:3] == bytes([0xEF, 0xBB, 0xBF])  # the UTF-8 BOM
         text = response.content.decode("utf-8-sig")
-        assert text.splitlines()[0].startswith("material;brand;")
+        assert text.splitlines()[0].startswith("id;material;brand;")
         # weight_used 250.5 rendered with a comma decimal; the cell gets quoted
         # only if it contained the delimiter, and ';' files leave ',' bare.
         assert "250,5" in text
@@ -419,7 +419,9 @@ class TestInventoryCsvReviewFollowups:
             "/api/v1/inventory/spools/import?dry_run=true", files=_csv_upload(export.text)
         )
         assert preview.status_code == 200, preview.text
-        assert preview.json()["warnings"] == []
+        # Re-imported on its own install the spool's number is in use (C32): that one says so;
+        # nothing about the cells.
+        assert [w for w in preview.json()["warnings"] if "get a new id" not in w] == []
         assert preview.json()["rows"][0]["spool"]["note"] == note
 
         # Wipe, re-import the exact export, and confirm the note is restored

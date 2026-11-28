@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.spool import Spool
 
-_TRAY_UUID = "0123456789ABCDEF0123456789ABCDEF"
+_TRAY_UUID = "0123456789AB4DEF8123456789ABCDEF"
 _TAG_UID = "FEDCBA9876543210"
 
 
@@ -56,7 +56,7 @@ class TestSpoolByTagLookup:
     @pytest.mark.integration
     async def test_lookup_is_normalized(self, async_client: AsyncClient, tagged_spool):
         # Lowercase + colon-separated input must still resolve (hex-normalized + upper-cased).
-        messy = "01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef"
+        messy = "01:23:45:67:89:ab:4d:ef:81:23:45:67:89:ab:cd:ef"
         resp = await async_client.get(f"/api/v1/inventory/spools/by-tag?tray_uuid={messy}")
         assert resp.status_code == 200
         assert resp.json()["id"] == tagged_spool.id
@@ -89,16 +89,16 @@ class TestSpoolByTagLookup:
             material="PLA",
             label_weight=1000,
             weight_used=0,
-            tray_uuid="BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            tray_uuid="BBBBBBBBBBBB4BBBBBBBBBBBBBBBBBBB",
             archived_at=datetime(2024, 1, 1),
         )
         db_session.add(spool)
         await db_session.commit()
 
-        resp = await async_client.get("/api/v1/inventory/spools/by-tag?tray_uuid=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
+        resp = await async_client.get("/api/v1/inventory/spools/by-tag?tray_uuid=BBBBBBBBBBBB4BBBBBBBBBBBBBBBBBBB")
         assert resp.status_code == 404
 
         resp2 = await async_client.get(
-            "/api/v1/inventory/spools/by-tag?tray_uuid=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB&include_archived=true"
+            "/api/v1/inventory/spools/by-tag?tray_uuid=BBBBBBBBBBBB4BBBBBBBBBBBBBBBBBBB&include_archived=true"
         )
         assert resp2.status_code == 200

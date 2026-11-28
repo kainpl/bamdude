@@ -595,7 +595,7 @@ export function useWebSocket() {
     // The whole ledger, read by the Inventory page's location column, the
     // assign dialog's "occupied" list and the spool form — a key of its own
     // that the card's prefix does not match.
-    queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments-all'] });
+    queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments', 'all'] });
   }, [queryClient]);
 
   /**
