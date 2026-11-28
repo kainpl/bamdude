@@ -64,6 +64,9 @@ READERS = {
     # The Spoolman delete door (C047 part 2): it refuses a spool with history of the
     # current source, read only after S0 proved Spoolman mode on.
     APP / "services" / "spoolman_delete.py",
+    # N62: the History routes narrow the rows to the printers the caller reaches
+    # (``_usage_scope``); every route refuses first while Spoolman is off (``_require_spoolman_mode``).
+    APP / "api" / "routes" / "spoolman_usage.py",
     APP / "models" / "spoolman_usage_history.py",
     APP / "models" / "__init__.py",
 }
