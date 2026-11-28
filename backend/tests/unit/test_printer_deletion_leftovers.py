@@ -41,6 +41,9 @@ LEFT_BEHIND = [
     ("backend.app.main", "_active_print_identities"),
     ("backend.app.main", "_last_projection_broadcast"),
     ("backend.app.main", "_projection_repeat_available"),
+    ("backend.app.services.wled", "wled_manager._configs"),
+    ("backend.app.services.wled", "wled_manager._require_plate_clear"),
+    ("backend.app.services.wled", "wled_manager._runtime"),
 ]
 
 
@@ -101,3 +104,41 @@ def test_a_confirmed_deletion_removes_the_references(calibration_dir, monkeypatc
     printer_deletion.finish(deletion, committed=True)
     assert not (calibration_dir / "printer_5_ref_0.jpg").exists()
     assert (calibration_dir / "printer_50_ref_0.jpg").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_committed_deletion_cancels_the_wled_tasks():
+    """N02 A3: the dropped runtime's send and Finished timer (up to a day) are cancelled, not left to wake."""
+    import asyncio
+
+    from backend.app.services.wled import _WLEDRuntime, wled_manager
+
+    send, timer = asyncio.create_task(asyncio.sleep(3600)), asyncio.create_task(asyncio.sleep(3600))
+    wled_manager._runtime[5] = _WLEDRuntime(send_task=send, finished_task=timer)
+    try:
+        taken = printer_deletion._take(wled_manager._runtime, 5)
+        assert 5 not in wled_manager._runtime
+        printer_deletion._drop(taken)
+        await asyncio.gather(send, timer, return_exceptions=True)
+        assert send.cancelled() and timer.cancelled()
+    finally:
+        wled_manager._runtime.pop(5, None)
+
+
+@pytest.mark.asyncio
+async def test_a_rolled_back_deletion_keeps_the_wled_runtime():
+    import asyncio
+
+    from backend.app.services.wled import _WLEDRuntime, wled_manager
+
+    timer = asyncio.create_task(asyncio.sleep(3600))
+    runtime = _WLEDRuntime(finished_task=timer)
+    wled_manager._runtime[5] = runtime
+    try:
+        taken = printer_deletion._take(wled_manager._runtime, 5)
+        printer_deletion._put_back(wled_manager._runtime, taken)
+        assert wled_manager._runtime[5] is runtime
+        assert not timer.done()
+    finally:
+        timer.cancel()
+        wled_manager._runtime.pop(5, None)

@@ -175,6 +175,7 @@ from backend.app.services.timelapse_files import (
     remote_source,
     remove_recording_after_attach,
 )
+from backend.app.services.wled import wled_manager
 from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.failure_reasons import OTHER as FAILURE_OTHER, USER_CANCELLED
 from backend.app.utils.filament_remaining import grams_used
@@ -2833,6 +2834,27 @@ class _HmsStatusObservation:
     observed_at: float
 
 
+async def initialize_wled_printers(db) -> None:
+    """Load every printer's WLED mapping and plate flag, and show offline where no session will start (N02).
+
+    Before any printer connects, so the first status push finds its mapping (upstream #3124). An inactive
+    printer, and an ARCHIVED one — our startup connects neither (``init_printer_connections``) — shows its
+    offline preset (A12). Each printer's own *Require plate clear* replaces upstream's global setting (A1).
+    """
+    from sqlalchemy import select as _select
+
+    from backend.app.models.printer import Printer
+
+    rows = await db.execute(
+        _select(Printer.id, Printer.wled_config, Printer.require_plate_clear, Printer.is_active, Printer.archived)
+    )
+    for printer_id, config, require_plate_clear, is_active, archived in rows.all():
+        wled_manager.configure_printer(printer_id, config)
+        wled_manager.set_require_plate_clear(printer_id, bool(require_plate_clear))
+        if config and (not is_active or archived):
+            wled_manager.handle_offline(printer_id)
+
+
 def on_printer_status_change(printer_id: int, state: PrinterState) -> Coroutine[None, None, None]:
     # PrinterManager calls this on the producer thread before queuing the
     # coroutine. The next packet can replace any of these fields immediately.
@@ -2929,6 +2951,15 @@ async def _handle_printer_status_change(
             )
     except Exception:
         pass  # Don't fail status callback if MQTT fails
+
+    # WLED (N02, upstream #3124): beside the relay — after the session proof above, before the dedupe, so every
+    # push reaches it; it only schedules background sends. A WLED fault never fails the status callback (A4).
+    try:
+        wled_manager.handle_status(
+            printer_id, state, awaiting_plate_clear=printer_manager.is_awaiting_plate_clear(printer_id)
+        )
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).debug("WLED status hook failed for printer %s", printer_id, exc_info=True)
 
     # Every await below may span a deletion of this printer record; what follows each one writes registries
     # or reaches the printer by id, so the session is proved again first (spec gh109-o1 r2 R6).
@@ -13286,6 +13317,10 @@ async def _application_lifespan(app: FastAPI):
             await db.rollback()
             logging.exception("Startup: could not remove built-in slot assignments left in Spoolman mode")
 
+    # WLED is optional (N02): its per-printer mappings are loaded before any printer connects.
+    async with async_session() as db:
+        await initialize_wled_printers(db)
+
     # Connect to all active printers
     async with async_session() as db:
         await init_printer_connections(db)
@@ -13908,6 +13943,11 @@ async def _application_lifespan(app: FastAPI):
         await camera_light.shutdown()
     except Exception as e:
         logging.warning("Failed to stop the camera-light lease: %s", e)
+    # WLED sends and Finished timers are cancelled, its HTTP client closed (N02).
+    try:
+        await wled_manager.shutdown()
+    except Exception as e:
+        logging.warning("Failed to stop the WLED manager: %s", e)
     # Held slot unlinks ask again from a timer task (services/slot_unlink_hold).
     try:
         from backend.app.services import slot_unlink_hold
