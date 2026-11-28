@@ -133,7 +133,7 @@ async def test_returned_first_wave_matches_actual_router(
     )
 
 
-ORDER_EDGES = ("most_hours", "priority", "least_recently_used")
+ORDER_EDGES = ("fewest_hours", "most_hours", "priority", "least_recently_used")
 
 
 async def _parity_farm(db_session, printer_factory, tmp_path, *, compatible=False):
@@ -317,10 +317,12 @@ async def _first_wave_parity(
     elif edge in ORDER_EDGES:
         # C01 (consilium r1 R1-08): facts that rank the printers against their ids, so a forecast
         # blind to the order deals the wave differently from the router.
-        db_session.add(Settings(key="model_dispatch_order", value=edge))
+        if edge != "fewest_hours":  # the default: no setting stored, as on every untouched farm
+            db_session.add(Settings(key="model_dispatch_order", value=edge))
         finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
         for printer in (await db_session.execute(select(Printer))).scalars().all():
-            printer.runtime_seconds = printer.id * 3600
+            # Against the ids whatever the order: more hours on a higher id, fewer under the default.
+            printer.runtime_seconds = (1000 - printer.id if edge == "fewest_hours" else printer.id) * 3600
             printer.dispatch_priority = 1000 - printer.id
             db_session.add(
                 PrintArchive(

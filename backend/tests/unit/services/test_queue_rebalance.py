@@ -994,9 +994,10 @@ def test_rebalance_refuses_a_move_when_a_manual_release_can_take_its_stagger_slo
     assert not actual.moves and actual.skipped == [(41, "forecast_incomplete")]
 
 
-def test_receivers_rank_by_the_printer_order():
-    """C01: the trial puts moved prints on the receiver the router would pick — here the X1C with
-    the fewest hours, not the lower id."""
+def test_a_move_lands_on_the_printer_the_order_names():
+    """C01: the trial's replay puts the moved print on the printer the order names — here the X1C
+    with the fewest hours, not the lower id. (``_receivers`` ranks its pool the same way, but the
+    order of that list is informative only: the trial's replay decides where the prints land.)"""
     from backend.app.services.printer_pick_order import PickFacts
 
     options = {10: [_opt(201, "x1c", 2, seconds=H)]}

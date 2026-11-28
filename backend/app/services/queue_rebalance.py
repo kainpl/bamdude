@@ -592,6 +592,8 @@ def _receivers(
 ) -> list[tuple[int, bool, int, float]]:
     """The ready printers, free now and not spent by a move of this pass, that can print
     ``plate`` for this job — ``(printer, exact, colour matches, remaining rank)`` in the router's order.
+    The order of the list is informative: the pool becomes the trial job's fits, and the trial's
+    replay decides which of them the moved prints land on.
 
     The pool the trial may put the moved prints on (spec T15): a forecast that needs any other
     printer is no proof. An unknown answer gives no capacity (R8) and is remembered for the reason.

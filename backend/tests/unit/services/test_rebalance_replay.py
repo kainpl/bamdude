@@ -615,3 +615,16 @@ def test_the_priority_survives_the_advance():
 def test_a_lane_without_facts_ranks_after_one_with_them():
     lanes = [_free(1), _free(2, pick=_pick(hours=999))]
     assert replay(lanes, [_job(1, 1, 2)], order="fewest_hours").lane_of[1] == 2
+
+
+def test_a_queued_rows_preparation_is_no_print_time():
+    """Acceptance r1 A1-02: neither lane has started; lane 1 prints 4200 s, lane 2 prepares 600 s and prints 3600 s,
+    so both free at 4200 s. Lane 2 printed less: fewest hours picks it. Counting the preparation would tie them
+    and give lane 1."""
+    lanes = [
+        Lane(1, held=(Held(4200.0),), pick=_pick(hours=0.0)),
+        Lane(2, held=(Held(3600.0, prep=600.0),), pick=_pick(hours=0.0)),
+    ]
+    result = replay(lanes, [_job(1, 1, 2)], order="fewest_hours")
+    assert result.routed_at[1] == 4200
+    assert result.lane_of[1] == 2

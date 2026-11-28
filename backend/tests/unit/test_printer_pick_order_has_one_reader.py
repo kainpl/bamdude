@@ -2,8 +2,9 @@
 
 The router, the wake step, the rebalancer's receivers and its replay must pick printers in the
 same order; a second reader of the setting or of a printer's priority would let one of them
-drift. Only ``services/printer_pick_order.py`` reads them for routing; the column, the schemas,
-the migration, the two CRUD routes and Git restore's key list name them for their own reasons.
+drift. Only ``services/printer_pick_order.py`` reads them for routing; the schemas, the migration and Git
+restore's key list name them for their own reasons (the model's column is a declaration, which the scan
+does not count; the settings and printer routes write through the schemas and name neither).
 """
 
 import ast
@@ -14,9 +15,6 @@ NAMES = {"model_dispatch_order", "dispatch_priority"}
 
 ALLOWED: dict[str, str] = {
     "services/printer_pick_order.py": "THE reader",
-    "models/printer.py": "the column itself",
-    "api/routes/settings.py": "the settings CRUD route",
-    "api/routes/printers.py": "the printer CRUD route",
     "services/git_restore.py": "the restorable settings key list",
 }
 
@@ -43,5 +41,9 @@ def test_nobody_else_reads_the_pick_order():
 
 
 def test_the_allowlist_is_live():
+    """Every exemption still names the setting or the column (acceptance r1 A1-03): an entry that names neither
+    would let a later routing reader in that file pass unseen."""
     for rel in ALLOWED:
-        assert (APP / rel).is_file(), rel
+        path = APP / rel
+        assert path.is_file(), rel
+        assert _mentions(ast.parse(path.read_text(encoding="utf-8"))), f"{rel} no longer names the order: drop it"
