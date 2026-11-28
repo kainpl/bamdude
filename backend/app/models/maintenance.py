@@ -64,18 +64,35 @@ class PrinterMaintenance(Base):
     # Relationships
     printer: Mapped["Printer"] = relationship(back_populates="maintenance_items")
     maintenance_type: Mapped["MaintenanceType"] = relationship(back_populates="printer_maintenance")
+    # The history outlives the item (N09): no ORM path deletes or nulls it; the doors that
+    # remove an item detach its history first (services/content_delete_rows).
     history: Mapped[list["MaintenanceHistory"]] = relationship(
-        back_populates="printer_maintenance", cascade="all, delete-orphan"
+        back_populates="printer_maintenance", passive_deletes="all"
     )
 
 
 class MaintenanceHistory(Base):
-    """Log of maintenance actions performed."""
+    """Log of maintenance actions performed.
+
+    A row outlives its printer, its task and its performer (N09, upstream 8afcb3fbd): the
+    links are ``SET NULL`` and the names are kept as they were at the reset, which is what
+    every reader shows. m274 added the snapshot columns and filled them for older rows.
+    """
 
     __tablename__ = "maintenance_history"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    printer_maintenance_id: Mapped[int] = mapped_column(ForeignKey("printer_maintenance.id", ondelete="CASCADE"))
+    printer_maintenance_id: Mapped[int | None] = mapped_column(
+        ForeignKey("printer_maintenance.id", ondelete="SET NULL"), nullable=True
+    )
+    # The printer the reset was for, and the names at that moment.
+    printer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("printers.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    printer_name: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    maintenance_type_name: Mapped[str] = mapped_column(String(100), default="", server_default="")
+    # The user's name, else the Telegram chat's label; NULL when nobody is known.
+    performed_by_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     performed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     hours_at_maintenance: Mapped[float] = mapped_column(Float, default=0.0)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -87,7 +104,7 @@ class MaintenanceHistory(Base):
     )
 
     # Relationships
-    printer_maintenance: Mapped["PrinterMaintenance"] = relationship(back_populates="history")
+    printer_maintenance: Mapped["PrinterMaintenance | None"] = relationship(back_populates="history")
     performed_by_user: Mapped["User | None"] = relationship()
     performed_by_chat: Mapped["TelegramChat | None"] = relationship()
 

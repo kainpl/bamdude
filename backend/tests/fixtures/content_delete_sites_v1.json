@@ -716,14 +716,6 @@
       "site": [
         "api/routes/printers.py::_delete_printer_queue_rows",
         "sqlalchemy.delete",
-        "backend.app.models.maintenance.MaintenanceHistory"
-      ],
-      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references (G03 B: moved into its lane-holding helper, A21 / A22)"
-    },
-    {
-      "site": [
-        "api/routes/printers.py::_delete_printer_queue_rows",
-        "sqlalchemy.delete",
         "backend.app.models.maintenance.PrinterMaintenance"
       ],
       "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references (G03 B: moved into its lane-holding helper, A21 / A22)"
@@ -1455,6 +1447,14 @@
         "model"
       ],
       "owner_policy": "C-I1: flush-only domain phase; root owns all gates and commit; exact child policies"
+    },
+    {
+      "site": [
+        "services/content_delete_rows.py::delete_maintenance_history",
+        "sqlalchemy.delete",
+        "backend.app.models.maintenance.MaintenanceHistory"
+      ],
+      "owner_policy": "N09: the cleanup doors' one delete (DELETE /maintenance/history by age, DELETE /maintenance/history/{entry_id}); flush-only, the route owns the printer scope and the commit; the items and their last reset stay. The printer delete no longer deletes history: it detaches it (detach_maintenance_history, forget_printer_in_maintenance_history)"
     },
     {
       "site": [

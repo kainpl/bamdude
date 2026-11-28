@@ -616,6 +616,7 @@
   "Macro requires swap mode enabled on printer": "Для макроса потрібно, щоб на принтері було увімкнено Swap Mode",
   "Macro targets swap profile '{}' but printer is set to '{}'": "Макрос розрахований на Swap Mode-профіль «{}», а на принтері встановлено «{}»",
   "Maintenance item not found": "Елемент обслуговування не знайдено",
+  "Maintenance history entry not found": "Запис історії обслуговування не знайдено",
   "Maintenance type already assigned to this printer": "Тип обслуговування вже призначено цьому принтеру",
   "Maintenance type not found": "Тип обслуговування не знайдено",
   "MakerWorld blocked the request (HTTP 418) for {}. Try again in a few minutes, or use 'Open on MakerWorld' to import manually.": "MakerWorld заблокував запит (HTTP 418) до {}. Спробуйте за кілька хвилин або скористайтеся «Відкрити на MakerWorld», щоб імпортувати вручну.",
