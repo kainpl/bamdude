@@ -286,6 +286,9 @@ export function CameraTile({
           intervalMs={snapshotIntervalMs}
           streamToken={streamToken}
           style={pictureStyle}
+          // The open-card button holds the bottom-right corner: the frame's time
+          // sits left of it instead of under it.
+          timePositionClassName={onOpenPrinterCard ? 'bottom-1.5 right-11' : undefined}
         />
       ) : livePhase === 'failed' ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-black/80 text-bambu-gray">
@@ -428,7 +431,15 @@ export function CameraTile({
             )}
           </div>
         )}
-        <span className={`block truncate text-xs font-medium${connected && mode === 'snapshot' ? ' pr-36' : ''}`}>{name}</span>
+        {/* The name stops short of the frame's time (and of the open-card button
+            beside it, which pushes the time further left). */}
+        <span
+          className={`block truncate text-xs font-medium${
+            connected && mode === 'snapshot' ? (onOpenPrinterCard ? ' pr-44' : ' pr-36') : ''
+          }`}
+        >
+          {name}
+        </span>
       </div>
       {controls && (
         // Above the tile-wide live toggle, like the tile's other buttons. Shown on
