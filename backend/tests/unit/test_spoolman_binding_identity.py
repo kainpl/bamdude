@@ -8,6 +8,7 @@ the next charge, weight, drying stamp or K to whatever spool held the number the
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from types import SimpleNamespace
 
 import httpx
@@ -387,6 +388,59 @@ class TestArchivedInSpoolman:
         finished[printer.id] = "RUNNING"
 
         await identity.ChargeCheck(_Spoolman({"id": NUMBER, "registered": OLD, "archived": True}), printer.id).settle()
+
+        assert len(await _rows(db_session, SpoolmanSlotAssignment)) == 1
+
+    async def test_a_printer_printing_again_keeps_a_gone_spools_row_for_its_own_tail(
+        self, db_session, printer_factory, finished
+    ):
+        # Acceptance A1-01: Spoolman can give a deleted spool's number to a new spool; the
+        # row is what refutes that number at the next print's tail.
+        await _spoolman_on(db_session)
+        printer = await printer_factory()
+        await _bind(db_session, printer.id)
+        finished[printer.id] = "RUNNING"
+
+        await identity.ChargeCheck(_Spoolman(None), printer.id).settle()
+
+        assert len(await _rows(db_session, SpoolmanSlotAssignment)) == 1
+
+    @staticmethod
+    def _print_starts_at_the_lock(monkeypatch, finished, printer_id):
+        """The next print starts while the sweep waits for the printer's assignment lock."""
+        import backend.app.main as main
+
+        real = main._get_ams_assignment_lock
+
+        @contextlib.asynccontextmanager
+        async def lock(pid):
+            finished[printer_id] = "RUNNING"
+            async with real(pid):
+                yield
+
+        monkeypatch.setattr(main, "_get_ams_assignment_lock", lock)
+
+    async def test_a_print_started_while_the_lock_was_awaited_keeps_an_archived_spools_row(
+        self, db_session, printer_factory, finished, monkeypatch
+    ):
+        await _spoolman_on(db_session)
+        printer = await printer_factory()
+        await _bind(db_session, printer.id)
+        self._print_starts_at_the_lock(monkeypatch, finished, printer.id)
+
+        await identity.ChargeCheck(_Spoolman({"id": NUMBER, "registered": OLD, "archived": True}), printer.id).settle()
+
+        assert len(await _rows(db_session, SpoolmanSlotAssignment)) == 1
+
+    async def test_a_print_started_while_the_lock_was_awaited_keeps_a_gone_spools_row(
+        self, db_session, printer_factory, finished, monkeypatch
+    ):
+        await _spoolman_on(db_session)
+        printer = await printer_factory()
+        await _bind(db_session, printer.id)
+        self._print_starts_at_the_lock(monkeypatch, finished, printer.id)
+
+        await identity.ChargeCheck(_Spoolman(None), printer.id).settle()
 
         assert len(await _rows(db_session, SpoolmanSlotAssignment)) == 1
 
