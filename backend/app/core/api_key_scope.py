@@ -137,6 +137,8 @@ _NOT_FOUND = {
     "batch": "Batch not found",
     "smart_plug": "Smart plug not found",
     "maintenance_item": "Maintenance item not found",
+    # N09 (acceptance A1-01): the route's own refusal, so another printer's entry reads as none.
+    "maintenance_history_entry": "Maintenance history entry not found",
     "calibration_session": "Calibration session not found",
     "dispatch_job": "Job not found",
     "drying_run": "Scheduled drying not found",

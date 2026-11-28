@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from backend.app.models.maintenance import MaintenanceHistory, MaintenanceType, PrinterMaintenance
 from backend.app.models.printer import Printer
+from backend.tests.integration.test_printer_scope_n62 import farm  # noqa: F401 -- N62's person fixture
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
@@ -259,6 +260,93 @@ class TestThePrinterScope:
         response = await async_client.get("/api/v1/maintenance/history")
 
         assert entries["gone"] in [entry["id"] for entry in response.json()["items"]]
+
+
+class TestAPersonsPrinterScope:
+    """N62 for a person (acceptance A1-01): another printer's entry reads as no entry at all."""
+
+    async def test_another_printers_entry_cannot_be_told_from_none(self, async_client, db_session, farm):  # noqa: F811
+        entry = await _entry(db_session, farm["b"].id, name="B")
+
+        other = await async_client.delete(f"/api/v1/maintenance/history/{entry}", headers=farm["alice"])
+        missing = await async_client.delete("/api/v1/maintenance/history/999999", headers=farm["alice"])
+
+        assert other.status_code == missing.status_code == 404
+        assert other.json()["detail"] == missing.json()["detail"]
+        assert entry in [row.id for row in await _rows(db_session)]
+
+    async def test_a_person_reads_only_their_printers_entries(self, async_client, db_session, farm):  # noqa: F811
+        own = await _entry(db_session, farm["a"].id, name="A")
+        await _entry(db_session, farm["b"].id, name="B")
+        await _entry(db_session, None, name="Deleted")
+
+        response = await async_client.get("/api/v1/maintenance/history", headers=farm["alice"])
+
+        assert [entry["id"] for entry in response.json()["items"]] == [own]
+
+
+class TestAPerformerGone:
+    async def test_a_deleted_users_name_stays_in_the_history(self, async_client, db_session, farm):  # noqa: F811
+        # The reset as the writer makes it (a person's id and name), then the person goes.
+        row = MaintenanceHistory(
+            printer_id=farm["a"].id,
+            printer_name="A",
+            maintenance_type_name="Clean Nozzle",
+            hours_at_maintenance=1.0,
+            performed_by_user_id=farm["alice_id"],
+            performed_by_name="alice",
+        )
+        db_session.add(row)
+        await db_session.commit()
+
+        gone = await async_client.delete(f"/api/v1/users/{farm['alice_id']}")
+        assert gone.status_code == 204, gone.text
+
+        [entry] = (await async_client.get("/api/v1/maintenance/history")).json()["items"]
+        assert entry["performed_by_name"] == "alice"
+
+    async def test_a_telegram_reset_keeps_the_names_the_bound_users_first(
+        self, async_client, db_session, printer_factory, monkeypatch
+    ):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from backend.app.models.notification import NotificationProvider
+        from backend.app.models.telegram_chat import TelegramChat
+        from backend.app.models.user import User
+        from backend.app.services.telegram_handlers import maintenance_handlers
+
+        printer = await printer_factory(name="Farm-9")
+        printer_id = printer.id
+        _kind, item_id = await _item(db_session, printer_id)
+        provider = NotificationProvider(
+            name="bot", provider_type="telegram", enabled=True, config='{"bot_token": "1:x"}'
+        )
+        db_session.add(provider)
+        await db_session.flush()
+        user = User(username="tg-operator")
+        db_session.add(user)
+        await db_session.flush()
+        bound = TelegramChat(chat_id=4242, provider_id=provider.id, is_active=True, label="Farm chat", user_id=user.id)
+        alone = TelegramChat(chat_id=4343, provider_id=provider.id, is_active=True, label="Night shift")
+        db_session.add_all([bound, alone])
+        await db_session.commit()
+        monkeypatch.setattr(maintenance_handlers, "has_perm", lambda chat, perm: True)
+        monkeypatch.setattr(maintenance_handlers, "deny_out_of_scope", AsyncMock(return_value=False))
+
+        for chat_id in (4242, 4343):
+            callback = SimpleNamespace(
+                data=f"maint:done:{item_id}:{printer_id}:n",
+                message=SimpleNamespace(chat=SimpleNamespace(id=chat_id), reply_markup=None, delete=AsyncMock()),
+                answer=AsyncMock(),
+            )
+            await maintenance_handlers.cb_maintenance_done(callback, None)
+
+        rows = await _rows(db_session)
+        assert [(r.printer_id, r.printer_name, r.maintenance_type_name) for r in rows] == [
+            (printer_id, "Farm-9", "Clean Nozzle")
+        ] * 2
+        assert [r.performed_by_name for r in rows] == ["tg-operator", "Night shift"]
 
 
 class TestCsv:

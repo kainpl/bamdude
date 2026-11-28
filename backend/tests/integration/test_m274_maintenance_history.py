@@ -13,6 +13,8 @@ from sqlalchemy import text
 
 from backend.app.migrations import m274_maintenance_history_outlives as m274
 from backend.app.models.maintenance import MaintenanceType, PrinterMaintenance
+from backend.app.models.notification import NotificationProvider
+from backend.app.models.telegram_chat import TelegramChat
 from backend.app.models.user import User
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -61,9 +63,13 @@ async def assert_m274_fills_once(engine, db, printer_factory, *, with_fk: bool =
     await db.commit()
     item = PrinterMaintenance(printer_id=printer_id, maintenance_type_id=kind.id)
     user = User(username="m274-operator")
-    db.add_all([item, user])
+    provider = NotificationProvider(name="bot", provider_type="telegram", enabled=True, config='{"bot_token": "1:x"}')
+    db.add_all([item, user, provider])
+    await db.flush()
+    chat = TelegramChat(chat_id=4242, provider_id=provider.id, is_active=True, label="Farm chat")
+    db.add(chat)
     await db.commit()
-    item_id, user_id, username = item.id, user.id, user.username
+    item_id, user_id, username, chat_id = item.id, user.id, user.username, chat.id
 
     async with engine.begin() as conn:
         dialect = conn.dialect.name
@@ -83,6 +89,15 @@ async def assert_m274_fills_once(engine, db, printer_factory, *, with_fk: bool =
             ),
             {"item": item_id, "user": user_id},
         )
+        await conn.execute(
+            text(
+                "INSERT INTO maintenance_history (id, printer_maintenance_id, performed_at, hours_at_maintenance, "
+                "performed_by_chat_id) VALUES "
+                # the same rule for a Telegram chat: named after it was created, not before
+                "(3, :item, CURRENT_TIMESTAMP, 11, :chat), (4, :item, '2000-01-01 00:00:00', 6, :chat)"
+            ),
+            {"item": item_id, "chat": chat_id},
+        )
 
         await m274.upgrade(conn)
 
@@ -97,6 +112,8 @@ async def assert_m274_fills_once(engine, db, printer_factory, *, with_fk: bool =
         assert [tuple(r) for r in rows] == [
             (1, printer_id, "Farm-7", "Clean Nozzle", username),
             (2, printer_id, "Farm-7", "Clean Nozzle", None),
+            (3, printer_id, "Farm-7", "Clean Nozzle", "Farm chat"),
+            (4, printer_id, "Farm-7", "Clean Nozzle", None),
         ]
         if with_fk or dialect == "sqlite":
             assert await _link_rule(conn) == "SET NULL"
@@ -124,7 +141,12 @@ async def assert_m274_fills_once(engine, db, printer_factory, *, with_fk: bool =
         again = (
             await conn.execute(text("SELECT printer_name, performed_by_name FROM maintenance_history ORDER BY id"))
         ).fetchall()
-        assert [tuple(r) for r in again] == [("Farm-7", username), ("Farm-7", None)]
+        assert [tuple(r) for r in again] == [
+            ("Farm-7", username),
+            ("Farm-7", None),
+            ("Farm-7", "Farm chat"),
+            ("Farm-7", None),
+        ]
 
 
 async def test_m274_on_sqlite(test_engine, db_session, printer_factory):
