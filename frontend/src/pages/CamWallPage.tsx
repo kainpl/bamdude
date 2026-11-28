@@ -24,6 +24,7 @@ import { useTranslation } from 'react-i18next';
 import { ApiError, api, type CamWallPrinter } from '../api/client';
 import { CameraWall, type CameraWallStatus } from '../components/CameraWall';
 import type { CameraTileStatusMode } from '../components/CameraTile';
+import { saveCamWallControlsMode, savedCamWallControlsMode, type CamWallControlsMode } from '../components/camWallControls';
 import { readStoredCardSize, storeCardSize } from '../utils/cardSize';
 import { CAM_WALL_TILE_SIZE_KEY, DEFAULT_CAM_WALL_TILE_SIZE, camWallTileSizeFromParam } from '../utils/camWallTileSize';
 
@@ -103,6 +104,21 @@ export function CamWallPage() {
     setTileSize(size);
     storeCardSize(CAM_WALL_TILE_SIZE_KEY, size);
   };
+  // When a tile shows its pause / stop / light buttons (upstream #3479). A kiosk
+  // wall has no buttons and writes nothing.
+  const [controlsMode, setControlsMode] = useState<CamWallControlsMode>(savedCamWallControlsMode);
+  const pickControlsMode = (mode: CamWallControlsMode) => {
+    setControlsMode(mode);
+    saveCamWallControlsMode(mode);
+  };
+  // The time format for the finish time, from the preferences any signed-in user may
+  // read (the Printers page's own query, #1293) — not the full settings, which need
+  // settings:read. A kiosk has no session to read them with.
+  const { data: settings } = useQuery({
+    queryKey: ['ui-preferences'],
+    queryFn: api.getUiPreferences,
+    enabled: !kiosk,
+  });
 
   // Persist only on the signed-in wall. A kiosk's settings come from its URL, and
   // writing them back would let opening a kiosk link once silently overwrite the
@@ -216,6 +232,12 @@ export function CamWallPage() {
                 window.location.assign(`/?view=camwall&expandPrinter=${printerId}`);
               }
         }
+        // Pause / stop / light on the tiles: never on a kiosk (its token is read-only);
+        // the tile asks printers:control itself.
+        showControls={!kiosk}
+        controlsMode={controlsMode}
+        onChangeControlsMode={kiosk ? undefined : pickControlsMode}
+        timeFormat={settings?.time_format || 'system'}
       />
     </div>
   );

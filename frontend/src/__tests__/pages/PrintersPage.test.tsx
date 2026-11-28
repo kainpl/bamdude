@@ -229,6 +229,45 @@ describe('PrintersPage', () => {
     }
   });
 
+  // Upstream #3479: the wall view gets the tile controls, and their hover/always
+  // choice is this browser's.
+  it('gives the Printers page wall its tile controls', async () => {
+    localStorage.setItem('printerPageView', 'camwall');
+    const view = render(<PrintersPage />);
+    try {
+      expect((await screen.findAllByRole('button', { name: 'Turn on chamber light' })).length).toBeGreaterThan(0);
+    } finally {
+      view.unmount();
+      localStorage.removeItem('printerPageView');
+    }
+  });
+
+  it('keeps the choice to always show the tile controls in this browser', async () => {
+    localStorage.setItem('printerPageView', 'camwall');
+    localStorage.removeItem('camWallControls');
+    const user = userEvent.setup();
+    let view = render(<PrintersPage />);
+    try {
+      await screen.findAllByRole('button', { name: 'Turn on chamber light' });
+      expect(screen.getAllByTestId('camwall-tile-controls')[0].className).toContain('opacity-0');
+
+      await user.click(screen.getByRole('button', { name: 'Cam wall settings' }));
+      await user.click(screen.getByRole('radio', { name: 'Always' }));
+      expect(localStorage.getItem('camWallControls')).toBe('always');
+      expect(screen.getAllByTestId('camwall-tile-controls')[0].className).not.toContain('opacity-0');
+
+      // A later visit starts from the saved choice.
+      view.unmount();
+      view = render(<PrintersPage />);
+      await screen.findAllByRole('button', { name: 'Turn on chamber light' });
+      expect(screen.getAllByTestId('camwall-tile-controls')[0].className).not.toContain('opacity-0');
+    } finally {
+      view.unmount();
+      localStorage.removeItem('printerPageView');
+      localStorage.removeItem('camWallControls');
+    }
+  });
+
   it('restores only the last saved camera and switches the single popup to another card', async () => {
     // Seeded WITHOUT `kind`: that is what an install saved before a camera could
     // stand on its own, and such a row must still read as a printer's camera.

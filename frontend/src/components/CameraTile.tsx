@@ -1,8 +1,9 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Expand, VideoOff, WifiOff } from 'lucide-react';
+import { AlertTriangle, Box, Expand, Flame, RectangleHorizontal, VideoOff, WifiOff } from 'lucide-react';
 import { api, getAuthToken, withStreamToken } from '../api/client';
-import { formatDuration } from '../utils/date';
+import { formatDuration, formatETA, type TimeFormat } from '../utils/date';
+import type { CamWallControlsMode } from './camWallControls';
 import { useCameraImageRef } from '../hooks/useCameraImageRef';
 import { useCameraStreamRecovery } from '../hooks/useCameraStreamRecovery';
 import { fillStyle, useRotatedBox } from '../hooks/useRotatedFit';
@@ -12,6 +13,14 @@ import { CameraSnapshotImage } from './CameraSnapshotImage';
 
 export type CameraTileMode = 'live' | 'snapshot' | 'paused';
 export type CameraTileStatusMode = 'off' | 'compact' | 'full';
+
+/** The heater readings a tile shows in the full overlay (upstream #3479). */
+export interface CameraTileTemperatures {
+  nozzle?: number;
+  nozzle_2?: number;
+  bed?: number;
+  chamber?: number;
+}
 
 interface CameraTileProps {
   /** A printer's camera, or a camera that belongs to a place. */
@@ -40,6 +49,18 @@ interface CameraTileProps {
    *  browser ever holds. */
   streamToken?: string;
   hmsErrorCount?: number;
+  // Full overlay only (upstream #3479): the heaters, on every connected tile, and
+  // the finish time beside the time left while printing. The kiosk feed carries
+  // no temperatures, so a kiosk tile shows none.
+  temperatures?: CameraTileTemperatures | null;
+  timeFormat?: TimeFormat;
+  /** Pause/resume, stop and the chamber light (``CameraTileControls``), drawn above
+   *  the tile-wide live toggle like the tile's other buttons. Given only on a wall
+   *  whose user may control printers; never on a kiosk wall. */
+  controls?: ReactNode;
+  /** Whether ``controls`` wait for hover (and focus) or are always on screen. A
+   *  touch screen has no hover and always shows them. */
+  controlsMode?: CamWallControlsMode;
 }
 
 // Tiles render lighter than EmbeddedCameraViewer's full window: lower fps,
@@ -93,6 +114,10 @@ export function CameraTile({
   printName = null,
   hmsErrorCount = 0,
   streamToken,
+  temperatures = null,
+  timeFormat = 'system',
+  controls,
+  controlsMode = 'hover',
 }: CameraTileProps) {
   const { t } = useTranslation();
   const lastModeRef = useRef<CameraTileMode>(mode);
@@ -206,6 +231,13 @@ export function CameraTile({
   const progressPct = progress != null ? Math.round(progress) : null;
   const hasLayers = layerNum != null && totalLayers != null && totalLayers > 0;
   const hasRemaining = remainingMin != null && remainingMin > 0;
+  // Heaters a printer has no sensor for are absent from its status, not 0.
+  const showTemps = connected && statusMode === 'full' && temperatures != null;
+  const nozzleTemps = [temperatures?.nozzle, temperatures?.nozzle_2].filter((v): v is number => v != null);
+  const hasTemps = showTemps && (nozzleTemps.length > 0 || temperatures?.bed != null || temperatures?.chamber != null);
+  // A printing or paused printer is the one whose tile has the print's rows and, in
+  // the controls, Pause and Stop: on a narrow tile the heaters give way to them.
+  const heatersGiveWay = printerState === 'RUNNING' || printerState === 'PAUSE';
 
   // Kiosk walls pass neither handler. They remain passive and redacted, while
   // an authenticated operator gets two distinct actions: select live, or open
@@ -221,7 +253,8 @@ export function CameraTile({
           ? ' border-bambu-green ring-1 ring-bambu-green/75'
           : ' border-bambu-dark-tertiary';
   const rootClass =
-    'group relative aspect-video w-full overflow-hidden rounded-lg border bg-black text-left' + attentionClass +
+    // `@container`: the overlay's extra rows read the tile's own width (below).
+    'group @container relative aspect-video w-full overflow-hidden rounded-lg border bg-black text-left' + attentionClass +
     (interactive ? '' : ' cursor-default');
 
   return (
@@ -356,11 +389,61 @@ export function CameraTile({
                   })}
                 </span>
               )}
+              {/* A paused print has no finish time: it moves with the pause. On a tile
+                  narrower than 15rem (size S on most screens; ours is two columns on a
+                  phone, upstream's one) the print's rows already fill the tile up to the
+                  chips, so the finish time and the heaters give way and the overlay
+                  stays as it was. */}
+              {hasRemaining && bucket === 'printing' && (
+                <span className="@max-[15rem]:hidden">
+                  {t('printers.camWall.eta', { time: formatETA(remainingMin ?? 0, timeFormat, t) })}
+                </span>
+              )}
             </div>
+          </div>
+        )}
+        {hasTemps && (
+          <div
+            className={`mb-0.5 flex flex-wrap items-center gap-x-2 text-[11px] leading-tight text-bambu-gray${
+              heatersGiveWay ? ' @max-[15rem]:hidden' : ''
+            }`}
+          >
+            {nozzleTemps.length > 0 && (
+              <span className="flex items-center gap-0.5" title={t('printers.temperatures.nozzle')}>
+                <Flame className="h-3 w-3" aria-label={t('printers.temperatures.nozzle')} />
+                {nozzleTemps.map((v) => `${Math.round(v)}°`).join(' / ')}
+              </span>
+            )}
+            {temperatures?.bed != null && (
+              <span className="flex items-center gap-0.5" title={t('printers.temperatures.bed')}>
+                <RectangleHorizontal className="h-3 w-3" aria-label={t('printers.temperatures.bed')} />
+                {Math.round(temperatures.bed)}°
+              </span>
+            )}
+            {temperatures?.chamber != null && (
+              <span className="flex items-center gap-0.5" title={t('printers.temperatures.chamber')}>
+                <Box className="h-3 w-3" aria-label={t('printers.temperatures.chamber')} />
+                {Math.round(temperatures.chamber)}°
+              </span>
+            )}
           </div>
         )}
         <span className={`block truncate text-xs font-medium${connected && mode === 'snapshot' ? ' pr-36' : ''}`}>{name}</span>
       </div>
+      {controls && (
+        // Above the tile-wide live toggle, like the tile's other buttons. Shown on
+        // hover or focus where there is a pointer, always on a touch screen.
+        <div
+          data-testid="camwall-tile-controls"
+          className={`absolute right-2 top-8 z-20 ${
+            controlsMode === 'always'
+              ? ''
+              : 'opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100'
+          }`}
+        >
+          {controls}
+        </div>
+      )}
       {onOpenPrinterCard && (
         <button
           type="button"

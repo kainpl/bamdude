@@ -6,11 +6,14 @@ import { useQueries } from '@tanstack/react-query';
 import { Settings as SettingsIcon } from 'lucide-react';
 import { useCameraLiveBudget } from '../hooks/useCameraLiveBudget';
 import { CameraTile, type CameraTileMode, type CameraTileStatusMode } from './CameraTile';
+import { CameraTileControls } from './CameraTileControls';
+import type { CamWallControlsMode } from './camWallControls';
 import { printerSource, sourceKey, standaloneSource, type CameraSource } from '../utils/cameraSource';
 import { filterKnownHMSErrors } from './HMSErrorModal';
 import { api, type HMSError, type PrinterStatus } from '../api/client';
 import { CardSizeSwitch } from './CardSizeSwitch';
 import { camWallGridClass, DEFAULT_CAM_WALL_TILE_SIZE } from '../utils/camWallTileSize';
+import type { TimeFormat } from '../utils/date';
 
 // The wall only ever reads these fields off a printer, so it asks for no more
 // than that. `Printer[]` satisfies this structurally, and so does the smaller
@@ -58,6 +61,9 @@ export interface CameraWallStatus {
   // authenticated wall and the kiosk feed, so the error chip means the same
   // thing in either mode.
   hms_errors?: HMSError[];
+  // Not in the kiosk feed: a kiosk tile shows neither (upstream #3479).
+  temperatures?: PrinterStatus['temperatures'];
+  chamber_light?: boolean;
 }
 
 interface CameraWallProps {
@@ -87,11 +93,22 @@ interface CameraWallProps {
   /** Given by a wall whose page has no size switch of its own (the standalone
    *  /camwall): the size is then offered in the settings popover. */
   onChangeTileSize?: (size: number) => void;
+  /** Pause/resume, stop and the chamber light on each printer tile (upstream #3479),
+   *  for a user with printers:control (``CameraTileControls`` asks). Never on a kiosk
+   *  wall: nobody stands at a TV, and its token is read-only. */
+  showControls?: boolean;
+  /** Whether those controls wait for hover or are always shown. The setting is
+   *  offered only on a wall that has the controls. */
+  controlsMode?: CamWallControlsMode;
+  onChangeControlsMode?: (next: CamWallControlsMode) => void;
+  /** For the finish time in the full overlay. */
+  timeFormat?: TimeFormat;
 }
 
 const MIN_SNAPSHOT_SEC = 2;
 const MAX_SNAPSHOT_SEC = 60;
 const STATUS_MODES: CameraTileStatusMode[] = ['off', 'compact', 'full'];
+const CONTROLS_MODES: CamWallControlsMode[] = ['hover', 'always'];
 
 /** ⚠️ Module-level, not a `cameras = []` default parameter: that literal is a new
  *  array on every render, which would make `tiles` and the IntersectionObserver
@@ -112,6 +129,10 @@ export function CameraWall({
   hideSettings = false,
   tileSize = DEFAULT_CAM_WALL_TILE_SIZE,
   onChangeTileSize,
+  showControls = false,
+  controlsMode = 'hover',
+  onChangeControlsMode,
+  timeFormat = 'system',
 }: CameraWallProps) {
   const { t } = useTranslation();
   // Keyed by `sourceKey`, not by a printer id: two kinds of source share this
@@ -242,6 +263,9 @@ export function CameraWall({
     setActiveLiveKey((current) => (current === tile.key ? null : tile.key));
   };
 
+  // A kiosk wall never gets the controls, whatever its page passes.
+  const controlsOn = showControls && !kiosk;
+
   if (tiles.length === 0) {
     return (
       <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-4 text-center text-bambu-gray">
@@ -334,6 +358,38 @@ export function CameraWall({
                   {t('printers.camWall.settings.statusOverlayHint')}
                 </span>
               </div>
+              {controlsOn && onChangeControlsMode && (
+                <div className="space-y-1">
+                  <span className="block text-xs font-medium text-white">
+                    {t('printers.camWall.settings.controls')}
+                  </span>
+                  <div
+                    role="radiogroup"
+                    aria-label={t('printers.camWall.settings.controls')}
+                    className="flex overflow-hidden rounded-md border border-bambu-dark-tertiary"
+                  >
+                    {CONTROLS_MODES.map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        role="radio"
+                        aria-checked={controlsMode === m}
+                        onClick={() => onChangeControlsMode(m)}
+                        className={`flex-1 px-2 py-1 text-xs ${
+                          controlsMode === m
+                            ? 'bg-bambu-green text-white font-semibold'
+                            : 'bg-bambu-dark text-white hover:bg-bambu-dark-tertiary'
+                        }`}
+                      >
+                        {t(`printers.camWall.controlsMode.${m}`)}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="block text-[11px] text-bambu-gray">
+                    {t('printers.camWall.settings.controlsHint')}
+                  </span>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -375,6 +431,20 @@ export function CameraWall({
                     : null
                 }
                 hmsErrorCount={filterKnownHMSErrors(status?.hms_errors ?? []).length}
+                temperatures={tilePrinter ? status?.temperatures ?? null : null}
+                timeFormat={timeFormat}
+                controls={
+                  controlsOn && tilePrinter ? (
+                    <CameraTileControls
+                      printerId={tilePrinter.id}
+                      printerName={tile.name}
+                      connected={status?.connected ?? false}
+                      printerState={status?.state ?? null}
+                      chamberLight={status?.chamber_light ?? null}
+                    />
+                  ) : undefined
+                }
+                controlsMode={controlsMode}
                 streamToken={streamToken}
                 activeLive={tile.key === activeLiveKey && mode === 'live'}
                 // The kiosk wall deliberately receives neither handler: its
