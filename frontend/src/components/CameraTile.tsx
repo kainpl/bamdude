@@ -286,9 +286,11 @@ export function CameraTile({
           intervalMs={snapshotIntervalMs}
           streamToken={streamToken}
           style={pictureStyle}
-          // The open-card button holds the bottom-right corner: the frame's time
-          // sits left of it instead of under it.
-          timePositionClassName={onOpenPrinterCard ? 'bottom-1.5 right-11' : undefined}
+          // The open-card button holds the bottom-right corner: the frame's time sits
+          // left of it, as the clock alone, so the printer's name keeps its room; on a
+          // tile narrower than 15rem (size S on most screens) it gives way to the name.
+          timePositionClassName={onOpenPrinterCard ? 'bottom-1.5 right-11 @max-[15rem]:hidden' : undefined}
+          compactTime={onOpenPrinterCard != null}
         />
       ) : livePhase === 'failed' ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-black/80 text-bambu-gray">
@@ -431,11 +433,11 @@ export function CameraTile({
             )}
           </div>
         )}
-        {/* The name stops short of the frame's time (and of the open-card button
-            beside it, which pushes the time further left). */}
+        {/* The name stops short of the frame's time and of the open-card button beside
+            it; on a narrow tile, where the time gives way, of the button alone. */}
         <span
           className={`block truncate text-xs font-medium${
-            connected && mode === 'snapshot' ? (onOpenPrinterCard ? ' pr-44' : ' pr-36') : ''
+            connected && mode === 'snapshot' ? (onOpenPrinterCard ? ' pr-24 @max-[15rem]:pr-9' : ' pr-36') : ''
           }`}
         >
           {name}
