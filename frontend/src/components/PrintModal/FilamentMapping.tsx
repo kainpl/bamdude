@@ -36,6 +36,7 @@ export function FilamentMapping({
   routingReason,
   routingChannels,
   routingDualNozzle = false,
+  routingNotices,
   nozzleRackChoice,
   onNozzleRackChoiceChange,
 }: FilamentMappingProps & { defaultExpanded?: boolean }) {
@@ -149,7 +150,10 @@ export function FilamentMapping({
     }
     return groups;
   }, [filamentReqs]);
-  const hasRack = (printerStatus?.nozzle_rack?.some((n) => n.id >= 16) ?? false)
+  // The H2C's rack picker. A direct-connected rack (H3C, P3C) has none: there the
+  // tray decides the PrintTool, and no nozzle mapping is sent.
+  const hasRack = !printerStatus?.direct_rack
+    && (printerStatus?.nozzle_rack?.some((n) => n.id >= 16) ?? false)
     && [...rackGroups.values()].some((g) => g.on_rack);
 
   // What the dispatcher would assign if nothing were picked, shown as the
@@ -537,6 +541,11 @@ export function FilamentMapping({
                 : requireExactColor && rawColorMismatch ? 'printModal.filamentColorMismatch' : 'printModal.filamentTypeMismatch')}
             </p>
           )}
+          {routingNotices?.filter(notice => notice.code === 'shared_print_tool').map(notice => (
+            <p key={notice.message} className="text-xs text-amber-700 dark:text-amber-400 mt-2" data-testid="routing-plan-notice">
+              {notice.message}
+            </p>
+          ))}
         </div>
       )}
     </div>

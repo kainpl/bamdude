@@ -326,6 +326,8 @@ AUTO_BED_LEVELING_MODELS = frozenset(
         "H2D",
         "H2DPRO",
         "X2D",
+        "H3C",
+        "P3C",
         # Internal codes
         "N9",  # A2L
         "N7",  # P2S
@@ -336,6 +338,8 @@ AUTO_BED_LEVELING_MODELS = frozenset(
         "O1E",  # H2D Pro
         "O2D",  # H2D Pro (alternate)
         "N6",  # X2D
+        "N10",  # H3C
+        "N11",  # P3C
     ]
 )
 
@@ -345,9 +349,10 @@ AUTO_BED_LEVELING_MODELS = frozenset(
 # ever supports one but not the other.
 AUTO_FLOW_CALI_MODELS = AUTO_BED_LEVELING_MODELS
 
-# Nozzle-offset auto-calibration — dual-nozzle models only (a nozzle *offset*
-# only exists with two nozzles). Currently coincides with DUAL_NOZZLE_MODELS,
-# but kept as its own matrix because the capability axes are independent.
+# Nozzle-offset auto-calibration — the models with more than one hotend (a
+# nozzle *offset* only exists with two): the dual-nozzle heads and the
+# direct-connected racks (H3C, P3C — ``support_nozzle_offset_calibration`` in
+# their mirrored config). Kept as its own matrix because the axes are independent.
 AUTO_NOZZLE_OFFSET_MODELS = frozenset(
     [
         # Display names (uppercase, no spaces/dashes)
@@ -355,6 +360,8 @@ AUTO_NOZZLE_OFFSET_MODELS = frozenset(
         "H2D",
         "H2DPRO",
         "X2D",
+        "H3C",
+        "P3C",
         # Internal codes
         "O1C",  # H2C
         "O1C2",  # H2C (dual nozzle variant)
@@ -362,6 +369,8 @@ AUTO_NOZZLE_OFFSET_MODELS = frozenset(
         "O1E",  # H2D Pro
         "O2D",  # H2D Pro (alternate)
         "N6",  # X2D
+        "N10",  # H3C
+        "N11",  # P3C
     ]
 )
 

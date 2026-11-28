@@ -7302,7 +7302,11 @@ async def _restore_usage_tracking_session_locked(
             log = restored
 
         tray_now = state.tray_now
-        if 0 <= tray_now <= 254 and not log:
+        # A loaded source: 0-254, or 255 on a direct rack whose snow said PrintTool 1's input.
+        from backend.app.utils.tray_ids import names_loaded_source
+
+        tray_now_loaded = names_loaded_source(tray_now, state)
+        if tray_now_loaded and not log:
             # No persisted history — a print that started before this build,
             # or before the row existed. Seed with the tray feeding right now
             # so the remainder of the print is at least attributable to the
@@ -7326,7 +7330,7 @@ async def _restore_usage_tracking_session_locked(
             last_loaded = tail.origin
         elif log:
             last_loaded = log[-1][0]
-        elif 0 <= tray_now <= 254:
+        elif tray_now_loaded:
             last_loaded = tray_now
         else:
             last_loaded = state.last_loaded_tray
@@ -7374,7 +7378,7 @@ async def _restore_usage_tracking_session_locked(
         else:
             # No held client to seed (nothing joined): put the chronology back as before.
             state.tray_change_log = log
-            if 0 <= tray_now <= 254:
+            if tray_now_loaded:
                 state.last_loaded_tray = tray_now
         return True
     except Exception:

@@ -735,16 +735,31 @@ class CalibrationService:
                 f"mode can dispatch to the printer."
             )
 
-        # A direct-connected rack (H3C, P3C) takes no print yet — and a filament
-        # calibration is one: the auto path publishes over MQTT outside the
-        # dispatcher, naming its trays by the page's numbers, the manual one
-        # would queue a row that can only wait. Refused before a session exists,
-        # so nothing blocks the next start (services/direct_rack_gate, N01 B/C).
+        # A direct-connected rack (H3C, P3C): the automatic calibration publishes
+        # over MQTT outside the dispatcher, keyed by ``nozzle_pos`` in Studio — it
+        # waits for N01 stage C. The manual one is a print and goes through the
+        # dispatcher, but its row is exempt from routing and its archive has no
+        # nozzle diameter: the hotend each tray leads to is asked here, before a
+        # session exists, and again at dispatch (``filament_preflight``).
         from backend.app.services import direct_rack_gate
         from backend.app.services.printer_manager import tray_layout_of
 
-        if direct_rack_gate.print_refused(tray_layout_of(printer_id, printer_manager)):
-            raise direct_rack_gate.DirectRackUnsupported()
+        rack_layout = tray_layout_of(printer_id, printer_manager)
+        if rack_layout.direct_rack:
+            if method == CaliMethod.AUTO and direct_rack_gate.auto_calibration_refused(rack_layout):
+                raise direct_rack_gate.DirectRackUnsupported()
+            from backend.app.services.filament_routing import calibration_hotend_refusal
+
+            rack_snapshot = printer_manager.get_feed_snapshot(printer_id)
+            for f in filaments:
+                code = calibration_hotend_refusal(
+                    rack_snapshot,
+                    rack_layout.global_tray_id(f.ams_id, f.slot_id),
+                    nozzle_diameter,
+                    nozzle_volume_type,
+                )
+                if code is not None:
+                    raise direct_rack_gate.DirectRackRefused(code)
 
         # Concurrent guard — one active session per printer
         existing = (
@@ -886,6 +901,15 @@ class CalibrationService:
     ) -> ManualResultOut:
         s = (await db.execute(select(CalibrationSession).where(CalibrationSession.id == session_id))).scalar_one()
         cm = CaliMode(s.cali_mode)
+
+        # A direct rack (H3C, P3C) prints its manual calibration but saves no
+        # result until N01 stage C (Studio keys it by ``nozzle_pos`` / the hotend's
+        # serial): every step that would save is refused by name. Flow Rate's
+        # coarse pick that starts the fine pass is a print, not a save.
+        if _session_on_direct_rack(s) and not (cm == CaliMode.FLOW_RATE and s.stage == 1 and not skip_fine):
+            from backend.app.services import direct_rack_gate
+
+            raise direct_rack_gate.DirectRackUnsupported()
 
         # PA / Flow saves happen at the "awaiting_user_input" step. Tower
         # sessions land at "saved" (on-complete handler), and the operator
@@ -1149,7 +1173,14 @@ class CalibrationService:
           3. MQTT extrusion_cali_set → printer-side 16-slot history.
           4. MQTT extrusion_cali_sel → bind to AMS slot (so subsequent prints use it).
           5. session.status='saved'.
+
+        Never on a direct rack (H3C, P3C) until N01 stage C — the floor under
+        ``submit_manual_result``'s own refusal.
         """
+        if _session_on_direct_rack(session):
+            from backend.app.services import direct_rack_gate
+
+            raise direct_rack_gate.DirectRackUnsupported()
         fil = json.loads(session.filaments_json)[0]
 
         # Flip existing active rows to false (preserves history). Scope is
@@ -1284,7 +1315,7 @@ class CalibrationService:
         - status=awaiting_user_input: just mark cancelled.
         """
         s = (await db.execute(select(CalibrationSession).where(CalibrationSession.id == session_id))).scalar_one()
-        if s.status in ("saved", "cancelled", "failed"):
+        if s.status in ("saved", "printed", "cancelled", "failed"):
             return
 
         client = printer_manager.get_client(s.printer_id)
@@ -1295,6 +1326,13 @@ class CalibrationService:
         s.status = "cancelled"
         await db.commit()
         await broadcast_calibration_event(printer_id=s.printer_id, event="cancelled", payload={"session_id": s.id})
+
+
+def _session_on_direct_rack(session: CalibrationSession) -> bool:
+    """Whether the session's printer is a direct-connected rack (H3C, P3C) — live layout, else its model."""
+    from backend.app.services.printer_manager import tray_layout_of
+
+    return tray_layout_of(session.printer_id, printer_manager).direct_rack
 
 
 async def reconcile_session_status(db: AsyncSession, session: CalibrationSession) -> bool:
@@ -1341,12 +1379,18 @@ async def reconcile_session_status(db: AsyncSession, session: CalibrationSession
             # after the hook finishes we have queue_item=gone +
             # archive.status='completed'. Both paths need to terminate
             # the session — pick whichever transitions first.
+            on_rack = _session_on_direct_rack(session)
+
             def _classify(state: str | None) -> str | None:
                 if state in {"cancelled", "aborted"}:
                     return "cancelled"
                 if state == "failed":
                     return "failed"
                 if state == "completed":
+                    if on_rack and not (session.cali_mode == CaliMode.FLOW_RATE.value and session.stage == 1):
+                        # A direct rack saves no result yet: printed, the value is
+                        # read off the plate and entered on the printer (N01 stage B).
+                        return "printed"
                     return "saved" if is_tower_mode(session.cali_mode) else "awaiting_user_input"
                 return None
 

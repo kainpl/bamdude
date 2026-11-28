@@ -152,14 +152,21 @@ export interface TrayLayout {
   units: Array<[number, number]>;
   directRack: boolean;
   rackSize: number;
+  /** A direct rack: `tray_now` 255 is PrintTool 1's input, not "nothing" (the toolhead's `snow` said so). */
+  mainInputLoaded: boolean;
 }
 
-export const NO_LAYOUT: TrayLayout = { units: [], directRack: false, rackSize: 0 };
+export const NO_LAYOUT: TrayLayout = { units: [], directRack: false, rackSize: 0, mainInputLoaded: false };
 
-/** The layout the status reports: its units (with `ams_type`), `direct_rack` and `rack_size`. */
+/** The layout the status reports: its units (with `ams_type`), `direct_rack`, `rack_size`, `direct_rack_input_loaded`. */
 export function trayLayoutOf(
   status:
-    | { ams?: UnitLike[] | null; direct_rack?: boolean | null; rack_size?: number | null }
+    | {
+        ams?: UnitLike[] | null;
+        direct_rack?: boolean | null;
+        rack_size?: number | null;
+        direct_rack_input_loaded?: boolean | null;
+      }
     | null
     | undefined,
 ): TrayLayout {
@@ -170,7 +177,23 @@ export function trayLayoutOf(
     if (Number.isNaN(id) || units.some(([uid]) => uid === id)) continue;
     units.push([id, amsTypeOf(id, unit.ams_type)]);
   }
-  return { units, directRack: Boolean(status.direct_rack), rackSize: status.rack_size ?? 0 };
+  const directRack = Boolean(status.direct_rack);
+  return {
+    units,
+    directRack,
+    rackSize: status.rack_size ?? 0,
+    mainInputLoaded: directRack && status.direct_rack_input_loaded === true,
+  };
+}
+
+/**
+ * Whether a `tray_now` value names a loaded filament source: 0-254 anywhere; 255 only
+ * on a direct rack whose toolhead `snow` said PrintTool 1's input is the tray now.
+ */
+export function namesLoadedSource(layout: TrayLayout, trayNow: number | null | undefined): boolean {
+  if (typeof trayNow !== 'number' || trayNow < 0) return false;
+  if (trayNow < NO_TRAY) return true;
+  return trayNow === NO_TRAY && layout.directRack && layout.mainInputLoaded;
 }
 
 export function layoutAmsType(layout: TrayLayout, amsId: number): number {
@@ -262,9 +285,11 @@ export function acceptsSlot(layout: TrayLayout, amsId: number, trayId: number): 
 }
 
 /**
- * Whether a printer command on slot (amsId, trayId) is withheld (the backend's
+ * Whether a stage-C printer command — load, unload, an RFID re-read, drying, the
+ * K-profile — on slot (amsId, trayId) is withheld (the backend's
  * `services/direct_rack_gate`): a rack AMS's slot, or a direct rack's external
- * input. The card offers no printer action there until those commands land.
+ * input. The slot's filament setting is not withheld (N01 stage B sends it in
+ * Bambu Studio's form).
  */
 export function slotCommandWithheld(layout: TrayLayout, amsId: number): boolean {
   if (isZmulti(layoutAmsType(layout, amsId))) return true;

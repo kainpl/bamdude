@@ -24,7 +24,7 @@ import {
 } from '../../api/client';
 import { Modal } from '../Modal';
 import { CalibrationModeControl } from '../PrintModal/CalibrationModeControl';
-import { autoCalibrationCaps, isDualNozzleModel } from '../../utils/printerCapabilities';
+import { autoCalibrationCaps, hasNozzleOffset } from '../../utils/printerCapabilities';
 import { useToast } from '../../contexts/ToastContext';
 import { MAX_CHAMBER_TEMP_C } from '../../utils/printer';
 import { Select } from '../Select';
@@ -522,9 +522,9 @@ function EditDialog({ mode, existingEntries, users, availableModels, initialEntr
               [
                 ['bed_levelling', 'printModal.bedLeveling'],
                 ['flow_cali', 'printModal.flowCalibration'],
-                // Dual-nozzle only (#1682) — same gate as the PrintModal's
-                // auto mode; single-nozzle machines skip it in MQTT anyway.
-                ...(isDualNozzleModel(printerModel)
+                // Dual-nozzle and direct-rack only (#1682, H3C / P3C) — same gate as the
+                // PrintModal's auto mode; single-nozzle machines skip it in MQTT anyway.
+                ...(hasNozzleOffset(printerModel)
                   ? ([['nozzle_offset_cali', 'printModal.nozzleOffsetCali']] as const)
                   : []),
               ] as const

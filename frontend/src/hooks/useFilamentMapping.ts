@@ -16,6 +16,8 @@ import {
 } from '../utils/amsHelpers';
 import { api } from '../api/client';
 import type { PrinterStatus } from '../api/client';
+import { NO_LAYOUT, externalSlotIndex, layoutGlobalTrayId, rackLabel, trayLayoutOf } from '../utils/trayIds';
+import type { TrayLayout } from '../utils/trayIds';
 import type { RackGroupInfo } from '../components/PrintModal/types';
 
 /**
@@ -25,6 +27,9 @@ import type { RackGroupInfo } from '../components/PrintModal/types';
 export function buildLoadedFilaments(printerStatus: PrinterStatus | undefined): LoadedFilament[] {
   const filaments: LoadedFilament[] = [];
   const amsExtruderMap = printerStatus?.ams_extruder_map;
+  // A direct-connected rack (H3C, P3C): one toolhead, never "two nozzles" — its
+  // nine external inputs are PrintTools, not a left and a right extruder.
+  const layout = trayLayoutOf(printerStatus);
   // Dual-nozzle detection (#1257 — upstream `080176c6`). The backend always
   // emits a 2-entry `nozzles` array (default-stub second entry on single-nozzle
   // printers), so `length` alone is not a reliable signal. Real second-nozzle
@@ -37,11 +42,11 @@ export function buildLoadedFilaments(printerStatus: PrinterStatus | undefined): 
   // Affects X2D, H2D, X2 Pro running without AMS: previously they fell through
   // to `extruderId=undefined` for external spools and the nozzle-aware filter
   // rejected every candidate because `undefined !== 0/1`.
-  const hasDualNozzle =
+  const hasDualNozzle = !layout.directRack && (
     Boolean(printerStatus?.nozzles?.[1]?.nozzle_diameter)
     || (amsExtruderMap && Object.keys(amsExtruderMap).length > 0)
     || (printerStatus?.vt_tray?.length ?? 0) > 1
-    || printerStatus?.vt_tray?.some(tray => tray.id === 255);
+    || printerStatus?.vt_tray?.some(tray => tray.id === 255));
 
   // Add filaments from all AMS units (regular and HT)
   printerStatus?.ams?.forEach((amsUnit) => {
@@ -54,6 +59,9 @@ export function buildLoadedFilaments(printerStatus: PrinterStatus | undefined): 
         // reader and every routing decision are about the spool.
         const actual = tray.actual ?? null;
         const color = normalizeColor(actual?.tray_color ?? tray.tray_color);
+        const trayGlobalId = layout.directRack
+          ? layoutGlobalTrayId(layout, amsUnit.id, tray.id)
+          : getGlobalTrayId(amsUnit.id, tray.id, false);
         filaments.push({
           type: tray.routing_type || actual?.tray_type || tray.tray_type,
           color,
@@ -62,11 +70,11 @@ export function buildLoadedFilaments(printerStatus: PrinterStatus | undefined): 
           trayId: tray.id,
           isHt,
           isExternal: false,
-          label: formatSlotLabel(amsUnit.id, tray.id, isHt, false),
-          globalTrayId: getGlobalTrayId(amsUnit.id, tray.id, false),
+          label: rackLabel(layout, trayGlobalId) ?? formatSlotLabel(amsUnit.id, tray.id, isHt, false),
+          globalTrayId: trayGlobalId,
           trayInfoIdx: (actual?.tray_info_idx ?? tray.tray_info_idx) || '',
           traySubBrands: tray.tray_sub_brands || '',
-          extruderId: amsExtruderMap?.[String(amsUnit.id)],
+          extruderId: layout.directRack ? 0 : amsExtruderMap?.[String(amsUnit.id)],
           remain: tray.remain ?? -1,
           advertisedColor: actual ? normalizeColor(tray.tray_color) : undefined,
           advertisedTrayInfoIdx: actual ? tray.tray_info_idx || '' : undefined,
@@ -85,14 +93,15 @@ export function buildLoadedFilaments(printerStatus: PrinterStatus | undefined): 
         color,
         colorName: getColorName(color, extTray.tray_sub_brands, extTray.tray_info_idx),
         amsId: -1,
-        trayId: trayId - 254,
+        // The index the input is stored under (254 -> 0, 255 -> 1, 247-253 -> 2-8).
+        trayId: externalSlotIndex(trayId),
         isHt: false,
         isExternal: true,
-        label: hasDualNozzle ? (trayId === 254 ? 'Ext-L' : 'Ext-R') : 'External',
+        label: rackLabel(layout, trayId) ?? (hasDualNozzle ? (trayId === 254 ? 'Ext-L' : 'Ext-R') : 'External'),
         globalTrayId: trayId,
         trayInfoIdx: extTray.tray_info_idx || '',
         traySubBrands: extTray.tray_sub_brands || '',
-        extruderId: hasDualNozzle ? (255 - trayId) : undefined,
+        extruderId: layout.directRack ? 0 : hasDualNozzle ? (255 - trayId) : undefined,
         remain: extTray.remain ?? -1,
       });
     }
@@ -139,6 +148,7 @@ export function computeAmsMapping(
       ftsActive,
       printerStatus?.tray_now,
       preferLowest,
+      trayLayoutOf(printerStatus),
     )
   );
 }
@@ -282,6 +292,8 @@ export function buildFilamentComparison(
   ftsActive = false,
   trayNow?: number,
   preferLowest = false,
+  // The printer's numbering: on a direct rack tray_now 255 can be PrintTool 1's input.
+  layout: TrayLayout = NO_LAYOUT,
 ): FilamentComparison[] {
   if (!filamentReqs?.filaments || filamentReqs.filaments.length === 0) return [];
   // FTS makes AMS reach both nozzles, not external feed supported.  Keep this
@@ -382,7 +394,7 @@ export function buildFilamentComparison(
     }
 
     const extruderTray = isSingleFilament
-      ? matchLoadedExtruderTray(req, available, trayNow)
+      ? matchLoadedExtruderTray(req, available, trayNow, layout)
       : undefined;
     const compatibleExtruderTray = extruderTray && loadedFilamentMatches(req, extruderTray) && filamentColorMatches(req, extruderTray)
       ? extruderTray
@@ -594,8 +606,10 @@ export function useFilamentMapping(
   const trayNow = printerStatus?.tray_now;
 
   const filamentComparison = useMemo(
-    () => buildFilamentComparison(filamentReqs, loadedFilaments, manualMappings, ftsActive, trayNow, preferLowest),
-    [filamentReqs, loadedFilaments, manualMappings, ftsActive, trayNow, preferLowest]
+    () => buildFilamentComparison(
+      filamentReqs, loadedFilaments, manualMappings, ftsActive, trayNow, preferLowest, trayLayoutOf(printerStatus),
+    ),
+    [filamentReqs, loadedFilaments, manualMappings, ftsActive, trayNow, preferLowest, printerStatus]
   );
 
   // Build AMS mapping from matched filaments

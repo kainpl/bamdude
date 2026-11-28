@@ -118,6 +118,18 @@ describe('computeBackupGroups', () => {
     expect(groups[0].members.map((member) => member.globalTrayId)).toEqual([0, 1, 2, 3]);
   });
 
+  it('a direct rack (H3C, P3C) shows only the firmware groups — never a guess across PrintTools', () => {
+    const { groups, usesFallback } = resolveBackupGroups(
+      [unit(0, [tray(0, 'PLA', 'GFA00', 'FF0000'), tray(1, 'PLA', 'GFA00', 'FF0000')])],
+      undefined,
+      false,
+      undefined,
+      true,
+    );
+    expect(usesFallback).toBe(false);
+    expect(groups).toEqual([]);
+  });
+
   it('honours an explicit empty firmware group list', () => {
     const { groups, usesFallback } = resolveBackupGroups(
       [unit(0, [tray(0, 'PLA', 'GFA00', 'FF0000'), tray(1, 'PLA', 'GFA00', 'FF0000')])],

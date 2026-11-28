@@ -7,19 +7,25 @@ interface Props {
   savedRows: FilamentCalibrationOut[];
   onCalibrateAnother: () => void;
   onClose: () => void;
+  /** An H3C / P3C calibration: printed, nothing saved — the value is entered on the printer. */
+  printedOnRack?: boolean;
 }
 
-export function CalibrationFinishPage({ savedRows, onCalibrateAnother, onClose }: Props) {
+export function CalibrationFinishPage({ savedRows, onCalibrateAnother, onClose, printedOnRack = false }: Props) {
   const { t } = useTranslation();
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" data-testid={printedOnRack ? 'calibration-rack-printed' : undefined}>
       <div className="flex items-center gap-2">
         <CheckCircle2 className="h-6 w-6 text-bambu-green" />
-        <h3 className="text-base font-semibold text-white">{t('filamentCali.finish.heading')}</h3>
+        <h3 className="text-base font-semibold text-white">
+          {t(printedOnRack ? 'filamentCali.rackPrinted.heading' : 'filamentCali.finish.heading')}
+        </h3>
       </div>
 
-      <p className="text-sm text-bambu-gray">{t('filamentCali.finish.body')}</p>
+      <p className="text-sm text-bambu-gray">
+        {t(printedOnRack ? 'filamentCali.rackPrinted.body' : 'filamentCali.finish.body')}
+      </p>
 
       {savedRows.length > 0 && (
         <div className="space-y-1">

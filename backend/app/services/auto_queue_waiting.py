@@ -23,6 +23,8 @@ ROUTINE_REASONS = frozenset(
         "swap_request_refused",
         "source_check_busy",
         "source_copy_busy",
+        # A direct rack (H3C, P3C) that is moving: it stops by itself.
+        "rack_busy",
     }
 )
 TERMINAL_REASONS = frozenset({"source_unreadable", "source_timeout"})
@@ -50,8 +52,20 @@ ACTIONABLE_REASONS = frozenset(
         "previous_print_failed",
         # The printer's queue is halted (paused/error after a failed or cancelled print): only Resume helps.
         "queue_halted",
-        # A direct-connected rack (H3C, P3C) takes no print yet: only another printer helps.
+        # A direct-connected rack (H3C, P3C) refusing a command it does not take yet
+        # (automatic calibration): only another printer helps.
         "direct_rack_unsupported",
+        # A direct rack (H3C, P3C): Bambu Studio's blocking statuses, each needing a person
+        # (a hotend installed, a tool put back, the docks calibrated, a hand to feed or
+        # unload a PrintTool, a re-slice, a job re-created).
+        "rack_no_hotend",
+        "rack_tool_detached",
+        "rack_not_calibrated",
+        "rack_hotend_mismatch",
+        "rack_manual_feed_only",
+        "rack_feed_blocked",
+        "dynamic_nozzle_map_unsupported",
+        "rack_mapping_recreate",
         "pinned_source_empty",
         "invalid_plate_id",
         "invalid_plate_metadata",

@@ -61,6 +61,7 @@ const NOZZLE_FLOW_LABELS: Record<string, string> = {
   standard: 'printers.nozzleStandardFlow',
   high_flow: 'printers.nozzleHighFlow',
   tpu_high_flow: 'printers.nozzleTpuHighFlow',
+  tpu285: 'printers.nozzleTpu285',
 };
 
 function NozzleCard({ label, type, diameter, flowType }: {

@@ -193,6 +193,13 @@ class UsedFilament(TypedDict):
     # The family-owned material class resolved from ``tray_info_idx`` after
     # parsing.  It is absent when the 3MF does not carry a resolvable family.
     filament_type: NotRequired[str]
+    # The hotend spec the slice assumed for this filament (Bambu Studio
+    # ``fill_slicing_nozzle_info``): the smallest diameter of its sliced nozzles
+    # and their volume type, "Hybrid" when several. Written by a slice for one
+    # head with several hotends (H3C, P3C); absent elsewhere. A direct rack's
+    # routing checks the hotend a tray leads to against it.
+    nozzle_diameter: NotRequired[float]
+    volume_type: NotRequired[str]
 
 
 @dataclass(frozen=True)
@@ -262,9 +269,71 @@ def _resolve_print_plate(
     return requested, plates[requested], members[requested]
 
 
-def _used_filaments(plate: Element, nozzle_mapping: dict[int, int]) -> tuple[UsedFilament, ...]:
+def _sliced_nozzle_spec(filament: Element, nozzles: dict[str, tuple[float | None, str]]) -> dict:
+    """``nozzle_diameter`` / ``volume_type`` of one used filament (BS ``fill_slicing_nozzle_info``).
+
+    The filament's ``group_id`` list names the plate's ``<nozzle>`` entries it
+    was sliced onto: the smallest of their diameters, and their volume type —
+    "Hybrid" when they differ. Without those entries, the filament's own
+    attributes. Nothing when the slice carries neither (every other printer).
+    """
+    diameters: list[float] = []
+    volumes: set[str] = set()
+    for group in (filament.get("group_id") or "").split(","):
+        spec = nozzles.get(group.strip())
+        if spec is None:
+            continue
+        if spec[0] is not None:
+            diameters.append(spec[0])
+        if spec[1]:
+            volumes.add(spec[1])
+    if not diameters:
+        try:
+            own = float(filament.get("nozzle_diameter"))
+            if math.isfinite(own) and own > 0:
+                diameters.append(own)
+        except (TypeError, ValueError):
+            pass
+    if not volumes and (filament.get("volume_type") or "").strip():
+        volumes.add(filament.get("volume_type").strip())
+    out: dict = {}
+    if diameters:
+        out["nozzle_diameter"] = min(diameters)
+    if volumes:
+        out["volume_type"] = next(iter(volumes)) if len(volumes) == 1 else "Hybrid"
+    return out
+
+
+def _plate_nozzles(plate: Element) -> dict[str, tuple[float | None, str]]:
+    """The plate's ``<nozzle id=group nozzle_diameter volume_type>`` entries by group id."""
+    out: dict[str, tuple[float | None, str]] = {}
+    for nozzle in plate.findall("nozzle"):
+        group = (nozzle.get("id") or "").strip()
+        if not group:
+            continue
+        try:
+            diameter = float(nozzle.get("nozzle_diameter"))
+            diameter = diameter if math.isfinite(diameter) and diameter > 0 else None
+        except (TypeError, ValueError):
+            diameter = None
+        out[group] = (diameter, (nozzle.get("volume_type") or "").strip())
+    return out
+
+
+def hotends_as_extruders(project: dict) -> bool:
+    """A slice for one head whose hotends act as extruders (H3C, P3C: ``handle_hotend_as_extruder``)."""
+    value = project.get("handle_hotend_as_extruder")
+    if isinstance(value, list):
+        value = value[0] if value else None
+    return str(value).strip().lower() in ("1", "true")
+
+
+def _used_filaments(
+    plate: Element, nozzle_mapping: dict[int, int], *, hotend_spec: bool = False
+) -> tuple[UsedFilament, ...]:
     slots: list[UsedFilament] = []
     seen: set[int] = set()
+    plate_nozzles = _plate_nozzles(plate) if hotend_spec else {}
     for filament in plate.findall("filament"):
         try:
             slot_id = int(filament.get("id"))
@@ -287,6 +356,7 @@ def _used_filaments(plate: Element, nozzle_mapping: dict[int, int]) -> tuple[Use
                 tray_info_idx=filament.get("tray_info_idx") or None,
                 used_grams=usage,
                 nozzle_id=nozzle_mapping.get(slot_id),
+                **(_sliced_nozzle_spec(filament, plate_nozzles) if hotend_spec else {}),
             )
         )
     if not slots:
@@ -341,7 +411,7 @@ def read_print_requirements(
                 raise _Unavailable("invalid_printer_model")
             model = normalize_model_name(raw_model)
             nozzle_mapping = extract_nozzle_mapping_from_3mf(zf, resolved) or {}
-            slots = _used_filaments(plate, nozzle_mapping)
+            slots = _used_filaments(plate, nozzle_mapping, hotend_spec=hotends_as_extruders(project))
             physical_map = project.get("physical_extruder_map") or []
             if not isinstance(physical_map, list):
                 raise _Unavailable("nozzle_mapping_unavailable")
@@ -353,6 +423,11 @@ def read_print_requirements(
                 for key in ("nozzle_diameter", "nozzle_type", "physical_extruder_map", "extruder_nozzle_stats")
                 if key in project
             }
+            # A slice whose filaments may move between nozzles per layer (Bambu Studio
+            # ``support_dynamic_nozzle_map``): it needs a V1 nozzle-mapping reply a
+            # direct rack never gives, so routing refuses it there.
+            if str(metadata.get("enable_filament_dynamic_map", "")).strip().lower() in ("1", "true"):
+                constraints["dynamic_nozzle_map"] = True
         # ``same_stat_as``, not ``!=``: this is the one comparison where the mtime
         # is real evidence, because the question is whether the file moved under
         # the parse that just finished — a window no restore can fall inside.

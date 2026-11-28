@@ -1,4 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  EXTERNAL_AMS_ID,
+  EXTERNAL_DEPUTY_ID,
+  externalSlotIndex,
+  layoutGlobalTrayId,
+  rackLabel,
+  trayLayoutOf,
+} from '../../utils/trayIds';
 import { NumberInput } from '../NumberInput';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
@@ -286,13 +294,17 @@ export function CalibrationPresetPage({
   const loadedSlots = useMemo<LoadedSlot[]>(() => {
     const units = statusQuery.data?.ams ?? [];
     const vtTrays = statusQuery.data?.vt_tray ?? [];
+    // The printer's numbering (utils/trayIds): an AMS-HT is its unit id, a rack AMS
+    // 28 + k / 37 + k, a direct rack's input its own id.
+    const layout = trayLayoutOf(statusQuery.data);
     const out: LoadedSlot[] = [];
     for (const unit of units) {
       for (const tray of unit.tray) {
         const loaded = tray.state === 11 || (tray.tray_info_idx && tray.tray_info_idx !== '');
         if (!loaded || !tray.tray_info_idx) continue;
-        const globalTrayId = unit.id * 4 + tray.id;
-        const label = `AMS ${unit.id + 1} · Slot ${tray.id + 1} · ${tray.tray_sub_brands ?? tray.tray_info_idx}`;
+        const globalTrayId = layoutGlobalTrayId(layout, unit.id, tray.id);
+        const where = rackLabel(layout, globalTrayId) ?? `AMS ${unit.id + 1} · Slot ${tray.id + 1}`;
+        const label = `${where} · ${tray.tray_sub_brands ?? tray.tray_info_idx}`;
         out.push({
           ams_id: unit.id,
           slot_id: tray.id,
@@ -313,11 +325,14 @@ export function CalibrationPresetPage({
     for (const tray of vtTrays) {
       const loaded = tray.state === 11 || (tray.tray_info_idx && tray.tray_info_idx !== '');
       if (!loaded || !tray.tray_info_idx) continue;
-      const label = `${t('filamentCali.preset.externalSpool', 'External spool')} · ${tray.tray_sub_brands ?? tray.tray_info_idx}`;
+      // A direct rack (H3C, P3C): each PrintTool's input by its own id, stored (255, index).
+      const inputId = typeof tray.id === 'number' ? tray.id : EXTERNAL_DEPUTY_ID;
+      const rackInput = layout.directRack ? rackLabel(layout, inputId) : null;
+      const label = `${rackInput ?? t('filamentCali.preset.externalSpool', 'External spool')} · ${tray.tray_sub_brands ?? tray.tray_info_idx}`;
       out.push({
-        ams_id: 254,
-        slot_id: 0,
-        tray_id: 254,
+        ams_id: rackInput ? EXTERNAL_AMS_ID : 254,
+        slot_id: rackInput ? externalSlotIndex(inputId) : 0,
+        tray_id: rackInput ? inputId : 254,
         filament_id: tray.tray_info_idx,
         filament_setting_id: null,
         filament_type: tray.tray_type,

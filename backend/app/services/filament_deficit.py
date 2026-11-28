@@ -36,17 +36,18 @@ class SlotShortfall:
         return round(max(0.0, self.needed_grams - self.available_grams), 1)
 
 
-def _slot_label(global_tray_id: int) -> str:
+def _slot_label(global_tray_id: int, layout=None) -> str:
     """How the operator refers to this slot — "A1", "HT-A", "Ext-L" — in the
     one vocabulary the assignment notifications coined, keyed by the global
     tray id the loaded-filament list already carries. A message that says
     "tray 5" sends somebody counting; a home-grown formula did worse: it
     turned the external holder (``ams_id = -1``) into ``@1`` and an AMS-HT
-    unit into ``Ext``.
+    unit into ``Ext``. ``layout`` (``utils/tray_ids``): a direct rack's slots read
+    ``AMS-3H 5`` / ``Ext-3``.
     """
     from backend.app.services.spool_assignment_notifications import _slot_label_from_global_tray  # noqa: PLC0415
 
-    return _slot_label_from_global_tray(global_tray_id)
+    return _slot_label_from_global_tray(global_tray_id, layout)
 
 
 def _same_filament(a: dict, b: dict) -> bool:
@@ -70,6 +71,7 @@ def compute_shortfalls(
     remaining_by_tray: dict[int, float],
     *,
     auto_refill: bool,
+    layout=None,
 ) -> list[SlotShortfall]:
     """Slots the print will exhaust, given what is loaded and how it was mapped.
 
@@ -129,7 +131,7 @@ def compute_shortfalls(
 
         if available >= needed:
             continue
-        label = _slot_label(tray)
+        label = _slot_label(tray, layout)
         shortfalls.append(
             SlotShortfall(
                 slot_label=str(label),

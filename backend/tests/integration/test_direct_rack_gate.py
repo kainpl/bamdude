@@ -1,9 +1,11 @@
-"""N01 stage A: a direct-connected rack (H3C, P3C) is read, never written to (spec r2 §3.1).
+"""What a direct-connected rack (H3C, P3C) is sent, and what it is not yet (N01 stages A, B).
 
-* A1-01 — a command on a rack AMS slot or a rack's external input is not
-  sent: the MQTT writer refuses, and an assignment there stays
-  ``pending_config``. The same assignment on an X1C / H2D publishes as before.
-* A1-02 — a print to a direct rack is refused at the one dispatch layer, by name.
+* Stage B: a print goes through the one dispatch layer, and the slot setting
+  (``ams_filament_setting``, its reset) goes out in Bambu Studio's form — an
+  assignment on a rack slot configures it like any slot.
+* Still refused until stage C, by name: loading and unloading, an RFID re-read,
+  drying, the K-profile of a slot and the automatic calibration. A manual
+  calibration prints, once the hotend its tray leads to matches the session.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -49,14 +51,17 @@ X1C = TrayLayout(units=((0, AmsType.AMS),))
 def test_the_gate():
     assert direct_rack_gate.slot_command_refused(H3C, 32, 5)
     assert direct_rack_gate.slot_command_refused(H3C, 255, 4)
+    assert direct_rack_gate.is_rack_slot(H3C, 32, 5)
     assert not direct_rack_gate.slot_command_refused(H3C, 0, 1)  # a bound regular AMS is not a rack slot
     assert not direct_rack_gate.slot_command_refused(X1C, 255, 0)
     assert direct_rack_gate.tray_command_refused(H3C, 34)
     assert direct_rack_gate.tray_command_refused(H3C, 254)
     assert not direct_rack_gate.tray_command_refused(X1C, 254)
-    assert direct_rack_gate.print_refused(P3C) and not direct_rack_gate.print_refused(X1C)
+    assert direct_rack_gate.auto_calibration_refused(P3C) and not direct_rack_gate.auto_calibration_refused(X1C)
     # A stand-in (a mocked manager's answer) is no layout, never "a rack".
-    assert not direct_rack_gate.print_refused(MagicMock())
+    assert not direct_rack_gate.auto_calibration_refused(MagicMock())
+    # Stage B: printing is no longer the gate's.
+    assert not hasattr(direct_rack_gate, "print_refused")
 
 
 def _client(model: str, units: list[dict]) -> BambuMQTTClient:
@@ -70,8 +75,8 @@ def _client(model: str, units: list[dict]) -> BambuMQTTClient:
 @pytest.mark.parametrize(
     ("model", "units", "ams_id", "tray_id", "sent"),
     [
-        ("H3C", [{"id": "32", "info": "240842026", "tray": []}], 32, 5, False),
-        ("H3C", [{"id": "32", "info": "240842026", "tray": []}], 255, 4, False),
+        ("H3C", [{"id": "32", "info": "240842026", "tray": []}], 32, 5, True),
+        ("H3C", [{"id": "32", "info": "240842026", "tray": []}], 255, 4, True),
         ("X1C", [{"id": "0", "info": "1001", "tray": []}], 0, 1, True),
         ("H2D", [{"id": "0", "info": "1001", "tray": []}], 255, 0, True),
     ],
@@ -107,10 +112,10 @@ def _status(units):
 @pytest.mark.integration
 @pytest.mark.parametrize(
     ("layout", "ams_id", "tray_id", "published"),
-    [(H3C, 32, 5, False), (H3C, 255, 4, False), (X1C, 0, 1, True)],
-    ids=["rack-slot", "rack-external", "x1c"],
+    [(H3C, 32, 5, True), (X1C, 0, 1, True)],
+    ids=["rack-slot", "x1c"],
 )
-async def test_assignment_on_a_rack_stays_pending(
+async def test_assignment_on_a_rack_configures_the_slot(
     async_client: AsyncClient, printer_factory, spool_factory, layout, ams_id, tray_id, published
 ):
     printer = await printer_factory(name="Rack", model="H3C" if layout.direct_rack else "X1C")
@@ -131,6 +136,9 @@ async def test_assignment_on_a_rack_stays_pending(
     assert response.status_code == 200, response.text
     assert response.json()["pending_config"] is (not published)
     assert mqtt.ams_set_filament_setting.called is published
+    if layout.direct_rack:
+        # The K-profile of a rack slot waits for stage C (keyed by nozzle_pos in Studio).
+        assert not mqtt.extrusion_cali_sel.called
 
 
 @pytest.mark.asyncio
@@ -149,18 +157,6 @@ async def test_assignment_beyond_a_p3c_rack_is_refused(async_client: AsyncClient
                 json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": ams_id, "tray_id": tray_id},
             )
             assert response.status_code == 422, (ams_id, tray_id, response.text)
-
-
-def test_direct_print_refused_by_name():
-    from backend.app.services.background_dispatch import BackgroundDispatchService, DispatchEnqueueRejected
-
-    service = BackgroundDispatchService()
-    with patch("backend.app.services.background_dispatch.printer_manager") as pm:
-        pm.tray_layout.return_value = H3C
-        with pytest.raises(DispatchEnqueueRejected) as refused:
-            service._refuse_unless_free(7, "H3C")
-    assert refused.value.code == direct_rack_gate.UNSUPPORTED_CODE
-    assert refused.value.detail()["message"] == direct_rack_gate.UNSUPPORTED_MESSAGE
 
 
 # --- acceptance r1 (A1-01, A1-05) and the refusals the first round did not pin ---
@@ -228,24 +224,8 @@ def test_calibration_writers_refuse_on_a_rack_as_the_floor():
 
 
 @pytest.mark.asyncio
-async def test_the_dispatch_floor_refuses_whatever_reached_it():
-    from backend.app.services.background_dispatch import BackgroundDispatchService
-
-    service = BackgroundDispatchService()
-    job = MagicMock(printer_id=7, awaited_by_scheduler=False)
-    with (
-        patch("backend.app.services.background_dispatch.printer_manager") as pm,
-        patch.object(service, "_refuse_dispatch", new=AsyncMock()) as refuse,
-        patch("backend.app.services.farm_startup_guard.farm_startup_guard.require"),
-    ):
-        pm.tray_layout.return_value = H3C
-        await service._process_job(job)
-    refuse.assert_awaited_once_with(job, direct_rack_gate.UNSUPPORTED_MESSAGE)
-
-
-@pytest.mark.asyncio
 @pytest.mark.integration
-async def test_autoqueue_does_not_route_to_a_rack(db_session, printer_factory):
+async def test_autoqueue_no_longer_refuses_a_rack(db_session, printer_factory):
     from types import SimpleNamespace
 
     from backend.app.models.auto_queue import AutoQueueItem
@@ -261,10 +241,9 @@ async def test_autoqueue_does_not_route_to_a_rack(db_session, printer_factory):
         "backend.app.services.auto_queue_eligibility.read_item_requirements", new=AsyncMock(return_value=requirements)
     ):
         result = await find_eligible_printer(db_session, AutoQueueItem(target_model="H3C"), set())
-    assert result.printer is None
     refused = [f for f in result.facts if f.printer_id == p.id]
-    assert [f.code for f in refused] == ["direct_rack_unsupported"]
-    assert routing_detail("direct_rack_unsupported")["message"] in refused[0].message
+    assert "direct_rack_unsupported" not in [f.code for f in refused]
+    assert routing_detail("direct_rack_unsupported")["message"]  # the code stays known for rows that waited on it
 
 
 @pytest.mark.asyncio
@@ -277,10 +256,64 @@ async def test_an_offline_rack_keeps_its_slots_on_both_doors(async_client: Async
         "/api/v1/inventory/assignments",
         json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 32, "tray_id": 5},
     )
+    # Stage B: as on any offline printer, nothing is sent and the row is kept.
     assert response.status_code == 200, response.text
-    assert response.json()["pending_config"] is True
     beyond = await async_client.post(
         "/api/v1/inventory/assignments",
         json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 32, "tray_id": 9},
     )
     assert beyond.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_a_manual_calibration_on_a_hotend_of_another_size_is_refused_before_a_session(
+    db_session, printer_factory
+):
+    """B1-01: a calibration row is exempt from routing, so its start asks the hotend its tray leads to."""
+    import copy
+
+    from sqlalchemy import select
+
+    from backend.app.models.calibration_session import CalibrationSession
+    from backend.app.services.calibration_constants import CaliMethod, CaliMode
+    from backend.app.services.calibration_mode_registry import ModeState
+    from backend.app.services.calibration_service import CalibFilamentInput, CalibrationService
+    from backend.app.services.printer_feed_snapshot import snapshot_from_state
+    from backend.tests.unit.test_h3c_p3c_telemetry import H3C_FRAME
+
+    h3c = BambuMQTTClient(ip_address="192.0.2.11", serial_number="H3CCALI", access_code="x", model="H3C")
+    h3c._process_message({"print": copy.deepcopy(H3C_FRAME)})
+    h3c.state.connected = True
+    printer = await printer_factory(model="H3C")
+    with (
+        patch("backend.app.services.calibration_service.printer_manager") as pm,
+        patch("backend.app.services.calibration_service.get_mode_state", return_value=ModeState.PRODUCTION),
+    ):
+        pm.get_client.return_value = h3c
+        pm.tray_layout.return_value = h3c.tray_layout()
+        pm.get_feed_snapshot.return_value = snapshot_from_state(printer.id, "H3C", h3c.state)
+        with pytest.raises(direct_rack_gate.DirectRackRefused) as refused:
+            await CalibrationService().start_calibration(
+                db=db_session,
+                printer_id=printer.id,
+                cali_mode=CaliMode.PA_LINE,
+                method=CaliMethod.MANUAL,
+                nozzle_diameter=0.6,  # PrintTool 7 (AMS 3H slot 6) holds a 0.4
+                nozzle_volume_type="high_flow",
+                extruder_id=0,
+                filaments=[
+                    CalibFilamentInput(
+                        ams_id=32,
+                        slot_id=6,
+                        tray_id=34,
+                        filament_id="GFL99",
+                        filament_setting_id="GFSL99",
+                        bed_temp=60,
+                        nozzle_temp=220,
+                        max_volumetric_speed=12.0,
+                    )
+                ],
+                user_id=None,
+            )
+    assert refused.value.code == "rack_hotend_mismatch"
+    assert (await db_session.execute(select(CalibrationSession))).scalars().all() == []

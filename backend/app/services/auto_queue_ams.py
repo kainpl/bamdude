@@ -15,6 +15,13 @@ per printer, with an advertised-profile overlay seen through
 from __future__ import annotations
 
 from backend.app.services import ams_advertised_overlay as overlay
+from backend.app.utils.tray_ids import (
+    EXTERNAL_DEPUTY_ID,
+    EXTERNAL_MAIN_ID,
+    TrayLayout,
+    external_slot_index,
+    is_ams_ht_id,
+)
 
 
 def _normalize_color(color: str | None) -> str:
@@ -50,11 +57,19 @@ def build_loaded_filaments(status, printer_id: int | None = None) -> list[dict]:
     filaments: list[dict] = []
     raw = status.raw_data
     ams_extruder_map = raw.get("ams_extruder_map", {})
+    # How this printer numbers its trays (``utils/tray_ids``): a rack AMS is 28 + k /
+    # 37 + k, a direct rack's input its own id (247-255), one extruder.
+    if printer_id is not None:
+        from backend.app.services.printer_manager import printer_manager, tray_layout_of
+
+        layout = tray_layout_of(printer_id, printer_manager)
+    else:
+        layout = TrayLayout.from_state(status)
 
     for ams_unit in raw.get("ams", []) or []:
         ams_id = int(ams_unit.get("id", 0))
         trays = ams_unit.get("tray", [])
-        is_ht = 128 <= ams_id <= 135  # the unit id, not how many trays it listed
+        is_ht = is_ams_ht_id(ams_id)  # the unit id, not how many trays it listed
         for tray in trays:
             tray_type = tray.get("tray_type")
             if not tray_type:
@@ -69,7 +84,7 @@ def build_loaded_filaments(status, printer_id: int | None = None) -> list[dict]:
                     entry.actual_color,
                     entry.actual_variant,
                 )
-            global_tray_id = ams_id if ams_id >= 128 else ams_id * 4 + tray_id
+            global_tray_id = layout.global_tray_id(ams_id, tray_id)
             filaments.append(
                 {
                     "type": tray_type,
@@ -80,7 +95,7 @@ def build_loaded_filaments(status, printer_id: int | None = None) -> list[dict]:
                     "is_ht": is_ht,
                     "is_external": False,
                     "global_tray_id": global_tray_id,
-                    "extruder_id": ams_extruder_map.get(str(ams_id)),
+                    "extruder_id": 0 if layout.direct_rack else ams_extruder_map.get(str(ams_id)),
                     "remain": tray.get("remain", -1),
                     # The spool's identity, for anything that must say "still the
                     # same spool" across syncs (the low-filament announcement).
@@ -89,21 +104,24 @@ def build_loaded_filaments(status, printer_id: int | None = None) -> list[dict]:
                 }
             )
 
-    for idx, vt in enumerate(raw.get("vt_tray") or []):
+    for vt in raw.get("vt_tray") or []:
         if not vt.get("tray_type"):
             continue
-        tray_id = int(vt.get("id", 254))
+        tray_id = int(vt.get("id", EXTERNAL_DEPUTY_ID))
         filaments.append(
             {
                 "type": vt["tray_type"],
                 "color": _normalize_color(vt.get("tray_color", "")),
                 "tray_info_idx": vt.get("tray_info_idx", ""),
                 "ams_id": -1,
-                "tray_id": idx,
+                # The index the input is stored under (254 -> 0, 255 -> 1, 247-253 -> 2-8).
+                "tray_id": external_slot_index(tray_id),
                 "is_ht": False,
                 "is_external": True,
                 "global_tray_id": tray_id,
-                "extruder_id": (255 - tray_id) if ams_extruder_map else None,
+                "extruder_id": (
+                    0 if layout.direct_rack else (EXTERNAL_MAIN_ID - tray_id) if ams_extruder_map else None
+                ),
                 "remain": vt.get("remain", -1),
                 "tray_uuid": vt.get("tray_uuid", ""),
                 "tag_uid": vt.get("tag_uid", ""),

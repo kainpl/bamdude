@@ -1,12 +1,16 @@
 import { useTranslation } from 'react-i18next';
 import type { PrinterRoutingChannel } from '../../api/client';
 import { formatSlotLabel } from '../../utils/amsHelpers';
+import { NO_LAYOUT, isAmsHtId, localSlot, slotKey } from '../../utils/trayIds';
 
-function slotLabel(id: number, dualNozzle: boolean) {
+/** The server's own words for a direct rack's source (`AMS-3H 5`, `Ext-3`); the numbering helper elsewhere. */
+function slotLabel(id: number, dualNozzle: boolean, serverLabel?: string | null) {
+  if (serverLabel) return serverLabel;
   if (id === 255) return 'Ext-R';
   if (id === 254) return dualNozzle ? 'Ext-L' : 'Ext';
-  if (id >= 24 && id <= 27) return `Lite-${(id % 4) + 1}`;
-  return formatSlotLabel(id >= 128 ? id : Math.floor(id / 4), id % 4, id >= 128, false);
+  if (id >= 24 && id <= 27) return `Lite-${localSlot(id) + 1}`;
+  const [amsId, slot] = slotKey(NO_LAYOUT, id);
+  return formatSlotLabel(amsId, slot, isAmsHtId(id), false);
 }
 
 function describe(material: string, profile: string | null) {
@@ -22,7 +26,7 @@ export function RoutingChannelDetails({ channel, dualNozzle }: { channel: Printe
     const reported = source.reported_material && source.reported_material !== source.material
       ? t('filamentRouting.channelReportedMaterial', { material: source.reported_material })
       : null;
-    const label = `${slotLabel(source.source_id, dualNozzle)} · ${compared}${reported ? ` · ${reported}` : ''}`;
+    const label = `${slotLabel(source.source_id, dualNozzle, source.label)} · ${compared}${reported ? ` · ${reported}` : ''}`;
     return { ...source, label };
   });
   const chosen = details.find(source => source.source_id === channel.selected_source_id);
@@ -36,10 +40,16 @@ export function RoutingChannelDetails({ channel, dualNozzle }: { channel: Printe
         </p>
       ) : channel.reason && (
         <p className="text-orange-700 dark:text-orange-400">
-          {channel.selected_source_id != null && `${slotLabel(channel.selected_source_id, dualNozzle)} · `}
+          {channel.selected_source_id != null
+            && `${slotLabel(channel.selected_source_id, dualNozzle, selected?.label)} · `}
           {channel.reason.message}
         </p>
       )}
+      {channel.notices?.map(notice => (
+        <p key={notice.code} className="text-amber-700 dark:text-amber-400" data-testid="routing-channel-notice">
+          {notice.message}
+        </p>
+      ))}
       {(!selected || details.length > 1) && details.length > 0 && (
         <details className="mt-1">
           <summary className="cursor-pointer">{t('filamentRouting.channelCheckedSources', { required: wanted })}</summary>

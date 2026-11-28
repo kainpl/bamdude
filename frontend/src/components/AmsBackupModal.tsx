@@ -43,6 +43,8 @@ interface AmsBackupModalProps {
   amsExtruderMap: Record<string, number> | undefined;
   firmwareGroups: Record<string, number[][]> | null | undefined;
   isDualNozzle: boolean;
+  /** A direct-connected rack (H3C, P3C): only the firmware's own groups — each tray is its own PrintTool. */
+  directRack?: boolean;
   canToggle: boolean;
   pending: boolean;
   onToggle: (next: boolean) => void;
@@ -208,6 +210,7 @@ export function AmsBackupModal({
   amsExtruderMap,
   firmwareGroups,
   isDualNozzle,
+  directRack = false,
   canToggle,
   pending,
   onToggle,
@@ -268,6 +271,7 @@ export function AmsBackupModal({
     amsExtruderMap,
     isDualNozzle,
     firmwareGroups,
+    directRack,
   );
   const trayCountByAms = new Map<number, number>(
     (amsUnits || []).map((u) => [u.id, u.tray.length]),

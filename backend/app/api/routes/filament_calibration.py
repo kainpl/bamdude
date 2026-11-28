@@ -244,6 +244,20 @@ async def start_session(
         except Exception:
             pass
         raise direct_rack_gate.refusal() from e
+    except direct_rack_gate.DirectRackRefused as e:
+        try:
+            await _audit(
+                db,
+                printer_id=printer_id,
+                user=user,
+                action="start_session",
+                payload=body.model_dump(),
+                result="error",
+                error=e.code,
+            )
+        except Exception:
+            pass
+        raise direct_rack_gate.refusal_for(e.code) from e
     except CalibModeNotImplementedError as e:
         try:
             await _audit(
@@ -416,6 +430,9 @@ async def submit_manual_result(
             fine_modifier=body.fine_modifier,
             tower_result=body.tower_result,
         )
+    except direct_rack_gate.DirectRackUnsupported as e:
+        # H3C / P3C: the calibration printed, its result is entered on the printer (N01 stage C saves it).
+        raise direct_rack_gate.refusal() from e
     except ValueError as e:
         raise HTTPException(400, str(e))
 

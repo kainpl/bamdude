@@ -599,6 +599,7 @@ async def _warn_on_filament_deficit(db, job, archive) -> None:
     try:
         from backend.app.services.filament_deficit import compute_shortfalls
         from backend.app.services.print_scheduler import scheduler as _sched
+        from backend.app.services.printer_manager import tray_layout_of as _tray_layout_of
 
         mapping = job.options.get("ams_mapping")
         if not mapping:
@@ -630,6 +631,7 @@ async def _warn_on_filament_deficit(db, job, archive) -> None:
             # have silently disabled the backup pooling — getattr returns the
             # default and nothing complains.
             auto_refill=bool(getattr(status, "ams_auto_switch_filament", False)),
+            layout=_tray_layout_of(job.printer_id, printer_manager),
         )
         if not shortfalls:
             return
@@ -725,6 +727,11 @@ async def _calibration_targets(
         ams_raw = ams_raw.get("ams", [])
     if not isinstance(ams_raw, list):
         ams_raw = []
+    from backend.app.services import direct_rack_gate
+    from backend.app.services.printer_manager import tray_layout_of
+    from backend.app.utils.tray_ids import external_slot_index
+
+    layout = tray_layout_of(printer_id, printer_manager)
 
     used_global: set[int] | None = None
     if ams_mapping is not None:
@@ -751,11 +758,14 @@ async def _calibration_targets(
                 continue
             if slot_id < 0:
                 continue
-            # An AMS-HT unit is one slot whose global id IS the unit id (128+),
-            # as in the plan's mapping — ``ams_id * 4`` never matched it, so HT
-            # slots were never bound before a print.
-            global_slot = ams_id if ams_id >= 128 else ams_id * 4 + slot_id
+            # The plan's own numbering (``utils/tray_ids``): an AMS-HT's one slot is
+            # its unit id (128+), a rack AMS's 28 + k / 37 + k.
+            global_slot = layout.global_tray_id(ams_id, slot_id)
             if used_global is not None and global_slot not in used_global:
+                continue
+            # A direct rack's slot binds its K-profile by ``nozzle_pos`` (Studio):
+            # N01 stage C. Not a target until then.
+            if direct_rack_gate.is_rack_slot(layout, ams_id, slot_id):
                 continue
             tray_info_idx = tray.get("tray_info_idx") or ""
             # The nozzle THIS slot feeds — diameter and flow type included.
@@ -801,9 +811,10 @@ async def _calibration_targets(
                 vt_id = int(vt.get("id", -1))
             except (TypeError, ValueError):
                 continue
-            if vt_id not in (254, 255):
+            if vt_id not in (254, 255) or layout.direct_rack:
+                # Every input of a direct rack is a rack slot (stage C, as above).
                 continue
-            ext_slot = vt_id - 254  # 254→0, 255→1
+            ext_slot = external_slot_index(vt_id)  # 254→0, 255→1
             tray_info_idx = vt.get("tray_info_idx") or ""
             # Ext-L feeds the left hotend on a dual-nozzle printer — it used to
             # bind as extruder 0 against the right one's diameter.
@@ -1971,15 +1982,6 @@ class BackgroundDispatchService:
         drift. Never call it without the lock: it reads the dispatcher's own
         in-memory job lists.
         """
-        from backend.app.services import direct_rack_gate
-        from backend.app.services.printer_manager import tray_layout_of
-
-        if direct_rack_gate.print_refused(tray_layout_of(printer_id, printer_manager)):
-            # A direct-connected rack (H3C, P3C) takes no print until N01 stage B.
-            raise DispatchEnqueueRejected(
-                direct_rack_gate.UNSUPPORTED_MESSAGE, code=direct_rack_gate.UNSUPPORTED_CODE, printer_id=printer_id
-            )
-
         if self.has_work_for_printer(printer_id):
             raise DispatchEnqueueRejected(f"Printer {printer_name} already has a background dispatch in progress")
 
@@ -2483,16 +2485,7 @@ class BackgroundDispatchService:
         from backend.app.services.farm_startup_guard import farm_startup_guard
 
         farm_startup_guard.require()
-        from backend.app.services import direct_rack_gate
         from backend.app.services.print_scheduler import scheduler as print_scheduler
-        from backend.app.services.printer_manager import tray_layout_of
-
-        # The one dispatch layer: whatever reached it, a direct-connected rack
-        # (H3C, P3C) is not sent a print until N01 stage B. The queue and the
-        # direct door refuse earlier and by name; this is the floor.
-        if direct_rack_gate.print_refused(tray_layout_of(job.printer_id, printer_manager)):
-            await self._refuse_dispatch(job, direct_rack_gate.UNSUPPORTED_MESSAGE)
-            return
 
         # Strict mode (opt-in): a DIRECT print whose printer's stagger group has
         # no free slot is refused here, before it would otherwise wait for one.
@@ -3412,6 +3405,8 @@ class BackgroundDispatchService:
                     layer_inspect=job.options.get("layer_inspect", False),
                     use_ams=job.options.get("use_ams", True),
                     nozzle_offset_cali=job.options.get("nozzle_offset_cali", False),
+                    # A direct rack sends a calibration print's tray raw (Studio).
+                    calibration=bool(job.options.get("is_calibration")),
                     # A BambuStudio capture, forwarded verbatim -- or, on an H2C,
                     # the rack mapping resolved from the plan and the pick.
                     nozzle_mapping=(
@@ -4449,6 +4444,8 @@ class BackgroundDispatchService:
                     layer_inspect=job.options.get("layer_inspect", False),
                     use_ams=job.options.get("use_ams", True),
                     nozzle_offset_cali=job.options.get("nozzle_offset_cali", False),
+                    # A direct rack sends a calibration print's tray raw (Studio).
+                    calibration=bool(job.options.get("is_calibration")),
                     # A BambuStudio capture, forwarded verbatim -- or, on an H2C,
                     # the rack mapping resolved from the plan and the pick.
                     nozzle_mapping=(

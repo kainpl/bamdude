@@ -15,6 +15,7 @@ import {
 const NOZZLE_FLOW_LABELS: Record<string, string> = {
   high_flow: 'printers.nozzleHighFlow',
   tpu_high_flow: 'printers.nozzleTpuHighFlow',
+  tpu285: 'printers.nozzleTpu285',
 };
 
 export function PAProfileSection({

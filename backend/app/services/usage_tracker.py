@@ -22,7 +22,15 @@ from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spool_usage_history import AMS_SYNC_STATUS, RUNOUT_STATUS, SpoolUsageHistory
 from backend.app.services.print_usage_journal import without_stale_refill_runouts
 from backend.app.utils.filament_remaining import usable_remain_percent
-from backend.app.utils.tray_ids import TrayLayout, decode_wire_slot, global_tray_id, slot_key, unit_type
+from backend.app.utils.tray_ids import (
+    TrayLayout,
+    decode_wire_slot,
+    global_tray_id,
+    names_loaded_source,
+    slot_key,
+    state_is_direct_rack,
+    unit_type,
+)
 from backend.app.utils.tray_split import CompletionSnapshot, printed_bound, sole_owner, split_weight
 
 logger = logging.getLogger(__name__)
@@ -523,7 +531,8 @@ async def _journal_print_start(db: AsyncSession, printer_id: int, state) -> None
     tray: int | None = None
     if seed_log:
         tray = seed_log[0][0]
-    elif 0 <= getattr(state, "tray_now", 255) <= 254:
+    elif names_loaded_source(getattr(state, "tray_now", 255), state):
+        # 255 too, when a direct rack's snow said PrintTool 1's input is loaded.
         tray = state.tray_now
 
     spool_id = spoolman_spool_id = None
@@ -2362,16 +2371,18 @@ async def _track_from_3mf(
             # Try tray_now_at_start first (captured at print start)
             tray_now_override = tray_now_at_start
             logger.info("[UsageTracker] 3MF: using tray_now_at_start=%d (single-filament fallback)", tray_now_at_start)
-        elif state and 0 <= state.tray_now <= 254:
-            # Current state is valid (printer didn't retract yet)
+        elif state and names_loaded_source(state.tray_now, state):
+            # Current state is valid (printer didn't retract yet); on a direct rack
+            # 255 when its snow said PrintTool 1's input
             tray_now_override = state.tray_now
             logger.info("[UsageTracker] 3MF: using current tray_now=%d", state.tray_now)
         elif state and 0 <= state.last_loaded_tray <= 253:
             # Last valid tray before retract (H2D retracts before completion callback)
             tray_now_override = state.last_loaded_tray
             logger.info("[UsageTracker] 3MF: using last_loaded_tray=%d (post-retract fallback)", state.last_loaded_tray)
-        elif state and state.tray_now == 255:
-            # 255 = "no filament" on legacy printers, but valid 2nd external spool on H2-series
+        elif state and state.tray_now == 255 and not state_is_direct_rack(state):
+            # 255 = "no filament" on legacy printers, but valid 2nd external spool on H2-series.
+            # Not on a direct rack: every one lists an input 255; its snow decided above.
             vt_tray = state.raw_data.get("vt_tray") or []
             if any(int(vt.get("id", 0)) == 255 for vt in vt_tray if isinstance(vt, dict)):
                 tray_now_override = state.tray_now

@@ -62,7 +62,6 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.settings import Settings
-from backend.app.services import direct_rack_gate
 from backend.app.services.auto_queue_waiting import (
     KNOWN_REASONS,
     WaitingFact,
@@ -80,7 +79,7 @@ from backend.app.services.filament_routing import resolve_filament_routing
 from backend.app.services.offline_feed import offline_shortfall
 from backend.app.services.print_scheduler import scheduler
 from backend.app.services.printer_location_service import load_tree, path_of, subtree_ids
-from backend.app.services.printer_manager import printer_manager, tray_layout_of
+from backend.app.services.printer_manager import printer_manager
 from backend.app.services.printer_occupancy import active_claim_printer_ids, holding_condition, placement_rank
 from backend.app.services.printer_pick_order import PickOrder, read_pick_order
 from backend.app.utils.model_compatibility import model_compatibility
@@ -528,12 +527,6 @@ async def find_eligible_printer(
         verdict = model_compatibility(req.model, printer_manager.effective_model_for(printer.id, printer.model))
         if verdict not in ("exact", "compatible"):
             refuse(printer, "model_mismatch", routing_detail("model_mismatch")["message"], {"file_model": req.model})
-            continue
-        if direct_rack_gate.print_refused(tray_layout_of(printer.id, printer_manager, printer.model)):
-            # A direct-connected rack (H3C, P3C) is not given work until N01 stage B.
-            refuse(
-                printer, direct_rack_gate.UNSUPPORTED_CODE, routing_detail(direct_rack_gate.UNSUPPORTED_CODE)["message"]
-            )
             continue
         if printer.id in halted_ids:
             # Before "busy": a halted queue with rows left in it is first of all halted.
