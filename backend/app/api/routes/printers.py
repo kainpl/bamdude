@@ -772,6 +772,11 @@ async def update_printer(
         printer_manager.update_printer_name(printer_id, printer.name)
 
     # WLED (N02, upstream #3124): a saved mapping reloads and shows the current state at once.
+    # A1: the printer's own plate flag; like upstream's settings hook, nothing is re-applied. Handed over with a
+    # saved mapping too (acceptance A1-01): a printer added outside the create route (the Telegram bot) has no flag
+    # in the manager until then, and the WLED tab saves only wled_config.
+    if "require_plate_clear" in update_data or "wled_config" in update_data:
+        wled_manager.set_require_plate_clear(printer_id, printer.require_plate_clear)
     if "wled_config" in update_data:
         wled_manager.configure_printer(printer_id, printer.wled_config)
         state = printer_manager.get_status(printer_id)
@@ -781,9 +786,6 @@ async def update_printer(
                 state,
                 awaiting_plate_clear=printer_manager.is_awaiting_plate_clear(printer_id),
             )
-    # A1: the printer's own plate flag; like upstream's settings hook, nothing is re-applied.
-    if "require_plate_clear" in update_data:
-        wled_manager.set_require_plate_clear(printer_id, printer.require_plate_clear)
 
     # Reconnect if connection settings changed
     if connection_changed:

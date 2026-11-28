@@ -2223,6 +2223,29 @@ class TestWLED:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_saving_a_wled_config_carries_the_printers_plate_flag(
+        self, async_client: AsyncClient, printer_factory
+    ):
+        """Acceptance A1-01: a printer the Telegram bot added never passed through the create route, so the manager
+        had no plate flag; the WLED tab saves only wled_config. The save hands the flag over before the state is
+        applied, so «Awaiting plate clear» shows at once instead of after a restart."""
+        from unittest.mock import MagicMock, patch
+
+        printer = await printer_factory(require_plate_clear=True)
+        calls = MagicMock()
+        config = {"enabled": True, "base_url": "http://wled.local", "presets": {"queue_waiting": 5}}
+        with (
+            patch("backend.app.api.routes.printers.wled_manager.set_require_plate_clear", calls.flag),
+            patch("backend.app.api.routes.printers.wled_manager.handle_status", calls.status),
+            patch("backend.app.api.routes.printers.printer_manager.get_status", return_value=MagicMock(name="state")),
+        ):
+            response = await async_client.patch(f"/api/v1/printers/{printer.id}", json={"wled_config": config})
+        assert response.status_code == 200, response.text
+        calls.flag.assert_called_once_with(printer.id, True)
+        assert [c[0] for c in calls.mock_calls if c[0] in ("flag", "status")] == ["flag", "status"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_an_update_without_wled_keys_leaves_the_manager_alone(
         self, async_client: AsyncClient, printer_factory
     ):
