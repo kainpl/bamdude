@@ -12,7 +12,10 @@ busy only while it holds a running print or a queued row), so routing happens in
 moments printers free. In a wave the jobs are taken in the router's order (:func:`router_key`:
 position, or SJF's model / ``been_jumped`` / time / position — with the id as the last key,
 which ``_fetch_pending`` carries too) and each takes the best free printer it fits, ranked as
-``find_eligible_printer`` ranks: ready, exact model, colour matches, no deferred rows, the lower id. A job that
+``find_eligible_printer`` ranks (``placement_rank``): ready, exact model, colour matches, no deferred rows, the
+operator's printer order (C01), the remaining level, the lower id. The order's facts move as the replay runs:
+at every print end with a known duration a lane's hours grow by its PRINTING time (never the preparation
+before it, never the plate service after it) and its last finish becomes that end. A job that
 fits no free printer does not block the next one. With SJF a placement marks its peers
 ``been_jumped`` (``_mark_jumped_peers``), and the next wave — never the open one — sees it.
 
@@ -41,6 +44,7 @@ from typing import TYPE_CHECKING
 from backend.app.services.auto_queue_return_policy import returned_printer_rank
 from backend.app.services.farm_forecast import _admit
 from backend.app.services.printer_occupancy import placement_rank
+from backend.app.services.printer_pick_order import DEFAULT as DEFAULT_ORDER, PickFacts, advanced, pick_key
 
 if TYPE_CHECKING:
     from backend.app.services.farm_forecast import StaggerPolicy
@@ -59,6 +63,10 @@ class Held:
     #: router for good, and nothing behind it starts either.
     blocked: bool = False
     not_before: float = 0.0
+    #: The printing time inside ``seconds`` when part of it is not printing — a print being
+    #: dispatched carries its preparation folded in (a started run's ``prep`` counts as done).
+    #: None = all of ``seconds`` prints. Only the printer order's hours read it (C01).
+    print_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -89,6 +97,9 @@ class Lane:
     interval: float = 0.0
     printer_identity: str | None = None
     has_staged_rows: bool = False
+    #: What the operator's printer order reads about this printer now (C01); None = nothing read,
+    #: which ranks after every printer with facts.
+    pick: PickFacts | None = None
 
 
 @dataclass(frozen=True)
@@ -179,6 +190,7 @@ class _Run:
     job: int | None = None
     blocked: bool = False
     not_before: float = 0.0
+    print_seconds: float | None = None
 
 
 def replay(
@@ -192,6 +204,7 @@ def replay(
     watch: frozenset[int] | set[int] | None = None,
     until: float | None = None,
     null_group_first: bool = True,
+    order: str = DEFAULT_ORDER,
 ) -> Replay:
     """Deal ``jobs`` out over ``lanes`` from now on, as the router would; see the module docstring.
 
@@ -344,6 +357,7 @@ def replay(
                     started=h.started,
                     blocked=h.blocked,
                     not_before=h.not_before,
+                    print_seconds=h.print_seconds,
                 )
             )
         if lane.has_staged_rows:
@@ -370,6 +384,11 @@ def replay(
     # printer starts, even for jobs placed in the known first routing wave.
     for pid in staged_peers:
         taint(pid, after_snapshot)
+
+    # The printer order's facts, advanced at every known print end (C01): what the router will
+    # read when the lane frees. A free lane never has a print running, so a print's facts can be
+    # taken when it starts.
+    picks: dict[int, PickFacts | None] = {lane.printer_id: lane.pick for lane in lanes}
 
     def is_ready(pid: int, t: float) -> bool:
         if t == 0.0 and pid in initially_free:
@@ -447,6 +466,7 @@ def replay(
                         fitted[pid][1],
                         by_pid[pid].has_staged_rows or any(run.not_before > t for run in queue[pid]),
                         pid,
+                        pick=pick_key(order, picks.get(pid)),
                         remaining_rank=fitted[pid][2],
                     ),
                 ),
@@ -489,6 +509,8 @@ def replay(
             freeze(pid, t)
             return
         finish = t + run.prep + run.seconds
+        printing = run.seconds if run.print_seconds is None else run.print_seconds
+        picks[pid] = advanced(picks.get(pid), seconds=printing, finished_at=finish)
         if run.job is not None:
             if doubtful:
                 out.unknown.add(run.job)

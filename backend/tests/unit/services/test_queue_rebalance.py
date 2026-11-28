@@ -609,7 +609,9 @@ def test_what_a_printer_holds_is_read_as_the_router_reads_it():
     assert machines[4].held == () and not machines[4].hold_unknown
     assert machines[5].held == () and machines[5].hold_unknown
     assert machines[6].held == (Held(900.0, started=True),) and not machines[6].hold_unknown
-    assert machines[7].held == (Held(920.0, started=True), Held(600.0, prep=120.0))
+    # C01 (consilium r1 R1-02): the preparation stays folded into the head's time, its printing
+    # time apart — the replay's hours grow by printing only.
+    assert machines[7].held == (Held(920.0, started=True, print_seconds=800.0), Held(600.0, prep=120.0))
     assert machines[8].held == (Held(None, blocked=True),)
 
 
@@ -990,3 +992,18 @@ def test_rebalance_refuses_a_move_when_a_manual_release_can_take_its_stagger_slo
     assert len(control.moves) == 1 and control.moves[0].finish == 30
     assert not delayed.moves and delayed.skipped == [(41, "no_faster_model")]
     assert not actual.moves and actual.skipped == [(41, "forecast_incomplete")]
+
+
+def test_a_move_lands_on_the_printer_the_order_names():
+    """C01: the trial's replay puts the moved print on the printer the order names — here the X1C
+    with the fewest hours, not the lower id. (``_receivers`` ranks its pool the same way, but the
+    order of that list is informative only: the trial's replay decides where the prints land.)"""
+    from backend.app.services.printer_pick_order import PickFacts
+
+    options = {10: [_opt(201, "x1c", 2, seconds=H)]}
+    farm = _farm((1, "p1s", False, 9 * H), (2, "x1c", True, 0), (3, "x1c", True, 0))
+    farm.machines[2] = replace(farm.machines[2], pick=PickFacts(50.0, None, None))
+    farm.machines[3] = replace(farm.machines[3], pick=PickFacts(5.0, None, None))
+    farm = replace(farm, order="fewest_hours")
+    [move] = plan_moves([_item(1, 10, "p1s", 2)], options, farm).moves
+    assert move.receivers == (3,)

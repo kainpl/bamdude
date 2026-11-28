@@ -367,6 +367,13 @@ class AppSettings(BaseModel):
         default=False,
         description="Auto-queue: use Bambu Studio compatible printer models when no exact model is ready",
     )
+    model_dispatch_order: Literal["fewest_hours", "most_hours", "least_recently_used", "priority"] = Field(
+        default="fewest_hours",
+        description=(
+            "Which printer an AutoQueue job takes among printers equally fit for it (upstream #2915): the fewest "
+            "print hours, the most, the one idle the longest, or the printers' own priority"
+        ),
+    )
     default_force_color_match: bool = Field(
         default=False,
         description="Default exact colour matching for new order-plan jobs and the print dialog",
@@ -1027,6 +1034,14 @@ class AppSettingsUpdate(BaseModel):
     auto_queue_rebalance_models: bool | None = None
     auto_queue_return_failed: StrictBool | None = None
     auto_queue_compatible_models: bool | None = None
+    model_dispatch_order: Literal["fewest_hours", "most_hours", "least_recently_used", "priority"] | None = None
+
+    @field_validator("model_dispatch_order")
+    @classmethod
+    def dispatch_order_not_null(cls, value):
+        if value is None:
+            raise ValueError("The printer order for AutoQueue jobs cannot be null")
+        return value
 
     @field_validator("auto_queue_return_failed")
     @classmethod

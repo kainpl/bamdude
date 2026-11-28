@@ -555,3 +555,76 @@ def test_replay_matches_the_router_remaining_filament_tie_break():
     assert replay([_free(1), _free(2)], [job]).lane_of[1] == 2
     different_color = replace(job, fits=((1, True, 1, -60), (2, True, 0, -20)))
     assert replay([_free(1), _free(2)], [different_color]).lane_of[1] == 1
+
+
+# ---------- C01: the operator's printer order, advanced as the replay runs ----------
+
+
+def _pick(hours=0.0, last=None, priority=None):
+    from backend.app.services.printer_pick_order import PickFacts
+
+    return PickFacts(hours=hours, last_finished=last, priority=priority)
+
+
+def test_the_router_ranks_by_the_printer_order_among_equal_printers():
+    lanes = [_free(1, pick=_pick(hours=30)), _free(2, pick=_pick(hours=5))]
+    assert replay(lanes, [_job(1, 1, 2)], order="fewest_hours").lane_of[1] == 2
+    assert replay(lanes, [_job(1, 1, 2)], order="most_hours").lane_of[1] == 1
+    assert replay(lanes, [_job(1, 1, 2)]).lane_of[1] == 2  # the default order is fewest hours
+
+
+def test_colour_still_beats_the_printer_order():
+    lanes = [_free(1, pick=_pick(hours=90)), _free(2, pick=_pick(hours=1))]
+    job = Job(1, 0, "P1S", 100.0, fits=((1, True, 2), (2, True, 1)))
+    assert replay(lanes, [job], order="fewest_hours").lane_of[1] == 1
+
+
+def test_lru_ranks_by_the_simulated_last_finish():
+    """Both lanes end a print at 1000 s and free together; the replay's own finishes are equal, so
+    the lower id decides. Without advancing, lane 2's older starting fact would win."""
+    lanes = [
+        Lane(1, held=(Held(1000.0, started=True),), pick=_pick(last=-50.0)),
+        Lane(2, held=(Held(1000.0, started=True),), pick=_pick(last=-100.0)),
+    ]
+    result = replay(lanes, [_job(1, 1, 2)], order="least_recently_used")
+    assert result.routed_at[1] == 1000
+    assert result.lane_of[1] == 1
+
+
+def test_hours_accumulate_by_print_time_only():
+    """Lane 2 is dispatching: 600 s of its 4200 s is preparation, not printing. Both free at 4200 s;
+    lane 2 printed 3600 s, lane 1 4200 s, so the fewest hours is lane 2. Counting the
+    preparation would tie them and give lane 1."""
+    lanes = [
+        Lane(1, held=(Held(4200.0, started=True),), pick=_pick(hours=0.0)),
+        Lane(2, held=(Held(4200.0, started=True, print_seconds=3600.0),), pick=_pick(hours=0.0)),
+    ]
+    result = replay(lanes, [_job(1, 1, 2)], order="fewest_hours")
+    assert result.routed_at[1] == 4200
+    assert result.lane_of[1] == 2
+
+
+def test_the_priority_survives_the_advance():
+    lanes = [
+        Lane(1, held=(Held(1000.0, started=True),), pick=_pick(priority=2)),
+        Lane(2, held=(Held(1000.0, started=True),), pick=_pick(priority=1)),
+    ]
+    assert replay(lanes, [_job(1, 1, 2)], order="priority").lane_of[1] == 2
+
+
+def test_a_lane_without_facts_ranks_after_one_with_them():
+    lanes = [_free(1), _free(2, pick=_pick(hours=999))]
+    assert replay(lanes, [_job(1, 1, 2)], order="fewest_hours").lane_of[1] == 2
+
+
+def test_a_queued_rows_preparation_is_no_print_time():
+    """Acceptance r1 A1-02: neither lane has started; lane 1 prints 4200 s, lane 2 prepares 600 s and prints 3600 s,
+    so both free at 4200 s. Lane 2 printed less: fewest hours picks it. Counting the preparation would tie them
+    and give lane 1."""
+    lanes = [
+        Lane(1, held=(Held(4200.0),), pick=_pick(hours=0.0)),
+        Lane(2, held=(Held(3600.0, prep=600.0),), pick=_pick(hours=0.0)),
+    ]
+    result = replay(lanes, [_job(1, 1, 2)], order="fewest_hours")
+    assert result.routed_at[1] == 4200
+    assert result.lane_of[1] == 2

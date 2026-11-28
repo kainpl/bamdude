@@ -187,6 +187,7 @@
   "Auto-queue item not found": "Елемент авточерги не знайдено",
   "auto_link_existing_accounts requires require_email_verified=True when email_claim='email'": "auto_link_existing_accounts вимагає require_email_verified=True, коли email_claim='email'",
   "AutoQueue failed-return setting cannot be null": "Перемикач повернення невдалих робіт в авточергу не може бути null",
+  "The printer order for AutoQueue jobs cannot be null": "Порядок вибору принтера для робіт авточерги не може бути null",
   "AutoQueue return work has not stopped; restart before restoring": "Робота повернення в авточергу ще не завершилася; перезапустіть BamDude перед відновленням",
   "axes must be 'z', 'xy', or 'all'": "axes має бути «z», «xy» або «all»",
   "axis must be one of: x, y, z, e": "axis має бути одним із: x, y, z, e",

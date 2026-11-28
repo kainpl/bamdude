@@ -415,6 +415,7 @@ _RESTORABLE_SETTING_KEYS = frozenset(
         "queue_shortest_first",
         "auto_queue_rebalance_models",
         "auto_queue_compatible_models",
+        "model_dispatch_order",
         "auto_queue_return_failed",
         "auto_order_for_batches",
         "default_force_color_match",

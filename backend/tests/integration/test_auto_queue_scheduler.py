@@ -1602,6 +1602,112 @@ async def test_remaining_filament_breaks_only_an_eligible_tie(
     assert result.printer.id == (low.id if expected == "low" else high.id)
 
 
+# ---- C01: which printer an AutoQueue job takes among equal ones (upstream #3480 / #2915) ----
+
+
+async def _two_equal_printers(db_session, printer_factory, routing_item, **second):
+    first, _ = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI", serial_number="PICK-1")
+    other, _ = await _make_printer_with_queue(
+        db_session, printer_factory, model="A1MINI", serial_number="PICK-2", **second
+    )
+    assert first.id < other.id  # the old tie break would take ``first``
+    item = routing_item(target_model="A1MINI", status="pending", position=1)
+    db_session.add(item)
+    await db_session.commit()
+    return first, other, item
+
+
+@pytest.mark.parametrize(
+    ("order", "first_facts", "second_facts"),
+    [
+        ("fewest_hours", (30.0, None, None), (5.0, None, None)),
+        ("most_hours", (5.0, None, None), (30.0, None, None)),
+        ("least_recently_used", (0.0, -3600.0, None), (0.0, -86400.0, None)),
+        ("least_recently_used", (0.0, -3600.0, None), (0.0, None, None)),
+        ("priority", (0.0, None, None), (0.0, None, 3)),
+        ("priority", (0.0, None, 7), (0.0, None, 3)),
+    ],
+)
+async def test_the_order_picks_among_equal_printers(
+    db_session, printer_factory, routing_item, order, first_facts, second_facts
+):
+    from backend.app.services.printer_pick_order import PickFacts, PickOrder
+
+    first, other, item = await _two_equal_printers(db_session, printer_factory, routing_item)
+    pick_order = PickOrder(order, {first.id: PickFacts(*first_facts), other.id: PickFacts(*second_facts)})
+    one, two = _patch_printer_manager({first.id, other.id})
+    with one, two:
+        result = await find_eligible_printer(db_session, item, set(), pick_order=pick_order)
+    assert result.printer.id == other.id
+
+
+async def test_colours_still_win_over_the_order(db_session, printer_factory, routing_item):
+    from backend.app.services.printer_pick_order import PickFacts, PickOrder
+
+    first, other, item = await _two_equal_printers(db_session, printer_factory, routing_item)
+    pick_order = PickOrder(
+        "fewest_hours", {first.id: PickFacts(500.0, None, None), other.id: PickFacts(1.0, None, None)}
+    )
+    statuses = {first.id: _idle_status(["PLA"]), other.id: _idle_status(["PLA"], ["#FF0000"])}
+    one, two = _patch_printer_manager({first.id, other.id}, statuses)
+    with one, two:
+        result = await find_eligible_printer(db_session, item, set(), pick_order=pick_order)
+    assert result.printer.id == first.id
+
+
+async def test_an_untouched_farm_routes_as_before(db_session, printer_factory, routing_item):
+    """No setting, no hours, no priority, no archives: the remaining level, then the lower id — today's rank."""
+    first, other, item = await _two_equal_printers(db_session, printer_factory, routing_item)
+    statuses = {first.id: _idle_status(["PLA"]), other.id: _idle_status(["PLA"])}
+    one, two = _patch_printer_manager({first.id, other.id}, statuses)
+    with one, two:
+        assert (await find_eligible_printer(db_session, item, set(), prefer_lowest=True)).printer.id == first.id
+    statuses[first.id].raw_data["ams"][0]["tray"][0]["remain"] = 64
+    statuses[other.id].raw_data["ams"][0]["tray"][0]["remain"] = 12
+    one, two = _patch_printer_manager({first.id, other.id}, statuses)
+    with one, two:
+        assert (await find_eligible_printer(db_session, item, set(), prefer_lowest=True)).printer.id == other.id
+
+
+async def test_the_order_is_read_when_not_handed_in(db_session, printer_factory, routing_item):
+    first, other, item = await _two_equal_printers(db_session, printer_factory, routing_item, runtime_seconds=7200)
+    db_session.add(Settings(key="model_dispatch_order", value="most_hours"))
+    await db_session.commit()
+    one, two = _patch_printer_manager({first.id, other.id})
+    with one, two:
+        result = await find_eligible_printer(db_session, item, set())
+    assert result.printer.id == other.id
+
+
+async def test_the_pass_reads_the_pick_order_once(db_session, scheduler, printer_factory, routing_item):
+    from backend.app.services import printer_pick_order
+
+    printers = [
+        (await _make_printer_with_queue(db_session, printer_factory, model="A1MINI", serial_number=f"ONCE-{n}"))[0]
+        for n in range(2)
+    ]
+    for position in range(1, 4):
+        db_session.add(routing_item(target_model="A1MINI", status="pending", position=position))
+    await db_session.commit()
+    calls = []
+    real = printer_pick_order.read_pick_order
+
+    async def counted(db, *, now):
+        calls.append(now)
+        return await real(db, now=now)
+
+    one, two = _patch_printer_manager({p.id for p in printers})
+    with (
+        one,
+        two,
+        patch("backend.app.services.auto_queue_scheduler.read_pick_order", counted),
+        patch("backend.app.services.auto_queue_eligibility.read_pick_order", counted),
+        patch("backend.app.services.auto_queue_scheduler.ws_manager.send_queue_changed", new_callable=AsyncMock),
+    ):
+        await scheduler.tick()
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize(
     ("model", "feed", "expected_mapping"),
     [

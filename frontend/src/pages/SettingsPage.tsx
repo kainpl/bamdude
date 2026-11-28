@@ -1,13 +1,13 @@
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
 import { NumberInput } from '../components/NumberInput';
-import { Loader2, Archive, MapPin, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles, MonitorPlay, Tag, Clock } from 'lucide-react';
+import { Loader2, Archive, MapPin, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles, MonitorPlay, Tag, Clock, ListOrdered } from 'lucide-react';
 import { availableEngines, hasEngineChoice, resolveEngine, type SliceEngineId } from '../lib/sliceEngines';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
 import { api, macrosApi } from '../api/client';
 import { invalidatePrinterFleet } from '../utils/printerFleetInvalidation';
 import { cameraTestMessage } from '../utils/cameraTestMessage';
-import type { SecretAction } from '../api/client';
+import type { ModelDispatchOrder, SecretAction } from '../api/client';
 import { SecretInput } from '../components/SecretInput';
 import { credentialDraft } from '../utils/credentialDraft';
 import { checkPasswordComplexity, isPasswordValid } from '../utils/password';
@@ -115,7 +115,7 @@ registerSettingsSearch({ labelKey: 'settings.tabs.slicing', tab: 'slicing', keyw
 registerSettingsSearch({ labelKey: 'settings.preferredSlicer', tab: 'slicing', keywords: 'preferred slicer orcaslicer bambu studio desktop open in slicer slice engine', anchor: 'card-slicer-configuration' });
 registerSettingsSearch({ labelKey: 'settings.useSlicerApi', tab: 'slicing', keywords: 'server side slicing sidecar api url health timeout orcaslicer bambu studio', anchor: 'card-slicer-configuration' });
 registerSettingsSearch({ labelKey: 'settings.pipelines.title', tab: 'slicing', keywords: 'saved slice settings pipeline preset printer process filament bed', anchor: 'card-slicer-pipelines' });
-registerSettingsSearch({ labelKey: 'settings.tabs.printing', tab: 'printing', keywords: 'printing bed leveling flow calibration vibration first layer timelapse staggered batch delay start group plate clear confirm auto queue gcode injection farmloop swapmod autoclear drying presets temperature humidity ams ftp retry upload eta forecast file transfer allowance', anchor: 'tab-printing' });
+registerSettingsSearch({ labelKey: 'settings.tabs.printing', tab: 'printing', keywords: 'printing bed leveling flow calibration vibration first layer timelapse staggered batch delay start group plate clear confirm auto queue printer order any model print hours idle priority gcode injection farmloop swapmod autoclear drying presets temperature humidity ams ftp retry upload eta forecast file transfer allowance', anchor: 'tab-printing' });
 registerSettingsSearch({ labelKey: 'printOptionsPrefs.cardTitle', labelFallback: 'Saved Print Profiles', tab: 'printing', keywords: 'print options profile preferences saved per user model toggles bed leveling flow timelapse mesh swap macros copy', anchor: 'card-print-options-prefs' });
 registerSettingsSearch({ labelKey: 'labelEditor.title', tab: 'filament', subTab: 'marking', keywords: 'label template design editor sticker niimbot barcode qr code placeholder print printer bridge cassette', anchor: 'card-label-designs' });
 registerSettingsSearch({ labelKey: 'labelSheets.title', tab: 'filament', subTab: 'marking', keywords: 'sheet sheets avery paper page grid columns rows margin gap label stickers a4 a5 letter', anchor: 'card-label-sheets' });
@@ -1407,6 +1407,7 @@ export function SettingsPage() {
       (baseline.auto_queue_rebalance_models ?? false) !== (localSettings.auto_queue_rebalance_models ?? false) ||
       (baseline.auto_queue_compatible_models ?? false) !== (localSettings.auto_queue_compatible_models ?? false) ||
       (baseline.auto_queue_return_failed ?? false) !== (localSettings.auto_queue_return_failed ?? false) ||
+      (baseline.model_dispatch_order ?? 'fewest_hours') !== (localSettings.model_dispatch_order ?? 'fewest_hours') ||
       (baseline.auto_order_for_batches ?? false) !== (localSettings.auto_order_for_batches ?? false) ||
       (baseline.default_force_color_match ?? false) !== (localSettings.default_force_color_match ?? false) ||
       (baseline.queue_drying_block ?? false) !== (localSettings.queue_drying_block ?? false) ||
@@ -1532,6 +1533,7 @@ export function SettingsPage() {
         auto_queue_rebalance_models: localSettings.auto_queue_rebalance_models,
         auto_queue_compatible_models: localSettings.auto_queue_compatible_models,
         auto_queue_return_failed: localSettings.auto_queue_return_failed,
+        model_dispatch_order: localSettings.model_dispatch_order,
         auto_order_for_batches: localSettings.auto_order_for_batches,
         default_force_color_match: localSettings.default_force_color_match,
         queue_drying_block: localSettings.queue_drying_block,
@@ -4058,6 +4060,36 @@ export function SettingsPage() {
                     <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
                   </label>
                 </div>
+              </div>
+
+              {/* The AutoQueue printer order (C01, upstream #2915) */}
+              <div id="settings-dispatch-order" className="space-y-3 pt-4 border-t border-bambu-dark-tertiary">
+                <div className="flex items-center gap-2 text-white">
+                  <ListOrdered className="w-4 h-4 text-bambu-green" />
+                  <span className="font-medium">{t('settings.dispatchOrderTitle')}</span>
+                </div>
+                <p className="text-xs text-bambu-gray">{t('settings.dispatchOrderDescription')}</p>
+                <div className="w-full sm:w-1/2">
+                  <label htmlFor="model_dispatch_order" className="block text-sm text-white mb-1">
+                    {t('settings.dispatchOrderLabel')}
+                  </label>
+                  <div className="relative">
+                    <select
+                      id="model_dispatch_order"
+                      aria-describedby="model-dispatch-order-help"
+                      value={localSettings.model_dispatch_order ?? 'fewest_hours'}
+                      onChange={(e) => updateSetting('model_dispatch_order', e.target.value as ModelDispatchOrder)}
+                      className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none appearance-none"
+                    >
+                      <option value="fewest_hours">{t('settings.dispatchOrderFewestHours')}</option>
+                      <option value="most_hours">{t('settings.dispatchOrderMostHours')}</option>
+                      <option value="least_recently_used">{t('settings.dispatchOrderLeastRecentlyUsed')}</option>
+                      <option value="priority">{t('settings.dispatchOrderPriority')}</option>
+                    </select>
+                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+                  </div>
+                </div>
+                <p id="model-dispatch-order-help" className="text-xs text-bambu-gray">{t('settings.dispatchOrderHelp')}</p>
               </div>
 
               {/* Per-Printer Mapping Default (Print Modal) */}

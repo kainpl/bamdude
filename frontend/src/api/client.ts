@@ -1019,6 +1019,8 @@ export interface Printer {
   mqtt_connection_timeout: number;
   /** Wear cost per printing hour; null or 0 = off. Older servers omit it. */
   wear_cost_per_hour?: number | null;
+  /** Place in the AutoQueue printer order when it is "priority" (upstream #2915): lowest first, null last. */
+  dispatch_priority?: number | null;
   external_camera_url?: string | null; // Write-only in current servers.
   external_camera_url_configured?: boolean;
   external_camera_snapshot_url_configured?: boolean;
@@ -1706,6 +1708,8 @@ export interface PrinterCreate {
   mqtt_connection_timeout?: number;
   /** Wear cost per printing hour; null clears it (off). */
   wear_cost_per_hour?: number | null;
+  /** Place in the AutoQueue printer order; null clears it (the printer goes last). */
+  dispatch_priority?: number | null;
   secret_actions?: Partial<Record<'external_camera_url' | 'external_camera_snapshot_url', 'keep' | 'clear' | 'replace'>>;
   external_camera_url?: string | null;
   external_camera_type?: string | null;
@@ -5271,6 +5275,8 @@ export interface AppSettings {
   auto_queue_rebalance_models: boolean;  // Move an order line's pending prints to idle printers of another model when that finishes sooner (spec 2026-09-10)
   auto_queue_compatible_models: boolean;
   auto_queue_return_failed: boolean;
+  /** Which printer an AutoQueue job takes among printers equally fit for it (C01, upstream #2915). */
+  model_dispatch_order?: ModelDispatchOrder;
   default_force_color_match: boolean;
   auto_order_for_batches: boolean;  // A multi-print batch from the print dialog proposes a new order when nothing open needs the plate
   prefer_lowest_filament: boolean;  // Drain the emptiest compatible spool first — honoured by AutoQueue AND by the Print dialog's auto-match
@@ -5433,6 +5439,8 @@ export interface AppSettings {
 }
 
 export type OctoEverywhereConfidence = 'lowest' | 'low' | 'medium' | 'high' | 'highest';
+
+export type ModelDispatchOrder = 'fewest_hours' | 'most_hours' | 'least_recently_used' | 'priority';
 
 export type AppSettingsUpdate = Partial<AppSettings> & {
   secret_actions?: Record<string, SecretAction>;
