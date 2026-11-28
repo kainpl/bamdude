@@ -46,8 +46,9 @@ const EXEMPT: Record<string, string> = {
   'components/PrintModal/RoutingChannelDetails.tsx :: >= 128': 'B: routing channel labels (dispatch)',
   'components/PrintModal/RoutingChannelDetails.tsx :: / 4)': 'B: routing channel labels (dispatch)',
   'components/PrintModal/RoutingChannelDetails.tsx :: % 4': 'B: routing channel labels (dispatch)',
-  'components/calibration/CalibrationPresetPage.tsx :: * 4 +': 'B: calibration print targets (dispatch)',
-  // N01 stage C — slot commands and drying.
+  // N01 stage C — slot commands, filament calibration and drying.
+  'components/calibration/CalibrationPresetPage.tsx :: * 4 +':
+    'C: filament calibration tray numbers (the start is refused on a direct rack, calibration_service)',
   'components/ConfigureAmsSlotModal.tsx :: - 128': 'C: slot configuration (printer command)',
   'components/ConfigureAmsSlotModal.tsx :: >= 128': 'C: slot configuration (printer command)',
   'components/DryingScheduleModal.tsx :: >= 128': 'C: drying ceiling per unit',

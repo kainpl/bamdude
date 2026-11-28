@@ -36,6 +36,7 @@ from backend.app.schemas.filament_calibration import (
     PACalibHistoryEntryOut,
     StartSessionIn,
 )
+from backend.app.services import direct_rack_gate
 from backend.app.services.calib_3mf_builder import build_calibration_3mf
 from backend.app.services.calibration_constants import CaliMode
 from backend.app.services.calibration_mode_registry import ModeState, get_mode_state
@@ -229,6 +230,20 @@ async def start_session(
             409,
             detail={"detail": "slicer_sidecar_required", "message": str(e)},
         )
+    except direct_rack_gate.DirectRackUnsupported as e:
+        try:
+            await _audit(
+                db,
+                printer_id=printer_id,
+                user=user,
+                action="start_session",
+                payload=body.model_dump(),
+                result="error",
+                error=str(e),
+            )
+        except Exception:
+            pass
+        raise direct_rack_gate.refusal() from e
     except CalibModeNotImplementedError as e:
         try:
             await _audit(

@@ -3613,7 +3613,12 @@ class PrintScheduler:
 
         if direct_rack_gate.print_refused(tray_layout_of(printer.id, printer_manager, printer.model)):
             # A direct-connected rack (H3C, P3C): the job waits, by name, until N01 stage B.
-            await self._wait(db, item, direct_rack_gate.UNSUPPORTED_CODE, direct_rack_gate.UNSUPPORTED_MESSAGE)
+            await self._wait(
+                db,
+                item,
+                direct_rack_gate.UNSUPPORTED_CODE,
+                routing_detail(direct_rack_gate.UNSUPPORTED_CODE)["message"],
+            )
             return False
 
         try:

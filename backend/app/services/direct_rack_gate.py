@@ -25,6 +25,13 @@ UNSUPPORTED_CODE = "direct_rack_unsupported"
 UNSUPPORTED_MESSAGE = "Printing and tray commands on H3C and P3C printers are not supported yet"
 
 
+class DirectRackUnsupported(Exception):
+    """A service refusing a print or a calibration on a direct rack; the route answers ``refusal()``."""
+
+    def __init__(self) -> None:
+        super().__init__(UNSUPPORTED_MESSAGE)
+
+
 def slot_command_refused(layout: TrayLayout, ams_id: int, tray_id: int | None = None) -> bool:
     """Whether a command for slot ``(ams_id, tray_id)`` must not be sent: a rack AMS's slot, or a direct rack's external input."""
     layout = as_layout(layout)
@@ -48,7 +55,11 @@ def tray_command_refused(layout: TrayLayout, tray: int | None) -> bool:
 
 
 def print_refused(layout: TrayLayout) -> bool:
-    """Whether a print must not be dispatched to this printer (until stage B)."""
+    """Whether a print must not be dispatched to this printer (until stage B).
+
+    A filament calibration is a print too (the auto one started over MQTT, not
+    through the dispatcher): refused by the same answer.
+    """
     return as_layout(layout).direct_rack
 
 

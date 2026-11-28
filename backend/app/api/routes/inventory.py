@@ -3066,7 +3066,9 @@ async def _assign_spool(
     # 0. The slot must be one this printer has (utils/tray_ids): a rack AMS
     # slot within the rack, a rack's external input within its PrintTools.
     # Other printers are as before — no slot of theirs is refused here.
-    layout = tray_layout_of(data.printer_id, printer_manager)
+    # With the printer's model, as the Spoolman door asks: an offline H3C keeps its rack.
+    printer_model = (await db.execute(select(Printer.model).where(Printer.id == data.printer_id))).scalar_one_or_none()
+    layout = tray_layout_of(data.printer_id, printer_manager, printer_model)
     if _slot_needs_layout_check(layout, data.ams_id, data.tray_id) and not layout.accepts_slot(
         data.ams_id, data.tray_id
     ):

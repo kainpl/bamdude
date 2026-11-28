@@ -13544,6 +13544,12 @@ class BambuMQTTClient:
         cali_mode: 0=auto (X1 lidar), 1=manual. ``filaments`` is the
         full BS payload (one dict per tray, see CalibrationService).
         """
+        if self.direct_rack:
+            # A filament calibration is a print: none to a direct rack yet (direct_rack_gate).
+            logger.info(
+                "[%s] extrusion_cali_start not sent: %s", self.serial_number, direct_rack_gate.UNSUPPORTED_MESSAGE
+            )
+            return False, None
         if not self._client or not self.state.connected:
             return False, None
         self._sequence_id += 1
@@ -13571,6 +13577,12 @@ class BambuMQTTClient:
         """Start flow rate calibration (X1 auto). Same ``extrusion_cali``
         verb but with ``flow_rate`` populated in each filament dict.
         """
+        if self.direct_rack:
+            # A filament calibration is a print: none to a direct rack yet (direct_rack_gate).
+            logger.info(
+                "[%s] flow_rate_cali_start not sent: %s", self.serial_number, direct_rack_gate.UNSUPPORTED_MESSAGE
+            )
+            return False, None
         if not self._client or not self.state.connected:
             return False, None
         self._sequence_id += 1

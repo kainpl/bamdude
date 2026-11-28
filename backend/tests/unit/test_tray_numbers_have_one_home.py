@@ -90,17 +90,44 @@ def test_the_scan_sees_the_forms():
     import tempfile
 
     sample = (
-        "def f(ams_id, tray_id, global_tray, unit):\n"
+        "def f(ams_id, tray_id, global_tray, unit, slot):\n"
         "    a = ams_id * 4 + tray_id\n"
-        "    b = global_tray // 4\n"
+        "    b = (ams_id << 8) | slot\n"
         "    c = 254 + tray_id\n"
-        "    d = global_tray >= 254\n"
-        "    e = 128 <= unit <= 135\n"
-        "    g = chr(65 + ams_id)\n"
+        "    d = global_tray // 4\n"
+        "    e = global_tray % 4\n"
+        "    g = slot & 3\n"
+        "    h = global_tray >> 2\n"
+        "    i = slot >> 8\n"
+        "    j = slot & 0xFF\n"
+        "    k = global_tray - 254\n"
+        "    m = unit - 128\n"
+        "    n = global_tray >= 254\n"
+        "    o = global_tray < 254\n"
+        "    q = unit >= 128\n"
+        "    r = 128 <= unit <= 135\n"
+        "    s = chr(65 + ams_id)\n"
     )
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         (root / "pkg").mkdir()
         (root / "pkg" / "m.py").write_text(sample, encoding="utf-8")
         forms = {f.form for f in scan(root / "pkg", root, skip=frozenset())}
-    assert {"* 4 +", "// 4", "254 +", ">= 254", "128 <= x <= 135", "chr(65 + …)"} <= forms
+    assert forms == {
+        "* 4 +",
+        "<< 8 |",
+        "254 +",
+        "// 4",
+        "% 4",
+        "& 3",
+        ">> 2",
+        ">> 8",
+        "& 0xFF",
+        "- 254",
+        "- 128",
+        ">= 254",
+        "< 254",
+        ">= 128",
+        "128 <= x <= 135",
+        "chr(65 + …)",
+    }

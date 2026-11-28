@@ -161,3 +161,126 @@ def test_direct_print_refused_by_name():
             service._refuse_unless_free(7, "H3C")
     assert refused.value.code == direct_rack_gate.UNSUPPORTED_CODE
     assert refused.value.detail()["message"] == direct_rack_gate.UNSUPPORTED_MESSAGE
+
+
+# --- acceptance r1 (A1-01, A1-05) and the refusals the first round did not pin ---
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cali", [("auto_pa_line", "extrusion_cali_start"), ("flow_rate", "flow_rate_cali_start")], ids=["pa", "flow"]
+)
+async def test_filament_calibration_is_refused_on_a_rack_before_a_session(db_session, printer_factory, cali):
+    from sqlalchemy import select
+
+    from backend.app.models.calibration_session import CalibrationSession
+    from backend.app.services.calibration_constants import CaliMethod, CaliMode
+    from backend.app.services.calibration_mode_registry import ModeState
+    from backend.app.services.calibration_service import CalibFilamentInput, CalibrationService
+
+    mode, writer = cali
+    printer = await printer_factory(model="H3C")
+    client = MagicMock()
+    client.state.connected = True
+    with (
+        patch("backend.app.services.calibration_service.printer_manager") as pm,
+        patch("backend.app.services.calibration_service.get_mode_state", return_value=ModeState.PRODUCTION),
+    ):
+        pm.get_client.return_value = client
+        pm.tray_layout.return_value = H3C
+        with pytest.raises(direct_rack_gate.DirectRackUnsupported):
+            await CalibrationService().start_calibration(
+                db=db_session,
+                printer_id=printer.id,
+                cali_mode=CaliMode(mode),
+                method=CaliMethod.AUTO,
+                nozzle_diameter=0.4,
+                nozzle_volume_type="standard",
+                extruder_id=0,
+                filaments=[
+                    CalibFilamentInput(
+                        ams_id=32,
+                        slot_id=5,
+                        tray_id=33,
+                        filament_id="GFG00",
+                        filament_setting_id="GFG00_60@BBL",
+                        bed_temp=60,
+                        nozzle_temp=220,
+                        max_volumetric_speed=12.0,
+                    )
+                ],
+                user_id=None,
+            )
+    assert not getattr(client, writer).called
+    sessions = (await db_session.execute(select(CalibrationSession))).scalars().all()
+    assert sessions == []  # nothing left to block the next start
+
+
+def test_calibration_writers_refuse_on_a_rack_as_the_floor():
+    client = _client("H3C", [{"id": "32", "info": "240842026", "tray": []}])
+    filaments = [{"tray_id": 133, "ams_id": 32, "slot_id": 5, "filament_id": "GFG00"}]
+    assert client.extrusion_cali_start(nozzle_diameter=0.4, cali_mode=0, filaments=filaments) == (False, None)
+    assert client.flow_rate_cali_start(nozzle_diameter=0.4, filaments=filaments) == (False, None)
+    assert not client._client.publish.called
+    x1c = _client("X1C", [{"id": "0", "info": "1001", "tray": []}])
+    ok, _ = x1c.extrusion_cali_start(nozzle_diameter=0.4, cali_mode=0, filaments=[{"tray_id": 0, "ams_id": 0}])
+    assert ok and x1c._client.publish.called
+
+
+@pytest.mark.asyncio
+async def test_the_dispatch_floor_refuses_whatever_reached_it():
+    from backend.app.services.background_dispatch import BackgroundDispatchService
+
+    service = BackgroundDispatchService()
+    job = MagicMock(printer_id=7, awaited_by_scheduler=False)
+    with (
+        patch("backend.app.services.background_dispatch.printer_manager") as pm,
+        patch.object(service, "_refuse_dispatch", new=AsyncMock()) as refuse,
+        patch("backend.app.services.farm_startup_guard.farm_startup_guard.require"),
+    ):
+        pm.tray_layout.return_value = H3C
+        await service._process_job(job)
+    refuse.assert_awaited_once_with(job, direct_rack_gate.UNSUPPORTED_MESSAGE)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_autoqueue_does_not_route_to_a_rack(db_session, printer_factory):
+    from types import SimpleNamespace
+
+    from backend.app.models.auto_queue import AutoQueueItem
+    from backend.app.models.printer_queue import PrinterQueue
+    from backend.app.services.auto_queue_eligibility import find_eligible_printer
+    from backend.app.services.filament_intake import routing_detail
+
+    p = await printer_factory(name="Rack", serial_number="RACK01", model="H3C", is_active=True)
+    db_session.add(PrinterQueue(printer_id=p.id, auto_distribute_eligible=True, is_paused=False))
+    await db_session.commit()
+    requirements = SimpleNamespace(status="ok", reason=None, model="H3C", resolved_plate_id=None)
+    with patch(
+        "backend.app.services.auto_queue_eligibility.read_item_requirements", new=AsyncMock(return_value=requirements)
+    ):
+        result = await find_eligible_printer(db_session, AutoQueueItem(target_model="H3C"), set())
+    assert result.printer is None
+    refused = [f for f in result.facts if f.printer_id == p.id]
+    assert [f.code for f in refused] == ["direct_rack_unsupported"]
+    assert routing_detail("direct_rack_unsupported")["message"] in refused[0].message
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_an_offline_rack_keeps_its_slots_on_both_doors(async_client: AsyncClient, printer_factory, spool_factory):
+    """A1-05: with no live client the built-in door reads the model, as the Spoolman door does."""
+    printer = await printer_factory(name="Offline H3C", model="H3C")
+    spool = await spool_factory(material="PLA")
+    response = await async_client.post(
+        "/api/v1/inventory/assignments",
+        json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 32, "tray_id": 5},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["pending_config"] is True
+    beyond = await async_client.post(
+        "/api/v1/inventory/assignments",
+        json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 32, "tray_id": 9},
+    )
+    assert beyond.status_code == 422
