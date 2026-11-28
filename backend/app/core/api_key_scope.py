@@ -65,7 +65,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.calibration_session import CalibrationSession
 from backend.app.models.filament_calibration import FilamentCalibration
-from backend.app.models.maintenance import PrinterMaintenance
+from backend.app.models.maintenance import MaintenanceHistory, PrinterMaintenance
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.scheduled_drying import DryingSchedule, ScheduledDrying
 from backend.app.models.smart_plug import SmartPlug
@@ -137,6 +137,8 @@ _NOT_FOUND = {
     "batch": "Batch not found",
     "smart_plug": "Smart plug not found",
     "maintenance_item": "Maintenance item not found",
+    # N09 (acceptance A1-01): the route's own refusal, so another printer's entry reads as none.
+    "maintenance_history_entry": "Maintenance history entry not found",
     "calibration_session": "Calibration session not found",
     "dispatch_job": "Job not found",
     "drying_run": "Scheduled drying not found",
@@ -349,6 +351,11 @@ async def _maintenance_item(db: AsyncSession, raw: str) -> set[int]:
     return await _printer_of(db, PrinterMaintenance, raw)
 
 
+async def _maintenance_history_entry(db: AsyncSession, raw: str) -> set[int]:
+    # N09: an entry of a deleted printer names no printer; the route's own check decides it.
+    return await _printer_of(db, MaintenanceHistory, raw)
+
+
 async def _calibration_session(db: AsyncSession, raw: str) -> set[int]:
     return await _printer_of(db, CalibrationSession, raw)
 
@@ -419,6 +426,7 @@ _PATH_RESOLVERS: tuple[tuple[str, str, Callable[[AsyncSession, str], Awaitable[s
     (_QUEUE_ROUTER, "batch_id", _queue_batch, "batch"),
     ("/api/v1/smart-plugs/", "plug_id", _smart_plug, "smart_plug"),
     ("/api/v1/maintenance/items/", "item_id", _maintenance_item, "maintenance_item"),
+    ("/api/v1/maintenance/history/", "entry_id", _maintenance_history_entry, "maintenance_history_entry"),
     ("/api/v1/calibration/sessions/", "session_id", _calibration_session, "calibration_session"),
     ("/api/v1/background-dispatch/", "job_id", _dispatch_job, "dispatch_job"),
     ("/api/v1/scheduled-dryings/", "run_id", _scheduled_drying_run, "drying_run"),
