@@ -1021,6 +1021,8 @@ export interface Printer {
   wear_cost_per_hour?: number | null;
   /** Place in the AutoQueue printer order when it is "priority" (upstream #2915): lowest first, null last. */
   dispatch_priority?: number | null;
+  /** WLED preset mapping (N02); older servers omit it. */
+  wled_config?: WLEDConfig | null;
   external_camera_url?: string | null; // Write-only in current servers.
   external_camera_url_configured?: boolean;
   external_camera_snapshot_url_configured?: boolean;
@@ -1710,6 +1712,8 @@ export interface PrinterCreate {
   wear_cost_per_hour?: number | null;
   /** Place in the AutoQueue printer order; null clears it (the printer goes last). */
   dispatch_priority?: number | null;
+  /** WLED preset mapping (N02); null clears it. */
+  wled_config?: WLEDConfig | null;
   secret_actions?: Partial<Record<'external_camera_url' | 'external_camera_snapshot_url', 'keep' | 'clear' | 'replace'>>;
   external_camera_url?: string | null;
   external_camera_type?: string | null;
@@ -5439,6 +5443,37 @@ export interface AppSettings {
 }
 
 export type OctoEverywhereConfidence = 'lowest' | 'low' | 'medium' | 'high' | 'highest';
+
+/** A printer's WLED preset per state (N02, upstream #3124); null = no preset for that state. */
+export interface WLEDPresets {
+  idle: number | null;
+  prepare: number | null;
+  printing: number | null;
+  paused: number | null;
+  finished: number | null;
+  error: number | null;
+  queue_waiting: number | null;
+  filament_problem: number | null;
+  hms_error: number | null;
+  offline: number | null;
+}
+
+export interface WLEDConfig {
+  enabled: boolean;
+  base_url: string | null;
+  presets: WLEDPresets;
+  finished_timeout_seconds: number | null;
+}
+
+export interface WLEDPreset {
+  id: number;
+  name: string;
+}
+
+export interface WLEDConnectionInfo {
+  name: string | null;
+  version: string | null;
+}
 
 export type ModelDispatchOrder = 'fewest_hours' | 'most_hours' | 'least_recently_used' | 'priority';
 
@@ -11244,6 +11279,21 @@ export const api = {
   // Re-advertise every assigned, loaded, non-RFID slot under the printer's
   // backup-compatibility policy. A dry run answers the preview without
   // touching MQTT; a real apply is refused while a print runs.
+  getWledPresets: (id: number, baseUrl: string) =>
+    request<WLEDPreset[]>(`/printers/${id}/wled/presets`, {
+      method: 'POST',
+      body: JSON.stringify({ base_url: baseUrl }),
+    }),
+  testWledConnection: (id: number, baseUrl: string) =>
+    request<WLEDConnectionInfo>(`/printers/${id}/wled/test-connection`, {
+      method: 'POST',
+      body: JSON.stringify({ base_url: baseUrl }),
+    }),
+  testWledPreset: (id: number, baseUrl: string, presetId: number) =>
+    request<{ success: boolean }>(`/printers/${id}/wled/test-preset`, {
+      method: 'POST',
+      body: JSON.stringify({ base_url: baseUrl, preset_id: presetId }),
+    }),
   applyAmsBackupCompatibility: (id: number, dryRun: boolean) =>
     request<BackupCompatibilityApplyResult>(`/printers/${id}/ams-policies/backup-compatibility/apply`, {
       method: 'POST',

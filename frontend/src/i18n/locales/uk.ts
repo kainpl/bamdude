@@ -3411,6 +3411,14 @@ export default {
       failed: 'Помилка',
     },
   },
+  wled: {
+    connectionSection: 'Підключення', mappingSection: 'Зіставлення станів', testConnection: 'Перевірити підключення', notTested: 'Не перевірено', connected: 'Підключено до WLED{{name}}{{version}}', notReachable: 'Не вдалося підключитися до WLED.', testPreset: 'Тест', presetTested: 'Пресет увімкнено', presetTestFailed: 'Не вдалося ввімкнути пресет', mappingSummary: 'Налаштовано станів: {{configured}} · Вимкнено станів: {{disabled}}',
+    title: 'WLED', description: 'Кольори, ефекти й пресети налаштовуються безпосередньо у WLED. BamDude лише зіставляє стани принтера з наявними пресетами.',
+    printer: 'Принтер', enabled: 'Увімкнути інтеграцію WLED', baseUrl: 'Адреса WLED', loadPresets: 'Завантажити пресети', online: 'Завантажено пресетів: {{count}}', offlineHint: 'WLED недоступний. Збережені номери пресетів лишаються.', noPrinters: 'Принтерів ще немає.', noPreset: 'Вимкнено — без пресету', savedUnavailable: 'Збережений пресет {{id}} — зараз недоступний', finishedTimeout: 'Повернення з «Завершено» (секунди)', finishedTimeoutHint: 'Через цей час перейти з пресету «Завершено» на «Очікує». 0 вимикає.', saved: 'Налаштування WLED збережено', saveError: 'Не вдалося зберегти налаштування WLED',
+    presetSegmentHint: 'Створюючи пресет у WLED, виберіть потрібний сегмент і ввімкніть «Checked segments only». Під час роботи BamDude лише вмикає налаштований пресет.',
+    status: { idle: 'Очікує', prepare: 'Підготовка', printing: 'Друкує', paused: 'На паузі', finished: 'Завершено', error: 'Збій / помилка', queue_waiting: 'Чекає очищення столу', filament_problem: 'Проблема з філаментом', hms_error: 'Помилка HMS', offline: 'Офлайн' },
+  },
+
   settings: {
     printerAccess: {
       tab: 'Доступ до принтерів',
@@ -3618,6 +3626,7 @@ export default {
       filamentGeneral: 'Основне',
       filamentMarking: 'Маркування',
       network: 'Мережа',
+      wled: 'WLED',
       apiKeys: 'API ключі',
       virtualPrinter: 'Віртуальний принтер',
       failureDetection: 'Виявлення збоїв',

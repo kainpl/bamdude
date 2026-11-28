@@ -23,6 +23,7 @@ export type SettingsSearchTab =
   | 'notifications'
   | 'plugs'
   | 'network'
+  | 'wled'
   | 'virtual-printer'
   | 'apikeys'
   | 'failure-detection'
