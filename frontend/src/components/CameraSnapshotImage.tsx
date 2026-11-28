@@ -13,10 +13,18 @@ interface CameraSnapshotImageProps {
   streamToken?: string;
   /** Geometry of the picture in its box — `fillStyle` of the surface showing it. */
   style?: CSSProperties;
+  /** Where the «Updated» time sits, as Tailwind position (and visibility) classes. A
+   *  surface with its own button in that corner moves it clear (the Cam Wall tile's
+   *  open-card button); every other surface keeps the corner. */
+  timePositionClassName?: string;
+  /** Show the clock alone (13:48:51); the «Updated: …» sentence stays its accessible
+   *  name, and the hover text says when this tab received it. For a surface whose name
+   *  shares the row with the time (the Cam Wall tile with its open-card button). */
+  compactTime?: boolean;
 }
 
 export function CameraSnapshotImage({
-  source, name, intervalMs, streamToken, style,
+  source, name, intervalMs, streamToken, style, timePositionClassName = 'bottom-1.5 right-2', compactTime = false,
 }: CameraSnapshotImageProps) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
@@ -104,6 +112,11 @@ export function CameraSnapshotImage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceKey(source), intervalMs, streamToken, queryClient]);
 
+  const clock = lastFrameAt !== null
+    ? new Date(lastFrameAt).toLocaleTimeString(i18n.language, { hour12: false })
+    : '';
+  const updated = t('printers.camWall.frameUpdatedAt', { time: clock });
+
   return <>
     <img
       ref={imageRef}
@@ -115,9 +128,10 @@ export function CameraSnapshotImage({
     {lastFrameAt !== null && <time
       dateTime={new Date(lastFrameAt).toISOString()}
       title={t('printers.camWall.frameReceivedAt', { time: new Date(lastFrameAt).toLocaleString(i18n.language) })}
-      className="absolute bottom-1.5 right-2 z-10 rounded bg-black/80 px-1.5 py-0.5 text-[10px] tabular-nums text-white/90"
+      aria-label={compactTime ? updated : undefined}
+      className={`absolute ${timePositionClassName} z-10 rounded bg-black/80 px-1.5 py-0.5 text-[10px] tabular-nums text-white/90`}
     >
-      {t('printers.camWall.frameUpdatedAt', { time: new Date(lastFrameAt).toLocaleTimeString(i18n.language, { hour12: false }) })}
+      {compactTime ? clock : updated}
     </time>}
     {failed && <span className="absolute inset-x-2 top-9 rounded bg-black/80 px-2 py-1 text-center text-xs text-bambu-gray" role="status">
       {t(hasFrame ? 'printers.camWall.snapshotStale' : 'printers.camWall.noSignal')}
