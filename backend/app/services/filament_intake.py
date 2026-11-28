@@ -121,6 +121,10 @@ def routing_detail(code: str, **params) -> dict:
         else:
             detail = "detail.wanted_only"
         message = f"{message} {t(lang, 'filament_routing', detail, **params)}"
+    if params.get("print_tools"):
+        # A direct rack's PrintTools the refusal is about (manual feed, a detached
+        # tool) — a sentence of its own, so a caller without them reads no hole.
+        message = f"{message} {t(lang, 'filament_routing', 'detail.print_tools', print_tools=params['print_tools'])}"
     return {"code": code, "params": params, "message": message}
 
 

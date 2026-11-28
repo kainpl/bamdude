@@ -67,7 +67,8 @@
   "detail": {
     "wanted_and_loaded": "Channel {slot} needs {wanted}; loaded: {loaded}.",
     "wanted_nothing_loaded": "Channel {slot} needs {wanted}; nothing is loaded.",
-    "wanted_only": "Channel {slot} needs {wanted}."
+    "wanted_only": "Channel {slot} needs {wanted}.",
+    "print_tools": "PrintTool: {print_tools}."
   },
   "auto_eject_conflict": "Finish G-code auto-eject conflicts with printer Swap Mode",
   "plate_calibration_required": "Plate-check calibration is required",

@@ -396,7 +396,10 @@ def test_a_calibration_asks_the_hotend_its_tray_leads_to(h3c):
     assert calibration_hotend_refusal(snap, 34, 0.4, "standard") is None
     assert calibration_hotend_refusal(snap, 34, 0.6, "standard") == "rack_hotend_mismatch"
     assert calibration_hotend_refusal(snap, 34, 0.4, "high_flow") == "rack_hotend_mismatch"
-    assert calibration_hotend_refusal(snap, 34, 0.4, "hybrid") is None
+    assert calibration_hotend_refusal(snap, 34, 0.4, "hybrid") == "rack_hotend_mismatch"  # one hotend, one flow
+    assert (
+        calibration_hotend_refusal(snap, 248, 0.4, "tpu_high_flow") == "rack_hotend_mismatch"
+    )  # TPU285: no wizard flow
 
 
 # --- 255 and the capture (§5.5, §8) ---------------------------------------------------------
@@ -479,3 +482,34 @@ def test_a_tpu285_hotends_own_rack_slot_is_offered_to_a_pin_only():
     )
     assert pinned.status == "compatible" and pinned.plan.mapping == [35]
     assert pinned.notices == ()  # a preload card carries no warning in Studio
+
+
+# --- acceptance r1 (B2-02 … B2-04) --------------------------------------------------------
+
+
+def test_a_slice_without_per_filament_data_is_checked_against_the_project_diameter(h3c):
+    """B2-02 / spec §5.2: no ``<filament nozzle_diameter>`` -> the project's diameter, flow any."""
+    req = replace(requirements({}), nozzle_constraints={"nozzle_diameter": ["0.6"]})
+    planned = resolve_filament_routing(req, RoutingPolicy(), _h3c_snapshot(h3c))
+    assert planned.status == "compatible" and planned.plan.mapping == [36]  # dock 8 holds the 0.6
+    h3c.state.nozzle_rack = [dict(n, diameter=0.4) if n.get("addr_id") == 8 else n for n in h3c.state.nozzle_rack]
+    refused = resolve_filament_routing(req, RoutingPolicy(), _h3c_snapshot(h3c))
+    assert refused.plan is None and refused.reason == "rack_hotend_mismatch"
+
+
+def test_the_print_tool_numbers_reach_the_sentence():
+    """B2-03: the numbers ride as a sentence of their own, absent when nobody knows them."""
+    from backend.app.services.filament_intake import routing_detail
+
+    with_numbers = routing_detail("rack_manual_feed_only", print_tools="4, 6")["message"]
+    assert "PrintTool: 4, 6." in with_numbers
+    assert "{" not in routing_detail("rack_manual_feed_only")["message"]
+
+
+def test_a_slot_the_rack_does_not_have_is_not_sent(p3c):
+    """B2-04: a P3C has no input 247 (PrintTool 9): neither the setting nor the reset goes out."""
+    assert p3c.ams_set_filament_setting(255, 2, "GFL99", "PLA", "", "FFFFFFFF", 190, 230) is False
+    assert p3c.reset_ams_slot(255, 2) is False
+    assert p3c.ams_set_filament_setting(33, 7, "GFL99", "PLA", "", "FFFFFFFF", 190, 230) is False
+    assert p3c._client.sent == []
+    assert p3c.ams_set_filament_setting(33, 6, "GFL99", "PLA", "", "FFFFFFFF", 190, 230) is True

@@ -67,7 +67,8 @@
   "detail": {
     "wanted_and_loaded": "Канал {slot} потребує {wanted}; у лотках: {loaded}.",
     "wanted_nothing_loaded": "Канал {slot} потребує {wanted}; лотки порожні.",
-    "wanted_only": "Канал {slot} потребує {wanted}."
+    "wanted_only": "Канал {slot} потребує {wanted}.",
+    "print_tools": "PrintTool: {print_tools}."
   },
   "auto_eject_conflict": "Автоскидання фінішним G-code несумісне зі Swap Mode принтера",
   "plate_calibration_required": "Потрібна калібровка перевірки стола",

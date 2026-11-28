@@ -104,6 +104,8 @@ STATUS_FIELDS = frozenset(
         # A direct-connected nozzle rack and its size: the shape of the card, no names.
         "direct_rack",
         "rack_size",
+        # Whether tray_now 255 is PrintTool 1's input (the toolhead's snow) — no names.
+        "direct_rack_input_loaded",
         "ams_auto_switch_filament",
         "ams_backup_groups",
         "ams_extruder_map",

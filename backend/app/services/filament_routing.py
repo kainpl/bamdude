@@ -209,6 +209,13 @@ def effective_slots(requirements: "PrintRequirements", policy: RoutingPolicy) ->
         if override.get("color"):
             slot["color"] = override["color"]
         slot["strict"] = policy.force_color_match or bool(override.get("force_color_match"))
+        if "nozzle_diameter" not in slot and isinstance(getattr(requirements, "nozzle_constraints", None), dict):
+            # A slice without per-filament hotend data (another slicer): the
+            # project's diameter for its nozzle, flow any — what a direct rack's
+            # hotend is checked against (spec N01 B §5.2). Not used elsewhere.
+            project = _required_diameter(requirements, slot_nozzle(slot))
+            if project is not None and project > 0:
+                slot["project_nozzle_diameter"] = project
     return slots
 
 
@@ -319,7 +326,8 @@ def _rack_source_fits(
     hotend = snapshot.rack.hotend(source.rack_addr)
     if hotend is None or not hotend.exists:
         return False, None, False
-    if not hotend_matches(hotend, slot.get("nozzle_diameter"), slot.get("volume_type")):
+    diameter = slot.get("nozzle_diameter") or slot.get("project_nozzle_diameter")
+    if not hotend_matches(hotend, diameter, slot.get("volume_type")):
         return False, "rack_hotend_mismatch", False
     if pin is not None:
         if hotend.dock_calibrated is False:
@@ -395,7 +403,10 @@ def calibration_hotend_refusal(
         return "rack_tool_detached"
     source = next((s for s in snapshot.sources if s.id == tray), None) if tray is not None else None
     hotend = rack.hotend(source.rack_addr) if source is not None else None
-    if hotend is None or not hotend_spec_matches(hotend, diameter, flow):
+    # Exact flow: a calibration is of ONE hotend, so "Hybrid" (a slice's "several
+    # flows") is no wildcard here — a TPU285 hotend, which the wizard has no flow
+    # for, is refused rather than calibrated as something else.
+    if hotend is None or (flow or "") != hotend.flow or not hotend_spec_matches(hotend, diameter, flow):
         return "rack_hotend_mismatch"
     if hotend.dock_calibrated is False:
         return "rack_not_calibrated"

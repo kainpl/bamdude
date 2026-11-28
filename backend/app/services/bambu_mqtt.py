@@ -3124,6 +3124,18 @@ class BambuMQTTClient:
         )
         return True
 
+    def _refuse_slot_outside_rack(self, what: str, ams_id: int, tray_id: int) -> bool:
+        """A direct rack: a slot its layout does not have (P3C input 247, an AMS 3P slot 7) is not sent.
+
+        Without this the other printers' branches would publish it (a P3C's ``(255, 2)``
+        as an H2D external) — only a raw API call reaches here; the routes answer 422.
+        """
+        layout = self.tray_layout()
+        if not layout.direct_rack or layout.accepts_slot(ams_id, tray_id):
+            return False
+        logger.info("[%s] %s for AMS %s slot %s not sent: no such slot", self.serial_number, what, ams_id, tray_id)
+        return True
+
     def _refuse_tray_command(self, what: str, tray: int | None) -> bool:
         """The same for a command that names its target by global tray id."""
         if not direct_rack_gate.tray_command_refused(self.tray_layout(), tray):
@@ -13147,6 +13159,8 @@ class BambuMQTTClient:
         if not self._client or not self.state.connected:
             logger.warning("[%s] Cannot set AMS filament setting: not connected", self.serial_number)
             return False
+        if self._refuse_slot_outside_rack("ams_filament_setting", ams_id, tray_id):
+            return False
 
         # A direct-connected rack (H3C, P3C): a rack AMS slot or a PrintTool's
         # input in Bambu Studio's form (``direct_rack.filament_setting_ids``) —
@@ -13245,6 +13259,8 @@ class BambuMQTTClient:
         """
         if not self._client or not self.state.connected:
             logger.warning("[%s] Cannot reset AMS slot: not connected", self.serial_number)
+            return False
+        if self._refuse_slot_outside_rack("reset slot", ams_id, tray_id):
             return False
 
         # Calculate mqtt IDs based on AMS type — same convention as

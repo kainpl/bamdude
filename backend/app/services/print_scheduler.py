@@ -179,6 +179,17 @@ async def basis_of(db: AsyncSession, item: PrintQueueItem) -> str:
 _canonical_filament_type = canonical_filament_type
 
 
+def _deferral_message(exc) -> str:
+    """A routing deferral as the queue row reads it: the sentence, plus a direct rack's PrintTool numbers.
+
+    Only ``print_tools`` travels from the deferral's facts — the channel details a
+    row has always gone without stay out of its one line.
+    """
+    params = getattr(exc, "params", None) or {}
+    extra = {"print_tools": params["print_tools"]} if params.get("print_tools") else {}
+    return routing_detail(exc.reason, **extra)["message"]
+
+
 def _installed_nozzle_diameters(status) -> list[float]:
     """Parse the installed nozzle diameters from a PrinterState (upstream #1899).
 
@@ -922,7 +933,7 @@ class PrintScheduler:
                         else:
                             mark_busy(printer_id, "verdict_changed")
                         continue
-                    await self._wait(db, item, "filament_unavailable", routing_detail(exc.reason)["message"])
+                    await self._wait(db, item, "filament_unavailable", _deferral_message(exc))
                     continue
                 # ⚠️ The plan is NOT written onto ``item`` here: this is the tick's
                 # session, and the final claim commits the plan in a session of its
@@ -3640,7 +3651,7 @@ class PrintScheduler:
             if exc.reason in SOURCE_FAILURES:
                 await self._fail_source_item(db, item, exc.reason, basis=basis)
             else:
-                await self._wait(db, item, "filament_unavailable", routing_detail(exc.reason)["message"])
+                await self._wait(db, item, "filament_unavailable", _deferral_message(exc))
             return False
 
         try:
@@ -3649,7 +3660,7 @@ class PrintScheduler:
             if exc.reason in SOURCE_FAILURES:
                 await self._fail_source_item(db, item, exc.reason, basis=basis)
                 return False
-            await self._wait(db, item, "filament_unavailable", routing_detail(exc.reason)["message"])
+            await self._wait(db, item, "filament_unavailable", _deferral_message(exc))
             return False
         # The plan travels as plain values into the claim's own commit (D-R5): written on
         # this tick session it would be a dirty row the claim's writer waits behind, or

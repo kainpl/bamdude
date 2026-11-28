@@ -3527,6 +3527,7 @@ async def configure_ams_slot(
         raise HTTPException(status_code=400, detail="Printer not connected")
     # A rack AMS slot / a direct rack's input (H3C, P3C) takes its filament setting
     # in Studio's form (N01 stage B); its K-profile waits for stage C (below).
+    _refuse_slot_outside_layout(printer_id, ams_id, tray_id)
     rack_slot = direct_rack_gate.is_rack_slot(tray_layout_of(printer_id, printer_manager), ams_id, tray_id)
 
     # ONE identity path (spec A §5.2): the family catalog builds the payload.
@@ -3729,6 +3730,7 @@ async def reset_ams_slot(
     if not client:
         raise HTTPException(status_code=400, detail="Printer not connected")
 
+    _refuse_slot_outside_layout(printer_id, ams_id, tray_id)
     if is_printer_busy(printer_id):
         # The slot's filament setting is what the job on the printer feeds from.
         # The dialog disables the button, but this route is reachable by an API
@@ -5321,6 +5323,13 @@ def _refuse_direct_rack_slot(printer_id: int, model: str | None, ams_id: int, tr
     """
     if direct_rack_gate.slot_command_refused(tray_layout_of(printer_id, printer_manager, model), ams_id, tray_id):
         raise direct_rack_gate.refusal()
+
+
+def _refuse_slot_outside_layout(printer_id: int, ams_id: int, tray_id: int) -> None:
+    """422 for a slot a direct rack does not have (a P3C's input 247), as the assignment doors answer."""
+    layout = tray_layout_of(printer_id, printer_manager)
+    if layout.direct_rack and not layout.accepts_slot(ams_id, tray_id):
+        raise HTTPException(422, "This printer has no such slot")
 
 
 def _is_valid_load_tray_id(tray_id: int) -> bool:
