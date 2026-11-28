@@ -87,6 +87,7 @@ from backend.app.services.tag_conflict import native_tag_refused, tag_already_li
 from backend.app.services.usage_tracker import print_is_unbooked
 from backend.app.utils.color_utils import spoolman_color_hex
 from backend.app.utils.filament_remaining import grams_remaining
+from backend.app.utils.tag_normalization import is_bambu_tray_uuid
 
 logger = logging.getLogger(__name__)
 
@@ -1441,7 +1442,20 @@ async def link_tag_to_spoolman_spool(
 
     A tag another spool already carries is refused with the shared
     ``tag_already_linked`` 409, identical to the built-in route's (upstream #3110).
+
+    A ``tray_uuid`` no Bambu tag can carry (``is_bambu_tray_uuid``, upstream
+    12e543b1b) is not linked: beside a ``tag_uid`` the tag UID is linked instead;
+    alone it is refused (422), before Spoolman is asked anything.
     """
+    if data.tray_uuid and not is_bambu_tray_uuid(data.tray_uuid):
+        if not data.tag_uid:
+            raise HTTPException(422, "tray_uuid is not a Bambu tray UUID")
+        logger.warning(
+            "Link tag: tray_uuid %s for Spoolman spool %s is not a Bambu tray UUID; linking the tag UID only",
+            data.tray_uuid.upper(),
+            spool_id,
+        )
+        data = data.model_copy(update={"tray_uuid": None})
     client = await _get_client(db)
     tag = (data.tray_uuid or data.tag_uid).upper()
     tag_json = json.dumps(tag)

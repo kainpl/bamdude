@@ -773,7 +773,7 @@ describe('useWebSocket hook', () => {
         ws.simulateMessage({ type: 'spool_assignment_changed', printer_id: 1, ams_id: 0, tray_id: 1 });
       });
 
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spoolman-slot-assignments-all'] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spoolman-slot-assignments', 'all'] });
       vi.unstubAllGlobals();
     });
 

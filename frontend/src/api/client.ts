@@ -10923,6 +10923,8 @@ export interface CsvExportOptions {
 export interface CsvImportRow {
   row_number: number;
   status: 'valid' | 'error' | 'skipped';
+  /** The number the spool is created with (C32, upstream #3520); null takes the next free one. */
+  keeps_id?: number | null;
   reason: string | null;
   material: string | null;
   brand: string | null;

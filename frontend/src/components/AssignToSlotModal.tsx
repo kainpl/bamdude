@@ -72,7 +72,7 @@ export function AssignToSlotModal({ spool, spoolmanMode, onClose, onAssigned }: 
     enabled: !spoolmanMode,
   });
   const { data: spoolmanAssignments } = useQuery({
-    queryKey: ['spoolman-slot-assignments-all'],
+    queryKey: ['spoolman-slot-assignments', 'all'],
     queryFn: () => api.getSpoolmanSlotAssignments(),
     enabled: spoolmanMode,
   });
